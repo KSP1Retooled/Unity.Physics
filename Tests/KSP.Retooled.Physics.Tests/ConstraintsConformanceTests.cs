@@ -4,8 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.PhysicsBackend.Tests
 {
     /// <summary>
-    /// Rigidbody.constraints. Unity turns the rotation flags into zeroed inertia axes, which the plugin API can express,
-    /// but has no command for the position flags, so those must be readable from something else the backend receives.
+    /// Rigidbody.constraints. No command carries them: after each step Unity itself reads the pose and velocities back,
+    /// removes the frozen components and writes the result, and it zeroes the inertia of frozen rotation axes.
     /// </summary>
     public class ConstraintsConformanceTests : PhysicsScene
     {

@@ -40,6 +40,7 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             AssemblyReloadEvents.beforeAssemblyReload += Detach;
+            EditorApplication.quitting += Detach;
             Attach();
         }
 #endif
@@ -49,8 +50,10 @@ namespace KSP.Retooled.PhysicsBackend
         {
             if (BackendInfo.IsRetooled)
             {
-                Application.quitting -= Detach;
+#if !UNITY_EDITOR
+                // In the editor this also fires on leaving play mode, when edit mode still needs the core.
                 Application.quitting += Detach;
+#endif
                 Attach();
             }
         }
@@ -100,23 +103,30 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static WorldState StateOf(NativeStore.WorldData* world)
         {
-            IntPtr key = (IntPtr)world;
-            if (!Worlds.TryGetValue(key, out WorldState state))
+            // Each world's own lock is held here, but queries on different worlds can run side by side.
+            lock (Worlds)
             {
-                state = new WorldState(world);
-                Worlds.Add(key, state);
-            }
+                IntPtr key = (IntPtr)world;
+                if (!Worlds.TryGetValue(key, out WorldState state))
+                {
+                    state = new WorldState(world);
+                    Worlds.Add(key, state);
+                }
 
-            return state;
+                return state;
+            }
         }
 
         private static void ReleaseWorld(NativeStore.WorldData* world)
         {
-            IntPtr key = (IntPtr)world;
-            if (Worlds.TryGetValue(key, out WorldState state))
+            lock (Worlds)
             {
-                state.Dispose();
-                Worlds.Remove(key);
+                IntPtr key = (IntPtr)world;
+                if (Worlds.TryGetValue(key, out WorldState state))
+                {
+                    state.Dispose();
+                    Worlds.Remove(key);
+                }
             }
         }
 

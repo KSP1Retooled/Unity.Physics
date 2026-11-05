@@ -50,10 +50,12 @@ namespace Retooled
             g_Managed.destroyWorld(&world->data);
         }
 
-        // Unity destroys bodies before their world, so this only frees storage.
+        // Unity destroys bodies before their world, so this only frees storage. A shape can outlive its body.
         for (uint32_t i = 0; i < world->data.bodyCount; i++)
         {
-            delete world->data.bodies[i].owner;
+            Body* body = world->data.bodies[i].owner;
+            DetachAllShapes(body);
+            delete body;
         }
 
         g_Worlds.erase(std::find(g_Worlds.begin(), g_Worlds.end(), world));
