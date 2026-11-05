@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using AOT;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -29,6 +30,15 @@ namespace KSP.Retooled.PhysicsBackend
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
         private static bool attached;
+
+        /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
+        public static int LastStepThreadId { get; private set; }
+
+        /// <summary>Steps run since this domain attached.</summary>
+        public static long StepCount { get; private set; }
+
+        /// <summary>The thread that attached, which is the main thread in every path that attaches.</summary>
+        public static int MainThreadId { get; private set; }
 
 #if UNITY_EDITOR
         [InitializeOnLoadMethod]
@@ -82,6 +92,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
             attached = true;
+            MainThreadId = Thread.CurrentThread.ManagedThreadId;
         }
 
         public static void Detach()
@@ -98,6 +109,15 @@ namespace KSP.Retooled.PhysicsBackend
             for (int i = 0; i < worldCount; i++)
             {
                 ReleaseWorld(NativeStore.RetooledPhysics_GetWorld(i));
+            }
+        }
+
+        private static void NoteStep()
+        {
+            LastStepThreadId = Thread.CurrentThread.ManagedThreadId;
+            if (StepCount++ == 0)
+            {
+                Debug.Log($"{Tag}first step on thread {LastStepThreadId}, main thread {MainThreadId}");
             }
         }
 
@@ -135,6 +155,7 @@ namespace KSP.Retooled.PhysicsBackend
         {
             try
             {
+                NoteStep();
                 StateOf(world).Step(deltaTime);
             }
             catch (Exception e)
