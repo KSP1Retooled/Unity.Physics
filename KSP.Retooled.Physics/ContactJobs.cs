@@ -221,6 +221,12 @@ namespace KSP.Retooled.PhysicsBackend
                 return false;
             }
 
+            if (IsBehindField(bodyA, header.ColliderKeyA, shapeA, bodyB, shapeB) || IsBehindField(bodyB, header.ColliderKeyB, shapeB, bodyA, shapeA))
+            {
+                header.JacobianFlags |= JacobianFlags.Disabled;
+                return false;
+            }
+
             bool trigger = (header.JacobianFlags & JacobianFlags.IsTrigger) != 0;
             int rowA = bodyA.Entity.Index;
             int rowB = bodyB.Entity.Index;
@@ -405,6 +411,23 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             return (a & immobile) == 0 || (b & immobile) == 0;
+        }
+
+        /// <summary>
+        /// PhysX culls a height field's triangle against the centre of the shape meeting it, so a shape centred below the
+        /// surface has no contact, while Unity Physics would drive it on through.
+        /// </summary>
+        private bool IsBehindField(RigidBody field, ColliderKey key, NativeStore.ShapeData* fieldShape, RigidBody other, NativeStore.ShapeData* otherShape)
+        {
+            if (fieldShape->geometryType != NativeStore.GeometryHeightField)
+            {
+                return false;
+            }
+
+            ref NativeStore.BodyData row = ref Store[other.Entity.Index];
+            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.position, row.rotation, out float3 lower, out float3 upper);
+            float3 centre = math.transform(math.inverse(field.WorldFromBody), (lower + upper) * 0.5f);
+            return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
         }
 
         private NativeStore.ShapeData* ShapeOf(RigidBody body, ColliderKey key)

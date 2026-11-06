@@ -171,6 +171,21 @@ namespace KSP.Retooled.PhysicsBackend
                     half = RotatedHalfExtents(rotation, (mesh->upper - mesh->lower) * 0.5f * math.abs(s));
                     break;
                 }
+                case NativeStore.GeometryHeightField:
+                {
+                    NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+                    if (field == null)
+                    {
+                        break;
+                    }
+
+                    float3 s = shape->extents;
+                    float3 top = new float3(field->resolution - 1, field->highest, field->resolution - 1) * s;
+                    float3 bottom = new float3(0.0f, field->lowest * s.y, 0.0f);
+                    center += math.rotate(rotation, (bottom + top) * 0.5f);
+                    half = RotatedHalfExtents(rotation, (top - bottom) * 0.5f);
+                    break;
+                }
             }
 
             lower = center - half;

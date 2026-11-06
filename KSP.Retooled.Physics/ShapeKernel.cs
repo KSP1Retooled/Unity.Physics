@@ -166,6 +166,15 @@ namespace KSP.Retooled.PhysicsBackend
                     a->vector = shape->data.extents;
                     a->pointer = shape->data.mesh;
                     break;
+                case ShapeCommand.CreateHeightField:
+                    a->pointer = HeightFields.Create(a, globals);
+                    break;
+                case ShapeCommand.UpdateHeightFieldRegion:
+                    HeightFields.Update(a, globals);
+                    break;
+                case ShapeCommand.DestroyHeightField:
+                    HeightFields.Release((NativeStore.HeightField*)a->pointer, globals);
+                    break;
             }
         }
 
@@ -212,12 +221,21 @@ namespace KSP.Retooled.PhysicsBackend
         private static void StoreGeometry(NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
             void* previousMesh = ShapeMath.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
+            if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            {
+                HeightFields.Release(shape, globals);
+            }
+
             shape->data.geometryType = a->mode;
             shape->data.extents = a->vector;
             shape->data.mesh = a->pointer;
             if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
             {
                 StoreOps.RetainMesh(globals, shape->data.mesh);
+            }
+            else if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            {
+                HeightFields.Retain(shape);
             }
 
             StoreOps.ReleaseMesh(globals, previousMesh);
@@ -245,6 +263,10 @@ namespace KSP.Retooled.PhysicsBackend
             if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
             {
                 StoreOps.ReleaseMesh(globals, shape->data.mesh);
+            }
+            else if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            {
+                HeightFields.Release(shape, globals);
             }
 
             StoreOps.ReleaseMaterial(globals, shape->data.material);

@@ -236,6 +236,8 @@ namespace Retooled
                 return sizeof(JointBreak);
             case 18:
                 return static_cast<int32_t>(PhysicsCommands::Joint::Count);
+            case 19:
+                return sizeof(HeightField);
             default:
                 return -1;
         }

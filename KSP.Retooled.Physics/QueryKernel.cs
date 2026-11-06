@@ -788,6 +788,11 @@ namespace KSP.Retooled.PhysicsBackend
                 ref CompoundCollider.Child child = ref compound->Children[i];
                 if (child.Entity.Index == index)
                 {
+                    if (shape->data.geometryType == NativeStore.GeometryHeightField)
+                    {
+                        worldFromCollider = math.mul(worldFromShape, ColliderBuilder.ShapeFromGrid(&shape->data));
+                    }
+
                     return child.Collider;
                 }
             }

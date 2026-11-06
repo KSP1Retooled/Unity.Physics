@@ -19,6 +19,7 @@ namespace KSP.Retooled.PhysicsBackend
         internal const uint GeometryBox = 4;
         internal const uint GeometryConvexMesh = 5;
         internal const uint GeometryTriangleMesh = 6;
+        internal const uint GeometryHeightField = 7;
         internal const uint ShapeFlagSceneQuery = 1 << 0;
         internal const uint ShapeFlagTrigger = 1 << 1;
 
@@ -136,6 +137,7 @@ namespace KSP.Retooled.PhysicsBackend
             public uint messages;
             public uint querySlot;
             private readonly uint reserved0;
+            public Shape* nextOnField;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -199,6 +201,20 @@ namespace KSP.Retooled.PhysicsBackend
             public MeshData* data;
             public MeshMoments moments;
             public uint momentsKnown;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct HeightField
+        {
+            public short* heights;
+            public byte* cells;
+            public uint resolution;
+            public uint holeCount;
+            public int lowest;
+            public int highest;
+            public uint references;
+            private readonly uint reserved0;
+            public Shape* firstShape;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -675,6 +691,7 @@ namespace KSP.Retooled.PhysicsBackend
                 (int)WorldCommand.Count,
                 sizeof(JointBreak),
                 (int)JointCommand.Count,
+                sizeof(HeightField),
             };
 
             string[] names =
@@ -698,6 +715,7 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(WorldCommand),
                 nameof(JointBreak),
                 nameof(JointCommand),
+                nameof(HeightField),
             };
 
             for (int i = 0; i < sizes.Length; i++)

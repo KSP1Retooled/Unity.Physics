@@ -551,9 +551,7 @@ namespace KSP.Retooled.PhysicsBackend
                 return false;
             }
 
-            BlobArray.Accessor<float3> vertices = ((PolygonCollider*)collider)->Vertices;
-            float3 normal = math.cross(vertices[1] - vertices[0], vertices[2] - vertices[0]);
-            return math.dot(math.rotate(leaf.TransformFromChild.rot, normal), direction) > 0.0f;
+            return math.dot(math.rotate(leaf.TransformFromChild.rot, FrontOf(root, key, collider)), direction) > 0.0f;
         }
 
         /// <summary>Whether a point lies behind the polygon a key names. Anything but a polygon has no behind.</summary>
@@ -571,8 +569,30 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             BlobArray.Accessor<float3> vertices = ((PolygonCollider*)collider)->Vertices;
+            float3 inLeaf = math.transform(math.inverse(leaf.TransformFromChild), point);
+            return math.dot(FrontOf(root, key, collider), inLeaf - vertices[0]) < 0.0f;
+        }
+
+        /// <summary>
+        /// The way a polygon faces, in its leaf's frame. A mesh's winding says, and a terrain's triangles wind the opposite way
+        /// from a mesh's, with the surface up.
+        /// </summary>
+        private static float3 FrontOf(Collider* root, ColliderKey key, Collider* polygon)
+        {
+            BlobArray.Accessor<float3> vertices = ((PolygonCollider*)polygon)->Vertices;
             float3 normal = math.cross(vertices[1] - vertices[0], vertices[2] - vertices[0]);
-            return math.dot(normal, point - vertices[0]) < 0.0f;
+            return IsTerrainLeaf(root, key) ? -normal : normal;
+        }
+
+        private static bool IsTerrainLeaf(Collider* root, ColliderKey key)
+        {
+            if (root->Type == ColliderType.Compound)
+            {
+                root->GetChild(ref key, out ChildCollider child);
+                return child.Collider->Type == ColliderType.Terrain;
+            }
+
+            return root->Type == ColliderType.Terrain;
         }
     }
 }

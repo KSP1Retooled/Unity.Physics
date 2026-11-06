@@ -1,5 +1,4 @@
-// Shape commands. Each one is unpacked here and runs in ShapeKernel.cs. Mesh.cpp holds the mesh commands. Height field
-// commands are stubs, so a TerrainCollider has no collision.
+// Shape commands. Each one is unpacked here and runs in ShapeKernel.cs. Mesh.cpp holds the mesh commands.
 
 #include <new>
 
@@ -133,10 +132,12 @@ namespace Retooled
     {
     }
 
-    template <typename T>
-    static void BindStub(FunctionBinding* table)
+    static void PackHeightField(CommandArgs& args, const Physics::HeightFieldDescriptor& descriptor)
     {
-        table[static_cast<size_t>(T::command)] = &ZeroedStub<T, kShapeCategory>;
+        args.pointer = const_cast<int16_t*>(descriptor.heights);
+        args.pointer2 = const_cast<uint8_t*>(descriptor.holes);
+        args.value = static_cast<uint32_t>(descriptor.resolution);
+        args.mode = static_cast<uint32_t>(descriptor.holesCount);
     }
 
     void BindShapeCommands(FunctionBinding* table)
@@ -192,8 +193,15 @@ namespace Retooled
         Bind<ShapeCmd::SetGeometry, [](CommandArgs& a, const auto& c) { PackGeometry(a, c.value); }>(table);
         Bind<ShapeCmd::GetGeometry, None, [](const CommandArgs& a, auto& c) { c.value = UnpackGeometry(a); }>(table);
 
-        BindMeshCommands(table);
+        Bind<ShapeCmd::CreateHeightField, [](CommandArgs& a, const auto& c) { PackHeightField(a, c.descriptor); },
+            [](const CommandArgs& a, auto& c) { c.heightField = a.pointer; }, false>(table);
+        Bind<ShapeCmd::UpdateHeightFieldRegion, [](CommandArgs& a, const auto& c)
+        {
+            PackHeightField(a, c.descriptor);
+            a.pointer3 = c.heightField;
+        }, None, false>(table);
+        Bind<ShapeCmd::DestroyHeightField, [](CommandArgs& a, const auto& c) { a.pointer = c.heightField; }, None, false>(table);
 
-        BindStub<ShapeCmd::CreateHeightField>(table);
+        BindMeshCommands(table);
     }
 }

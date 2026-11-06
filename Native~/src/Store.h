@@ -7,7 +7,7 @@
 // Commands reach the store through the Burst kernels in BodyKernel.cs, ShapeKernel.cs and WorldKernel.cs. Native code keeps
 // only what comes before managed code exists: worlds, their settings and materials.
 //
-// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, World*). Hot body
+// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, HeightField*, World*). Hot body
 // state lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
 // is destroyed; a Body never does.
 //
@@ -163,7 +163,7 @@ namespace Retooled
         uint32_t ignorePairId;
         uint32_t collisionDisabled;
 
-        void* mesh; // the Mesh or height field of the geometry, when it has one. A shape holds a reference to a Mesh.
+        void* mesh; // the Mesh or HeightField of the geometry, when it has one, and the shape holds a reference to it
         MaterialData* material; // never null, and the shape holds a reference
         void* userData;
         Shape* owner;
@@ -199,6 +199,24 @@ namespace Retooled
     };
 
     static_assert(sizeof(MeshMoments) == 40, "NativeStore.MeshMoments mirrors this layout");
+
+    // Mirrored. A height field, and the handle Unity holds, written by HeightFields.cs on the store's heap: the samples Unity
+    // sent, unscaled, because the scale belongs to each shape. Only the main thread touches it. Unity holds one reference and
+    // each shape using it another.
+    struct HeightField
+    {
+        int16_t* heights;      // resolution * resolution samples
+        uint8_t* cells;        // (resolution - 1) squared, non-zero where the surface is solid, or null when all of it is
+        uint32_t resolution;   // samples per side
+        uint32_t holeCount;    // cells that aren't solid
+        int32_t lowest;        // bounds of the samples, which an update may only widen, as in PhysX
+        int32_t highest;
+        uint32_t references;
+        uint32_t reserved0;
+        Shape* firstShape;     // the shapes using this field, linked by Shape::nextOnField
+    };
+
+    static_assert(sizeof(HeightField) == 48, "NativeStore.HeightField mirrors this layout");
 
     // Mirrored. A cook's source mesh, as the descriptor gave it.
     struct CookInput
@@ -564,9 +582,10 @@ namespace Retooled
         // One past the shape's entry in the query world last published, so that removing the shape can hide it there.
         uint32_t querySlot;
         uint32_t reserved0;
+        Shape* nextOnField; // the next shape using the same height field
     };
 
-    static_assert(sizeof(Shape) == 136, "NativeStore.Shape mirrors this layout");
+    static_assert(sizeof(Shape) == 144, "NativeStore.Shape mirrors this layout");
 
     // The cold half of a world, and the handle Unity holds. Kernels get it as a WorldData, the first field.
     struct World

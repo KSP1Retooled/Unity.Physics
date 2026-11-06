@@ -72,7 +72,7 @@ namespace KSP.Retooled.PhysicsBackend
                 return null;
             }
 
-            if (usable == 1)
+            if (usable == 1 && body->shapes[lastUsable]->geometryType != NativeStore.GeometryHeightField)
             {
                 NativeStore.ShapeData* shape = body->shapes[lastUsable];
                 return Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
@@ -90,10 +90,12 @@ namespace KSP.Retooled.PhysicsBackend
                         continue;
                     }
 
+                    RigidTransform compoundFromShape = new RigidTransform(shape->localRotation, shape->localPosition);
+                    bool heightField = shape->geometryType == NativeStore.GeometryHeightField;
                     children[next++] = new CompoundCollider.ColliderBlobInstance
                     {
                         Collider = Create(shape, float3.zero, quaternion.identity),
-                        CompoundFromChild = new RigidTransform(shape->localRotation, shape->localPosition),
+                        CompoundFromChild = heightField ? math.mul(compoundFromShape, ShapeFromGrid(shape)) : compoundFromShape,
                         Entity = new Entity { Index = i, Version = 1 },
                     };
                 }
@@ -158,6 +160,18 @@ namespace KSP.Retooled.PhysicsBackend
                     return mesh != null && mesh->vertexCount != 0 && math.all(shape->extents != 0.0f);
                 }
 
+                case NativeStore.GeometryHeightField:
+                {
+                    NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+                    if (field == null || !math.all(shape->extents > 0.0f))
+                    {
+                        return false;
+                    }
+
+                    long cells = field->resolution - 1L;
+                    return field->holeCount < cells * cells;
+                }
+
                 default:
                     return false;
             }
@@ -184,9 +198,37 @@ namespace KSP.Retooled.PhysicsBackend
                 case NativeStore.GeometryConvexMesh:
                 case NativeStore.GeometryTriangleMesh:
                     return CreateMesh(shape, center, orientation, filter, material);
+                case NativeStore.GeometryHeightField:
+                    return CreateHeightField(shape, filter, material);
                 default:
                     return CapsuleCollider.Create(CapsuleOf(shape->extents, center, orientation), filter, material);
             }
+        }
+
+        /// <summary>
+        /// Where a height field's grid lies in its shape: a quarter turn about Y, with the grid's rows along X and its columns
+        /// running back along Z. PhysX splits every cell from (x, z) to (x + 1, z + 1), and Unity Physics' queries always from
+        /// (i + 1, j) to (i, j + 1), whatever TerrainCollider.Create is told, so only turning the grid makes the two agree.
+        /// </summary>
+        internal static RigidTransform ShapeFromGrid(NativeStore.ShapeData* shape)
+        {
+            NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+            return new RigidTransform(quaternion.RotateY(math.PI / 2.0f), new float3(0.0f, 0.0f, (field->resolution - 1) * shape->extents.z));
+        }
+
+        private static BlobAssetReference<Collider> CreateHeightField(NativeStore.ShapeData* shape, CollisionFilter filter, Material material)
+        {
+            void* collider = null;
+            new HeightFieldColliderJob
+            {
+                Field = (NativeStore.HeightField*)shape->mesh,
+                Scale = shape->extents.zyx,
+                Filter = filter,
+                Material = material,
+                Result = &collider,
+            }.Run();
+
+            return FromPointer(collider);
         }
 
         internal static BoxGeometry BoxOf(float3 extents, float3 center, quaternion orientation)
@@ -391,6 +433,89 @@ namespace KSP.Retooled.PhysicsBackend
                 }
 
                 *Result = collider.GetUnsafePtr();
+            }
+        }
+
+        /// <summary>
+        /// Builds a height field's blob over the grid that <see cref="ShapeFromGrid"/> places. Grid cell (i, j) is the source
+        /// cell (j, last - i). Unity Physics' terrain has no holes, so a field with any is a triangle mesh of its solid cells,
+        /// split the same way, whose triangles face up as a mesh's do. A terrain collides by its triangles as PhysX does:
+        /// VertexSamples pushes up any vertex under the surface, which throws a body whose centre is below it into the air.
+        /// </summary>
+        [BurstCompile]
+        private struct HeightFieldColliderJob : IJob
+        {
+            // Unity Physics stretches the tallest sample to the whole range of a short, which a field of zeros would divide
+            // by, so one corner rises by this fraction of a sample.
+            private const float FlatFieldRise = 1.0f / 1024.0f;
+
+            [NativeDisableUnsafePtrRestriction]
+            public NativeStore.HeightField* Field;
+
+            public float3 Scale;
+            public CollisionFilter Filter;
+            public Material Material;
+
+            [NativeDisableUnsafePtrRestriction]
+            public void** Result;
+
+            public void Execute()
+            {
+                int size = (int)Field->resolution;
+                var heights = new NativeArray<float>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int j = 0; j < size; j++)
+                {
+                    for (int i = 0; i < size; i++)
+                    {
+                        heights[j * size + i] = Field->heights[(size - 1 - i) * size + j];
+                    }
+                }
+
+                BlobAssetReference<Collider> collider;
+                if (Field->holeCount != 0)
+                {
+                    collider = CreateMesh(heights, size);
+                }
+                else
+                {
+                    if (Field->lowest == 0 && Field->highest == 0)
+                    {
+                        heights[0] = FlatFieldRise;
+                    }
+
+                    collider = TerrainCollider.Create(heights, new int2(size), Scale, TerrainCollider.CollisionMethod.Triangles, Filter, Material);
+                }
+
+                *Result = collider.GetUnsafePtr();
+            }
+
+            private BlobAssetReference<Collider> CreateMesh(NativeArray<float> heights, int size)
+            {
+                var vertices = new NativeArray<float3>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int j = 0; j < size; j++)
+                {
+                    for (int i = 0; i < size; i++)
+                    {
+                        vertices[j * size + i] = new float3(i, heights[j * size + i], j) * Scale;
+                    }
+                }
+
+                int cells = size - 1;
+                var triangles = new NativeList<int3>(2 * cells * cells, Allocator.Temp);
+                for (int j = 0; j < cells; j++)
+                {
+                    for (int i = 0; i < cells; i++)
+                    {
+                        if (Field->cells[(cells - 1 - i) * cells + j] != 0)
+                        {
+                            int corner = j * size + i;
+                            triangles.Add(new int3(corner, corner + size, corner + 1));
+                            triangles.Add(new int3(corner + 1, corner + size, corner + size + 1));
+                        }
+                    }
+                }
+
+                return MeshCollider.Create(vertices, triangles.AsArray(), Filter, Material);
             }
         }
 

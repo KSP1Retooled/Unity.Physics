@@ -54,15 +54,6 @@ namespace Retooled
         Function(object, ctx, static_cast<T&>(command));
     }
 
-    // A command that is not implemented yet and has outputs: Unity reads the fields back, so they are zeroed, and zero
-    // means "nothing" throughout the command set (no hit, no count, a null handle, false).
-    template <typename T, uint32_t Category>
-    void ZeroedStub(void*, const Context&, Command& command)
-    {
-        LogUnimplementedOnce(Category, static_cast<uint32_t>(T::command));
-        std::memset(static_cast<void*>(&static_cast<T&>(command)), 0, sizeof(T));
-    }
-
     template <uint32_t Id, uint32_t Category>
     void SilentStub(void*, const Context&, Command&)
     {
