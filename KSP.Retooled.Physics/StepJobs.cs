@@ -220,6 +220,7 @@ namespace KSP.Retooled.PhysicsBackend
                 NativeStore.BodyData* body = Store + entity.Index;
                 QueryBodies[i] = new QueryBody
                 {
+                    Owner = body->owner,
                     FirstShape = nextShape,
                     SingleShape = ColliderBuilder.FirstSupported(body),
                     IsStatic = (body->flags & NativeStore.BodyFlags.Static) != 0 ? 1 : 0,
@@ -228,10 +229,14 @@ namespace KSP.Retooled.PhysicsBackend
                 for (int s = 0; s < body->shapeCount; s++)
                 {
                     NativeStore.ShapeData* shape = body->shapes[s];
+                    shape->owner->querySlot = (uint)nextShape + 1;
                     QueryShapes[nextShape++] = new QueryShape
                     {
                         EngineObjectId = shape->userData != null ? *(ulong*)((byte*)shape->userData + EngineObjectIdOffset) : 0,
+                        UserData = shape->userData,
+                        Handle = shape->owner,
                         Flags = shape->flags,
+                        GeometryType = shape->geometryType,
                     };
                 }
             }

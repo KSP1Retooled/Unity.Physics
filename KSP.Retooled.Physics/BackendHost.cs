@@ -29,7 +29,7 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
-        private static IntPtr rayCastFunction;
+        private static IntPtr queryFunction;
         private static IntPtr cookMeshFunction;
         private static IntPtr validateMeshFunction;
         private static IntPtr bodyCommandFunction;
@@ -111,7 +111,7 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 simulate = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(SimulateDelegate),
                 buildQueryWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
-                rayCast = RayCastFunction(),
+                query = QueryFunction(),
                 destroyWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
                 cookMesh = CookMeshFunction(),
                 validateMesh = ValidateMeshFunction(),
@@ -167,14 +167,14 @@ namespace KSP.Retooled.PhysicsBackend
         /// Asks Burst for the function once per domain. Burst compiles in the background and hands back a stub that runs
         /// the method in Mono until the compile lands, or for good if Burst is off.
         /// </summary>
-        private static IntPtr RayCastFunction()
+        private static IntPtr QueryFunction()
         {
-            if (rayCastFunction == IntPtr.Zero)
+            if (queryFunction == IntPtr.Zero)
             {
-                rayCastFunction = BurstCompiler.CompileFunctionPointer<QueryKernel.RayCastFunction>(QueryKernel.RayCast).Value;
+                queryFunction = BurstCompiler.CompileFunctionPointer<QueryKernel.QueryFunction>(QueryKernel.Run).Value;
             }
 
-            return rayCastFunction;
+            return queryFunction;
         }
 
         private static IntPtr CookMeshFunction()

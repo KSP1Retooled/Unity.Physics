@@ -263,7 +263,8 @@ namespace KSP.Retooled.PhysicsBackend
 
             query->Collision = world.CollisionWorld;
             query->Bodies = queryBodies.GetUnsafeReadOnlyPtr();
-            query->Shapes = queryShapes.GetUnsafeReadOnlyPtr();
+            query->Shapes = queryShapes.GetUnsafePtr();
+            query->ShapeCount = queryShapes.Length;
             store->queryWorld = query;
             builtWhole = true;
         }

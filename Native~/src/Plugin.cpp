@@ -209,7 +209,7 @@ namespace Retooled
             case 4:
                 return sizeof(StoreGlobals);
             case 5:
-                return sizeof(RayCastInput);
+                return sizeof(QueryInput);
             case 6:
                 return sizeof(RayCastHit);
             case 7:

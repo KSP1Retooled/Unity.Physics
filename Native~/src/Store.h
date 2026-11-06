@@ -352,7 +352,7 @@ namespace Retooled
         uint32_t queryDirty;
 
         World* owner;
-        // What managed hands the ray cast function, null while no built world can be read. Guarded by queryLock.
+        // What managed hands the query function, null while no built world can be read. Guarded by queryLock.
         void* queryWorld;
     };
 
@@ -417,19 +417,55 @@ namespace Retooled
     // A Burst function pointer: command is the plugin API's id within the category and object the handle it addresses.
     using CommandKernel = void (*)(uint32_t command, void* object, CommandArgs* args, StoreGlobals* globals);
 
-    // Mirrored. Input of the managed ray cast.
-    struct RayCastInput
+    // Mirrored. Which query a QueryInput asks for.
+    enum QueryKind : uint32_t
     {
-        Float3 origin;
-        Float3 direction;
-        float maxDistance;
-        int32_t layerMask;
-        uint32_t filterOptions; // Physics::QueryFilterFlags
+        kQueryRay = 0,
+        kQueryRayAll = 1,
+        kQueryRayAgainstShape = 2,
+        kQueryOverlapAny = 3,
+        kQueryOverlapAll = 4,
+        kQueryOverlapBroadphase = 5,
+        kQueryCast = 6,
+        kQueryCastAll = 7,
+        kQueryBodyCast = 8,
+        kQueryBodyCastAll = 9,
+        kQueryClosestPoint = 10,
+        kQueryPenetration = 11,
     };
 
-    static_assert(sizeof(RayCastInput) == 36, "NativeStore.RayCastInput mirrors this layout");
+    // Mirrored. A query's input. What a kind doesn't use stays zero. A geometry reads as a ShapeData's does: the type and the
+    // extents, in a pose that is the shape's own. The collector is the plugin API's callback for that kind.
+    struct QueryInput
+    {
+        Float4 rotation;
+        Float3 position;
+        uint32_t geometryType;
 
-    // Mirrored. Output of the managed ray cast; the layout equals Physics::QueryHit.
+        Float3 extents;
+        int32_t layerMask;
+
+        Float3 direction;
+        float maxDistance;
+
+        uint32_t filterOptions; // Physics::QueryFilterFlags
+        uint32_t keepInitialOverlaps;
+
+        // The second shape's pose in a penetration test.
+        Float4 rotation2;
+        Float3 position2;
+        uint32_t reserved0;
+
+        Shape* shape;
+        Shape* shape2;
+        Body* body;
+        void* collector;
+        void* collectorContext;
+    };
+
+    static_assert(sizeof(QueryInput) == 144, "NativeStore.QueryInput mirrors this layout");
+
+    // Mirrored. A query hit; the layout equals Physics::QueryHit.
     struct RayCastHit
     {
         Float3 point;
@@ -441,6 +477,15 @@ namespace Retooled
     };
 
     static_assert(sizeof(RayCastHit) == 48, "NativeStore.RayCastHit mirrors this layout");
+
+    // Mirrored. A query's output. The hit also carries a closest point in point, and a penetration's direction in normal.
+    struct QueryOutput
+    {
+        RayCastHit hit;
+        void* shapeUserData;
+    };
+
+    static_assert(sizeof(QueryOutput) == 56, "NativeStore.QueryOutput mirrors this layout");
 
     enum QueryWorldBuild : int32_t
     {
@@ -459,10 +504,10 @@ namespace Retooled
         // queryLock held exclusively, on the main thread only: the build needs Allocator.Temp, job scheduling and write
         // access to native containers, and a job worker has none of them.
         int32_t (*buildQueryWorld)(WorldData* world);
-        // Returns non-zero and fills hit when the ray hits something. Called with queryLock held shared, on any thread.
-        // This is a Burst function, so no thread pays a Mono transition once it has compiled; until then it is a stub
-        // that runs the same code in Mono.
-        int32_t (*rayCast)(void* queryWorld, const RayCastInput* input, RayCastHit* hit);
+        // Returns non-zero and fills output when a query of that kind found something; a collector gets its hits as they
+        // come. Called with queryLock held shared, on any thread. This is a Burst function, so no thread pays a Mono
+        // transition once it has compiled; until then it is a stub that runs the same code in Mono.
+        int32_t (*query)(uint32_t kind, void* queryWorld, const QueryInput* input, QueryOutput* output);
         // Frees everything managed holds for a world that is going away.
         void (*destroyWorld)(WorldData* world);
         // Burst functions like rayCast, called on any thread with g_MeshLock held shared.
@@ -515,9 +560,12 @@ namespace Retooled
         float contactOffset;
         // Physics::ShapePairEventFlags, which the contact report reads, and which the filter holds in a bit field otherwise.
         uint32_t messages;
+        // One past the shape's entry in the query world last published, so that removing the shape can hide it there.
+        uint32_t querySlot;
+        uint32_t reserved0;
     };
 
-    static_assert(sizeof(Shape) == 128, "NativeStore.Shape mirrors this layout");
+    static_assert(sizeof(Shape) == 136, "NativeStore.Shape mirrors this layout");
 
     // The cold half of a world, and the handle Unity holds. Kernels get it as a WorldData, the first field.
     struct World

@@ -178,42 +178,43 @@ namespace KSP.Retooled.PhysicsBackend
             switch (shape->geometryType)
             {
                 case NativeStore.GeometryBox:
-                {
-                    BoxGeometry box = new BoxGeometry
-                    {
-                        Center = center,
-                        Orientation = orientation,
-                        Size = math.max(shape->extents * 2.0f, MinimumExtent),
-                        BevelRadius = 0.0f,
-                    };
-
-                    return BoxCollider.Create(box, filter, material);
-                }
-
+                    return BoxCollider.Create(BoxOf(shape->extents, center, orientation), filter, material);
                 case NativeStore.GeometrySphere:
-                {
-                    SphereGeometry sphere = new SphereGeometry { Center = center, Radius = math.max(shape->extents.x, MinimumExtent) };
-                    return SphereCollider.Create(sphere, filter, material);
-                }
-
+                    return SphereCollider.Create(SphereOf(shape->extents, center), filter, material);
                 case NativeStore.GeometryConvexMesh:
                 case NativeStore.GeometryTriangleMesh:
                     return CreateMesh(shape, center, orientation, filter, material);
-
                 default:
-                {
-                    // The extents hold the radius and half of the cylinder's length, along local X as in PhysX.
-                    float3 halfAxis = math.rotate(orientation, new float3(math.max(shape->extents.y, MinimumExtent), 0.0f, 0.0f));
-                    CapsuleGeometry capsule = new CapsuleGeometry
-                    {
-                        Vertex0 = center - halfAxis,
-                        Vertex1 = center + halfAxis,
-                        Radius = math.max(shape->extents.x, MinimumExtent),
-                    };
-
-                    return CapsuleCollider.Create(capsule, filter, material);
-                }
+                    return CapsuleCollider.Create(CapsuleOf(shape->extents, center, orientation), filter, material);
             }
+        }
+
+        internal static BoxGeometry BoxOf(float3 extents, float3 center, quaternion orientation)
+        {
+            return new BoxGeometry
+            {
+                Center = center,
+                Orientation = orientation,
+                Size = math.max(extents * 2.0f, MinimumExtent),
+                BevelRadius = 0.0f,
+            };
+        }
+
+        internal static SphereGeometry SphereOf(float3 extents, float3 center)
+        {
+            return new SphereGeometry { Center = center, Radius = math.max(extents.x, MinimumExtent) };
+        }
+
+        /// <summary>The extents hold the radius and half of the cylinder's length, along local X as in PhysX.</summary>
+        internal static CapsuleGeometry CapsuleOf(float3 extents, float3 center, quaternion orientation)
+        {
+            float3 halfAxis = math.rotate(orientation, new float3(math.max(extents.y, MinimumExtent), 0.0f, 0.0f));
+            return new CapsuleGeometry
+            {
+                Vertex0 = center - halfAxis,
+                Vertex1 = center + halfAxis,
+                Radius = math.max(extents.x, MinimumExtent),
+            };
         }
 
         private static BlobAssetReference<Collider> CreateMesh(

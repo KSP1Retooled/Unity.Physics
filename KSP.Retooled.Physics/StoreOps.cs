@@ -118,6 +118,27 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             world->removedShapes[world->removedShapeCount++] = shape;
+            HideFromQueries(world, shape);
+        }
+
+        /// <summary>
+        /// A worker keeps reading the query world last published, where a hit on this shape would hand Unity a pointer to a
+        /// collider that may be about to go away. The slot can be left over from an older world, hence the check.
+        /// </summary>
+        private static void HideFromQueries(NativeStore.WorldData* world, NativeStore.Shape* shape)
+        {
+            QueryWorld* query = world->queryWorld;
+            if (query != null && shape->querySlot != 0 && shape->querySlot <= (uint)query->ShapeCount)
+            {
+                QueryShape* published = query->Shapes + (shape->querySlot - 1);
+                if (published->Handle == shape)
+                {
+                    published->Flags = 0;
+                    published->UserData = null;
+                }
+            }
+
+            shape->querySlot = 0;
         }
 
         /// <summary>Takes the shape off its body, keeping the order of the rest, which a compound's child indices follow.</summary>

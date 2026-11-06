@@ -26,6 +26,7 @@ namespace KSP.Retooled.PhysicsBackend
         internal const uint QueryUseStaticBodies = 1 << 1;
         internal const uint QueryUseTriggerShapes = 1 << 2;
         internal const uint QueryAllowBackfaces = 1 << 4;
+        internal const uint QueryAllowMultipleMeshHits = 1 << 5;
 
         // QueryWorldBuild in Store.h.
         internal const int QueryWorldFailed = 0;
@@ -133,6 +134,8 @@ namespace KSP.Retooled.PhysicsBackend
             private fixed uint filter[4];
             public float contactOffset;
             public uint messages;
+            public uint querySlot;
+            private readonly uint reserved0;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -517,14 +520,48 @@ namespace KSP.Retooled.PhysicsBackend
             private readonly uint reserved0;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct RayCastInput
+        /// <summary>QueryKind in Store.h.</summary>
+        internal enum QueryKind : uint
         {
-            public float3 origin;
+            Ray = 0,
+            RayAll = 1,
+            RayAgainstShape = 2,
+            OverlapAny = 3,
+            OverlapAll = 4,
+            OverlapBroadphase = 5,
+            Cast = 6,
+            CastAll = 7,
+            BodyCast = 8,
+            BodyCastAll = 9,
+            ClosestPoint = 10,
+            Penetration = 11,
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct QueryInput
+        {
+            public quaternion rotation;
+            public float3 position;
+            public uint geometryType;
+
+            public float3 extents;
+            public int layerMask;
+
             public float3 direction;
             public float maxDistance;
-            public int layerMask;
+
             public uint filterOptions;
+            public uint keepInitialOverlaps;
+
+            public quaternion rotation2;
+            public float3 position2;
+            private readonly uint reserved0;
+
+            public Shape* shape;
+            public Shape* shape2;
+            public Body* body;
+            public void* collector;
+            public void* collectorContext;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -537,6 +574,25 @@ namespace KSP.Retooled.PhysicsBackend
             public float2 uv;
             public ulong engineObjectId;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct QueryOutput
+        {
+            public RayCastHit hit;
+            public void* shapeUserData;
+        }
+
+        /// <summary>Physics::QueryHitResultCollectorCallback. The answer is a C++ bool, so it is one byte.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate byte HitCollectorFunction(void* context, RayCastHit* hits, ulong count);
+
+        /// <summary>Physics::QueryShapesResultCollectorCallback.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate byte ShapeCollectorFunction(void* context, void** shapeUserDatas, ulong count);
+
+        /// <summary>Physics::BroadPhaseQueryShapeCollectorCallback.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate byte BroadphaseCollectorFunction(void* context, void* shape, void* body, void* shapeUserData, ushort geometryType);
 
         internal delegate void SimulateCallback(WorldData* world, float deltaTime);
 
@@ -560,7 +616,7 @@ namespace KSP.Retooled.PhysicsBackend
         {
             public IntPtr simulate;
             public IntPtr buildQueryWorld;
-            public IntPtr rayCast;
+            public IntPtr query;
             public IntPtr destroyWorld;
             public IntPtr cookMesh;
             public IntPtr validateMesh;
@@ -604,7 +660,7 @@ namespace KSP.Retooled.PhysicsBackend
                 sizeof(MaterialData),
                 sizeof(WorldData),
                 sizeof(StoreGlobals),
-                sizeof(RayCastInput),
+                sizeof(QueryInput),
                 sizeof(RayCastHit),
                 sizeof(ManagedCallbacks),
                 sizeof(MeshData),
@@ -627,7 +683,7 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(MaterialData),
                 nameof(WorldData),
                 nameof(StoreGlobals),
-                nameof(RayCastInput),
+                nameof(QueryInput),
                 nameof(RayCastHit),
                 nameof(ManagedCallbacks),
                 nameof(MeshData),
