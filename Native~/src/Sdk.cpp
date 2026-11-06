@@ -1,5 +1,6 @@
 // SDK lifecycle and materials. Material commands address the material through the object handle.
 
+#include <cstdlib>
 #include <cstring>
 
 #include "Commands.h"
@@ -42,6 +43,17 @@ namespace Retooled
         {
             delete material;
         }
+    }
+
+    void InitializeGlobals()
+    {
+        g_Globals.defaultMaterial = &s_DefaultMaterial;
+        g_Globals.reallocate = [](void* memory, uint64_t size) { return std::realloc(memory, static_cast<size_t>(size)); };
+        g_Globals.release = std::free;
+        g_Globals.retainMesh = RetainMesh;
+        g_Globals.releaseMesh = ReleaseMesh;
+        g_Globals.retainMaterial = RetainMaterial;
+        g_Globals.releaseMaterial = ReleaseMaterial;
     }
 
     static void InitializeSdk(void*, const Context&, SdkData::InitializeSdk& command)

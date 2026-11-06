@@ -1,0 +1,351 @@
+using System;
+using AOT;
+using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
+using UnityEngine;
+
+namespace KSP.Retooled.PhysicsBackend
+{
+    /// <summary>
+    /// The plugin API's shape commands, by the id Shape.cpp passes. Attach checks the count against the plugin's. Only what
+    /// runs in <see cref="ShapeKernel"/> has a name here that matters; the mesh commands stay in Mesh.cpp.
+    /// </summary>
+    internal enum ShapeCommand : uint
+    {
+        Invalid = 0,
+        CreateShape,
+        DestroyShape,
+        GetActorDescriptor,
+        GetUserData,
+        GetFlags,
+        SetFlags,
+        GetFilterData,
+        SetFilterData,
+        SetModifiableContacts,
+        SetSupportedMessages,
+        SetMaterial,
+        GetLocalPose,
+        GetPose,
+        SetPose,
+        SetContactOffset,
+        GetWorldBounds,
+        GetBoundsAtPose,
+        ShouldIgnoreCollision,
+        IgnoreCollision,
+        CleanupIgnoredColliders,
+        CookCollisionMesh,
+        CookCollisionMeshStream,
+        CreateCollisionMeshFromStream,
+        CreateHeightField,
+        UpdateHeightFieldRegion,
+        DestroyHeightField,
+        DestroyCollisionMesh,
+        ExtractCollisionMeshData,
+        GetGeometryType,
+        SetGeometry,
+        GetGeometry,
+        RemapTriangleIndexToSourceIndex,
+        Count,
+    }
+
+    /// <summary>
+    /// Everything a shape command does. Shape commands arrive on the main thread outside a step. As with the query functions,
+    /// the plugin holds a Burst function pointer, and until the async compile delivers it is a stub running the same code in Mono.
+    /// </summary>
+    [BurstCompile]
+    internal static unsafe class ShapeKernel
+    {
+        // Physics::ActorType.
+        private const uint ActorStatic = 1;
+        private const uint ActorDynamic = 2;
+
+        [BurstCompile(DisableSafetyChecks = true)]
+        [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
+        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        {
+            bool ranInMono = false;
+            RunInMono(command, handle, args, globals, ref ranInMono);
+            if (!ranInMono)
+            {
+                Execute((ShapeCommand)command, (NativeStore.Shape*)handle, args, globals);
+            }
+        }
+
+        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        [BurstDiscard]
+        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
+        {
+            ranInMono = true;
+            try
+            {
+                Execute((ShapeCommand)command, (NativeStore.Shape*)handle, args, globals);
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
+        }
+
+        private static void Execute(ShapeCommand command, NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        {
+            switch (command)
+            {
+                case ShapeCommand.CreateShape:
+                    a->pointer = Create(a, globals);
+                    break;
+                case ShapeCommand.DestroyShape:
+                    Destroy(shape, globals);
+                    break;
+                case ShapeCommand.GetActorDescriptor:
+                    a->pointer = shape->body;
+                    if (shape->body != null)
+                    {
+                        a->pointer2 = shape->body->userData;
+                        a->mode = (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0 ? ActorStatic : ActorDynamic;
+                    }
+
+                    break;
+                case ShapeCommand.GetUserData:
+                    a->pointer = shape->data.userData;
+                    break;
+                case ShapeCommand.GetFlags:
+                    a->flags = shape->data.flags;
+                    break;
+                case ShapeCommand.SetFlags:
+                    shape->data.flags = a->flags;
+                    TouchBody(shape);
+                    break;
+                case ShapeCommand.SetFilterData:
+                    shape->data.belongsTo = a->value;
+                    shape->data.collidesWith = a->value2;
+                    shape->data.ignorePairId = a->mode;
+                    shape->data.collisionDisabled = a->enabled;
+                    TouchBody(shape);
+                    break;
+                case ShapeCommand.SetMaterial:
+                    SetMaterial(shape, (NativeStore.MaterialData*)a->pointer, globals);
+                    TouchBody(shape);
+                    break;
+                case ShapeCommand.GetLocalPose:
+                    a->position = shape->data.localPosition;
+                    a->rotation = shape->data.localRotation;
+                    break;
+                case ShapeCommand.GetPose:
+                    GetPose(shape, a);
+                    break;
+                case ShapeCommand.SetPose:
+                    SetPose(shape, a);
+                    break;
+                case ShapeCommand.SetContactOffset:
+                    shape->contactOffset = a->scalar;
+                    break;
+                case ShapeCommand.GetWorldBounds:
+                    GetWorldBounds(shape, a);
+                    break;
+                case ShapeCommand.GetBoundsAtPose:
+                    // The pose replaces the shape's whole world pose, so the shape's own local pose takes no part.
+                    ShapeMath.WorldBounds(&shape->data, float3.zero, quaternion.identity, a->position, a->rotation, out float3 lower, out float3 upper);
+                    WriteBounds(a, lower, upper);
+                    break;
+                case ShapeCommand.ShouldIgnoreCollision:
+                    a->enabled = FindIgnoredPair(globals, IgnorePairKey(a->value, a->value2), out _) ? 1u : 0u;
+                    break;
+                case ShapeCommand.IgnoreCollision:
+                    SetIgnoredPair(globals, IgnorePairKey(a->value, a->value2), a->enabled != 0);
+                    break;
+                case ShapeCommand.CleanupIgnoredColliders:
+                    CleanupIgnoredPairs(globals, a->value);
+                    break;
+                case ShapeCommand.GetGeometryType:
+                    a->mode = shape->data.geometryType;
+                    break;
+                case ShapeCommand.SetGeometry:
+                    StoreGeometry(shape, a, globals);
+                    TouchBody(shape);
+                    break;
+                case ShapeCommand.GetGeometry:
+                    a->mode = shape->data.geometryType;
+                    a->vector = shape->data.extents;
+                    a->pointer = shape->data.mesh;
+                    break;
+            }
+        }
+
+        private static void TouchBody(NativeStore.Shape* shape)
+        {
+            if (shape->body != null)
+            {
+                StoreOps.MarkColliderDirty(shape->body);
+            }
+        }
+
+        private static void SetMaterial(NativeStore.Shape* shape, NativeStore.MaterialData* material, NativeStore.StoreGlobals* globals)
+        {
+            NativeStore.MaterialData* next = material != null ? material : globals->defaultMaterial;
+            StoreOps.RetainMaterial(globals, next);
+            StoreOps.ReleaseMaterial(globals, shape->data.material);
+            shape->data.material = next;
+        }
+
+        private static void StoreGeometry(NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        {
+            void* previousMesh = ShapeMath.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
+            shape->data.geometryType = a->mode;
+            shape->data.extents = a->vector;
+            shape->data.mesh = a->pointer;
+            if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
+            {
+                StoreOps.RetainMesh(globals, shape->data.mesh);
+            }
+
+            StoreOps.ReleaseMesh(globals, previousMesh);
+        }
+
+        private static NativeStore.Shape* Create(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        {
+            NativeStore.Shape* shape = StoreOps.Allocate<NativeStore.Shape>(globals);
+            shape->data.owner = shape;
+            shape->data.localRotation = quaternion.identity;
+            shape->data.flags = a->flags;
+            shape->data.userData = a->pointer3;
+            SetMaterial(shape, (NativeStore.MaterialData*)a->pointer2, globals);
+            StoreGeometry(shape, a, globals);
+            return shape;
+        }
+
+        private static void Destroy(NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
+        {
+            if (shape->body != null)
+            {
+                StoreOps.RemoveShape(shape->body, shape);
+            }
+
+            if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
+            {
+                StoreOps.ReleaseMesh(globals, shape->data.mesh);
+            }
+
+            StoreOps.ReleaseMaterial(globals, shape->data.material);
+            StoreOps.Release(globals, shape);
+        }
+
+        private static void GetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        {
+            if (shape->body == null)
+            {
+                a->position = shape->data.localPosition;
+                a->rotation = shape->data.localRotation;
+                return;
+            }
+
+            NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
+            a->position = hot->position + math.rotate(hot->rotation, shape->data.localPosition);
+            a->rotation = math.mul(hot->rotation, shape->data.localRotation);
+        }
+
+        private static void SetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        {
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0)
+            {
+                BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
+            }
+            else
+            {
+                shape->data.localPosition = a->position;
+                shape->data.localRotation = a->rotation;
+            }
+
+            TouchBody(shape);
+        }
+
+        private static void GetWorldBounds(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        {
+            float3 position = float3.zero;
+            quaternion rotation = quaternion.identity;
+            if (shape->body != null)
+            {
+                NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
+                position = hot->position;
+                rotation = hot->rotation;
+            }
+
+            ShapeMath.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);
+            WriteBounds(a, lower, upper);
+        }
+
+        private static void WriteBounds(NativeStore.CommandArgs* a, float3 lower, float3 upper)
+        {
+            a->vector = (lower + upper) * 0.5f;
+            a->vector2 = (upper - lower) * 0.5f;
+        }
+
+        private static uint IgnorePairKey(uint a, uint b)
+        {
+            return (math.min(a, b) << 16) | math.max(a, b);
+        }
+
+        /// <summary>Binary search of the sorted pairs. Without a match, <paramref name="index"/> is where the key belongs.</summary>
+        private static bool FindIgnoredPair(NativeStore.StoreGlobals* globals, uint key, out uint index)
+        {
+            uint low = 0;
+            uint high = globals->ignoredPairCount;
+            while (low < high)
+            {
+                uint middle = low + (high - low) / 2;
+                if (globals->ignoredPairs[middle] < key)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle;
+                }
+            }
+
+            index = low;
+            return low < globals->ignoredPairCount && globals->ignoredPairs[low] == key;
+        }
+
+        private static void SetIgnoredPair(NativeStore.StoreGlobals* globals, uint key, bool ignored)
+        {
+            bool found = FindIgnoredPair(globals, key, out uint index);
+            if (found == ignored)
+            {
+                return;
+            }
+
+            if (ignored)
+            {
+                if (globals->ignoredPairCount == globals->ignoredPairCapacity)
+                {
+                    globals->ignoredPairCapacity = StoreOps.Grown(globals->ignoredPairCapacity);
+                    globals->ignoredPairs = (uint*)StoreOps.Reallocate(globals, globals->ignoredPairs, globals->ignoredPairCapacity * sizeof(uint));
+                }
+
+                UnsafeUtility.MemMove(globals->ignoredPairs + index + 1, globals->ignoredPairs + index, (globals->ignoredPairCount - index) * sizeof(uint));
+                globals->ignoredPairs[index] = key;
+                globals->ignoredPairCount++;
+                return;
+            }
+
+            globals->ignoredPairCount--;
+            UnsafeUtility.MemMove(globals->ignoredPairs + index, globals->ignoredPairs + index + 1, (globals->ignoredPairCount - index) * sizeof(uint));
+        }
+
+        private static void CleanupIgnoredPairs(NativeStore.StoreGlobals* globals, uint id)
+        {
+            uint kept = 0;
+            for (uint i = 0; i < globals->ignoredPairCount; i++)
+            {
+                uint key = globals->ignoredPairs[i];
+                if (key >> 16 != id && (key & 0xffff) != id)
+                {
+                    globals->ignoredPairs[kept++] = key;
+                }
+            }
+
+            globals->ignoredPairCount = kept;
+        }
+    }
+}

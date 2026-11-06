@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -20,7 +21,6 @@ namespace Retooled
     ManagedCallbacks g_Managed{};
     std::thread::id g_MainThread;
     std::vector<World*> g_Worlds;
-    std::unordered_set<uint32_t> g_IgnoredPairs;
 
     static IUnityLog* s_Log;
     static bool s_Registered;
@@ -61,6 +61,41 @@ namespace Retooled
         }
     }
 
+    // Which commands arrived with no managed core, counted per detached stretch and logged at the next attach. In a player
+    // this is the only evidence of what comes before managed code exists, and in the editor it shows what a reload missed.
+    static std::atomic<uint32_t> s_Detached[16][256];
+
+    static void NoteDetachedCommand(uint32_t category, uint32_t id)
+    {
+        if (category < 16 && id < 256)
+        {
+            s_Detached[category][id].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    static void LogDetachedCommands()
+    {
+        std::string text = "[RetooledPhysics] commands while detached (category.id x count):";
+        bool any = false;
+        for (uint32_t category = 0; category < 16; category++)
+        {
+            for (uint32_t id = 0; id < 256; id++)
+            {
+                const uint32_t count = s_Detached[category][id].exchange(0, std::memory_order_relaxed);
+                if (count != 0)
+                {
+                    text += " " + std::to_string(category) + "." + std::to_string(id) + "x" + std::to_string(count);
+                    any = true;
+                }
+            }
+        }
+
+        if (any)
+        {
+            LogInfo(text.c_str());
+        }
+    }
+
     static void BindTables()
     {
         FillWithStubs<kSdkCategory, static_cast<uint32_t>(PhysicsCommands::SDK::Count)>(s_Sdk);
@@ -84,6 +119,11 @@ namespace Retooled
     static void ProcessCommand(void* object, const Context& ctx, const uint32_t function, Command& command)
     {
         const uint32_t id = function & kReverseFullMask;
+        if (g_Managed.simulate == nullptr)
+        {
+            NoteDetachedCommand((function & kFullMask) >> kMaskOffsetSize, id);
+        }
+
 #ifdef RETOOLED_VEHICLE_TRACE
         if ((function & kFullMask) != kPhysXExtensionMask)
         {
@@ -136,6 +176,7 @@ namespace Retooled
             return;
         }
 
+        InitializeGlobals();
         BindTables();
         s_Registered = system->Register(reinterpret_cast<BackendEntryPoint>(ProcessCommand));
         if (!s_Registered)
@@ -150,7 +191,8 @@ namespace Retooled
         s_Log = nullptr;
     }
 
-    // The managed core attaches through these. Sizes are indexed by NativeStore.StructId.
+    // The managed core attaches through these. FirstSizeMismatch reads the sizes in this order and the command counts after
+    // them, which catches a plugin API that numbers its commands differently from the kernels' enums.
     extern "C" UNITY_INTERFACE_EXPORT int32_t UNITY_INTERFACE_API RetooledPhysics_StructSize(int32_t id)
     {
         switch (id)
@@ -177,6 +219,18 @@ namespace Retooled
                 return sizeof(CookInput);
             case 10:
                 return sizeof(CookOutput);
+            case 11:
+                return sizeof(Body);
+            case 12:
+                return sizeof(Shape);
+            case 13:
+                return sizeof(CommandArgs);
+            case 14:
+                return static_cast<int32_t>(PhysicsCommands::Body::Count);
+            case 15:
+                return static_cast<int32_t>(PhysicsCommands::Shape::Count);
+            case 16:
+                return static_cast<int32_t>(PhysicsCommands::World::Count);
             default:
                 return -1;
         }
@@ -190,6 +244,7 @@ namespace Retooled
         }
 
         g_MainThread = std::this_thread::get_id();
+        LogDetachedCommands();
         FinishQueuedMeshes();
     }
 

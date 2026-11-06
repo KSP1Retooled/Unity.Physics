@@ -32,6 +32,9 @@ namespace KSP.Retooled.PhysicsBackend
         private static IntPtr rayCastFunction;
         private static IntPtr cookMeshFunction;
         private static IntPtr validateMeshFunction;
+        private static IntPtr bodyCommandFunction;
+        private static IntPtr shapeCommandFunction;
+        private static IntPtr worldCommandFunction;
         private static bool attached;
         private static long managedJobRuns;
         private static long managedQueries;
@@ -107,6 +110,9 @@ namespace KSP.Retooled.PhysicsBackend
                 destroyWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
                 cookMesh = CookMeshFunction(),
                 validateMesh = ValidateMeshFunction(),
+                bodyCommand = BodyCommandFunction(),
+                shapeCommand = ShapeCommandFunction(),
+                worldCommand = WorldCommandFunction(),
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
@@ -178,6 +184,36 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             return validateMeshFunction;
+        }
+
+        private static IntPtr BodyCommandFunction()
+        {
+            if (bodyCommandFunction == IntPtr.Zero)
+            {
+                bodyCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(BodyKernel.Run).Value;
+            }
+
+            return bodyCommandFunction;
+        }
+
+        private static IntPtr ShapeCommandFunction()
+        {
+            if (shapeCommandFunction == IntPtr.Zero)
+            {
+                shapeCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(ShapeKernel.Run).Value;
+            }
+
+            return shapeCommandFunction;
+        }
+
+        private static IntPtr WorldCommandFunction()
+        {
+            if (worldCommandFunction == IntPtr.Zero)
+            {
+                worldCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(WorldKernel.Run).Value;
+            }
+
+            return worldCommandFunction;
         }
 
         /// <summary>

@@ -23,6 +23,16 @@ namespace Retooled
         return static_cast<World*>(object);
     }
 
+    static void DetachAllShapes(Body* body)
+    {
+        for (uint32_t i = 0; i < body->shapeCount; i++)
+        {
+            body->shapes[i]->body = nullptr;
+        }
+
+        std::free(body->shapes);
+    }
+
     static void GrowBodies(WorldData& data)
     {
         const uint32_t capacity = std::max<uint32_t>(32, data.bodyCapacity * 2);

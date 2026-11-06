@@ -23,13 +23,43 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             {
                 Simulate(10);
 
-                Assert.That(body.position.y, Is.EqualTo(2.0f));
                 Assert.That(Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.False);
             }
             finally
             {
                 BackendHost.Attach();
             }
+
+            Assert.That(body.position.y, Is.EqualTo(2.0f));
+        }
+
+        [Test]
+        public void DetachedCommandsAreSafeNoOps()
+        {
+            Rigidbody body = DynamicBox(new Vector3(0.0f, 2.0f, 0.0f));
+
+            BackendHost.Detach();
+            try
+            {
+                body.linearVelocity = new Vector3(1.0f, 0.0f, 0.0f);
+                body.AddForce(new Vector3(1.0f, 0.0f, 0.0f));
+                Assert.That(body.position, Is.EqualTo(Vector3.zero), "a detached read answers zero");
+                Assert.That(body.rotation, Is.EqualTo(Quaternion.identity), "a detached rotation is valid");
+
+                GameObject created = Track(new GameObject("detached"));
+                created.AddComponent<BoxCollider>();
+                created.AddComponent<Rigidbody>();
+                Physics.SyncTransforms();
+            }
+            finally
+            {
+                BackendHost.Attach();
+            }
+
+            Assert.That(body.linearVelocity, Is.EqualTo(Vector3.zero), "the velocity set while detached was dropped");
+            Assert.That(body.position.y, Is.EqualTo(2.0f), "the store is as it was");
+            Simulate(1);
+            Assert.That(body.position.y, Is.EqualTo(2.0f).Within(0.01f));
         }
 
         [TestCase(false)]
@@ -51,6 +81,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 BackendHost.Attach();
             }
 
+            // The cook was queued, but a shape can't exist without the core, so the collider builds it from the mesh now.
+            collider.enabled = false;
+            collider.enabled = true;
             Physics.SyncTransforms();
 
             Assert.That(Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit hit, 100.0f), Is.True);

@@ -1,0 +1,169 @@
+using Unity.Mathematics;
+
+namespace KSP.Retooled.PhysicsBackend
+{
+    /// <summary>The geometry of one shape: what the mass calculation needs of it, and its bounds.</summary>
+    internal static unsafe class ShapeMath
+    {
+        /// <summary>
+        /// The straight part of a capsule. Despite its name in the plugin API, CapsuleGeometry::height holds half of this,
+        /// like PxCapsuleGeometry::halfHeight.
+        /// </summary>
+        internal static float CapsuleCylinderLength(NativeStore.ShapeData* shape)
+        {
+            return 2.0f * shape->extents.y;
+        }
+
+        internal static bool IsMeshGeometry(uint geometryType)
+        {
+            return geometryType == NativeStore.GeometryConvexMesh || geometryType == NativeStore.GeometryTriangleMesh;
+        }
+
+        /// <summary>
+        /// The shape's volume, its centre of mass and its inertia per unit mass about that centre, in the shape's own frame.
+        /// False for shapes the calculation skips, among them any with no volume: such a shape takes none of the mass, and a
+        /// per-unit-mass inertia has no value for it.
+        /// </summary>
+        internal static bool MassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        {
+            volume = 0.0f;
+            center = float3.zero;
+            inertiaPerUnitMass = default;
+            switch (shape->geometryType)
+            {
+                case NativeStore.GeometryBox:
+                {
+                    float3 h = shape->extents;
+                    volume = 8.0f * h.x * h.y * h.z;
+                    inertiaPerUnitMass = float3x3.Scale(
+                        (h.y * h.y + h.z * h.z) / 3.0f,
+                        (h.x * h.x + h.z * h.z) / 3.0f,
+                        (h.x * h.x + h.y * h.y) / 3.0f);
+                    break;
+                }
+                case NativeStore.GeometrySphere:
+                {
+                    float r = shape->extents.x;
+                    volume = 4.0f / 3.0f * math.PI * r * r * r;
+                    inertiaPerUnitMass = float3x3.Scale(0.4f * r * r);
+                    break;
+                }
+                case NativeStore.GeometryCapsule:
+                {
+                    // The axis is local X, as in PhysX. A cylinder of length h between two hemispheres.
+                    float r = shape->extents.x;
+                    float h = CapsuleCylinderLength(shape);
+                    float cylinder = math.PI * r * r * h;
+                    float spheres = 4.0f / 3.0f * math.PI * r * r * r;
+                    volume = cylinder + spheres;
+                    if (volume <= 0.0f)
+                    {
+                        return false;
+                    }
+
+                    float axial = cylinder * r * r / 2.0f + spheres * 0.4f * r * r;
+                    float transverse = cylinder * (h * h / 12.0f + r * r / 4.0f)
+                        + spheres * (0.4f * r * r + h * h / 4.0f + 3.0f * h * r / 8.0f);
+                    inertiaPerUnitMass = float3x3.Scale(axial / volume, transverse / volume, transverse / volume);
+                    break;
+                }
+                case NativeStore.GeometryConvexMesh:
+                case NativeStore.GeometryTriangleMesh:
+                    return MeshMassProperties(shape, out volume, out center, out inertiaPerUnitMass);
+                default:
+                    return false;
+            }
+
+            return volume > 0.0f;
+        }
+
+        /// <summary>
+        /// A scale s moves x to s x, so the covariance's (i, j) entry gains s_i s_j. The inertia of a unit mass about its
+        /// centre is trace(C) I - C.
+        /// </summary>
+        private static bool MeshMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        {
+            volume = 0.0f;
+            center = float3.zero;
+            inertiaPerUnitMass = default;
+
+            NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
+            if (mesh == null || mesh->moments.volume <= 0.0f)
+            {
+                return false;
+            }
+
+            float3 s = shape->extents;
+            volume = mesh->moments.volume * math.abs(s.x * s.y * s.z);
+            center = mesh->moments.centroid * s;
+
+            float3 diagonal = mesh->moments.covarianceDiagonal * s * s;
+            float3 offDiagonal = mesh->moments.covarianceOffDiagonal;
+            float xy = offDiagonal.x * s.x * s.y;
+            float xz = offDiagonal.y * s.x * s.z;
+            float yz = offDiagonal.z * s.y * s.z;
+            inertiaPerUnitMass = new float3x3(
+                diagonal.y + diagonal.z, -xy, -xz,
+                -xy, diagonal.x + diagonal.z, -yz,
+                -xz, -yz, diagonal.x + diagonal.y);
+            return volume > 0.0f;
+        }
+
+        /// <summary>The half extents of the world-aligned box around a box of the given half extents.</summary>
+        private static float3 RotatedHalfExtents(quaternion rotation, float3 half)
+        {
+            float3 x = math.rotate(rotation, new float3(half.x, 0.0f, 0.0f));
+            float3 y = math.rotate(rotation, new float3(0.0f, half.y, 0.0f));
+            float3 z = math.rotate(rotation, new float3(0.0f, 0.0f, half.z));
+            return math.abs(x) + math.abs(y) + math.abs(z);
+        }
+
+        /// <summary>The shape's world-space axis-aligned bounds under a body pose, about the given local pose.</summary>
+        internal static void WorldBounds(
+            NativeStore.ShapeData* shape,
+            float3 localPosition,
+            quaternion localRotation,
+            float3 bodyPosition,
+            quaternion bodyRotation,
+            out float3 lower,
+            out float3 upper)
+        {
+            float3 center = bodyPosition + math.rotate(bodyRotation, localPosition);
+            quaternion rotation = math.mul(bodyRotation, localRotation);
+
+            float3 half = float3.zero;
+            switch (shape->geometryType)
+            {
+                case NativeStore.GeometryBox:
+                    half = RotatedHalfExtents(rotation, shape->extents);
+                    break;
+                case NativeStore.GeometrySphere:
+                    half = new float3(shape->extents.x);
+                    break;
+                case NativeStore.GeometryCapsule:
+                {
+                    float3 axis = math.rotate(rotation, new float3(CapsuleCylinderLength(shape) / 2.0f, 0.0f, 0.0f));
+                    half = math.abs(axis) + shape->extents.x;
+                    break;
+                }
+                case NativeStore.GeometryConvexMesh:
+                case NativeStore.GeometryTriangleMesh:
+                {
+                    NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
+                    if (mesh == null)
+                    {
+                        break;
+                    }
+
+                    float3 s = shape->extents;
+                    center += math.rotate(rotation, (mesh->lower + mesh->upper) * 0.5f * s);
+                    half = RotatedHalfExtents(rotation, (mesh->upper - mesh->lower) * 0.5f * math.abs(s));
+                    break;
+                }
+            }
+
+            lower = center - half;
+            upper = center + half;
+        }
+    }
+}

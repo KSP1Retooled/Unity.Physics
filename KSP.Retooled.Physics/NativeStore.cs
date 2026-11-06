@@ -46,6 +46,7 @@ namespace KSP.Retooled.PhysicsBackend
             Sleeping = 1 << 9,
             HasKinematicTarget = 1 << 10,
             ColliderDirty = 1 << 11,
+            PublicMask = Gravity | Kinematic | Simulated,
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -98,9 +99,34 @@ namespace KSP.Retooled.PhysicsBackend
             public float3 targetPosition;
             private readonly uint reserved7;
 
-            public IntPtr owner;
+            public Body* owner;
             public ShapeData** shapes;
             public void* collider;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Body
+        {
+            public WorldData* world;
+            public ShapeData** shapes;
+            public void* userData;
+            public uint index;
+            public uint shapeCount;
+            public uint shapeCapacity;
+            public int collisionDetectionMode;
+            public uint positionIterations;
+            public uint velocityIterations;
+        }
+
+        /// <summary>A shape's handle points at this, and its first field makes that a <see cref="ShapeData"/> as well.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Shape
+        {
+            public ShapeData data;
+            public Body* body;
+            private fixed uint filter[4];
+            public float contactOffset;
+            private readonly uint reserved0;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -133,7 +159,7 @@ namespace KSP.Retooled.PhysicsBackend
             public void* mesh;
             public MaterialData* material;
             public void* userData;
-            public IntPtr owner;
+            public Shape* owner;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -223,6 +249,41 @@ namespace KSP.Retooled.PhysicsBackend
         {
             public uint materialVersion;
             public uint engineObjectIdOffset;
+
+            public uint* ignoredPairs;
+            public uint ignoredPairCount;
+            public uint ignoredPairCapacity;
+
+            public MaterialData* defaultMaterial;
+
+            public IntPtr reallocate;
+            public IntPtr release;
+            public IntPtr retainMesh;
+            public IntPtr releaseMesh;
+            public IntPtr retainMaterial;
+            public IntPtr releaseMaterial;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CommandArgs
+        {
+            public quaternion rotation;
+            public float3 position;
+            public uint flags;
+            public float3 vector;
+            public float scalar;
+            public float3 vector2;
+            public float scalar2;
+            public void* pointer;
+            public void* pointer2;
+            public void* pointer3;
+            public ulong size;
+            public float scalar3;
+            public uint mode;
+            public uint enabled;
+            public uint value;
+            public uint value2;
+            private readonly uint reserved0;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -252,6 +313,17 @@ namespace KSP.Retooled.PhysicsBackend
 
         internal delegate void DestroyWorldCallback(WorldData* world);
 
+        /// <summary>A category's commands, in a Burst function. The command is the plugin API's id and the handle what it addresses.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void CommandFunction(uint command, void* handle, CommandArgs* args, StoreGlobals* globals);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void* ReallocateFunction(void* memory, ulong size);
+
+        /// <summary>The plugin's functions that take one pointer: freeing memory, and retaining or releasing a record.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void PointerFunction(void* pointer);
+
         [StructLayout(LayoutKind.Sequential)]
         internal struct ManagedCallbacks
         {
@@ -261,6 +333,9 @@ namespace KSP.Retooled.PhysicsBackend
             public IntPtr destroyWorld;
             public IntPtr cookMesh;
             public IntPtr validateMesh;
+            public IntPtr bodyCommand;
+            public IntPtr shapeCommand;
+            public IntPtr worldCommand;
         }
 
         [DllImport(Library)]
@@ -284,7 +359,7 @@ namespace KSP.Retooled.PhysicsBackend
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
-        /// <summary>The first struct whose size differs from the plugin's, or null when all agree.</summary>
+        /// <summary>The first struct or command enum whose size differs from the plugin's, or null when all agree.</summary>
         internal static string FirstSizeMismatch()
         {
             int[] sizes =
@@ -300,6 +375,12 @@ namespace KSP.Retooled.PhysicsBackend
                 sizeof(MeshData),
                 sizeof(CookInput),
                 sizeof(CookOutput),
+                sizeof(Body),
+                sizeof(Shape),
+                sizeof(CommandArgs),
+                (int)BodyCommand.Count,
+                (int)ShapeCommand.Count,
+                (int)WorldCommand.Count,
             };
 
             string[] names =
@@ -315,6 +396,12 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(MeshData),
                 nameof(CookInput),
                 nameof(CookOutput),
+                nameof(Body),
+                nameof(Shape),
+                nameof(CommandArgs),
+                nameof(BodyCommand),
+                nameof(ShapeCommand),
+                nameof(WorldCommand),
             };
 
             for (int i = 0; i < sizes.Length; i++)
@@ -322,7 +409,7 @@ namespace KSP.Retooled.PhysicsBackend
                 int native = RetooledPhysics_StructSize(i);
                 if (native != sizes[i])
                 {
-                    return $"{names[i]} is {sizes[i]} bytes here and {native} in the plugin";
+                    return $"{names[i]} is {sizes[i]} here and {native} in the plugin";
                 }
             }
 

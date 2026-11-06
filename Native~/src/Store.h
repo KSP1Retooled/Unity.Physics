@@ -1,8 +1,11 @@
 // The native store: everything the backend knows about the physics scene, held in plain memory that outlives a managed
 // domain reload. The structs marked "mirrored" are read and written directly by managed code and Burst jobs through
 // NativeStore.cs, so their layout is a contract: only 4-byte fields and 8-byte pointers, padding spelled out, and a size
-// and offset check here and in NativeStore.Validate. RetooledPhysics_StructSize reports the sizes, and managed attach
-// refuses to run on a mismatch.
+// and offset check here and in NativeStore.FirstSizeMismatch. RetooledPhysics_StructSize reports the sizes, and managed
+// attach refuses to run on a mismatch.
+//
+// Commands reach the store through the Burst kernels in BodyKernel.cs, ShapeKernel.cs and WorldKernel.cs. Native code keeps
+// only what comes before managed code exists: worlds, their settings and materials.
 //
 // SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, World*). Hot body
 // state lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
@@ -21,7 +24,6 @@
 #include <cstdint>
 #include <shared_mutex>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 #include "PhysicsFilterData.h"
@@ -254,16 +256,61 @@ namespace Retooled
 
     static_assert(sizeof(WorldData) == 72, "NativeStore.WorldData mirrors this layout");
 
-    // Mirrored. What every world shares.
+    // Mirrored. What every world shares, and what a kernel needs from the plugin, which reaches it as function pointers
+    // because a Burst function gets everything through its arguments.
     struct StoreGlobals
     {
         // Bumped when any material changes: colliders embed their materials, so all of them are rebuilt.
         uint32_t materialVersion;
         // Where the EngineObjectId sits inside the object a userData pointer refers to.
         uint32_t engineObjectIdOffset;
+
+        // Which collision pairs Physics.IgnoreCollision switched off, sorted, as (low id << 16 | high id).
+        uint32_t* ignoredPairs;
+        uint32_t ignoredPairCount;
+        uint32_t ignoredPairCapacity;
+
+        MaterialData* defaultMaterial;
+
+        // The heap everything in the store comes from, because it has to outlive a domain reload.
+        void* (*reallocate)(void* memory, uint64_t size);
+        void (*release)(void* memory);
+
+        void (*retainMesh)(Mesh* mesh);
+        void (*releaseMesh)(Mesh* mesh);
+        void (*retainMaterial)(MaterialData* material);
+        void (*releaseMaterial)(MaterialData* material);
     };
 
-    static_assert(sizeof(StoreGlobals) == 8, "NativeStore.StoreGlobals mirrors this layout");
+    static_assert(sizeof(StoreGlobals) == 80, "NativeStore.StoreGlobals mirrors this layout");
+
+    // Mirrored. What one command carries to a kernel and back, which saves a struct and a function pointer per command.
+    // The Bind lines in the command files say which field holds what.
+    struct CommandArgs
+    {
+        Float4 rotation;
+        Float3 position;
+        uint32_t flags;
+        Float3 vector;
+        float scalar;
+        Float3 vector2;
+        float scalar2;
+        void* pointer;
+        void* pointer2;
+        void* pointer3;
+        uint64_t size;
+        float scalar3;
+        uint32_t mode;
+        uint32_t enabled;
+        uint32_t value;
+        uint32_t value2;
+        uint32_t reserved0;
+    };
+
+    static_assert(sizeof(CommandArgs) == 120, "NativeStore.CommandArgs mirrors this layout");
+
+    // A Burst function pointer: command is the plugin API's id within the category and object the handle it addresses.
+    using CommandKernel = void (*)(uint32_t command, void* object, CommandArgs* args, StoreGlobals* globals);
 
     // Mirrored. Input of the managed ray cast.
     struct RayCastInput
@@ -316,9 +363,12 @@ namespace Retooled
         // Burst functions like rayCast, called on any thread with g_MeshLock held shared.
         void (*cookMesh)(const CookInput* input, CookOutput* output);
         int32_t (*validateMesh)(const uint8_t* stream, int64_t size, int32_t convex);
+        CommandKernel bodyCommand;
+        CommandKernel shapeCommand;
+        CommandKernel worldCommand;
     };
 
-    static_assert(sizeof(ManagedCallbacks) == 48, "NativeStore.ManagedCallbacks mirrors this layout");
+    static_assert(sizeof(ManagedCallbacks) == 72, "NativeStore.ManagedCallbacks mirrors this layout");
 
     // Mirrored in its first field. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
     // code (see Mesh.cpp) or if finishing it failed. Unity holds one reference and each shape using the mesh another,
@@ -329,26 +379,35 @@ namespace Retooled
         std::atomic<uint32_t> references{1};
     };
 
-    // The cold half of a body, and the handle Unity holds.
+    // Mirrored. The cold half of a body, and the handle Unity holds.
     struct Body
     {
-        World* world = nullptr;
-        uint32_t index = 0; // into WorldData::bodies
-        void* userData = nullptr;
-        std::vector<Shape*> shapes;
-        int32_t collisionDetectionMode = 0;
-        uint32_t positionIterations = 0;
-        uint32_t velocityIterations = 0;
+        World* world;
+        Shape** shapes; // shapeCapacity entries, also what BodyData::shapes points at
+        void* userData;
+        uint32_t index; // into WorldData::bodies
+        uint32_t shapeCount;
+        uint32_t shapeCapacity;
+        int32_t collisionDetectionMode;
+        uint32_t positionIterations;
+        uint32_t velocityIterations;
     };
 
-    // A shape, and the handle Unity holds. A shape can exist without a body, for use as query geometry.
+    static_assert(sizeof(Body) == 48, "NativeStore.Body mirrors this layout");
+
+    // Mirrored. A shape, and the handle Unity holds. A shape can exist without a body, for use as query geometry.
     struct Shape
     {
-        ShapeData data{};
-        Body* body = nullptr;
-        Physics::FilterData filter; // what Unity set, returned verbatim; ShapeData holds the fields the step reads
-        float contactOffset = 0.0f;
+        ShapeData data;
+        Body* body;
+        // What Unity set, returned verbatim. Only the plugin reads it, because bit field layout belongs to the compiler;
+        // ShapeData holds the fields the step reads.
+        Physics::FilterData filter;
+        float contactOffset;
+        uint32_t reserved0;
     };
+
+    static_assert(sizeof(Shape) == 128, "NativeStore.Shape mirrors this layout");
 
     // A joint record. Joint.cpp owns its meaning.
     struct Joint
@@ -388,9 +447,6 @@ namespace Retooled
 
     // Every world, for managed to walk when it attaches or detaches.
     extern std::vector<World*> g_Worlds;
-
-    // Which collision pairs Physics.IgnoreCollision switched off, as (low id << 16 | high id).
-    extern std::unordered_set<uint32_t> g_IgnoredPairs;
 
     inline void MarkQueryDirty(World* world)
     {

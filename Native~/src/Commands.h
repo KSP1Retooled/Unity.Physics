@@ -105,9 +105,6 @@ namespace Retooled
     Joint* CreateJointRecord(const WorldCmd::CreateJoint& command);
     void DestroyJointRecord(Joint* joint);
 
-    // Detaches a body's shapes when the body goes away; the shapes outlive it until Unity destroys them.
-    void DetachAllShapes(Body* body);
-
     inline bool IsMeshGeometry(const ShapeData& shape)
     {
         const auto type = static_cast<Physics::GeometryType>(shape.geometryType);
@@ -132,25 +129,68 @@ namespace Retooled
     // What a shape uses when Unity gives it no material.
     MaterialData* DefaultMaterial();
 
-    // The straight part of a capsule. Despite its name in the plugin API, CapsuleGeometry::height holds half of this,
-    // like PxCapsuleGeometry::halfHeight.
-    inline float CapsuleCylinderLength(const ShapeData& shape)
+    // Fills the plugin's half of StoreGlobals. Before any command, so a kernel always finds it.
+    void InitializeGlobals();
+
+    inline Float3 ToFloat3(const Physics::Vec3& v)
     {
-        return 2.0f * shape.extents.y;
+        return {v.x, v.y, v.z};
     }
 
-    // What the mass calculation needs of one shape, in the shape's own frame: its volume, its centre of mass, and its
-    // inertia per unit mass about that centre. False for shapes the calculation skips.
-    bool ShapeMassProperties(const ShapeData& shape, float& volume, Float3& center, float (&inertiaPerUnitMass)[3][3]);
+    inline Float4 ToFloat4(const Physics::Vec4& v)
+    {
+        return {v.x, v.y, v.z, v.w};
+    }
 
-    // The shape's world-space axis-aligned bounds under a body pose.
-    void ShapeWorldBounds(const ShapeData& shape, const Float3& bodyPosition, const Float4& bodyRotation, Float3& min, Float3& max);
+    inline Physics::Vec3 ToVec3(const Float3& v)
+    {
+        return Physics::Vec3(v.x, v.y, v.z);
+    }
 
-    // Small rigid-transform helpers.
-    Float3 Rotate(const Float4& q, const Float3& v);
-    Float4 Multiply(const Float4& a, const Float4& b);
+    inline Physics::Vec4 ToVec4(const Float4& v)
+    {
+        return Physics::Vec4(v.x, v.y, v.z, v.w);
+    }
 
-    // Unity gives a static body's shape a world-space pose in AttachShape and SetPose, unlike a dynamic body's, whatever
-    // the plugin API's comments say. The store keeps every shape relative to its body.
-    void StoreStaticShapePose(ShapeData& shape, const BodyData& body, const Physics::Pose& worldPose);
+    inline void PackPose(CommandArgs& args, const Physics::Pose& pose)
+    {
+        args.position = ToFloat3(pose.pos);
+        args.rotation = ToFloat4(pose.quat);
+    }
+
+    inline Physics::Pose UnpackPose(const CommandArgs& args)
+    {
+        return Physics::Pose(args.position, args.rotation);
+    }
+
+    // The unpacking the command files repeat. Pack fills CommandArgs from the command, and Unpack the command from it.
+    inline constexpr auto None = [](auto&, auto&) {};
+    inline constexpr auto ScalarIn = [](CommandArgs& args, const auto& command) { args.scalar = command.value; };
+    inline constexpr auto ScalarOut = [](const CommandArgs& args, auto& command) { command.value = args.scalar; };
+    inline constexpr auto VectorIn = [](CommandArgs& args, const auto& command) { args.vector = ToFloat3(command.value); };
+    inline constexpr auto VectorOut = [](const CommandArgs& args, auto& command) { command.value = ToVec3(args.vector); };
+    inline constexpr auto PoseIn = [](CommandArgs& args, const auto& command) { PackPose(args, command.value); };
+    inline constexpr auto PoseOut = [](const CommandArgs& args, auto& command) { command.value = UnpackPose(args); };
+    inline constexpr auto RotationIn = [](CommandArgs& args, const auto& command) { args.rotation = ToFloat4(command.value); };
+    inline constexpr auto RotationOut = [](const CommandArgs& args, auto& command) { command.value = ToVec4(args.rotation); };
+
+    // Runs a command in its kernel. Without a kernel, or for a handle Unity never got because it was created without one,
+    // it is a no-op that answers zero and a rotation that is at least valid. That only happens while the core is away for
+    // a domain reload, when no command is expected.
+    template <typename T, CommandKernel ManagedCallbacks::*Kernel, auto Pack, auto Unpack, bool NeedsObject>
+    void Forwarded(void* object, const Context&, Command& base)
+    {
+        T& command = static_cast<T&>(base);
+        CommandArgs args{};
+        args.rotation.w = 1.0f;
+
+        const CommandKernel kernel = g_Managed.*Kernel;
+        if (kernel != nullptr && (object != nullptr || !NeedsObject))
+        {
+            Pack(args, command);
+            kernel(static_cast<uint32_t>(T::command), object, &args, &g_Globals);
+        }
+
+        Unpack(args, command);
+    }
 }
