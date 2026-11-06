@@ -112,7 +112,21 @@ namespace KSP.Retooled.PhysicsBackend
                 SynchronizeCollisionWorld = true,
             };
 
-            simulation.ScheduleStepJobs(input, built);
+            // These are ScheduleStepJobs' stages, with a gap after the narrow phase for what the contacts decide.
+            built = simulation.ScheduleBroadphaseJobs(input, built).FinalExecutionHandle;
+            built = simulation.ScheduleNarrowphaseJobs(input, built).FinalExecutionHandle;
+
+            SimulationSingleton singleton = default;
+            singleton.InitializeFromSimulation(ref simulation);
+            built = new ReadContactsJob
+            {
+                Store = store->bodies,
+                Globals = NativeStore.RetooledPhysics_Globals(),
+                Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
+            }.Schedule(singleton, ref world, built);
+
+            built = simulation.ScheduleCreateJacobiansJobs(input, built).FinalExecutionHandle;
+            simulation.ScheduleSolveAndIntegrateJobs(input, built);
             simulation.FinalJobHandle.Complete();
 
             new WriteBackJob

@@ -178,7 +178,12 @@ namespace Retooled
             a.value = c.ignoreId0;
             a.value2 = c.ignoreId1;
             a.enabled = c.value;
-        }, None, false>(table);
+        }, [](const CommandArgs& a, auto& c)
+        {
+            // The ids are in and out: 0 asks for a new one, which Unity keeps on the collider and puts in its filter data.
+            c.ignoreId0 = static_cast<uint16_t>(a.value);
+            c.ignoreId1 = static_cast<uint16_t>(a.value2);
+        }, false>(table);
         Bind<ShapeCmd::CleanupIgnoredColliders, [](CommandArgs& a, const auto& c) { a.value = c.ignoreID; }, None, false>(table);
         Bind<ShapeCmd::GetGeometryType, None, [](const CommandArgs& a, auto& c) { c.value = static_cast<Physics::GeometryType>(a.mode); }>(table);
         Bind<ShapeCmd::SetGeometry, [](CommandArgs& a, const auto& c) { PackGeometry(a, c.value); }>(table);

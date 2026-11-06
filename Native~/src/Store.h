@@ -358,10 +358,9 @@ namespace Retooled
         // Where the EngineObjectId sits inside the object a userData pointer refers to.
         uint32_t engineObjectIdOffset;
 
-        // Which collision pairs Physics.IgnoreCollision switched off, sorted, as (low id << 16 | high id).
-        uint32_t* ignoredPairs;
-        uint32_t ignoredPairCount;
-        uint32_t ignoredPairCapacity;
+        // Which collision pairs Physics.IgnoreCollision switched off. IgnoreTable.cs owns the layout, and it stays on the
+        // store's heap across a reload.
+        void* ignoreTable;
 
         MaterialData* defaultMaterial;
 
@@ -375,7 +374,7 @@ namespace Retooled
         void (*releaseMaterial)(MaterialData* material);
     };
 
-    static_assert(sizeof(StoreGlobals) == 80, "NativeStore.StoreGlobals mirrors this layout");
+    static_assert(sizeof(StoreGlobals) == 72, "NativeStore.StoreGlobals mirrors this layout");
 
     // Mirrored. What one command carries to a kernel and back, which saves a struct and a function pointer per command.
     // The Bind lines in the command files say which field holds what.

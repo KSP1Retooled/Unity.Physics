@@ -202,6 +202,70 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void IgnoringWithoutIdsHandsOutOnesThatDestroyingFreesAgain()
+        {
+            NativeStore.CommandArgs args = default;
+            args.enabled = 1;
+            ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
+            uint first = args.value;
+            uint second = args.value2;
+
+            Assert.That(first, Is.Not.Zero);
+            Assert.That(second, Is.Not.Zero.And.Not.EqualTo(first));
+            Assert.That(IsIgnored(first, second), Is.True);
+
+            NativeStore.CommandArgs cleanup = default;
+            cleanup.value = second;
+            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            Assert.That(IsIgnored(first, second), Is.False);
+
+            NativeStore.CommandArgs another = default;
+            another.value = first;
+            another.enabled = 1;
+            ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &another, globals);
+            Assert.That(another.value2, Is.EqualTo(second), "a destroyed collider's id goes back in use");
+
+            cleanup.value = second;
+            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            cleanup.value = first;
+            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+        }
+
+        [Test]
+        public void ManyIgnoredPairsSurviveGrowingAndRestoring()
+        {
+            const uint Count = 400;
+            for (uint i = 1; i <= Count; i++)
+            {
+                for (uint j = i + 1; j <= Count; j += 3)
+                {
+                    SetIgnored(i, j, true);
+                }
+            }
+
+            for (uint i = 1; i <= Count; i += 2)
+            {
+                for (uint j = i + 1; j <= Count; j += 3)
+                {
+                    SetIgnored(j, i, false);
+                }
+            }
+
+            Assert.That(IsIgnored(1, 2), Is.False);
+            Assert.That(IsIgnored(2, 3), Is.True);
+            Assert.That(IsIgnored(2, 4), Is.False);
+
+            NativeStore.CommandArgs cleanup = default;
+            for (uint i = 1; i <= Count; i++)
+            {
+                cleanup.value = i;
+                ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            }
+
+            Assert.That(IsIgnored(2, 3), Is.False);
+        }
+
+        [Test]
         public void StatsCountEachKindOfBodyOnce()
         {
             CreateBody(Dynamic);

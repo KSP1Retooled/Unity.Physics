@@ -376,9 +376,7 @@ namespace KSP.Retooled.PhysicsBackend
             public uint materialVersion;
             public uint engineObjectIdOffset;
 
-            public uint* ignoredPairs;
-            public uint ignoredPairCount;
-            public uint ignoredPairCapacity;
+            public IgnoreTable* ignoreTable;
 
             public MaterialData* defaultMaterial;
 

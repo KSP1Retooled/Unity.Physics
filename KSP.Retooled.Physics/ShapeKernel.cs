@@ -118,11 +118,7 @@ namespace KSP.Retooled.PhysicsBackend
                     TouchBody(shape);
                     break;
                 case ShapeCommand.SetFilterData:
-                    shape->data.belongsTo = a->value;
-                    shape->data.collidesWith = a->value2;
-                    shape->data.ignorePairId = a->mode;
-                    shape->data.collisionDisabled = a->enabled;
-                    TouchBody(shape);
+                    SetFilter(shape, a);
                     break;
                 case ShapeCommand.SetMaterial:
                     SetMaterial(shape, (NativeStore.MaterialData*)a->pointer, globals);
@@ -150,13 +146,13 @@ namespace KSP.Retooled.PhysicsBackend
                     WriteBounds(a, lower, upper);
                     break;
                 case ShapeCommand.ShouldIgnoreCollision:
-                    a->enabled = FindIgnoredPair(globals, IgnorePairKey(a->value, a->value2), out _) ? 1u : 0u;
+                    a->enabled = IgnoreTable.Contains(globals, a->value, a->value2) ? 1u : 0u;
                     break;
                 case ShapeCommand.IgnoreCollision:
-                    SetIgnoredPair(globals, IgnorePairKey(a->value, a->value2), a->enabled != 0);
+                    IgnoreTable.Set(globals, ref a->value, ref a->value2, a->enabled != 0);
                     break;
                 case ShapeCommand.CleanupIgnoredColliders:
-                    CleanupIgnoredPairs(globals, a->value);
+                    IgnoreTable.Forget(globals, a->value);
                     break;
                 case ShapeCommand.GetGeometryType:
                     a->mode = shape->data.geometryType;
@@ -170,6 +166,23 @@ namespace KSP.Retooled.PhysicsBackend
                     a->vector = shape->data.extents;
                     a->pointer = shape->data.mesh;
                     break;
+            }
+        }
+
+        /// <summary>
+        /// Unity rewrites the filter of both colliders after every IgnoreCollision, to make PhysX pair them afresh, and contacts
+        /// read the ignore id live. Only what is baked into a collider needs a rebuild.
+        /// </summary>
+        private static void SetFilter(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        {
+            bool baked = shape->data.belongsTo != a->value || shape->data.collidesWith != a->value2 || shape->data.collisionDisabled != a->enabled;
+            shape->data.belongsTo = a->value;
+            shape->data.collidesWith = a->value2;
+            shape->data.ignorePairId = a->mode;
+            shape->data.collisionDisabled = a->enabled;
+            if (baked)
+            {
+                TouchBody(shape);
             }
         }
 
@@ -279,74 +292,6 @@ namespace KSP.Retooled.PhysicsBackend
         {
             a->vector = (lower + upper) * 0.5f;
             a->vector2 = (upper - lower) * 0.5f;
-        }
-
-        private static uint IgnorePairKey(uint a, uint b)
-        {
-            return (math.min(a, b) << 16) | math.max(a, b);
-        }
-
-        /// <summary>Binary search of the sorted pairs. Without a match, <paramref name="index"/> is where the key belongs.</summary>
-        private static bool FindIgnoredPair(NativeStore.StoreGlobals* globals, uint key, out uint index)
-        {
-            uint low = 0;
-            uint high = globals->ignoredPairCount;
-            while (low < high)
-            {
-                uint middle = low + (high - low) / 2;
-                if (globals->ignoredPairs[middle] < key)
-                {
-                    low = middle + 1;
-                }
-                else
-                {
-                    high = middle;
-                }
-            }
-
-            index = low;
-            return low < globals->ignoredPairCount && globals->ignoredPairs[low] == key;
-        }
-
-        private static void SetIgnoredPair(NativeStore.StoreGlobals* globals, uint key, bool ignored)
-        {
-            bool found = FindIgnoredPair(globals, key, out uint index);
-            if (found == ignored)
-            {
-                return;
-            }
-
-            if (ignored)
-            {
-                if (globals->ignoredPairCount == globals->ignoredPairCapacity)
-                {
-                    globals->ignoredPairCapacity = StoreOps.Grown(globals->ignoredPairCapacity);
-                    globals->ignoredPairs = (uint*)StoreOps.Reallocate(globals, globals->ignoredPairs, globals->ignoredPairCapacity * sizeof(uint));
-                }
-
-                UnsafeUtility.MemMove(globals->ignoredPairs + index + 1, globals->ignoredPairs + index, (globals->ignoredPairCount - index) * sizeof(uint));
-                globals->ignoredPairs[index] = key;
-                globals->ignoredPairCount++;
-                return;
-            }
-
-            globals->ignoredPairCount--;
-            UnsafeUtility.MemMove(globals->ignoredPairs + index, globals->ignoredPairs + index + 1, (globals->ignoredPairCount - index) * sizeof(uint));
-        }
-
-        private static void CleanupIgnoredPairs(NativeStore.StoreGlobals* globals, uint id)
-        {
-            uint kept = 0;
-            for (uint i = 0; i < globals->ignoredPairCount; i++)
-            {
-                uint key = globals->ignoredPairs[i];
-                if (key >> 16 != id && (key & 0xffff) != id)
-                {
-                    globals->ignoredPairs[kept++] = key;
-                }
-            }
-
-            globals->ignoredPairCount = kept;
         }
     }
 }
