@@ -358,6 +358,201 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void ATriangleMeshGivesAKinematicBodyNoMassProperties()
+        {
+            MeshCollider collider = Collider(BoxMesh(new Vector3(1.0f, 2.0f, 3.0f), new Vector3(1.0f, 2.0f, 3.0f)), false);
+            Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
+            body.isKinematic = true;
+
+            body.mass = 12.0f;
+
+            AssertVector(Vector3.zero, body.centerOfMass, 1e-3f, "centre of mass");
+            AssertVector(Vector3.one, body.inertiaTensor, 1e-3f, "inertia");
+        }
+
+        [Test]
+        public void ATriangleMeshBesideABoxLeavesAKinematicBodyWithNoMassProperties()
+        {
+            GameObject root = Track(new GameObject("root"));
+            Rigidbody body = root.AddComponent<Rigidbody>();
+            body.isKinematic = true;
+            root.AddComponent<BoxCollider>();
+            GameObject child = new GameObject("child");
+            child.transform.SetParent(root.transform);
+            MeshCollider mesh = child.AddComponent<MeshCollider>();
+            mesh.sharedMesh = BoxMesh(new Vector3(4.0f, 0.0f, 0.0f), Vector3.one);
+
+            body.mass = 9.0f;
+
+            AssertVector(Vector3.zero, body.centerOfMass, 1e-3f, "centre of mass");
+            AssertVector(Vector3.one, body.inertiaTensor, 1e-3f, "inertia");
+
+            // Going dynamic drops the triangle mesh, which leaves the box alone.
+            body.isKinematic = false;
+
+            AssertVector(Vector3.one * 1.5f, body.inertiaTensor, 1e-3f, "inertia once dynamic");
+        }
+
+        [Test]
+        public void AVertexNoTriangleUsesIsLeftOutOfATriangleMesh()
+        {
+            Mesh box = BoxMesh(Vector3.zero, Vector3.one);
+            Mesh mesh = MeshOf(box.vertices.Append(new Vector3(100.0f, 0.0f, 0.0f)).ToArray(), box.triangles);
+            MeshCollider collider = Collider(mesh, false);
+
+            Physics.SyncTransforms();
+
+            AssertVector(Vector3.zero, collider.bounds.center, 1e-3f, "center");
+            AssertVector(Vector3.one * 0.5f, collider.bounds.extents, 1e-3f, "extents");
+            Assert.That(RayDistance(new Vector3(50.0f, 5.0f, 0.0f), Vector3.down), Is.EqualTo(-1.0f));
+        }
+
+        [Test]
+        public void AVertexNoTriangleUsesStillShapesAConvexMesh()
+        {
+            Mesh box = BoxMesh(Vector3.zero, Vector3.one);
+            Mesh mesh = MeshOf(box.vertices.Append(new Vector3(100.0f, 0.0f, 0.0f)).ToArray(), box.triangles);
+            MeshCollider collider = Collider(mesh, true);
+
+            Physics.SyncTransforms();
+
+            AssertVector(new Vector3(49.75f, 0.0f, 0.0f), collider.bounds.center, 1e-2f, "center");
+            AssertVector(new Vector3(50.25f, 0.5f, 0.5f), collider.bounds.extents, 1e-2f, "extents");
+            Assert.That(RayDistance(new Vector3(50.0f, 5.0f, 0.0f), Vector3.down), Is.GreaterThan(0.0f));
+        }
+
+        [Test]
+        public void AMeshOfCoincidentVerticesHasNoCollider()
+        {
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                Mesh mesh = MeshOf(new[] { Vector3.one, Vector3.one, Vector3.one, Vector3.one }, new[] { 0, 1, 2, 1, 2, 3 });
+                Collider(mesh, false);
+
+                Assert.That(RayDistance(new Vector3(1.0f, 5.0f, 1.0f), Vector3.down), Is.EqualTo(-1.0f));
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+            }
+        }
+
+        /// <summary>A closed sphere of the given radius, from a grid of latitudes and longitudes.</summary>
+        private Mesh Sphere(float radius, int rings, int segments)
+        {
+            Vector3[] vertices = new Vector3[(rings + 1) * segments];
+            for (int ring = 0; ring <= rings; ring++)
+            {
+                float latitude = Mathf.PI * ring / rings;
+                for (int segment = 0; segment < segments; segment++)
+                {
+                    float longitude = 2.0f * Mathf.PI * segment / segments;
+                    vertices[ring * segments + segment] = radius * new Vector3(
+                        Mathf.Sin(latitude) * Mathf.Cos(longitude),
+                        Mathf.Cos(latitude),
+                        Mathf.Sin(latitude) * Mathf.Sin(longitude));
+                }
+            }
+
+            List<int> triangles = new List<int>();
+            for (int ring = 0; ring < rings; ring++)
+            {
+                for (int segment = 0; segment < segments; segment++)
+                {
+                    int next = (segment + 1) % segments;
+                    int a = ring * segments + segment;
+                    int b = ring * segments + next;
+                    int c = (ring + 1) * segments + segment;
+                    int d = (ring + 1) * segments + next;
+                    triangles.AddRange(new[] { a, b, c, b, d, c });
+                }
+            }
+
+            Mesh mesh = TrackAsset(new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 });
+            mesh.vertices = vertices;
+            mesh.triangles = triangles.ToArray();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        [TestCase(40, 80)]
+        [TestCase(200, 300)]
+        public void ALargeConvexSphereHasTheMassOfASphere(int rings, int segments)
+        {
+            MeshCollider collider = Collider(Sphere(2.0f, rings, segments), true);
+            Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
+
+            body.mass = 10.0f;
+
+            // Both backends keep about 250 vertices of it, which is a little less than the sphere.
+            AssertVector(Vector3.zero, body.centerOfMass, 0.03f, "centre of mass");
+            AssertVector(Vector3.one * 15.5f, body.inertiaTensor, 0.8f, "inertia");
+            Assert.That(RayDistance(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down), Is.EqualTo(3.0f).Within(0.05f));
+        }
+
+        [Test]
+        public void ACubeOfManyCoplanarPointsHasTheMassOfACube()
+        {
+            const int Cells = 12;
+            List<Vector3> vertices = new List<Vector3>();
+            for (int x = 0; x <= Cells; x++)
+            {
+                for (int y = 0; y <= Cells; y++)
+                {
+                    for (int z = 0; z <= Cells; z++)
+                    {
+                        bool onSurface = x == 0 || x == Cells || y == 0 || y == Cells || z == 0 || z == Cells;
+                        if (onSurface)
+                        {
+                            vertices.Add(new Vector3(x, y, z) / Cells);
+                        }
+                    }
+                }
+            }
+
+            MeshCollider collider = Collider(MeshOf(vertices.ToArray(), new[] { 0, 1, 2 }), true);
+            Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
+
+            body.mass = 6.0f;
+
+            AssertVector(Vector3.one * 0.5f, body.centerOfMass, 1e-3f, "centre of mass");
+            AssertVector(Vector3.one, body.inertiaTensor, 0.01f, "inertia");
+        }
+
+        [Test]
+        public void ANearlyFlatConvexCloudStaysUsable()
+        {
+            var random = new Unity.Mathematics.Random(1234);
+            Vector3[] vertices = new Vector3[2000];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                Unity.Mathematics.float2 flat = random.NextFloat2(-1.0f, 1.0f);
+                vertices[i] = new Vector3(flat.x, random.NextFloat(-1e-6f, 1e-6f) + flat.y * 0.25f, flat.y);
+            }
+
+            MeshCollider collider = Collider(MeshOf(vertices, new[] { 0, 1, 2 }), true);
+            collider.gameObject.AddComponent<Rigidbody>().isKinematic = true;
+
+            Physics.SyncTransforms();
+
+            Assert.That(Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(hit.collider, Is.SameAs(collider));
+        }
+
+        [Test]
+        public void ATinyConvexMeshHasTheMassOfItsSolid()
+        {
+            MeshCollider collider = Collider(BoxMesh(new Vector3(0.01f, 0.0f, 0.0f), Vector3.one * 0.005f), true);
+            Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
+
+            body.mass = 6000.0f;
+
+            AssertVector(new Vector3(0.01f, 0.0f, 0.0f), body.centerOfMass, 1e-4f, "centre of mass");
+            AssertVector(Vector3.one * 0.025f, body.inertiaTensor, 1e-3f, "inertia");
+        }
+
+        [Test]
         public void ABoxShapedMeshHasTheBoundsOfTheBox()
         {
             MeshCollider collider = Collider(BoxMesh(new Vector3(1.0f, 0.0f, 0.0f), new Vector3(1.0f, 2.0f, 3.0f)), true);

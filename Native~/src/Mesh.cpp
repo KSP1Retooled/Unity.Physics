@@ -82,13 +82,8 @@ namespace Retooled
         CookOutput output{};
         g_Managed.cookMesh(&input, &output);
 
-        do
-        {
-            output.capacity = output.size;
-            output.bytes = static_cast<uint8_t*>(std::realloc(output.bytes, static_cast<size_t>(output.capacity)));
-            g_Managed.cookMesh(&input, &output);
-        }
-        while (output.status == kMeshCookNeedsCapacity);
+        output.bytes = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(output.size)));
+        g_Managed.cookMesh(&input, &output);
 
         status = output.status;
         size = static_cast<size_t>(output.size);

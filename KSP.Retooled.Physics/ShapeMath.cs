@@ -68,8 +68,7 @@ namespace KSP.Retooled.PhysicsBackend
                     break;
                 }
                 case NativeStore.GeometryConvexMesh:
-                case NativeStore.GeometryTriangleMesh:
-                    return MeshMassProperties(shape, out volume, out center, out inertiaPerUnitMass);
+                    return ConvexMassProperties(shape, out volume, out center, out inertiaPerUnitMass);
                 default:
                     return false;
             }
@@ -79,16 +78,28 @@ namespace KSP.Retooled.PhysicsBackend
 
         /// <summary>
         /// A scale s moves x to s x, so the covariance's (i, j) entry gains s_i s_j. The inertia of a unit mass about its
-        /// centre is trace(C) I - C.
+        /// centre is trace(C) I - C. The unscaled moments are worked out once per mesh, because a rigidbody asks for them
+        /// each time its mass is set, and they are the same for every shape: the hull scales with its points.
         /// </summary>
-        private static bool MeshMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        private static bool ConvexMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
             volume = 0.0f;
             center = float3.zero;
             inertiaPerUnitMass = default;
 
-            NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
-            if (mesh == null || mesh->moments.volume <= 0.0f)
+            NativeStore.Mesh* mesh = (NativeStore.Mesh*)shape->mesh;
+            if (mesh == null || mesh->data == null || mesh->data->vertexCount == 0)
+            {
+                return false;
+            }
+
+            if (mesh->momentsKnown == 0)
+            {
+                ColliderBuilder.ConvexMoments(mesh->data, &mesh->moments);
+                mesh->momentsKnown = 1;
+            }
+
+            if (mesh->moments.volume <= 0.0f)
             {
                 return false;
             }

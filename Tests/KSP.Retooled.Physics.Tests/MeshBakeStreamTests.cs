@@ -32,18 +32,12 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 NativeStore.CookOutput output = default;
                 MeshCook.Cook(&input, &output);
 
-                byte[] buffer;
-                do
+                byte[] buffer = new byte[output.size];
+                fixed (byte* b = buffer)
                 {
-                    buffer = new byte[output.size];
-                    fixed (byte* b = buffer)
-                    {
-                        output.bytes = b;
-                        output.capacity = output.size;
-                        MeshCook.Cook(&input, &output);
-                    }
+                    output.bytes = b;
+                    MeshCook.Cook(&input, &output);
                 }
-                while (output.status == MeshCook.StatusNeedsCapacity);
 
                 System.Array.Resize(ref buffer, (int)output.size);
                 stream = buffer;
@@ -92,22 +86,62 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Assert.That(mesh.triangleCount, Is.EqualTo(4));
             Assert.That(mesh.lower, Is.EqualTo(float3.zero));
             Assert.That(mesh.upper, Is.EqualTo(new float3(1.0f, 1.0f, 1.0f)));
-            Assert.That(mesh.moments.volume, Is.EqualTo(1.0f / 6.0f).Within(1e-5f));
         }
 
         [Test]
-        public void ConvexCookingWeldsAndDropsInteriorPoints()
+        public void ATriangleMeshsBoundsCoverOnlyItsTriangles()
+        {
+            float3[] vertices =
+            {
+                new float3(0.0f, 0.0f, 0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(0.0f, 1.0f, 0.0f), new float3(50.0f, 0.0f, 0.0f),
+            };
+
+            NativeStore.MeshData mesh = Header(Cook(vertices, new[] { 0, 2, 1 }, false));
+
+            Assert.That(mesh.upper, Is.EqualTo(new float3(1.0f, 1.0f, 0.0f)));
+        }
+
+        [Test]
+        public void AConvexMeshsBoundsCoverEveryVertex()
         {
             float3[] vertices =
             {
                 new float3(0.0f, 0.0f, 0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(0.0f, 1.0f, 0.0f), new float3(0.0f, 0.0f, 1.0f),
-                new float3(0.1f, 0.1f, 0.1f), new float3(1.0f, 0.0f, 0.0f),
+                new float3(50.0f, 0.0f, 0.0f),
             };
 
             NativeStore.MeshData mesh = Header(Cook(vertices, new[] { 0, 1, 2 }, true));
 
-            Assert.That(mesh.vertexCount, Is.EqualTo(4));
-            Assert.That(mesh.triangleCount, Is.EqualTo(4));
+            Assert.That(mesh.upper, Is.EqualTo(new float3(50.0f, 1.0f, 1.0f)));
+        }
+
+        [Test]
+        public void AConvexMeshNeedsNoIndices()
+        {
+            fixed (float3* v = Tetrahedron)
+            {
+                NativeStore.CookInput input = new NativeStore.CookInput
+                {
+                    vertices = v,
+                    vertexCount = (uint)Tetrahedron.Length,
+                    vertexStride = (uint)sizeof(float3),
+                    convex = 1u,
+                };
+
+                NativeStore.CookOutput output = default;
+                MeshCook.Cook(&input, &output);
+                byte[] buffer = new byte[output.size];
+                fixed (byte* b = buffer)
+                {
+                    output.bytes = b;
+                    MeshCook.Cook(&input, &output);
+                }
+
+                Assert.That(output.status, Is.EqualTo(MeshCook.StatusOk));
+                NativeStore.MeshData mesh = Header(buffer);
+                Assert.That(mesh.vertexCount, Is.EqualTo(4));
+                Assert.That(mesh.triangleCount, Is.EqualTo(0));
+            }
         }
 
         [Test]
@@ -184,35 +218,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
-        public void AHullOfManyCoplanarPointsKeepsItsVolumeAndFits()
+        public void ACloudFlatToWithinRoundingCooksASlab()
         {
-            const int Cells = 12;
-            var vertices = new System.Collections.Generic.List<float3>();
-            for (int x = 0; x <= Cells; x++)
-            {
-                for (int y = 0; y <= Cells; y++)
-                {
-                    for (int z = 0; z <= Cells; z++)
-                    {
-                        bool onSurface = x == 0 || x == Cells || y == 0 || y == Cells || z == 0 || z == Cells;
-                        if (onSurface)
-                        {
-                            vertices.Add(new float3(x, y, z) / Cells);
-                        }
-                    }
-                }
-            }
-
-            byte[] stream = Cook(vertices.ToArray(), new[] { 0, 1, 2 }, true);
-
-            Assert.That(Accepted(stream, true), Is.True);
-            Assert.That(Header(stream).moments.volume, Is.EqualTo(1.0f).Within(1e-4f));
-        }
-
-        [Test]
-        public void AHullOfANoisyNearlyFlatCloudStaysSmall()
-        {
-            // Points within rounding of one another's faces are what makes a naive hull lose its surface.
             var random = new Unity.Mathematics.Random(1234);
             float3[] vertices = new float3[2000];
             for (int i = 0; i < vertices.Length; i++)
@@ -224,26 +231,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             CookStatus(vertices, new[] { 0, 1, 2 }, true, out byte[] stream);
 
             Assert.That(Accepted(stream, true), Is.True);
-            // The cloud is flat to within rounding, so it gains thickness, which doubles its points.
-            Assert.That(Header(stream).triangleCount, Is.LessThan(vertices.Length * 4u));
-        }
-
-        [Test]
-        public void AHullOfASphereKeepsItsVolume()
-        {
-            var random = new Unity.Mathematics.Random(99);
-            float3[] vertices = new float3[3000];
-            for (int i = 0; i < vertices.Length; i++)
-            {
-                vertices[i] = random.NextFloat3Direction();
-            }
-
-            byte[] stream = Cook(vertices, new[] { 0, 1, 2 }, true);
-
-            NativeStore.MeshData mesh = Header(stream);
-            Assert.That(mesh.vertexCount, Is.EqualTo(vertices.Length));
-            Assert.That(mesh.triangleCount, Is.EqualTo(vertices.Length * 2 - 4));
-            Assert.That(mesh.moments.volume, Is.EqualTo(4.0f / 3.0f * math.PI).Within(0.02f));
+            Assert.That(Header(stream).vertexCount, Is.EqualTo(vertices.Length * 2));
         }
 
         [Test]

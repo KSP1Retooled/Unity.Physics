@@ -169,15 +169,6 @@ namespace KSP.Retooled.PhysicsBackend
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        internal struct MeshMoments
-        {
-            public float volume;
-            public float3 centroid;
-            public float3 covarianceDiagonal;
-            public float3 covarianceOffDiagonal;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
         internal struct MeshData
         {
             public uint magic;
@@ -187,7 +178,24 @@ namespace KSP.Retooled.PhysicsBackend
             public uint triangleCount;
             public float3 lower;
             public float3 upper;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MeshMoments
+        {
+            public float volume;
+            public float3 centroid;
+            public float3 covarianceDiagonal;
+            public float3 covarianceOffDiagonal;
+        }
+
+        /// <summary>The head of the handle a shape holds. Native keeps the reference count after it, which is never read here.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Mesh
+        {
+            public MeshData* data;
             public MeshMoments moments;
+            public uint momentsKnown;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -207,16 +215,15 @@ namespace KSP.Retooled.PhysicsBackend
         internal struct CookOutput
         {
             public byte* bytes;
-            public long capacity;
             public long size;
             public int status;
             private readonly int reserved0;
         }
 
-        /// <summary>The cooked mesh of a shape, or null while it has none. A shape's mesh handle starts with this pointer.</summary>
+        /// <summary>The cooked mesh of a shape, or null while it has none.</summary>
         internal static MeshData* MeshOf(ShapeData* shape)
         {
-            return shape->mesh != null ? *(MeshData**)shape->mesh : null;
+            return shape->mesh != null ? ((Mesh*)shape->mesh)->data : null;
         }
 
         internal static float3* VerticesOf(MeshData* mesh)

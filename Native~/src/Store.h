@@ -171,20 +171,10 @@ namespace Retooled
 
     static_assert(sizeof(ShapeData) == 96, "NativeStore.ShapeData mirrors this layout");
 
-    // Mirrored. The solid a mesh bounds, unscaled. Volume is 0 when it bounds none. The covariance is the mean of
-    // (x - centroid)(x - centroid)^T over the solid, which is what a scale transforms simply.
-    struct MeshMoments
-    {
-        float volume;
-        Float3 centroid;
-        Float3 covarianceDiagonal;    // xx yy zz
-        Float3 covarianceOffDiagonal; // xy xz yz
-    };
-
     // Mirrored, and written by MeshCook.cs. The head of a cooked mesh: one block with no pointers in it, followed by
     // vertexCount Float3 and then triangleCount triples of uint32_t, which is also the stream stored in a baked mesh asset.
-    // The vertices are welded and unscaled, and the triangles clean, or the faces of the hull when convex. A mesh with no
-    // triangles has no collider.
+    // The vertices are the source mesh's, unscaled, and doubled into a slab for a flat convex mesh. A convex mesh may have no
+    // triangles, since its hull comes from its vertices. A mesh with no vertices has no collider.
     struct MeshData
     {
         uint32_t magic;
@@ -194,10 +184,21 @@ namespace Retooled
         uint32_t triangleCount;
         Float3 lower;
         Float3 upper;
-        MeshMoments moments;
     };
 
-    static_assert(sizeof(MeshData) == 84, "NativeStore.MeshData mirrors this layout");
+    static_assert(sizeof(MeshData) == 44, "NativeStore.MeshData mirrors this layout");
+
+    // Mirrored. The solid a convex mesh's hull bounds, unscaled. Volume is 0 when it bounds none. The covariance is the mean
+    // of (x - centroid)(x - centroid)^T over the solid, which is what a scale transforms simply.
+    struct MeshMoments
+    {
+        float volume;
+        Float3 centroid;
+        Float3 covarianceDiagonal;    // xx yy zz
+        Float3 covarianceOffDiagonal; // xy xz yz
+    };
+
+    static_assert(sizeof(MeshMoments) == 40, "NativeStore.MeshMoments mirrors this layout");
 
     // Mirrored. A cook's source mesh, as the descriptor gave it.
     struct CookInput
@@ -220,21 +221,19 @@ namespace Retooled
         kMeshCookEmpty = 1,
         kMeshCookBadVertices = 2,
         kMeshCookBadIndices = 3,
-        kMeshCookNeedsCapacity = 4,
     };
 
-    // Mirrored. With null bytes the cook reports a likely capacity in size. Otherwise it fills bytes, size and status, or
-    // leaves bytes alone and asks for the capacity in size with kMeshCookNeedsCapacity.
+    // Mirrored. With null bytes the cook reports in size a capacity that is enough. Otherwise it fills bytes, and sets size
+    // to what it wrote, and status.
     struct CookOutput
     {
         uint8_t* bytes;
-        int64_t capacity;
         int64_t size;
         int32_t status; // MeshCookStatus
         int32_t reserved0;
     };
 
-    static_assert(sizeof(CookOutput) == 32, "NativeStore.CookOutput mirrors this layout");
+    static_assert(sizeof(CookOutput) == 24, "NativeStore.CookOutput mirrors this layout");
 
     // Mirrored. A joint that broke in the last step, in the shape of Physics::JointBreakEvent.
     struct JointBreak
@@ -477,12 +476,15 @@ namespace Retooled
 
     static_assert(sizeof(ManagedCallbacks) == 80, "NativeStore.ManagedCallbacks mirrors this layout");
 
-    // Mirrored in its first field. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
-    // code (see Mesh.cpp) or if finishing it failed. Unity holds one reference and each shape using the mesh another,
-    // because a mesh goes away with its Mesh asset while colliders can still use it.
+    // Mirrored up to references. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
+    // code (see Mesh.cpp) or if finishing it failed. Managed works out a convex mesh's moments on first use and keeps them
+    // here, on the main thread. Unity holds one reference and each shape using the mesh another, because a mesh goes away
+    // with its Mesh asset while colliders can still use it.
     struct Mesh
     {
         MeshData* data = nullptr;
+        MeshMoments moments{};
+        uint32_t momentsKnown = 0;
         std::atomic<uint32_t> references{1};
     };
 

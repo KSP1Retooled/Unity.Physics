@@ -602,6 +602,14 @@ namespace KSP.Retooled.PhysicsBackend
             for (uint i = 0; i < body->shapeCount; i++)
             {
                 NativeStore.ShapeData* shape = body->shapes[i];
+
+                // PhysX can't integrate a triangle mesh, and gives up on the whole body. Only a kinematic body can carry one.
+                if (shape->geometryType == NativeStore.GeometryTriangleMesh)
+                {
+                    totalVolume = 0.0f;
+                    break;
+                }
+
                 if (TakesMass(shape, out float volume, out float3 localCenter, out _))
                 {
                     totalVolume += volume;
