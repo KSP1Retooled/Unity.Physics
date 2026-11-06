@@ -10,6 +10,9 @@ namespace KSP.Retooled.PhysicsBackend
     /// </summary>
     internal static unsafe class StoreOps
     {
+        // What a woken body's counter starts from. PhysX's Dy::sleepCheck: 20 steps of 0.02 s, whatever the step actually is.
+        internal const float WakeCounterReset = 0.4f;
+
         private const uint MinimumCapacity = 32;
 
         /// <summary>The body's hot row. It stays valid until a body in the same world is created or destroyed.</summary>

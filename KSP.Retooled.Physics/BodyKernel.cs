@@ -77,8 +77,6 @@ namespace KSP.Retooled.PhysicsBackend
     [BurstCompile]
     internal static unsafe class BodyKernel
     {
-        private const float WakeCounterReset = 0.4f;
-
         private const uint OverrideCenterOfMass = 1;
         private const uint OverrideInertiaTensor = 2;
 
@@ -336,7 +334,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static void Wake(NativeStore.BodyData* hot)
         {
             hot->flags &= ~NativeStore.BodyFlags.Sleeping;
-            hot->wakeCounter = math.max(hot->wakeCounter, WakeCounterReset);
+            hot->wakeCounter = math.max(hot->wakeCounter, StoreOps.WakeCounterReset);
         }
 
         private static void WakeIfAsked(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)

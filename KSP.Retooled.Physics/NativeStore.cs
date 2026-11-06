@@ -6,7 +6,8 @@ namespace KSP.Retooled.PhysicsBackend
 {
     /// <summary>
     /// The managed view of the plugin's store, field for field the "mirrored" structs of Native/RetooledPhysics/src/Store.h,
-    /// which documents them. Everything is blittable so jobs can read the native rows directly.
+    /// which documents them. Everything is blittable so jobs can read the native rows directly. Joints are defined here
+    /// alone: the plugin only keeps them on its heap, so that they outlive a domain reload.
     /// </summary>
     internal static unsafe class NativeStore
     {
@@ -263,6 +264,10 @@ namespace KSP.Retooled.PhysicsBackend
             BodyDestroyed = 1 << 3,
         }
 
+        /// <summary>
+        /// One axis of a joint, at the index Physics::ConstraintAxis gives it. min and max are radians on an angular axis and
+        /// metres on a linear one, in the units Unity sends them.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct JointAxis
         {
@@ -276,20 +281,24 @@ namespace KSP.Retooled.PhysicsBackend
             public float driveSpring;
             public float driveDamper;
             public float driveMaxForce;
-            public uint dofLock;
+            public uint dofLock; // Physics::JointDofLock
             public uint driveUsesAcceleration;
         }
 
+        /// <summary>
+        /// A joint's settings as Unity sent them and what the last step measured. A joint's handle points here, and the world's
+        /// list points back. A null body is the world, which the joint's pose is then relative to.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct JointData
         {
             public quaternion rotation0;
             public float3 position0;
-            public uint type;
+            public uint type; // Physics::JointType
 
             public quaternion rotation1;
             public float3 position1;
-            public uint flags;
+            public uint flags; // Physics::JointFlags
 
             public quaternion targetRotation;
             public float3 targetPosition;
@@ -300,6 +309,8 @@ namespace KSP.Retooled.PhysicsBackend
             public float3 targetAngularVelocity;
             public float breakTorque;
 
+            // What the joint's constraints applied in the last step, as a force in newtons and a torque in newton metres, in
+            // world space.
             public float3 force;
             public float inverseMassScale0;
             public float3 torque;
@@ -311,14 +322,22 @@ namespace KSP.Retooled.PhysicsBackend
             public float hingeMotorMaxForce;
 
             public float hingeMotorTargetVelocity;
-            public uint index;
+            public uint index; // In the world's list.
 
             public Body* body0;
             public Body* body1;
             public void* userData;
 
+            // JointAxisCount of them, which AxisOf reaches from the first.
             public JointAxis axes0;
-            private fixed byte otherAxes[(JointAxisCount - 1) * 48];
+            private readonly JointAxis axes1;
+            private readonly JointAxis axes2;
+            private readonly JointAxis axes3;
+            private readonly JointAxis axes4;
+            private readonly JointAxis axes5;
+            private readonly JointAxis axes6;
+            private readonly JointAxis axes7;
+            private readonly JointAxis axes8;
         }
 
         /// <summary>The axis of a joint at a Physics::ConstraintAxis index. The record is on the store's heap, so it doesn't move.</summary>
@@ -454,6 +473,9 @@ namespace KSP.Retooled.PhysicsBackend
             public uint materialVersion;
             public uint engineObjectIdOffset;
 
+            public uint jointDataSize;
+            private readonly uint reserved0;
+
             public IgnoreTable* ignoreTable;
 
             public MaterialData* defaultMaterial;
@@ -562,7 +584,10 @@ namespace KSP.Retooled.PhysicsBackend
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
-        /// <summary>The first struct or command enum whose size differs from the plugin's, or null when all agree.</summary>
+        /// <summary>
+        /// What stops this domain attaching, or null when nothing does: the first struct or command enum whose size differs
+        /// from the plugin's, or a joint layout other than the one the store's records were written with.
+        /// </summary>
         internal static string FirstSizeMismatch()
         {
             int[] sizes =
@@ -584,8 +609,6 @@ namespace KSP.Retooled.PhysicsBackend
                 (int)BodyCommand.Count,
                 (int)ShapeCommand.Count,
                 (int)WorldCommand.Count,
-                sizeof(JointData),
-                sizeof(JointAxis),
                 sizeof(JointBreak),
                 (int)JointCommand.Count,
             };
@@ -609,8 +632,6 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(BodyCommand),
                 nameof(ShapeCommand),
                 nameof(WorldCommand),
-                nameof(JointData),
-                nameof(JointAxis),
                 nameof(JointBreak),
                 nameof(JointCommand),
             };
@@ -620,10 +641,17 @@ namespace KSP.Retooled.PhysicsBackend
                 int native = RetooledPhysics_StructSize(i);
                 if (native != sizes[i])
                 {
-                    return $"{names[i]} is {sizes[i]} here and {native} in the plugin";
+                    return $"{names[i]} is {sizes[i]} here and {native} in the plugin. Rebuild the plugin with `RetooledCli native build`";
                 }
             }
 
+            StoreGlobals* globals = RetooledPhysics_Globals();
+            if (globals->jointDataSize != 0 && globals->jointDataSize != sizeof(JointData))
+            {
+                return $"{nameof(JointData)} is {sizeof(JointData)} here and {globals->jointDataSize} in the store's joints. Restart Unity";
+            }
+
+            globals->jointDataSize = (uint)sizeof(JointData);
             return null;
         }
     }

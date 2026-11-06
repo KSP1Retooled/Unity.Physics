@@ -160,7 +160,8 @@ namespace KSP.Retooled.PhysicsBackend
                     // Motion velocities are those of the centre of mass, and a rotation about the body origin moves it.
                     float3 targetCenter = body.targetPosition + math.rotate(body.targetRotation, body.localCenterOfMass);
                     linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
-                    angular = math.rotate(math.conjugate(worldFromMotion.rot), AngularVelocityTo(body.rotation, body.targetRotation));
+                    quaternion turn = math.normalize(math.mul(body.targetRotation, math.conjugate(body.rotation)));
+                    angular = math.rotate(math.conjugate(worldFromMotion.rot), JointConstraints.AngleAxis(turn) / DeltaTime);
                 }
             }
 
@@ -187,23 +188,6 @@ namespace KSP.Retooled.PhysicsBackend
                 AngularExpansionFactor = expansion,
                 GravityFactor = 0.0f,
             };
-        }
-
-        private float3 AngularVelocityTo(quaternion from, quaternion to)
-        {
-            quaternion delta = math.normalize(math.mul(to, math.conjugate(from)));
-            if (delta.value.w < 0.0f)
-            {
-                delta.value = -delta.value;
-            }
-
-            float sine = math.length(delta.value.xyz);
-            if (sine < 1e-6f)
-            {
-                return delta.value.xyz * 2.0f / DeltaTime;
-            }
-
-            return delta.value.xyz / sine * (2.0f * math.atan2(sine, delta.value.w)) / DeltaTime;
         }
     }
 

@@ -108,8 +108,6 @@ namespace KSP.Retooled.PhysicsBackend
     [BurstCompile]
     internal unsafe struct SleepJob : IJob
     {
-        // PhysX's Dy::sleepCheck: 20 steps of 0.02 s, whatever the step actually is.
-        private const float WakeCounterReset = 0.4f;
         private const int MaximumCountedContacts = 10;
 
         [NativeDisableUnsafePtrRestriction]
@@ -202,7 +200,7 @@ namespace KSP.Retooled.PhysicsBackend
         private void UpdateWakeCounter(NativeStore.BodyData* body, int contacts)
         {
             float counter = body->wakeCounter;
-            if (counter < WakeCounterReset * 0.5f || counter < DeltaTime)
+            if (counter < StoreOps.WakeCounterReset * 0.5f || counter < DeltaTime)
             {
                 quaternion worldFromInertia = math.mul(body->rotation, body->inertiaRotation);
                 body->sleepLinearSum += body->linearVelocity;
@@ -214,7 +212,7 @@ namespace KSP.Retooled.PhysicsBackend
                 if (energy >= threshold)
                 {
                     float factor = threshold == 0.0f ? 2.0f : math.min(energy / threshold, 2.0f);
-                    body->wakeCounter = factor * 0.5f * WakeCounterReset + DeltaTime * (cluster - 1.0f);
+                    body->wakeCounter = factor * 0.5f * StoreOps.WakeCounterReset + DeltaTime * (cluster - 1.0f);
                     body->sleepLinearSum = float3.zero;
                     body->sleepAngularSum = float3.zero;
                     return;

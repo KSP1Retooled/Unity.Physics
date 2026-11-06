@@ -407,17 +407,10 @@ namespace KSP.Retooled.PhysicsBackend
             return (a & immobile) == 0 || (b & immobile) == 0;
         }
 
-        /// <summary>The shape behind a key: a compound child knows it, and any other collider stands for one shape.</summary>
         private NativeStore.ShapeData* ShapeOf(RigidBody body, ColliderKey key)
         {
             NativeStore.BodyData* row = Store + body.Entity.Index;
-            if (body.Collider.Value.Type != ColliderType.Compound)
-            {
-                return row->shapes[ColliderBuilder.FirstSupported(row)];
-            }
-
-            body.Collider.Value.GetChild(ref key, out ChildCollider child);
-            return row->shapes[child.Entity.Index];
+            return row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, key, ColliderBuilder.FirstSupported(row))];
         }
     }
 

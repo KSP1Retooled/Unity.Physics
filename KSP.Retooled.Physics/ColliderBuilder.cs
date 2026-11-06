@@ -110,6 +110,21 @@ namespace KSP.Retooled.PhysicsBackend
             }
         }
 
+        /// <summary>
+        /// The index among a body's shapes of what a key names. A compound's child knows it, one level down only, because a
+        /// polygon inside a mesh child doesn't, and any other collider stands for <paramref name="singleShape"/>.
+        /// </summary>
+        internal static int ShapeIndexOf(BlobAssetReference<Collider> collider, ColliderKey key, int singleShape)
+        {
+            if (collider.Value.Type != ColliderType.Compound)
+            {
+                return singleShape;
+            }
+
+            collider.Value.GetChild(ref key, out ChildCollider child);
+            return child.Entity.Index;
+        }
+
         /// <summary>The index of the shape a body's collider stands for when it isn't a compound.</summary>
         internal static int FirstSupported(NativeStore.BodyData* body)
         {

@@ -49,8 +49,6 @@ namespace KSP.Retooled.PhysicsBackend
     [BurstCompile]
     internal static unsafe class JointKernel
     {
-        private const float WakeCounterReset = 0.4f;
-
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
@@ -256,7 +254,7 @@ namespace KSP.Retooled.PhysicsBackend
         internal static void WakeRow(NativeStore.BodyData* hot)
         {
             hot->flags &= ~NativeStore.BodyFlags.Sleeping;
-            hot->wakeCounter = math.max(hot->wakeCounter, WakeCounterReset);
+            hot->wakeCounter = math.max(hot->wakeCounter, StoreOps.WakeCounterReset);
         }
 
         internal static NativeStore.JointData* Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)

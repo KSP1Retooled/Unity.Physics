@@ -53,7 +53,6 @@ namespace KSP.Retooled.PhysicsBackend
         private const float DefaultMaxAngularVelocity = 7.0f;
         private const float DefaultMaxDepenetrationVelocity = 1e32f;
         private const float DefaultSleepThreshold = 0.005f;
-        private const float DefaultWakeCounter = 0.4f;
 
         /// <summary>The head of Physics::SimulationStepStats. World.cpp checks the offsets.</summary>
         [StructLayout(LayoutKind.Sequential)]
@@ -183,7 +182,7 @@ namespace KSP.Retooled.PhysicsBackend
             hot->maxLinearVelocity = DefaultMaxLinearVelocity;
             hot->maxAngularVelocity = DefaultMaxAngularVelocity;
             hot->maxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
-            hot->wakeCounter = DefaultWakeCounter;
+            hot->wakeCounter = StoreOps.WakeCounterReset;
             hot->sleepThreshold = DefaultSleepThreshold;
             hot->targetRotation = hot->rotation;
             hot->targetPosition = hot->position;

@@ -203,7 +203,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (joint->hingeMotorMaxForce > 0.0f && !MotorCoasts(joint))
             {
-                Add(AngularVelocityMotor(0, joint->hingeMotorTargetVelocity, joint->hingeMotorMaxForce * DeltaTime,
+                Add(Constraint.AngularVelocityMotor(joint->hingeMotorTargetVelocity, joint->hingeMotorMaxForce * DeltaTime,
                     Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio));
             }
         }
@@ -241,14 +241,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (math.any(locked))
             {
-                Add(new Constraint
-                {
-                    ConstrainedAxes = locked,
-                    Type = ConstraintType.Linear,
-                    SpringFrequency = Constraint.DefaultSpringFrequency,
-                    DampingRatio = Constraint.DefaultDampingRatio,
-                    MaxImpulse = ReportEveryImpulse,
-                });
+                Add(LinearAxes(locked, 0.0f, 0.0f, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio));
             }
 
             if (math.any(limited))
@@ -257,17 +250,23 @@ namespace KSP.Retooled.PhysicsBackend
                 NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
                 Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
                 bool signed = limited.x ^ limited.y ^ limited.z && !math.all(limited);
-                Add(new Constraint
-                {
-                    ConstrainedAxes = limited,
-                    Type = ConstraintType.Linear,
-                    Min = signed ? -axis->max : axis->min,
-                    Max = axis->max,
-                    SpringFrequency = frequency,
-                    DampingRatio = damping,
-                    MaxImpulse = ReportEveryImpulse,
-                });
+                Add(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
             }
+        }
+
+        /// <summary>The package's linear constraints fix which axes they hold, and a joint's locks and limits can pick any of them.</summary>
+        private static Constraint LinearAxes(bool3 axes, float min, float max, float frequency, float damping)
+        {
+            return new Constraint
+            {
+                ConstrainedAxes = axes,
+                Type = ConstraintType.Linear,
+                Min = min,
+                Max = max,
+                SpringFrequency = frequency,
+                DampingRatio = damping,
+                MaxImpulse = ReportEveryImpulse,
+            };
         }
 
         private void AddAngularDof(NativeStore.JointData* joint)
@@ -352,19 +351,7 @@ namespace KSP.Retooled.PhysicsBackend
                 float target = (axis->driveSpring > 0.0f ? joint->targetPosition[i] : current[i]) + velocityOffset;
 
                 Softness(spring, axis->driveDamper, mass, axis->driveUsesAcceleration != 0, out float frequency, out float damping);
-                float3 targets = float3.zero;
-                targets[i] = target;
-                bool3 axes = default;
-                axes[i] = true;
-                Add(new Constraint
-                {
-                    ConstrainedAxes = axes,
-                    Type = ConstraintType.PositionMotor,
-                    SpringFrequency = frequency,
-                    DampingRatio = damping,
-                    MaxImpulse = new float3(MaxImpulse(axis), 0.0f, 0.0f),
-                    Target = targets,
-                });
+                Add(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis), frequency, damping)));
             }
         }
 
@@ -419,45 +406,27 @@ namespace KSP.Retooled.PhysicsBackend
                 float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                 float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
                 Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-
-                float3 targets = float3.zero;
-                targets[index] = angles[index] + offset;
-                bool3 axes = default;
-                axes[index] = true;
-                Add(new Constraint
-                {
-                    ConstrainedAxes = axes,
-                    Type = ConstraintType.RotationMotor,
-                    Min = float.NegativeInfinity,
-                    Max = float.PositiveInfinity,
-                    SpringFrequency = frequency,
-                    DampingRatio = damping,
-                    MaxImpulse = new float3(MaxImpulse(drive), 0.0f, 0.0f),
-                    Target = targets,
-                });
+                Add(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive), frequency, damping)));
             }
             else if (drive->driveDamper > 0.0f)
             {
                 Softness(drive->driveDamper * PureDamperSpringRatio, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                Add(AngularVelocityMotor(index, JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive), frequency, damping));
+                Add(OnAxis(index, Constraint.AngularVelocityMotor(JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive), frequency, damping)));
             }
         }
 
-        private static Constraint AngularVelocityMotor(int index, float target, float maxImpulse, float frequency, float damping)
+        /// <summary>
+        /// Moves one of the package's motors, which all act along the joint's x axis, onto another. The motor's jacobian takes
+        /// its axis from the constraint, and its impulse limit stays in the first slot whichever axis that is.
+        /// </summary>
+        private static Constraint OnAxis(int index, Constraint motor)
         {
-            float3 targets = float3.zero;
-            targets[index] = target;
-            bool3 axes = default;
-            axes[index] = true;
-            return new Constraint
-            {
-                ConstrainedAxes = axes,
-                Type = ConstraintType.AngularVelocityMotor,
-                SpringFrequency = frequency,
-                DampingRatio = damping,
-                MaxImpulse = new float3(maxImpulse, 0.0f, 0.0f),
-                Target = targets,
-            };
+            float target = motor.Target.x;
+            motor.Target = float3.zero;
+            motor.Target[index] = target;
+            motor.ConstrainedAxes = default;
+            motor.ConstrainedAxes[index] = true;
+            return motor;
         }
 
         /// <summary>A motor's impulse accumulates over the whole step, substeps included, and starts over at the next.</summary>

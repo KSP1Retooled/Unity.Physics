@@ -58,7 +58,7 @@ namespace KSP.Retooled.PhysicsBackend
                 return false;
             }
 
-            QueryShape* shape = queryShapes + body->FirstShape + ShapeIndexOf(body, rigidBody, hit.ColliderKey);
+            QueryShape* shape = queryShapes + body->FirstShape + ColliderBuilder.ShapeIndexOf(rigidBody.Collider, hit.ColliderKey, body->SingleShape);
             if ((shape->Flags & NativeStore.ShapeFlagSceneQuery) == 0)
             {
                 return false;
@@ -86,18 +86,6 @@ namespace KSP.Retooled.PhysicsBackend
             MaxFraction = hit.Fraction;
             NumHits = 1;
             return true;
-        }
-
-        private static int ShapeIndexOf(QueryBody* body, RigidBody rigidBody, ColliderKey key)
-        {
-            if (rigidBody.Collider.Value.Type != ColliderType.Compound)
-            {
-                return body->SingleShape;
-            }
-
-            // One level down only: a compound's child knows its entity, and a polygon inside a mesh child doesn't.
-            rigidBody.Collider.Value.GetChild(ref key, out ChildCollider child);
-            return child.Entity.Index;
         }
 
         /// <summary>

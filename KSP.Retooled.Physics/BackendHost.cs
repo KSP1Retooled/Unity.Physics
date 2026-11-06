@@ -103,7 +103,7 @@ namespace KSP.Retooled.PhysicsBackend
             string mismatch = NativeStore.FirstSizeMismatch();
             if (mismatch != null)
             {
-                Debug.LogError($"{Tag}not attaching: {mismatch}. Rebuild the plugin with `RetooledCli native build`.");
+                Debug.LogError($"{Tag}not attaching: {mismatch}.");
                 return;
             }
 

@@ -36,6 +36,24 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public unsafe void JointsOfAnotherLayoutAreRefused()
+        {
+            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            uint size = globals->jointDataSize;
+            Assert.That(NativeStore.FirstSizeMismatch(), Is.Null);
+
+            globals->jointDataSize = size + 8;
+            try
+            {
+                Assert.That(NativeStore.FirstSizeMismatch(), Does.Contain(nameof(NativeStore.JointData)));
+            }
+            finally
+            {
+                globals->jointDataSize = size;
+            }
+        }
+
+        [Test]
         public void DetachedCommandsAreSafeNoOps()
         {
             Rigidbody body = DynamicBox(new Vector3(0.0f, 2.0f, 0.0f));

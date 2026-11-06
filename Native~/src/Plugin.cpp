@@ -233,12 +233,8 @@ namespace Retooled
             case 16:
                 return static_cast<int32_t>(PhysicsCommands::World::Count);
             case 17:
-                return sizeof(JointData);
-            case 18:
-                return sizeof(JointAxis);
-            case 19:
                 return sizeof(JointBreak);
-            case 20:
+            case 18:
                 return static_cast<int32_t>(PhysicsCommands::Joint::Count);
             default:
                 return -1;
