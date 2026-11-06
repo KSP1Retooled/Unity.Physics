@@ -211,7 +211,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (joint->hingeMotorMaxForce > 0.0f && !MotorCoasts(joint))
             {
-                Add(Constraint.AngularVelocityMotor(joint->hingeMotorTargetVelocity, joint->hingeMotorMaxForce * DeltaTime / WorldState.Substeps,
+                Add(Constraint.AngularVelocityMotor(joint->hingeMotorTargetVelocity, MaxImpulse(joint->hingeMotorMaxForce),
                     Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio));
             }
         }
@@ -433,9 +433,10 @@ namespace KSP.Retooled.PhysicsBackend
                 Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
                 if (drive->driveMaxForce >= JointConstraints.UnlimitedForce)
                 {
-                    // A rotation motor reads its angle from Quaternion.ToAngleAxis, which returns zero below about 0.6 mrad and
-                    // then jumps, and stiff part joints rest in that range. Only a motor can cap its impulse, so uncapped drives
-                    // hold their angle as a soft two-sided limit instead.
+                    // A rotation motor reads its angle from Quaternion.ToAngleAxis, which returns zero below about 0.6 mrad, where
+                    // stiff part joints rest, and nearly a full turn when the relative rotation comes out negated, which nothing
+                    // in the package rules out. Only a motor can cap its impulse, so uncapped drives hold their angle as a soft
+                    // two-sided limit instead.
                     float target = angles[index] + offset;
                     Add(Constraint.Twist(index, new FloatRange(target, target), Constraint.DefaultMaxImpulse, frequency, damping));
                     return;
@@ -464,10 +465,15 @@ namespace KSP.Retooled.PhysicsBackend
             return motor;
         }
 
-        /// <summary>The direct solver limits a motor's impulse in each substep on its own.</summary>
         private float MaxImpulse(NativeStore.JointAxis* drive)
         {
-            return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : drive->driveMaxForce * DeltaTime / WorldState.Substeps;
+            return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : MaxImpulse(drive->driveMaxForce);
+        }
+
+        /// <summary>The direct solver limits a motor's impulse in each substep on its own, and the iterative one over the whole step.</summary>
+        private float MaxImpulse(float force)
+        {
+            return force * DeltaTime / (direct ? WorldState.Substeps : 1);
         }
 
         /// <summary>

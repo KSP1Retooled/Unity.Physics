@@ -123,6 +123,44 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void ADriveIgnoresWhichSignARotationComesIn([Values] bool ofInertia)
+        {
+            tilt = Quaternion.FromToRotation(Vector3.up, new Vector3(-0.8231264f, -0.0016914f, 0.567856f));
+
+            Rigidbody mount = Part(Vector3.zero, Vector3.one, 1.0f);
+            mount.isKinematic = true;
+            Rigidbody arm = Part(new Vector3(0.0f, 1.2f, 0.0f), Vector3.one, 2.0f);
+            arm.linearVelocity = Vector3.zero;
+
+            // With an axis locked the drives can't be one soft rotation, and each axis left free holds its own.
+            ConfigurableJoint joint = PartJoint(arm, mount, new Vector3(0.0f, 0.5f, 0.0f), 60000.0f);
+            joint.angularZMotion = ConfigurableJointMotion.Locked;
+
+            Physics.gravity = Vector3.zero;
+            Simulate(5);
+
+            Quaternion q = ofInertia ? arm.inertiaTensorRotation : arm.rotation;
+            Quaternion flipped = new Quaternion(-q.x, -q.y, -q.z, -q.w);
+            if (ofInertia)
+            {
+                arm.inertiaTensorRotation = flipped;
+            }
+            else
+            {
+                arm.rotation = flipped;
+            }
+
+            float top = 0.0f;
+            for (int step = 0; step < 10; step++)
+            {
+                Simulate();
+                top = Mathf.Max(top, arm.angularVelocity.magnitude);
+            }
+
+            Assert.That(top, Is.LessThan(0.1f));
+        }
+
+        [Test]
         public void ARocketOnPartJointsStaysCalmWhenItsClampsArrive([Values] bool tilted)
         {
             // The pad's up in KSP's world, where no axis points anywhere in particular.
