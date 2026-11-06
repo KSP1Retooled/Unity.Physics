@@ -110,6 +110,12 @@ namespace KSP.Retooled.PhysicsBackend
                 case WorldCommand.DestroyBody:
                     DestroyBody(world, (NativeStore.Body*)a->pointer, globals);
                     break;
+                case WorldCommand.CreateJoint:
+                    a->pointer = JointKernel.Create(world, a, globals);
+                    break;
+                case WorldCommand.DestroyJoint:
+                    JointKernel.Destroy(world, (NativeStore.JointData*)a->pointer, globals);
+                    break;
                 case WorldCommand.GetAllShapesByLayerMask:
                     CollectShapesByLayerMask(world, a, globals);
                     break;
@@ -196,6 +202,7 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             StoreOps.DetachAllShapes(body, globals);
+            JointKernel.ForgetBody(world, body);
 
             NativeStore.BodyData* hot = world->bodies + body->index;
             if (hot->collider != null)

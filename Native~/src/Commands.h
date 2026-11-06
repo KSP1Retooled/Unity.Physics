@@ -29,6 +29,7 @@ namespace Retooled
 
     // The plugin API's command structs. Their namespaces share names with the store's records.
     namespace BodyCmd = PhysicsCommands::BodyData;
+    namespace JointCmd = PhysicsCommands::JointData;
     namespace MaterialCmd = PhysicsCommands::MaterialData;
     namespace ShapeCmd = PhysicsCommands::ShapeData;
     namespace WorldCmd = PhysicsCommands::WorldData;
@@ -100,10 +101,6 @@ namespace Retooled
     void BindVehicleTrace(FunctionBinding* table);
     void TraceCommand(void* object, const Context& ctx, uint32_t function);
 #endif
-
-    // The handlers World.cpp forwards to, so that each kind of record is created and destroyed in its own file.
-    Joint* CreateJointRecord(const WorldCmd::CreateJoint& command);
-    void DestroyJointRecord(Joint* joint);
 
     inline bool IsMeshGeometry(const ShapeData& shape)
     {

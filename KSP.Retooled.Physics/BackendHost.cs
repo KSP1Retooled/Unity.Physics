@@ -35,6 +35,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static IntPtr bodyCommandFunction;
         private static IntPtr shapeCommandFunction;
         private static IntPtr worldCommandFunction;
+        private static IntPtr jointCommandFunction;
         private static bool attached;
         private static long managedJobRuns;
         private static long managedQueries;
@@ -52,7 +53,7 @@ namespace KSP.Retooled.PhysicsBackend
         /// <summary>Mesh cooks that ran in Mono, which they do until the async Burst compile has delivered the cook function.</summary>
         public static long ManagedCooks => Interlocked.Read(ref managedCooks);
 
-        /// <summary>Body, shape and world commands that ran in Mono, which they do until the async Burst compile has delivered their kernels.</summary>
+        /// <summary>Body, shape, world and joint commands that ran in Mono, which they do until the async Burst compile has delivered their kernels.</summary>
         public static long ManagedCommands => Interlocked.Read(ref managedCommands);
 
         /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
@@ -117,6 +118,7 @@ namespace KSP.Retooled.PhysicsBackend
                 bodyCommand = BodyCommandFunction(),
                 shapeCommand = ShapeCommandFunction(),
                 worldCommand = WorldCommandFunction(),
+                jointCommand = JointCommandFunction(),
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
@@ -223,6 +225,16 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             return worldCommandFunction;
+        }
+
+        private static IntPtr JointCommandFunction()
+        {
+            if (jointCommandFunction == IntPtr.Zero)
+            {
+                jointCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(JointKernel.Run).Value;
+            }
+
+            return jointCommandFunction;
         }
 
         /// <summary>

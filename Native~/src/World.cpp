@@ -48,6 +48,13 @@ namespace Retooled
         }
 
         g_Worlds.erase(std::find(g_Worlds.begin(), g_Worlds.end(), world));
+        for (uint32_t i = 0; i < world->data.jointCount; i++)
+        {
+            std::free(world->data.joints[i]);
+        }
+
+        std::free(world->data.joints);
+        std::free(world->data.jointBreaks);
         std::free(world->data.bodies);
         std::free(world->data.deadColliders);
         delete world;
@@ -125,16 +132,6 @@ namespace Retooled
     {
     }
 
-    static void CreateJoint(void*, const Context&, WorldCmd::CreateJoint& command)
-    {
-        command.outJoint = CreateJointRecord(command);
-    }
-
-    static void DestroyJoint(void*, const Context&, WorldCmd::DestroyJoint& command)
-    {
-        DestroyJointRecord(static_cast<Joint*>(command.value));
-    }
-
     static void GetArticulationCount(void*, const Context&, WorldCmd::GetArticulationCount& command)
     {
         command.value = 0;
@@ -174,8 +171,6 @@ namespace Retooled
         Bind<WorldCmd::AddActorsToScene, AddActorsToScene>(table);
         Bind<WorldCmd::CreateArticulation, CreateArticulation>(table);
         Bind<WorldCmd::DestoryArticulation, DestroyArticulation>(table);
-        Bind<WorldCmd::CreateJoint, CreateJoint>(table);
-        Bind<WorldCmd::DestroyJoint, DestroyJoint>(table);
         Bind<WorldCmd::GetArticulationCount, GetArticulationCount>(table);
         Bind<WorldCmd::GetArticulations, GetArticulations>(table);
 
@@ -196,6 +191,15 @@ namespace Retooled
             a.enabled = c.isStatic;
         }, [](const CommandArgs& a, auto& c) { c.outBody = a.pointer; }>(table);
         Forward<WorldCmd::DestroyBody, [](CommandArgs& a, const auto& c) { a.pointer = c.value; }>(table);
+        Forward<WorldCmd::CreateJoint, [](CommandArgs& a, const auto& c)
+        {
+            a.pointer = c.body0;
+            a.pointer2 = c.body1;
+            a.pointer3 = c.userData;
+            a.value = static_cast<uint32_t>(c.type);
+            a.flags = static_cast<uint32_t>(c.flags);
+        }, [](const CommandArgs& a, auto& c) { c.outJoint = a.pointer; }>(table);
+        Forward<WorldCmd::DestroyJoint, [](CommandArgs& a, const auto& c) { a.pointer = c.value; }>(table);
         Forward<WorldCmd::GetAllShapesByLayerMask, [](CommandArgs& a, const auto& c) { a.value = c.layerMask; }, [](const CommandArgs& a, auto& c)
         {
             c.callback(static_cast<void**>(a.pointer), static_cast<size_t>(a.size));

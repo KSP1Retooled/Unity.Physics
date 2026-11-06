@@ -29,6 +29,8 @@ namespace KSP.Retooled.PhysicsBackend
         private NativeReference<int> staticsChanged = new NativeReference<int>(1, Allocator.Persistent);
         private NativeList<int> dynamicIndices = new NativeList<int>(Allocator.Persistent);
         private NativeList<int> staticIndices = new NativeList<int>(Allocator.Persistent);
+        private NativeList<int> builtIndices = new NativeList<int>(Allocator.Persistent);
+        private NativeList<Joint> builtJoints = new NativeList<Joint>(Allocator.Persistent);
         private NativeList<QueryBody> queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
         private NativeList<QueryShape> queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
         private uint builtStaticsVersion;
@@ -65,6 +67,8 @@ namespace KSP.Retooled.PhysicsBackend
             staticsChanged.Dispose();
             dynamicIndices.Dispose();
             staticIndices.Dispose();
+            builtIndices.Dispose();
+            builtJoints.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
         }
@@ -80,6 +84,8 @@ namespace KSP.Retooled.PhysicsBackend
             store->queryWorld = null;
             store->queryDirty = 1;
             RefreshColliders();
+
+            new WakeJointedBodiesJob { World = store }.Run();
 
             new ApplyForcesJob
             {
@@ -116,6 +122,15 @@ namespace KSP.Retooled.PhysicsBackend
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(dynamicIndices.Length, ParallelBatchSize).Complete();
+
+            new ReadJointForcesJob
+            {
+                World = store,
+                Globals = NativeStore.RetooledPhysics_Globals(),
+                Events = simulation.ImpulseEvents,
+                DeltaTime = deltaTime,
+                EngineObjectIdOffset = NativeStore.RetooledPhysics_Globals()->engineObjectIdOffset,
+            }.Run();
 
             // The step synchronized the built world to the motions it wrote back, which spares the queries after it a
             // rebuild. The store can't change during a step, so these bodies are the only way it can differ.
@@ -224,10 +239,12 @@ namespace KSP.Retooled.PhysicsBackend
         {
             dynamicIndices.Clear();
             staticIndices.Clear();
+            builtIndices.ResizeUninitialized((int)store->bodyCount);
             motionsMatchStore = true;
             for (int i = 0; i < store->bodyCount; i++)
             {
                 NativeStore.BodyFlags flags = store->bodies[i].flags;
+                builtIndices[i] = -1;
                 if ((flags & NativeStore.BodyFlags.Simulated) == 0)
                 {
                     continue;
@@ -235,10 +252,12 @@ namespace KSP.Retooled.PhysicsBackend
 
                 if ((flags & NativeStore.BodyFlags.Static) != 0)
                 {
+                    builtIndices[i] = staticIndices.Length;
                     staticIndices.Add(i);
                 }
                 else
                 {
+                    builtIndices[i] = dynamicIndices.Length;
                     dynamicIndices.Add(i);
                     if ((flags & PosedByWriteBack) != 0)
                     {
@@ -254,7 +273,31 @@ namespace KSP.Retooled.PhysicsBackend
             builtDynamicCount = dynamicIndices.Length;
             builtWhole = false;
 
-            world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
+            for (int i = 0; i < builtIndices.Length; i++)
+            {
+                if (builtIndices[i] >= 0 && (store->bodies[i].flags & NativeStore.BodyFlags.Static) != 0)
+                {
+                    builtIndices[i] += dynamicIndices.Length;
+                }
+            }
+
+            // A query world never solves, so only a step needs the joints, and only a step has a time to give their motors.
+            builtJoints.Clear();
+            if (deltaTime > 0.0f)
+            {
+                new BuildJointsJob
+                {
+                    World = store,
+                    BuiltIndices = builtIndices.AsArray(),
+                    Output = builtJoints,
+                    DynamicCount = dynamicIndices.Length,
+                    AnchorIndex = dynamicIndices.Length + staticIndices.Length,
+                    DeltaTime = deltaTime,
+                }.Run();
+            }
+
+            world.Reset(staticIndices.Length + 1, dynamicIndices.Length, builtJoints.Length);
+            world.DynamicsWorld.Joints.CopyFrom(builtJoints.AsArray());
 
             return new BuildBodiesJob
             {

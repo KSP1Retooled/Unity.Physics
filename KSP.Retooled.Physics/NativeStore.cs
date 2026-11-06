@@ -223,12 +223,138 @@ namespace KSP.Retooled.PhysicsBackend
             return (int3*)(VerticesOf(mesh) + mesh->vertexCount);
         }
 
+        // Physics::ConstraintAxis.
+        internal const int AxisAngularX = 0;
+        internal const int AxisAngularY = 1;
+        internal const int AxisAngularZ = 2;
+        internal const int AxisAngularYZ = 3;
+        internal const int AxisLinearX = 4;
+        internal const int AxisDistance = 7;
+        internal const int AxisSlerp = 8;
+        internal const int JointAxisCount = 9;
+
+        // Physics::JointDofLock.
+        internal const uint DofLocked = 0;
+        internal const uint DofLimited = 1;
+        internal const uint DofFree = 2;
+
+        // Physics::JointType.
+        internal const uint JointTypeFixed = 0;
+        internal const uint JointTypePrismatic = 1;
+        internal const uint JointTypeHinge = 2;
+        internal const uint JointTypeBallAndSocket = 3;
+        internal const uint JointTypeDistance = 5;
+        internal const uint JointTypeDof6 = 6;
+
+        // Physics::JointFlags.
+        internal const uint JointFlagCollisionEnabled = 1 << 2;
+
+        [Flags]
+        internal enum JointState : uint
+        {
+            Broken = 1 << 0,
+            HingeLimitEnabled = 1 << 1,
+            HingeMotorFreeSpin = 1 << 2,
+            BodyDestroyed = 1 << 3,
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct JointAxis
+        {
+            public float min;
+            public float max;
+            public float bounciness;
+            public float bounceMinVelocity;
+            public float contactDistance;
+            public float limitSpring;
+            public float limitDamping;
+            public float driveSpring;
+            public float driveDamper;
+            public float driveMaxForce;
+            public uint dofLock;
+            public uint driveUsesAcceleration;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct JointData
+        {
+            public quaternion rotation0;
+            public float3 position0;
+            public uint type;
+
+            public quaternion rotation1;
+            public float3 position1;
+            public uint flags;
+
+            public quaternion targetRotation;
+            public float3 targetPosition;
+            public JointState state;
+
+            public float3 targetLinearVelocity;
+            public float breakForce;
+            public float3 targetAngularVelocity;
+            public float breakTorque;
+
+            public float3 force;
+            public float inverseMassScale0;
+            public float3 torque;
+            public float inverseMassScale1;
+
+            public float projectionLinearTolerance;
+            public float projectionAngularTolerance;
+            public float distanceErrorTolerance;
+            public float hingeMotorMaxForce;
+
+            public float hingeMotorTargetVelocity;
+            public uint index;
+
+            public Body* body0;
+            public Body* body1;
+            public void* userData;
+
+            public JointAxis axes0;
+            private fixed byte otherAxes[(JointAxisCount - 1) * 48];
+        }
+
+        /// <summary>The axis of a joint at a Physics::ConstraintAxis index. The record is on the store's heap, so it doesn't move.</summary>
+        internal static JointAxis* AxisOf(JointData* joint, int axis)
+        {
+            return &joint->axes0 + axis;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct JointBreak
+        {
+            public ulong engineObjectId;
+            public float linearMagnitude;
+            public float angularMagnitude;
+        }
+
+        /// <summary>The blittable head of Physics::ActorDescriptor, whose layout Joint.cpp checks.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct ActorDescriptor
+        {
+            public Body* actor;
+            public void* userData;
+            public ushort type;
+            private readonly ushort reserved0;
+            private readonly uint reserved1;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         internal struct WorldData
         {
             public BodyData* bodies;
             public uint bodyCount;
             public uint bodyCapacity;
+
+            public JointData** joints;
+            public uint jointCount;
+            public uint jointCapacity;
+
+            public JointBreak* jointBreaks;
+            public uint jointBreakCount;
+            public uint jointBreakCapacity;
 
             public void** deadColliders;
             public uint deadColliderCount;
@@ -336,6 +462,7 @@ namespace KSP.Retooled.PhysicsBackend
             public IntPtr bodyCommand;
             public IntPtr shapeCommand;
             public IntPtr worldCommand;
+            public IntPtr jointCommand;
         }
 
         [DllImport(Library)]
@@ -381,6 +508,10 @@ namespace KSP.Retooled.PhysicsBackend
                 (int)BodyCommand.Count,
                 (int)ShapeCommand.Count,
                 (int)WorldCommand.Count,
+                sizeof(JointData),
+                sizeof(JointAxis),
+                sizeof(JointBreak),
+                (int)JointCommand.Count,
             };
 
             string[] names =
@@ -402,6 +533,10 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(BodyCommand),
                 nameof(ShapeCommand),
                 nameof(WorldCommand),
+                nameof(JointData),
+                nameof(JointAxis),
+                nameof(JointBreak),
+                nameof(JointCommand),
             };
 
             for (int i = 0; i < sizes.Length; i++)

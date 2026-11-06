@@ -31,7 +31,6 @@
 namespace Retooled
 {
     struct Body;
-    struct Joint;
     struct Mesh;
     struct Shape;
     struct World;
@@ -228,12 +227,107 @@ namespace Retooled
 
     static_assert(sizeof(CookOutput) == 32, "NativeStore.CookOutput mirrors this layout");
 
+    // Mirrored. One axis of a joint, at the index Physics::ConstraintAxis gives it. min and max are radians on an angular
+    // axis and metres on a linear one, in the units Unity sends them.
+    struct JointAxis
+    {
+        float min;
+        float max;
+        float bounciness;
+        float bounceMinVelocity;
+        float contactDistance;
+        float limitSpring;
+        float limitDamping;
+        float driveSpring;
+        float driveDamper;
+        float driveMaxForce;
+        uint32_t lock;                  // Physics::JointDofLock
+        uint32_t driveUsesAcceleration;
+    };
+
+    static_assert(sizeof(JointAxis) == 48, "NativeStore.JointAxis mirrors this layout");
+
+    constexpr uint32_t kJointAxisCount = 9;
+
+    // Mirrored. A joint's settings as Unity sent them and what the last step measured. A joint's handle points here, and
+    // the world's list points back. A null body is the world, which the joint's pose is then relative to.
+    struct JointData
+    {
+        Float4 rotation0;
+        Float3 position0;
+        uint32_t type;                  // Physics::JointType
+
+        Float4 rotation1;
+        Float3 position1;
+        uint32_t flags;                 // Physics::JointFlags
+
+        Float4 targetRotation;
+        Float3 targetPosition;
+        uint32_t state;                 // JointState
+
+        Float3 targetLinearVelocity;
+        float breakForce;
+        Float3 targetAngularVelocity;
+        float breakTorque;
+
+        // What the joint's constraints applied in the last step, as a force in newtons and a torque in newton metres, in
+        // world space.
+        Float3 force;
+        float inverseMassScale0;
+        Float3 torque;
+        float inverseMassScale1;
+
+        float projectionLinearTolerance;
+        float projectionAngularTolerance;
+        float distanceErrorTolerance;
+        float hingeMotorMaxForce;
+
+        float hingeMotorTargetVelocity;
+        uint32_t index;                 // In the world's list.
+
+        Body* body0;
+        Body* body1;
+        void* userData;
+
+        JointAxis axes[kJointAxisCount];
+    };
+
+    static_assert(sizeof(JointData) == 640, "NativeStore.JointData mirrors this layout");
+
+    // Bits of JointData::state.
+    enum JointState : uint32_t
+    {
+        kJointBroken = 1 << 0,
+        kJointHingeLimitEnabled = 1 << 1,
+        kJointHingeMotorFreeSpin = 1 << 2,
+        kJointBodyDestroyed = 1 << 3,
+    };
+
+    // Mirrored. A joint that broke in the last step, in the shape of Physics::JointBreakEvent.
+    struct JointBreak
+    {
+        uint64_t engineObjectId;
+        float linearMagnitude;
+        float angularMagnitude;
+    };
+
+    static_assert(sizeof(JointBreak) == 16, "NativeStore.JointBreak mirrors this layout");
+
     // Mirrored. One physics scene.
     struct WorldData
     {
         BodyData* bodies;
         uint32_t bodyCount;
         uint32_t bodyCapacity;
+
+        JointData** joints;
+        uint32_t jointCount;
+        uint32_t jointCapacity;
+
+        // Reset by each step, and read by whatever publishes the step's results.
+        JointBreak* jointBreaks;
+        uint32_t jointBreakCount;
+        uint32_t jointBreakCapacity;
 
         // Colliders of destroyed bodies, freed by managed once no built world refers to them.
         void** deadColliders;
@@ -253,7 +347,7 @@ namespace Retooled
         void* queryWorld;
     };
 
-    static_assert(sizeof(WorldData) == 72, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 104, "NativeStore.WorldData mirrors this layout");
 
     // Mirrored. What every world shares, and what a kernel needs from the plugin, which reaches it as function pointers
     // because a Burst function gets everything through its arguments.
@@ -365,9 +459,10 @@ namespace Retooled
         CommandKernel bodyCommand;
         CommandKernel shapeCommand;
         CommandKernel worldCommand;
+        CommandKernel jointCommand;
     };
 
-    static_assert(sizeof(ManagedCallbacks) == 72, "NativeStore.ManagedCallbacks mirrors this layout");
+    static_assert(sizeof(ManagedCallbacks) == 80, "NativeStore.ManagedCallbacks mirrors this layout");
 
     // Mirrored in its first field. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
     // code (see Mesh.cpp) or if finishing it failed. Unity holds one reference and each shape using the mesh another,
@@ -407,16 +502,6 @@ namespace Retooled
     };
 
     static_assert(sizeof(Shape) == 128, "NativeStore.Shape mirrors this layout");
-
-    // A joint record. Joint.cpp owns its meaning.
-    struct Joint
-    {
-        void* userData = nullptr;
-        Body* body0 = nullptr;
-        Body* body1 = nullptr;
-        int32_t type = 0;
-        int32_t flags = 0;
-    };
 
     // The cold half of a world, and the handle Unity holds. Kernels get it as a WorldData, the first field.
     struct World
