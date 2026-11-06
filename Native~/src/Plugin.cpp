@@ -10,17 +10,6 @@
 
 #include "Commands.h"
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#elif defined(__APPLE__)
-#include <crt_externs.h>
-#else
-#include <fstream>
-#include <string>
-#endif
-
 using namespace PhysicsCommands;
 
 namespace Retooled
@@ -67,39 +56,6 @@ namespace Retooled
             std::snprintf(text, sizeof(text), "[RetooledPhysics] unimplemented command %u.%u", category, id);
             LogInfo(text);
         }
-    }
-
-    // Whether this process asked for PhysX. The plugin loads before Unity reads any setting a script could change, so
-    // the flag comes straight from the operating system.
-    static bool LaunchedWithPhysX()
-    {
-        static constexpr const char* kFlag = "-retooled-physx";
-#if defined(_WIN32)
-        return std::strstr(GetCommandLineA(), kFlag) != nullptr;
-#elif defined(__APPLE__)
-        char** arguments = *_NSGetArgv();
-        for (int i = 0; i < *_NSGetArgc(); i++)
-        {
-            if (std::strcmp(arguments[i], kFlag) == 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
-#else
-        std::ifstream file("/proc/self/cmdline", std::ios::binary);
-        std::string argument;
-        while (std::getline(file, argument, '\0'))
-        {
-            if (argument == kFlag)
-            {
-                return true;
-            }
-        }
-
-        return false;
-#endif
     }
 
     static void BindTables()
@@ -170,12 +126,6 @@ namespace Retooled
         }
 
         s_Log = interfaces->Get<IUnityLog>();
-        if (LaunchedWithPhysX())
-        {
-            LogInfo("[RetooledPhysics] -retooled-physx: leaving the backend unregistered");
-            return;
-        }
-
         IUnityPhysicsBackendSystem* system = interfaces->Get<IUnityPhysicsBackendSystem>();
         if (system == nullptr)
         {
