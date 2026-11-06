@@ -30,6 +30,12 @@ namespace KSP.Retooled.PhysicsBackend
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
         private static bool attached;
+        private static long managedJobRuns;
+
+        /// <summary>
+        /// Bodies a force job has handled in its Mono form, which it runs until the async Burst compile has delivered it.
+        /// </summary>
+        public static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
 
         /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
         public static int LastStepThreadId { get; private set; }
@@ -110,6 +116,11 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 ReleaseWorld(NativeStore.RetooledPhysics_GetWorld(i));
             }
+        }
+
+        internal static void NoteManagedJobRun()
+        {
+            Interlocked.Increment(ref managedJobRuns);
         }
 
         private static void NoteStep()

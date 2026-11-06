@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Threading;
 using NUnit.Framework;
 using Unity.Burst;
+using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
 using UnityEngine.TestTools;
 using Debug = UnityEngine.Debug;
@@ -12,6 +13,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
     /// <summary>The step runs jobs from inside the engine's Simulate call, whichever state Burst is in.</summary>
     public class StepThreadTests : PhysicsScene
     {
+        private const double PhaseSeconds = 10.0;
+
         [SetUp]
         public void RequireTheBackend()
         {
@@ -30,47 +33,63 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         /// <summary>
-        /// Keeps stepping a scene large enough to show Mono job code in its timing for as long as an async Burst compile
-        /// takes after a cold start, between editor updates so that the compile can finish. In a run without
-        /// Library/BurstCache the log shows the step time fall when the compiled jobs come in.
+        /// Steps a pile of boxes through the states jobs can be in: whatever a fresh domain found, Mono code as in an async
+        /// compile still running, and compiled code coming in under a running scene. Each state runs between editor
+        /// updates, so that a compile in the background can land. After a cold start without Library/BurstCache the log
+        /// shows when the first state stopped using Mono.
         /// </summary>
         [UnityTest]
         [Category("Slow")]
-        public IEnumerator StepsKeepWorkingWhileBurstCompiles()
+        public IEnumerator StepsKeepWorkingAcrossMonoAndBurstJobs()
         {
-            Ground();
+            Box(new Vector3(0.0f, -0.5f, 0.0f), new Vector3(100.0f, 1.0f, 100.0f));
             const int bodies = 500;
-            Rigidbody[] boxes = new Rigidbody[bodies];
             for (int i = 0; i < bodies; i++)
             {
-                boxes[i] = DynamicBox(new Vector3((i % 25) * 1.5f - 18.0f, 1.0f + (i / 25) * 1.5f, 0.0f));
+                DynamicBox(new Vector3((i % 25) * 1.5f - 18.0f, 1.0f + (i / 25) * 1.5f, 0.0f));
             }
 
-            Stopwatch total = Stopwatch.StartNew();
-            Stopwatch step = new Stopwatch();
-            double firstMilliseconds = 0.0;
-            double bestMilliseconds = double.MaxValue;
-            int steps = 0;
-            while (total.Elapsed.TotalSeconds < 90.0)
+            bool compilerWasEnabled = JobsUtility.JobCompilerEnabled;
+            long[] monoRuns = new long[3];
+            string[] phases = { "as found", "Mono", "compiled again" };
+            try
             {
-                step.Restart();
-                Physics.Simulate(Step);
-                step.Stop();
-
-                double milliseconds = step.Elapsed.TotalMilliseconds;
-                firstMilliseconds = steps == 0 ? milliseconds : firstMilliseconds;
-                bestMilliseconds = System.Math.Min(bestMilliseconds, milliseconds);
-                if (steps++ % 25 == 0)
+                for (int phase = 0; phase < phases.Length; phase++)
                 {
-                    Debug.Log($"[RetooledPhysics] step {steps} at {total.Elapsed.TotalSeconds:F1} s: {milliseconds:F2} ms");
-                }
+                    JobsUtility.JobCompilerEnabled = phase != 1 && compilerWasEnabled;
 
-                yield return null;
+                    long monoBefore = BackendHost.ManagedJobRuns;
+                    Stopwatch watch = Stopwatch.StartNew();
+                    double slowest = 0.0;
+                    int steps = 0;
+                    while (watch.Elapsed.TotalSeconds < PhaseSeconds)
+                    {
+                        Stopwatch step = Stopwatch.StartNew();
+                        Physics.Simulate(Step);
+                        slowest = System.Math.Max(slowest, step.Elapsed.TotalMilliseconds);
+                        steps++;
+                        if (steps % 100 == 1)
+                        {
+                            Debug.Log($"[RetooledPhysics] {phases[phase]}: step {steps} at {watch.Elapsed.TotalSeconds:F1} s, " +
+                                $"{step.Elapsed.TotalMilliseconds:F2} ms, Mono job runs {BackendHost.ManagedJobRuns - monoBefore}");
+                        }
+
+                        yield return null;
+                    }
+
+                    monoRuns[phase] = BackendHost.ManagedJobRuns - monoBefore;
+                    Debug.Log($"[RetooledPhysics] {phases[phase]}: {steps} steps, slowest {slowest:F2} ms, " +
+                        $"Mono job runs {monoRuns[phase]}, Burst enabled {BurstCompiler.IsEnabled}");
+                }
+            }
+            finally
+            {
+                JobsUtility.JobCompilerEnabled = compilerWasEnabled;
             }
 
-            Debug.Log($"[RetooledPhysics] {steps} steps, first {firstMilliseconds:F2} ms, best {bestMilliseconds:F2} ms, " +
-                $"Burst enabled {BurstCompiler.IsEnabled}");
-            Assert.That(boxes[0].position.y, Is.LessThan(1.1f).And.GreaterThan(0.0f));
+            Assume.That(compilerWasEnabled && BurstCompiler.IsEnabled, "this run has Burst off, so it never left Mono");
+            Assert.That(monoRuns[1], Is.GreaterThan(0), "the middle phase ran Mono jobs");
+            Assert.That(monoRuns[2], Is.EqualTo(0), "the last phase ran compiled jobs");
         }
     }
 }

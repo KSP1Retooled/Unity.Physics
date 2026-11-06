@@ -95,6 +95,11 @@ namespace Retooled
     void BindJointCommands(FunctionBinding* table);
     void BindExtensionCommands(FunctionBinding* table);
 
+#ifdef RETOOLED_VEHICLE_TRACE
+    void BindVehicleTrace(FunctionBinding* table);
+    void TraceCommand(void* object, const Context& ctx, uint32_t function);
+#endif
+
     // The handlers World.cpp forwards to, so that each kind of record is created and destroyed in its own file.
     Joint* CreateJointRecord(const WorldCmd::CreateJoint& command);
     void DestroyJointRecord(Joint* joint);

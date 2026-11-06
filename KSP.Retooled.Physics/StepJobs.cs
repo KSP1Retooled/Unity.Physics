@@ -25,6 +25,8 @@ namespace KSP.Retooled.PhysicsBackend
 
         public void Execute(int index)
         {
+            NoteManagedRun();
+
             ref NativeStore.BodyData body = ref Bodies[index];
             const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
             if ((body.flags & immobile) != 0 || (body.flags & NativeStore.BodyFlags.Simulated) == 0)
@@ -57,6 +59,13 @@ namespace KSP.Retooled.PhysicsBackend
             body.linearVelocity = ClampLength(linear, body.maxLinearVelocity);
             body.angularVelocity = ClampLength(angular, body.maxAngularVelocity);
             ClearAccumulators(ref body);
+        }
+
+        /// <summary>Burst drops this, so the count only moves while a step runs the job's Mono code.</summary>
+        [BurstDiscard]
+        private static void NoteManagedRun()
+        {
+            BackendHost.NoteManagedJobRun();
         }
 
         internal static float3 ClampLength(float3 value, float limit)

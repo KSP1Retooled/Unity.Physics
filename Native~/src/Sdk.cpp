@@ -37,6 +37,9 @@ namespace Retooled
         info.id = kBackendId;
         info.version[0] = 1;
         info.features = Physics::FeatureSupport::DynamicsSupport;
+#ifdef RETOOLED_VEHICLE_TRACE
+        info.features |= Physics::FeatureSupport::PhysXVehicleSupport;
+#endif
         std::strcpy(info.name, "RetooledPhysics");
         std::strcpy(info.desc, "Unity Physics backend for KSP Retooled");
     }
