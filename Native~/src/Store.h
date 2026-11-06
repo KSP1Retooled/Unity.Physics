@@ -113,15 +113,21 @@ namespace Retooled
         Float3 targetPosition;
         uint32_t reserved7;
 
+        // The velocities summed since the body last showed enough energy to stay awake, the angular one in the inertia frame.
+        Float3 sleepLinearSum;
+        uint32_t reserved8;
+        Float3 sleepAngularSum;
+        uint32_t reserved9;
+
         Body* owner;
         Shape* const* shapes;  // shapeCount entries, owned by the Body
         void* collider;        // Unity.Physics blob, owned by managed; null means no collider or a rebuild is due
     };
 
-    static_assert(sizeof(BodyData) == 328, "NativeStore.BodyData mirrors this layout");
+    static_assert(sizeof(BodyData) == 360, "NativeStore.BodyData mirrors this layout");
     static_assert(offsetof(BodyData, force) == 144);
     static_assert(offsetof(BodyData, targetRotation) == 272);
-    static_assert(offsetof(BodyData, owner) == 304);
+    static_assert(offsetof(BodyData, owner) == 336);
 
     // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
     // one reference and each shape using the material another, because Unity releases a material while shapes still use it.

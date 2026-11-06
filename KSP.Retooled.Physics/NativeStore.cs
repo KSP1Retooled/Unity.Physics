@@ -99,6 +99,11 @@ namespace KSP.Retooled.PhysicsBackend
             public float3 targetPosition;
             private readonly uint reserved7;
 
+            public float3 sleepLinearSum;
+            private readonly uint reserved8;
+            public float3 sleepAngularSum;
+            private readonly uint reserved9;
+
             public Body* owner;
             public ShapeData** shapes;
             public void* collider;

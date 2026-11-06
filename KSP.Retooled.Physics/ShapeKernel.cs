@@ -171,7 +171,8 @@ namespace KSP.Retooled.PhysicsBackend
 
         /// <summary>
         /// Unity rewrites the filter of both colliders after every IgnoreCollision, to make PhysX pair them afresh, and contacts
-        /// read the ignore id live. Only what is baked into a collider needs a rebuild.
+        /// read the ignore id live. Only what is baked into a collider needs a rebuild. PhysX drops a shape's pairs on any new
+        /// filter, so a sleeping body wakes to find out what it still touches.
         /// </summary>
         private static void SetFilter(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
@@ -184,6 +185,11 @@ namespace KSP.Retooled.PhysicsBackend
             if (baked)
             {
                 TouchBody(shape);
+            }
+
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            {
+                JointKernel.WakeRow(StoreOps.Hot(shape->body));
             }
         }
 

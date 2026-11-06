@@ -22,24 +22,30 @@ namespace KSP.Retooled.PhysicsBackend
 
         public void Execute()
         {
-            bool woke = true;
-            while (woke)
+            while (WakeThroughJoints(World))
             {
-                woke = false;
-                for (uint i = 0; i < World->jointCount; i++)
-                {
-                    NativeStore.JointData* joint = World->joints[i];
-                    if (joint->body0 == null || joint->body1 == null || (joint->state & JointConstraints.Inactive) != 0)
-                    {
-                        continue;
-                    }
-
-                    NativeStore.BodyData* first = StoreOps.Hot(joint->body0);
-                    NativeStore.BodyData* second = StoreOps.Hot(joint->body1);
-                    woke |= WakeFrom(first, second);
-                    woke |= WakeFrom(second, first);
-                }
             }
+        }
+
+        /// <summary>One pass over the joints. Waking spreads along a chain of them, so the caller repeats until nothing wakes.</summary>
+        internal static bool WakeThroughJoints(NativeStore.WorldData* world)
+        {
+            bool woke = false;
+            for (uint i = 0; i < world->jointCount; i++)
+            {
+                NativeStore.JointData* joint = world->joints[i];
+                if (joint->body0 == null || joint->body1 == null || (joint->state & JointConstraints.Inactive) != 0)
+                {
+                    continue;
+                }
+
+                NativeStore.BodyData* first = StoreOps.Hot(joint->body0);
+                NativeStore.BodyData* second = StoreOps.Hot(joint->body1);
+                woke |= WakeFrom(first, second);
+                woke |= WakeFrom(second, first);
+            }
+
+            return woke;
         }
 
         private static bool WakeFrom(NativeStore.BodyData* awake, NativeStore.BodyData* sleeping)
@@ -489,8 +495,9 @@ namespace KSP.Retooled.PhysicsBackend
     /// Reads what the joints' constraints applied from the step's impulse events, which arrive once per constraint with the
     /// impulse of the whole step, then breaks the joints over their limits. A constraint's impulse acts on body A, the
     /// connected body, and Unity reports what acts on the joint's owner. Drives count for neither, as under PhysX, so they
-    /// raise no events. A broken joint stops constraining from the next step and waits in the world's break list for
-    /// whatever publishes the step's results.
+    /// raise no events. A joint whose bodies sleep isn't solved, and it keeps reporting the last forces it had, as under
+    /// PhysX. A broken joint stops constraining from the next step and waits in the world's break list for whatever
+    /// publishes the step's results.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadJointForcesJob : IJob
@@ -509,8 +516,12 @@ namespace KSP.Retooled.PhysicsBackend
         {
             for (uint i = 0; i < World->jointCount; i++)
             {
-                World->joints[i]->force = float3.zero;
-                World->joints[i]->torque = float3.zero;
+                NativeStore.JointData* joint = World->joints[i];
+                if (!IsAsleep(joint->body0) || !IsAsleep(joint->body1))
+                {
+                    joint->force = float3.zero;
+                    joint->torque = float3.zero;
+                }
             }
 
             float scale = 1.0f / DeltaTime;
@@ -538,6 +549,12 @@ namespace KSP.Retooled.PhysicsBackend
                     Break(joint, force, torque);
                 }
             }
+        }
+
+        private static bool IsAsleep(NativeStore.Body* body)
+        {
+            const NativeStore.BodyFlags resting = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
+            return body == null || (StoreOps.Hot(body)->flags & resting) != 0;
         }
 
         private void Break(NativeStore.JointData* joint, float force, float torque)

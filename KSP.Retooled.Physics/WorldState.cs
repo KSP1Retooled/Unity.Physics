@@ -137,6 +137,14 @@ namespace KSP.Retooled.PhysicsBackend
                 DeltaTime = deltaTime,
             }.Schedule(singleton, ref world, built);
 
+            built = new WakeTouchedBodiesJob
+            {
+                World = store,
+                Records = manifolds,
+                DynamicIndices = dynamicIndices.AsArray(),
+                Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
+            }.Schedule(built);
+
             built = simulation.ScheduleCreateJacobiansJobs(input, built).FinalExecutionHandle;
             simulation.ScheduleSolveAndIntegrateJobs(input, built);
             simulation.FinalJobHandle.Complete();
@@ -172,6 +180,8 @@ namespace KSP.Retooled.PhysicsBackend
                 Touching = touching,
                 Step = ++stepCount,
             }.Run();
+
+            new SleepJob { World = store, Records = manifolds, DeltaTime = deltaTime }.Run();
 
             // The step synchronized the built world to the motions it wrote back, which spares the queries after it a
             // rebuild. The store can't change during a step, so these bodies are the only way it can differ.

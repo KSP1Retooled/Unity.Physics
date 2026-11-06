@@ -416,10 +416,23 @@ namespace KSP.Retooled.PhysicsBackend
             NativeArray<ShapePairKey> keys = Touching.GetKeyArray(Allocator.Temp);
             foreach (ShapePairKey key in keys)
             {
-                if (removed.Contains(key.First) || removed.Contains(key.Second))
+                bool firstGone = removed.Contains(key.First);
+                bool secondGone = removed.Contains(key.Second);
+                if (firstGone || secondGone)
                 {
                     Touching.Remove(key);
+                    WakeOwner(firstGone ? key.Second : key.First, firstGone && secondGone);
                 }
+            }
+        }
+
+        /// <summary>What rested on a shape that went away has nothing holding it now, so PhysX wakes it.</summary>
+        private void WakeOwner(IntPtr shape, bool gone)
+        {
+            NativeStore.Shape* left = (NativeStore.Shape*)shape;
+            if (!gone && left->body != null)
+            {
+                JointKernel.WakeRow(StoreOps.Hot(left->body));
             }
         }
 
