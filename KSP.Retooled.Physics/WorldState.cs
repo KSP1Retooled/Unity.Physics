@@ -140,6 +140,7 @@ namespace KSP.Retooled.PhysicsBackend
                 Points = manifoldPoints,
                 LastImpulses = lastImpulses,
                 DeltaTime = deltaTime,
+                BounceThreshold = store->bounceThreshold,
             }.Schedule(singleton, ref world, built);
 
             built = new WakeTouchedBodiesJob

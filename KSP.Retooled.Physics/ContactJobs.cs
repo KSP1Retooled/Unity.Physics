@@ -38,7 +38,7 @@ namespace KSP.Retooled.PhysicsBackend
         // As the narrow phase gave it, which is how the solver's jacobian knows it.
         public float3 BuiltNormal;
 
-        // What the solve starts from and what it ended on; the first is left out of what the solver's event says.
+        // What the last step left to start from, of which the solve is given WarmStartJob.Fraction, and what it ended on.
         public float WarmImpulse;
         public float Impulse;
         public bool Touching;
@@ -184,6 +184,7 @@ namespace KSP.Retooled.PhysicsBackend
         public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
 
         public float DeltaTime;
+        public float BounceThreshold;
 
         private bool skipping;
         private float touchDistance;
@@ -289,7 +290,11 @@ namespace KSP.Retooled.PhysicsBackend
 
             bool sticks = InFrictionCone(ref record, anchors * staticFriction);
             header.CoefficientOfFriction = anchors * (sticks ? staticFriction : dynamicFriction);
-            header.CoefficientOfRestitution = Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine);
+
+            // The solver's own resting test measures against gravity, and the step gives it none, so a body at rest would
+            // bounce on a step's worth of gravity. PhysX's test is the threshold.
+            bool bounces = ClosingSpeed(ref record, PatchCenter(ref record)) > BounceThreshold;
+            header.CoefficientOfRestitution = bounces ? Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine) : 0.0f;
 
             // With substeps, a bouncy contact's rows stay shut until it bounces, so they couldn't take back a warm start.
             if (header.CoefficientOfRestitution <= 0.0f)
@@ -323,19 +328,24 @@ namespace KSP.Retooled.PhysicsBackend
         /// </summary>
         private bool InFrictionCone(ref ManifoldRecord record, float coefficient)
         {
-            float3 center = float3.zero;
-            for (int i = 0; i < record.PointCount; i++)
-            {
-                center += Points[record.FirstPoint + i].Position;
-            }
-
-            center /= record.PointCount;
+            float3 center = PatchCenter(ref record);
             float3 velocityA = PointVelocity(ref Store[record.RowA], record.LinearVelocityA, record.AngularVelocityA, center);
             float3 velocityB = PointVelocity(ref Store[record.RowB], record.LinearVelocityB, record.AngularVelocityB, center);
             float3 relative = velocityB - velocityA;
             float closing = math.dot(relative, record.Normal);
             float3 sliding = relative - closing * record.Normal;
             return math.lengthsq(sliding) <= math.square(coefficient * math.max(closing, 0.0f));
+        }
+
+        private float3 PatchCenter(ref ManifoldRecord record)
+        {
+            float3 center = float3.zero;
+            for (int i = 0; i < record.PointCount; i++)
+            {
+                center += Points[record.FirstPoint + i].Position;
+            }
+
+            return center / record.PointCount;
         }
 
         /// <summary>PhysX's rule for a pair: the mode that ranks higher wins, and maximum outranks multiply, minimum, average.</summary>
@@ -458,7 +468,7 @@ namespace KSP.Retooled.PhysicsBackend
     internal unsafe struct WarmStartJob : IJacobiansJob
     {
         // Less than all of it, because a manifold with nothing left to add raises no event and would start cold next step.
-        private const float Fraction = 0.95f;
+        internal const float Fraction = 0.95f;
 
         [ReadOnly]
         public NativeHashMap<JacobianKey, float2> WarmStarts;
@@ -561,7 +571,7 @@ namespace KSP.Retooled.PhysicsBackend
                 {
                     float impulse = collision.CalculateDetails(ref Built).EstimatedImpulse;
                     ref ManifoldRecord record = ref Records.ElementAt(index);
-                    record.Impulse = math.isfinite(impulse) ? impulse + record.WarmImpulse : 0.0f;
+                    record.Impulse = math.isfinite(impulse) ? impulse + WarmStartJob.Fraction * record.WarmImpulse : 0.0f;
                 }
             }
         }

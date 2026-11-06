@@ -99,6 +99,57 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Assert.That(body.position.x, Is.LessThan(1.0f));
         }
 
+        /// <summary>
+        /// A fully elastic box let go above the ground, with a set bounce threshold, and the highest it gets from the step
+        /// after it would have landed on. A half metre drop lands at about 3.1 m/s, 16 steps in.
+        /// </summary>
+        private float PeakAfterDrop(float dropHeight, float bounceThreshold)
+        {
+            float previous = Physics.bounceThreshold;
+            try
+            {
+                Physics.bounceThreshold = bounceThreshold;
+                PhysicsMaterial material = new PhysicsMaterial { bounciness = 1.0f, bounceCombine = PhysicsMaterialCombine.Maximum };
+                GameObject ground = Ground();
+                ground.GetComponent<Collider>().sharedMaterial = material;
+                Rigidbody body = DynamicBox(new Vector3(0.0f, 0.5f + dropHeight, 0.0f));
+                body.GetComponent<Collider>().sharedMaterial = material;
+                body.sleepThreshold = 0.0f;
+
+                Simulate(20);
+                float peak = body.position.y;
+                for (int i = 0; i < 50; i++)
+                {
+                    Simulate();
+                    peak = Mathf.Max(peak, body.position.y);
+                }
+
+                return peak;
+            }
+            finally
+            {
+                Physics.bounceThreshold = previous;
+            }
+        }
+
+        [Test]
+        public void AContactClosingFasterThanTheBounceThresholdBounces()
+        {
+            Assert.That(PeakAfterDrop(0.5f, 1.0f), Is.GreaterThan(0.75f));
+        }
+
+        [Test]
+        public void AContactClosingSlowerThanTheBounceThresholdStops()
+        {
+            Assert.That(PeakAfterDrop(0.5f, 5.0f), Is.LessThan(0.52f));
+        }
+
+        [Test]
+        public void AnElasticBodyAtRestStaysDown()
+        {
+            Assert.That(PeakAfterDrop(0.0f, 1.0f), Is.LessThan(0.505f));
+        }
+
         [Test]
         public void IgnoredLayersDoNotCollide()
         {

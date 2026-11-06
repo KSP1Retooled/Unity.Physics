@@ -210,6 +210,25 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void ARestingContactNeverDriftsOffItsWeight()
+        {
+            Ground();
+            CollisionLog log = FallingBox(new Vector3(0.0f, 0.51f, 0.0f), out Rigidbody body);
+            body.sleepThreshold = 0.0f;
+
+            Simulate(100);
+            log.Stays.Clear();
+            Simulate(50);
+
+            float weightPerStep = body.mass * -Gravity * Step;
+            Assert.That(log.Stays.Count, Is.EqualTo(50));
+            foreach (Collision stay in log.Stays)
+            {
+                Assert.That(stay.impulse.magnitude, Is.EqualTo(weightPerStep).Within(weightPerStep * 0.02f));
+            }
+        }
+
+        [Test]
         public void RelativeVelocityIsTheOtherMinusThisAtImpact()
         {
             Ground();
