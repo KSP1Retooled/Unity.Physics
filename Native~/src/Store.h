@@ -313,6 +313,62 @@ namespace Retooled
 
     static_assert(sizeof(JointBreak) == 16, "NativeStore.JointBreak mirrors this layout");
 
+    // Mirrored. What Unity reads back after a step, laid out as the plugin API's Physics::ContactPoint, ShapePair, BodyPair
+    // and TriggerEvent. World.cpp checks that they match.
+    struct ContactPoint
+    {
+        Float3 position;
+        float separation;
+        Float3 normal;
+        uint32_t faceIndex0;
+        Float3 impulse;
+        uint32_t faceIndex1;
+    };
+
+    static_assert(sizeof(ContactPoint) == 48, "NativeStore.ContactPoint mirrors this layout");
+
+    struct ContactShapePair
+    {
+        uint64_t thisCollider;
+        uint64_t otherCollider;
+        ContactPoint* points;
+        uint32_t pointCount;
+        uint16_t flags;
+        uint16_t events;
+        Float3 impulseSum;
+        uint32_t reserved0;
+    };
+
+    static_assert(sizeof(ContactShapePair) == 48, "NativeStore.ContactShapePair mirrors this layout");
+
+    struct ContactBodyPair
+    {
+        uint64_t thisBody;
+        uint64_t otherBody;
+        ContactShapePair* shapes;
+        uint32_t shapeCount;
+        uint16_t flags;
+        uint16_t reserved0;
+        Float3 thisLinearVelocity;
+        Float3 thisAngularVelocity;
+        Float3 otherLinearVelocity;
+        Float3 otherAngularVelocity;
+    };
+
+    static_assert(sizeof(ContactBodyPair) == 80, "NativeStore.ContactBodyPair mirrors this layout");
+
+    struct TriggerEvent
+    {
+        void* triggerShape;
+        void* colliderShape;
+        uint64_t trigger;
+        uint64_t collider;
+        uint32_t type;
+        uint32_t reserved0;
+    };
+
+    static_assert(sizeof(TriggerEvent) == 40, "NativeStore.TriggerEvent mirrors this layout");
+
     // Mirrored. One physics scene.
     struct WorldData
     {
@@ -324,10 +380,31 @@ namespace Retooled
         uint32_t jointCount;
         uint32_t jointCapacity;
 
-        // Reset by each step, and read by whatever publishes the step's results.
+        // The step's results, held until the next step, or until Unity releases them.
         JointBreak* jointBreaks;
         uint32_t jointBreakCount;
         uint32_t jointBreakCapacity;
+
+        ContactBodyPair* contactBodies;
+        uint32_t contactBodyCount;
+        uint32_t contactBodyCapacity;
+
+        ContactShapePair* contactShapes;
+        uint32_t contactShapeCount;
+        uint32_t contactShapeCapacity;
+
+        ContactPoint* contactPoints;
+        uint32_t contactPointCount;
+        uint32_t contactPointCapacity;
+
+        TriggerEvent* triggers;
+        uint32_t triggerCount;
+        uint32_t triggerCapacity;
+
+        // Shapes taken off their bodies since the last step, which end their touches without an exit.
+        void** removedShapes;
+        uint32_t removedShapeCount;
+        uint32_t removedShapeCapacity;
 
         // Colliders of destroyed bodies, freed by managed once no built world refers to them.
         void** deadColliders;
@@ -347,7 +424,7 @@ namespace Retooled
         void* queryWorld;
     };
 
-    static_assert(sizeof(WorldData) == 104, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 184, "NativeStore.WorldData mirrors this layout");
 
     // Mirrored. What every world shares, and what a kernel needs from the plugin, which reaches it as function pointers
     // because a Burst function gets everything through its arguments.
@@ -497,7 +574,8 @@ namespace Retooled
         // ShapeData holds the fields the step reads.
         Physics::FilterData filter;
         float contactOffset;
-        uint32_t reserved0;
+        // Physics::ShapePairEventFlags, which the contact report reads, and which the filter holds in a bit field otherwise.
+        uint32_t messages;
     };
 
     static_assert(sizeof(Shape) == 128, "NativeStore.Shape mirrors this layout");

@@ -106,9 +106,21 @@ namespace KSP.Retooled.PhysicsBackend
             PublishShapes(body);
         }
 
-        /// <summary>Takes the shape off its body, keeping the order of the rest, which a compound's child indices follow.</summary>
-        internal static void RemoveShape(NativeStore.Body* body, NativeStore.Shape* shape)
+        private static void NoteRemovedShape(NativeStore.WorldData* world, NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
         {
+            if (world->removedShapeCount == world->removedShapeCapacity)
+            {
+                world->removedShapeCapacity = Grown(world->removedShapeCapacity);
+                world->removedShapes = (void**)Reallocate(globals, world->removedShapes, world->removedShapeCapacity * (ulong)sizeof(void*));
+            }
+
+            world->removedShapes[world->removedShapeCount++] = shape;
+        }
+
+        /// <summary>Takes the shape off its body, keeping the order of the rest, which a compound's child indices follow.</summary>
+        internal static void RemoveShape(NativeStore.Body* body, NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
+        {
+            NoteRemovedShape(body->world, shape, globals);
             uint kept = 0;
             for (uint i = 0; i < body->shapeCount; i++)
             {
@@ -128,6 +140,7 @@ namespace KSP.Retooled.PhysicsBackend
         {
             for (uint i = 0; i < body->shapeCount; i++)
             {
+                NoteRemovedShape(body->world, (NativeStore.Shape*)body->shapes[i], globals);
                 ((NativeStore.Shape*)body->shapes[i])->body = null;
             }
 

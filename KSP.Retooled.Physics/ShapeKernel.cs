@@ -180,6 +180,7 @@ namespace KSP.Retooled.PhysicsBackend
             shape->data.collidesWith = a->value2;
             shape->data.ignorePairId = a->mode;
             shape->data.collisionDisabled = a->enabled;
+            shape->messages = (uint)a->size;
             if (baked)
             {
                 TouchBody(shape);
@@ -232,7 +233,7 @@ namespace KSP.Retooled.PhysicsBackend
         {
             if (shape->body != null)
             {
-                StoreOps.RemoveShape(shape->body, shape);
+                StoreOps.RemoveShape(shape->body, shape, globals);
             }
 
             if (ShapeMath.IsMeshGeometry(shape->data.geometryType))

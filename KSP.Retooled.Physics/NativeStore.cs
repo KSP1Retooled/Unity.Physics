@@ -126,7 +126,7 @@ namespace KSP.Retooled.PhysicsBackend
             public Body* body;
             private fixed uint filter[4];
             public float contactOffset;
-            private readonly uint reserved0;
+            public uint messages;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -342,6 +342,59 @@ namespace KSP.Retooled.PhysicsBackend
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct ContactPoint
+        {
+            public float3 position;
+            public float separation;
+            public float3 normal;
+            public uint faceIndex0;
+            public float3 impulse;
+            public uint faceIndex1;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct ContactShapePair
+        {
+            public ulong thisCollider;
+            public ulong otherCollider;
+            public ContactPoint* points;
+            public uint pointCount;
+            public ushort flags;
+            public ushort events;
+            public float3 impulseSum;
+            private readonly uint reserved0;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct ContactBodyPair
+        {
+            public ulong thisBody;
+            public ulong otherBody;
+            public ContactShapePair* shapes;
+            public uint shapeCount;
+            public ushort flags;
+            private readonly ushort reserved0;
+            public float3 thisLinearVelocity;
+            public float3 thisAngularVelocity;
+            public float3 otherLinearVelocity;
+            public float3 otherAngularVelocity;
+        }
+
+        internal const uint TriggerEventEnter = 1;
+        internal const uint TriggerEventExit = 2;
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct TriggerEvent
+        {
+            public Shape* triggerShape;
+            public Shape* colliderShape;
+            public ulong trigger;
+            public ulong collider;
+            public uint type;
+            private readonly uint reserved0;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct WorldData
         {
             public BodyData* bodies;
@@ -355,6 +408,26 @@ namespace KSP.Retooled.PhysicsBackend
             public JointBreak* jointBreaks;
             public uint jointBreakCount;
             public uint jointBreakCapacity;
+
+            public ContactBodyPair* contactBodies;
+            public uint contactBodyCount;
+            public uint contactBodyCapacity;
+
+            public ContactShapePair* contactShapes;
+            public uint contactShapeCount;
+            public uint contactShapeCapacity;
+
+            public ContactPoint* contactPoints;
+            public uint contactPointCount;
+            public uint contactPointCapacity;
+
+            public TriggerEvent* triggers;
+            public uint triggerCount;
+            public uint triggerCapacity;
+
+            public void** removedShapes;
+            public uint removedShapeCount;
+            public uint removedShapeCapacity;
 
             public void** deadColliders;
             public uint deadColliderCount;

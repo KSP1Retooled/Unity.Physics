@@ -306,7 +306,8 @@ namespace KSP.Retooled.PhysicsBackend
             }
             else
             {
-                material.CollisionResponse = CollisionResponsePolicy.Collide;
+                // The events are the only place a contact's solved impulse comes out of the solver.
+                material.CollisionResponse = CollisionResponsePolicy.CollideRaiseCollisionEvents;
             }
 
             return material;

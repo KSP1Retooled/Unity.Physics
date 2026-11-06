@@ -19,6 +19,18 @@ namespace Retooled
     static_assert(offsetof(Physics::SimulationStepStats, activeKinematicBodies) == 12);
     static_assert(offsetof(Physics::SimulationStepStats, staticBodies) == 16);
 
+    // Unity reads the results straight from the store's arrays.
+    static_assert(sizeof(Physics::ContactPoint) == sizeof(ContactPoint));
+    static_assert(sizeof(Physics::ShapePair) == sizeof(ContactShapePair));
+    static_assert(offsetof(Physics::ShapePair, events) == offsetof(ContactShapePair, events));
+    static_assert(offsetof(Physics::ShapePair, impulseSum) == offsetof(ContactShapePair, impulseSum));
+    static_assert(sizeof(Physics::BodyPair) == sizeof(ContactBodyPair));
+    static_assert(offsetof(Physics::BodyPair, thisBodyLinearVelocity) == offsetof(ContactBodyPair, thisLinearVelocity));
+    static_assert(sizeof(Physics::TriggerEvent) == sizeof(TriggerEvent));
+    static_assert(offsetof(Physics::TriggerEvent, trigger) == offsetof(TriggerEvent, trigger));
+    static_assert(offsetof(Physics::TriggerEvent, type) == offsetof(TriggerEvent, type));
+    static_assert(sizeof(Physics::JointBreakEvent) == sizeof(JointBreak));
+
     static World* AsWorld(void* object)
     {
         return static_cast<World*>(object);
@@ -55,6 +67,11 @@ namespace Retooled
 
         std::free(world->data.joints);
         std::free(world->data.jointBreaks);
+        std::free(world->data.contactBodies);
+        std::free(world->data.contactShapes);
+        std::free(world->data.contactPoints);
+        std::free(world->data.triggers);
+        std::free(world->data.removedShapes);
         std::free(world->data.bodies);
         std::free(world->data.deadColliders);
         delete world;
@@ -98,18 +115,26 @@ namespace Retooled
         command.ranSimulation = true;
     }
 
-    static void GetLastSimulationStepResults(void*, const Context&, WorldCmd::GetLastSimulationStepResults& command)
+    static void GetLastSimulationStepResults(void* object, const Context&, WorldCmd::GetLastSimulationStepResults& command)
     {
-        command.bodyContactPairs = nullptr;
-        command.bodyContactPairsCount = 0;
-        command.triggerEvents = nullptr;
-        command.triggerEventsCount = 0;
-        command.jointBreakEvents = nullptr;
-        command.jointBreakEventsCount = 0;
+        const WorldData& world = AsWorld(object)->data;
+        command.bodyContactPairs = reinterpret_cast<Physics::BodyPair*>(world.contactBodies);
+        command.bodyContactPairsCount = world.contactBodyCount;
+        command.triggerEvents = reinterpret_cast<Physics::TriggerEvent*>(world.triggers);
+        command.triggerEventsCount = world.triggerCount;
+        command.jointBreakEvents = reinterpret_cast<Physics::JointBreakEvent*>(world.jointBreaks);
+        command.jointBreakEventsCount = world.jointBreakCount;
     }
 
-    static void ReleaseLastSimulationStepData(void*, const Context&, WorldCmd::ReleaseLastSimulationStepData&)
+    // The arrays are kept for the next step, which only needs them marked empty.
+    static void ReleaseLastSimulationStepData(void* object, const Context&, WorldCmd::ReleaseLastSimulationStepData&)
     {
+        WorldData& world = AsWorld(object)->data;
+        world.contactBodyCount = 0;
+        world.contactShapeCount = 0;
+        world.contactPointCount = 0;
+        world.triggerCount = 0;
+        world.jointBreakCount = 0;
     }
 
     static void GetUserData(void* object, const Context&, WorldCmd::GetUserData& command)

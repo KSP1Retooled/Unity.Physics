@@ -160,7 +160,7 @@ namespace KSP.Retooled.PhysicsBackend
                 case BodyCommand.DetachShape:
                     if (a->pointer != null)
                     {
-                        StoreOps.RemoveShape(body, (NativeStore.Shape*)a->pointer);
+                        StoreOps.RemoveShape(body, (NativeStore.Shape*)a->pointer, globals);
                     }
 
                     break;
@@ -397,7 +397,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (shape->body != null)
             {
-                StoreOps.RemoveShape(shape->body, shape);
+                StoreOps.RemoveShape(shape->body, shape, globals);
             }
 
             NativeStore.BodyData* hot = StoreOps.Hot(body);

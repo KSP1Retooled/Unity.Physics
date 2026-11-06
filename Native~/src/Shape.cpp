@@ -107,6 +107,7 @@ namespace Retooled
             a.value2 = c.data.collidesWith;
             a.mode = c.data.ignorePairID;
             a.enabled = c.data.hasCollisionDisabled;
+            a.size = static_cast<uint64_t>(c.data.pairFlags);
         }, None, true>(object, ctx, base);
     }
 
@@ -122,7 +123,9 @@ namespace Retooled
     {
         if (object != nullptr)
         {
-            static_cast<Shape*>(object)->filter.pairFlags = static_cast<ShapeCmd::SetSupportedMessages&>(base).flags;
+            Shape* shape = static_cast<Shape*>(object);
+            shape->filter.pairFlags = static_cast<ShapeCmd::SetSupportedMessages&>(base).flags;
+            shape->messages = static_cast<uint32_t>(shape->filter.pairFlags);
         }
     }
 

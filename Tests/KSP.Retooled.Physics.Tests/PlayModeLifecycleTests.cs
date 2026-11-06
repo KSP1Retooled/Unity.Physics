@@ -189,6 +189,64 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Assert.That(between, Is.GreaterThan(20), $"{sampler.Samples.Count} frames, too few of them between fixed steps");
         }
 
+        internal class DestroyOnLanding : MonoBehaviour
+        {
+            private void OnCollisionEnter(Collision collision)
+            {
+                Destroy(gameObject);
+            }
+        }
+
+        internal class DestroyJointOwnerOnBreak : MonoBehaviour
+        {
+            private void OnJointBreak(float breakForce)
+            {
+                Destroy(gameObject);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator TheEngineLoopDeliversACollisionThatDestroysItsBody()
+        {
+            yield return new EnterPlayMode();
+
+            Physics.gravity = TestGravity;
+            BuildScene();
+            BodyInScene().gameObject.AddComponent<DestroyOnLanding>();
+
+            float end = FixedTimeAfter(100);
+            while (Time.fixedTime < end && GameObject.Find(BodyName) != null)
+            {
+                yield return null;
+            }
+
+            Assert.That(GameObject.Find(BodyName), Is.Null);
+
+            yield return new ExitPlayMode();
+        }
+
+        [UnityTest]
+        public IEnumerator TheEngineLoopDeliversAJointBreak()
+        {
+            yield return new EnterPlayMode();
+
+            Physics.gravity = TestGravity;
+            BuildScene();
+            GameObject body = BodyInScene().gameObject;
+            body.AddComponent<DestroyJointOwnerOnBreak>();
+            body.AddComponent<FixedJoint>().breakForce = 0.1f;
+
+            float end = FixedTimeAfter(20);
+            while (Time.fixedTime < end && GameObject.Find(BodyName) != null)
+            {
+                yield return null;
+            }
+
+            Assert.That(GameObject.Find(BodyName), Is.Null);
+
+            yield return new ExitPlayMode();
+        }
+
         [UnityTest]
         public IEnumerator InterpolationLagsTheBodyByThePartOfAStepNotYetShown()
         {

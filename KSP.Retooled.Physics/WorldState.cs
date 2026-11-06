@@ -33,6 +33,10 @@ namespace KSP.Retooled.PhysicsBackend
         private NativeList<Joint> builtJoints = new NativeList<Joint>(Allocator.Persistent);
         private NativeList<QueryBody> queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
         private NativeList<QueryShape> queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
+        private NativeList<ManifoldRecord> manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
+        private NativeList<ManifoldPoint> manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
+        private NativeHashMap<ShapePairKey, ShapePairState> touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+        private uint stepCount;
         private uint builtStaticsVersion;
         private uint builtMaterialVersion;
         private int builtDynamicCount;
@@ -71,6 +75,9 @@ namespace KSP.Retooled.PhysicsBackend
             builtJoints.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
+            manifolds.Dispose();
+            manifoldPoints.Dispose();
+            touching.Dispose();
         }
 
         /// <summary>One simulation step: integrate forces, build, solve, write back.</summary>
@@ -118,11 +125,16 @@ namespace KSP.Retooled.PhysicsBackend
 
             SimulationSingleton singleton = default;
             singleton.InitializeFromSimulation(ref simulation);
+            manifolds.Clear();
+            manifoldPoints.Clear();
             built = new ReadContactsJob
             {
                 Store = store->bodies,
                 Globals = NativeStore.RetooledPhysics_Globals(),
                 Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
+                Records = manifolds,
+                Points = manifoldPoints,
+                DeltaTime = deltaTime,
             }.Schedule(singleton, ref world, built);
 
             built = simulation.ScheduleCreateJacobiansJobs(input, built).FinalExecutionHandle;
@@ -144,6 +156,21 @@ namespace KSP.Retooled.PhysicsBackend
                 Events = simulation.ImpulseEvents,
                 DeltaTime = deltaTime,
                 EngineObjectIdOffset = NativeStore.RetooledPhysics_Globals()->engineObjectIdOffset,
+            }.Run();
+
+            if (world.NumDynamicBodies != 0)
+            {
+                new ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
+            }
+
+            new PublishContactsJob
+            {
+                World = store,
+                Globals = NativeStore.RetooledPhysics_Globals(),
+                Records = manifolds,
+                Points = manifoldPoints,
+                Touching = touching,
+                Step = ++stepCount,
             }.Run();
 
             // The step synchronized the built world to the motions it wrote back, which spares the queries after it a
