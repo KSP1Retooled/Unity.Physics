@@ -30,6 +30,8 @@ namespace KSP.Retooled.PhysicsBackend
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
         private static IntPtr rayCastFunction;
+        private static IntPtr cookMeshFunction;
+        private static IntPtr validateMeshFunction;
         private static bool attached;
         private static long managedJobRuns;
         private static long managedQueries;
@@ -99,6 +101,8 @@ namespace KSP.Retooled.PhysicsBackend
                 buildQueryWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
                 rayCast = RayCastFunction(),
                 destroyWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
+                cookMesh = CookMeshFunction(),
+                validateMesh = ValidateMeshFunction(),
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
@@ -145,6 +149,26 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             return rayCastFunction;
+        }
+
+        private static IntPtr CookMeshFunction()
+        {
+            if (cookMeshFunction == IntPtr.Zero)
+            {
+                cookMeshFunction = BurstCompiler.CompileFunctionPointer<MeshCook.CookFunction>(MeshCook.Cook).Value;
+            }
+
+            return cookMeshFunction;
+        }
+
+        private static IntPtr ValidateMeshFunction()
+        {
+            if (validateMeshFunction == IntPtr.Zero)
+            {
+                validateMeshFunction = BurstCompiler.CompileFunctionPointer<MeshCook.ValidateFunction>(MeshCook.Validate).Value;
+            }
+
+            return validateMeshFunction;
         }
 
         /// <summary>

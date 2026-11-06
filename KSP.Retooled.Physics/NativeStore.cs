@@ -137,16 +137,64 @@ namespace KSP.Retooled.PhysicsBackend
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct MeshMoments
+        {
+            public float volume;
+            public float3 centroid;
+            public float3 covarianceDiagonal;
+            public float3 covarianceOffDiagonal;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct MeshData
         {
-            public float3* vertices;
-            public int3* triangles;
+            public uint magic;
+            public uint version;
+            public uint convex;
             public uint vertexCount;
             public uint triangleCount;
-            public uint convex;
-            private readonly uint reserved0;
             public float3 lower;
             public float3 upper;
+            public MeshMoments moments;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CookInput
+        {
+            public void* vertices;
+            public void* indices;
+            public uint vertexCount;
+            public uint indexCount;
+            public uint vertexStride;
+            public uint indexStride;
+            public uint convex;
+            public uint flippedNormals;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CookOutput
+        {
+            public byte* bytes;
+            public long capacity;
+            public long size;
+            public int status;
+            private readonly int reserved0;
+        }
+
+        /// <summary>The cooked mesh of a shape, or null while it has none. A shape's mesh handle starts with this pointer.</summary>
+        internal static MeshData* MeshOf(ShapeData* shape)
+        {
+            return shape->mesh != null ? *(MeshData**)shape->mesh : null;
+        }
+
+        internal static float3* VerticesOf(MeshData* mesh)
+        {
+            return (float3*)(mesh + 1);
+        }
+
+        internal static int3* TrianglesOf(MeshData* mesh)
+        {
+            return (int3*)(VerticesOf(mesh) + mesh->vertexCount);
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -211,6 +259,8 @@ namespace KSP.Retooled.PhysicsBackend
             public IntPtr buildQueryWorld;
             public IntPtr rayCast;
             public IntPtr destroyWorld;
+            public IntPtr cookMesh;
+            public IntPtr validateMesh;
         }
 
         [DllImport(Library)]
@@ -234,15 +284,6 @@ namespace KSP.Retooled.PhysicsBackend
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
-        [DllImport(Library)]
-        internal static extern int RetooledPhysics_CookStream(float3* vertices, int vertexCount, int* indices, int indexCount, int convex, byte* output, int capacity);
-
-        [DllImport(Library)]
-        internal static extern MeshData* RetooledPhysics_LoadStream(byte* stream, int size, int convex);
-
-        [DllImport(Library)]
-        internal static extern void RetooledPhysics_ReleaseMesh(MeshData* mesh);
-
         /// <summary>The first struct whose size differs from the plugin's, or null when all agree.</summary>
         internal static string FirstSizeMismatch()
         {
@@ -257,6 +298,8 @@ namespace KSP.Retooled.PhysicsBackend
                 sizeof(RayCastHit),
                 sizeof(ManagedCallbacks),
                 sizeof(MeshData),
+                sizeof(CookInput),
+                sizeof(CookOutput),
             };
 
             string[] names =
@@ -270,6 +313,8 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(RayCastHit),
                 nameof(ManagedCallbacks),
                 nameof(MeshData),
+                nameof(CookInput),
+                nameof(CookOutput),
             };
 
             for (int i = 0; i < sizes.Length; i++)

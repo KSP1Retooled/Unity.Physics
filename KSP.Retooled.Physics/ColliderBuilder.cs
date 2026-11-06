@@ -134,9 +134,11 @@ namespace KSP.Retooled.PhysicsBackend
                     return true;
                 case NativeStore.GeometryConvexMesh:
                 case NativeStore.GeometryTriangleMesh:
-                    return shape->mesh != null
-                        && ((NativeStore.MeshData*)shape->mesh)->triangleCount != 0
-                        && math.all(shape->extents != 0.0f);
+                {
+                    NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
+                    return mesh != null && mesh->triangleCount != 0 && math.all(shape->extents != 0.0f);
+                }
+
                 default:
                     return false;
             }
@@ -205,7 +207,7 @@ namespace KSP.Retooled.PhysicsBackend
             void* collider = null;
             new MeshColliderJob
             {
-                Mesh = (NativeStore.MeshData*)shape->mesh,
+                Mesh = NativeStore.MeshOf(shape),
                 Scale = shape->extents,
                 Center = center,
                 Orientation = orientation,
@@ -240,9 +242,10 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 int vertexCount = (int)Mesh->vertexCount;
                 var vertices = new NativeArray<float3>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                float3* source = NativeStore.VerticesOf(Mesh);
                 for (int i = 0; i < vertexCount; i++)
                 {
-                    vertices[i] = Center + math.rotate(Orientation, Mesh->vertices[i] * Scale);
+                    vertices[i] = Center + math.rotate(Orientation, source[i] * Scale);
                 }
 
                 BlobAssetReference<Collider> collider;
@@ -264,9 +267,10 @@ namespace KSP.Retooled.PhysicsBackend
                     bool mirrored = Scale.x * Scale.y * Scale.z < 0.0f;
                     int triangleCount = (int)Mesh->triangleCount;
                     var triangles = new NativeArray<int3>(triangleCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    int3* sourceTriangles = NativeStore.TrianglesOf(Mesh);
                     for (int i = 0; i < triangleCount; i++)
                     {
-                        int3 triangle = Mesh->triangles[i];
+                        int3 triangle = sourceTriangles[i];
                         triangles[i] = mirrored ? triangle.xzy : triangle;
                     }
 

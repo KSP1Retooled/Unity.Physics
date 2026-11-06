@@ -11,7 +11,8 @@
 // Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, and they
 // read only the query world, a snapshot managed builds on the main thread and holds nothing of the live store. Replacing
 // that snapshot takes World::queryLock exclusively, and queries hold it shared. Mesh cooking can arrive from worker
-// threads too: a cook touches only its own new record, and a mesh's reference count is the one thing threads share.
+// threads too: a cook touches only its own new record, a mesh's reference count is the one thing threads share, and
+// g_MeshLock keeps the cook functions from going away under a cook.
 
 #pragma once
 
@@ -161,31 +162,68 @@ namespace Retooled
 
     static_assert(sizeof(ShapeData) == 96, "NativeStore.ShapeData mirrors this layout");
 
-    // Mirrored. A cooked mesh as managed reads it to build colliders. The vertices are welded and unscaled. The triangles
-    // are clean, or the faces of the hull when convex, and index the vertices three at a time. A mesh with no triangles has
-    // no collider.
-    struct MeshData
-    {
-        const Float3* vertices;
-        const uint32_t* triangles;
-        uint32_t vertexCount;
-        uint32_t triangleCount;
-        uint32_t convex;
-        uint32_t reserved0;
-        Float3 lower;
-        Float3 upper;
-    };
-
-    static_assert(sizeof(MeshData) == 56, "NativeStore.MeshData mirrors this layout");
-
-    // The solid a mesh bounds, unscaled. Volume is 0 when it bounds none. The covariance is the mean of (x - centroid)
-    // (x - centroid)^T over the solid, which is what a scale transforms simply: xx yy zz xy xz yz.
+    // Mirrored. The solid a mesh bounds, unscaled. Volume is 0 when it bounds none. The covariance is the mean of
+    // (x - centroid)(x - centroid)^T over the solid, which is what a scale transforms simply.
     struct MeshMoments
     {
         float volume;
         Float3 centroid;
-        float covariance[6];
+        Float3 covarianceDiagonal;    // xx yy zz
+        Float3 covarianceOffDiagonal; // xy xz yz
     };
+
+    // Mirrored, and written by MeshCook.cs. The head of a cooked mesh: one block with no pointers in it, followed by
+    // vertexCount Float3 and then triangleCount triples of uint32_t, which is also the stream stored in a baked mesh asset.
+    // The vertices are welded and unscaled, and the triangles clean, or the faces of the hull when convex. A mesh with no
+    // triangles has no collider.
+    struct MeshData
+    {
+        uint32_t magic;
+        uint32_t version;
+        uint32_t convex;
+        uint32_t vertexCount;
+        uint32_t triangleCount;
+        Float3 lower;
+        Float3 upper;
+        MeshMoments moments;
+    };
+
+    static_assert(sizeof(MeshData) == 84, "NativeStore.MeshData mirrors this layout");
+
+    // Mirrored. A cook's source mesh, as the descriptor gave it.
+    struct CookInput
+    {
+        const void* vertices;
+        const void* indices;
+        uint32_t vertexCount;
+        uint32_t indexCount;
+        uint32_t vertexStride;
+        uint32_t indexStride;
+        uint32_t convex;
+        uint32_t flippedNormals;
+    };
+
+    static_assert(sizeof(CookInput) == 40, "NativeStore.CookInput mirrors this layout");
+
+    enum MeshCookStatus : int32_t
+    {
+        kMeshCookOk = 0,
+        kMeshCookEmpty = 1,
+        kMeshCookBadVertices = 2,
+        kMeshCookBadIndices = 3,
+    };
+
+    // Mirrored. With null bytes the cook reports a sufficient capacity in size. Otherwise it fills bytes, size and status.
+    struct CookOutput
+    {
+        uint8_t* bytes;
+        int64_t capacity;
+        int64_t size;
+        int32_t status; // MeshCookStatus
+        int32_t reserved0;
+    };
+
+    static_assert(sizeof(CookOutput) == 32, "NativeStore.CookOutput mirrors this layout");
 
     // Mirrored. One physics scene.
     struct WorldData
@@ -273,19 +311,19 @@ namespace Retooled
         int32_t (*rayCast)(void* queryWorld, const RayCastInput* input, RayCastHit* hit);
         // Frees everything managed holds for a world that is going away.
         void (*destroyWorld)(WorldData* world);
+        // Burst functions like rayCast, called on any thread with g_MeshLock held shared.
+        void (*cookMesh)(const CookInput* input, CookOutput* output);
+        int32_t (*validateMesh)(const uint8_t* stream, int64_t size, int32_t convex);
     };
 
-    static_assert(sizeof(ManagedCallbacks) == 32, "NativeStore.ManagedCallbacks mirrors this layout");
+    static_assert(sizeof(ManagedCallbacks) == 48, "NativeStore.ManagedCallbacks mirrors this layout");
 
-    // A cooked mesh, and the handle Unity holds. data comes first, so a ShapeData::mesh pointer is also a MeshData pointer.
-    // Unity holds one reference and each shape using the mesh another, because a mesh goes away with its Mesh asset while
-    // colliders can still use it. Nothing changes after cooking, so any thread can read it.
+    // Mirrored in its first field. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
+    // code (see Mesh.cpp) or if finishing it failed. Unity holds one reference and each shape using the mesh another,
+    // because a mesh goes away with its Mesh asset while colliders can still use it.
     struct Mesh
     {
-        MeshData data{};
-        MeshMoments moments{};
-        std::vector<Float3> vertices;
-        std::vector<uint32_t> triangles;
+        MeshData* data = nullptr;
         std::atomic<uint32_t> references{1};
     };
 
@@ -336,6 +374,9 @@ namespace Retooled
 
     extern StoreGlobals g_Globals;
     extern ManagedCallbacks g_Managed;
+
+    // Held shared around a call to the cook functions, and exclusively to change them, so detaching waits for running cooks.
+    extern std::shared_mutex g_MeshLock;
 
     // The thread managed attached on, set before any callback can run.
     extern std::thread::id g_MainThread;

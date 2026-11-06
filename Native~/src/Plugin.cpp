@@ -173,6 +173,10 @@ namespace Retooled
                 return sizeof(ManagedCallbacks);
             case 8:
                 return sizeof(MeshData);
+            case 9:
+                return sizeof(CookInput);
+            case 10:
+                return sizeof(CookOutput);
             default:
                 return -1;
         }
@@ -180,8 +184,13 @@ namespace Retooled
 
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_Attach(const ManagedCallbacks* callbacks)
     {
-        g_Managed = *callbacks;
+        {
+            std::unique_lock lock(g_MeshLock);
+            g_Managed = *callbacks;
+        }
+
         g_MainThread = std::this_thread::get_id();
+        FinishQueuedMeshes();
     }
 
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_SyncQueryWorlds()
@@ -191,7 +200,10 @@ namespace Retooled
 
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_Detach()
     {
-        g_Managed = {};
+        {
+            std::unique_lock lock(g_MeshLock);
+            g_Managed = {};
+        }
 
         // A query reads the callbacks under the world's lock, so passing through each lock waits out any query already
         // running, and managed can free what those queries read.

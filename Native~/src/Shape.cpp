@@ -122,7 +122,7 @@ namespace Retooled
     // centre is trace(C) I - C.
     static bool MeshMassProperties(const ShapeData& shape, float& volume, Float3& center, float (&inertiaPerUnitMass)[3][3])
     {
-        const Mesh* mesh = static_cast<const Mesh*>(shape.mesh);
+        const MeshData* mesh = MeshDataOf(shape);
         if (mesh == nullptr || mesh->moments.volume <= 0.0f)
         {
             return false;
@@ -133,12 +133,12 @@ namespace Retooled
         volume = moments.volume * std::abs(s.x * s.y * s.z);
         center = {moments.centroid.x * s.x, moments.centroid.y * s.y, moments.centroid.z * s.z};
 
-        const float xx = moments.covariance[0] * s.x * s.x;
-        const float yy = moments.covariance[1] * s.y * s.y;
-        const float zz = moments.covariance[2] * s.z * s.z;
-        const float xy = moments.covariance[3] * s.x * s.y;
-        const float xz = moments.covariance[4] * s.x * s.z;
-        const float yz = moments.covariance[5] * s.y * s.z;
+        const float xx = moments.covarianceDiagonal.x * s.x * s.x;
+        const float yy = moments.covarianceDiagonal.y * s.y * s.y;
+        const float zz = moments.covarianceDiagonal.z * s.z * s.z;
+        const float xy = moments.covarianceOffDiagonal.x * s.x * s.y;
+        const float xz = moments.covarianceOffDiagonal.y * s.x * s.z;
+        const float yz = moments.covarianceOffDiagonal.z * s.y * s.z;
         inertiaPerUnitMass[0][0] = yy + zz;
         inertiaPerUnitMass[1][1] = xx + zz;
         inertiaPerUnitMass[2][2] = xx + yy;
@@ -233,12 +233,13 @@ namespace Retooled
             case Physics::GeometryType::ConvexMesh:
             case Physics::GeometryType::TriangleMesh:
             {
-                if (shape.mesh == nullptr)
+                const MeshData* cooked = MeshDataOf(shape);
+                if (cooked == nullptr)
                 {
                     break;
                 }
 
-                const MeshData& mesh = *static_cast<const MeshData*>(shape.mesh);
+                const MeshData& mesh = *cooked;
                 const Float3& s = shape.extents;
                 const Float3 middle = {
                     (mesh.lower.x + mesh.upper.x) * 0.5f * s.x,

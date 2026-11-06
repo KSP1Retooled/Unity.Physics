@@ -114,6 +114,15 @@ namespace Retooled
         return type == Physics::GeometryType::ConvexMesh || type == Physics::GeometryType::TriangleMesh;
     }
 
+    // The cooked mesh of a shape, or null if it has none yet.
+    inline const MeshData* MeshDataOf(const ShapeData& shape)
+    {
+        return IsMeshGeometry(shape) && shape.mesh != nullptr ? static_cast<const Mesh*>(shape.mesh)->data : nullptr;
+    }
+
+    // Runs the cooks and loads that arrived while the core was detached. Main thread, after attaching.
+    void FinishQueuedMeshes();
+
     // Meshes and materials are reference counted (see Store.h), and these accept null where a reference may be missing.
     void RetainMesh(Mesh* mesh);
     void ReleaseMesh(Mesh* mesh);

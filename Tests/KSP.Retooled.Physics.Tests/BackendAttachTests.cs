@@ -32,6 +32,32 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void AMeshCookedWhileDetachedHasItsColliderAfterAttaching(bool convex)
+        {
+            Mesh mesh = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+            GameObject gameObject = Track(new GameObject("mesh"));
+            MeshCollider collider = gameObject.AddComponent<MeshCollider>();
+            collider.convex = convex;
+
+            BackendHost.Detach();
+            try
+            {
+                collider.sharedMesh = mesh;
+            }
+            finally
+            {
+                BackendHost.Attach();
+            }
+
+            Physics.SyncTransforms();
+
+            Assert.That(Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(hit.collider, Is.SameAs(collider));
+            Assert.That(hit.distance, Is.EqualTo(4.5f).Within(1e-3f));
+        }
+
         [Test]
         public void AttachingAgainPicksUpTheStoreWhereItWas()
         {
