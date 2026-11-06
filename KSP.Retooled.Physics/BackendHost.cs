@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using AOT;
+using Unity.Burst;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -24,18 +25,22 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static readonly NativeStore.SimulateCallback SimulateDelegate = OnSimulate;
         private static readonly NativeStore.BuildQueryWorldCallback BuildQueryWorldDelegate = OnBuildQueryWorld;
-        private static readonly NativeStore.RayCastCallback RayCastDelegate = OnRayCast;
         private static readonly NativeStore.DestroyWorldCallback DestroyWorldDelegate = OnDestroyWorld;
 
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
+        private static IntPtr rayCastFunction;
         private static bool attached;
         private static long managedJobRuns;
+        private static long managedQueries;
 
         /// <summary>
         /// Bodies a force job has handled in its Mono form, which it runs until the async Burst compile has delivered it.
         /// </summary>
         public static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
+
+        /// <summary>Queries that ran in Mono, which they do until the async Burst compile has delivered the query functions.</summary>
+        public static long ManagedQueries => Interlocked.Read(ref managedQueries);
 
         /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
         public static int LastStepThreadId { get; private set; }
@@ -92,7 +97,7 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 simulate = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(SimulateDelegate),
                 buildQueryWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
-                rayCast = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(RayCastDelegate),
+                rayCast = RayCastFunction(),
                 destroyWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
             };
 
@@ -121,6 +126,38 @@ namespace KSP.Retooled.PhysicsBackend
         internal static void NoteManagedJobRun()
         {
             Interlocked.Increment(ref managedJobRuns);
+        }
+
+        internal static void NoteManagedQuery()
+        {
+            Interlocked.Increment(ref managedQueries);
+        }
+
+        /// <summary>
+        /// Asks Burst for the function once per domain. Burst compiles in the background and hands back a stub that runs
+        /// the method in Mono until the compile lands, or for good if Burst is off.
+        /// </summary>
+        private static IntPtr RayCastFunction()
+        {
+            if (rayCastFunction == IntPtr.Zero)
+            {
+                rayCastFunction = BurstCompiler.CompileFunctionPointer<QueryKernel.RayCastFunction>(QueryKernel.RayCast).Value;
+            }
+
+            return rayCastFunction;
+        }
+
+        /// <summary>
+        /// Brings the query world up to date with everything the main thread has done. Workers can't rebuild it and read
+        /// the last one published, so main-thread code calls this between moving things and scheduling query jobs, after
+        /// any Physics.SyncTransforms. A step and a main-thread query already do the same. Main thread only.
+        /// </summary>
+        public static void SyncQueryWorlds()
+        {
+            if (attached)
+            {
+                NativeStore.RetooledPhysics_SyncQueryWorlds();
+            }
         }
 
         private static void NoteStep()
@@ -171,34 +208,24 @@ namespace KSP.Retooled.PhysicsBackend
             }
             catch (Exception e)
             {
+                world->queryWorld = null;
+                world->queryDirty = 1;
                 Debug.LogException(e);
             }
         }
 
         [MonoPInvokeCallback(typeof(NativeStore.BuildQueryWorldCallback))]
-        private static void OnBuildQueryWorld(NativeStore.WorldData* world)
+        private static int OnBuildQueryWorld(NativeStore.WorldData* world)
         {
             try
             {
-                StateOf(world).BuildForQueries();
+                return StateOf(world).BuildForQueries();
             }
             catch (Exception e)
             {
+                world->queryWorld = null;
                 Debug.LogException(e);
-            }
-        }
-
-        [MonoPInvokeCallback(typeof(NativeStore.RayCastCallback))]
-        private static int OnRayCast(NativeStore.WorldData* world, NativeStore.RayCastInput* input, NativeStore.RayCastHit* hit)
-        {
-            try
-            {
-                return StateOf(world).RayCast(input, hit) ? 1 : 0;
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                return 0;
+                return NativeStore.QueryWorldFailed;
             }
         }
 

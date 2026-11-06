@@ -205,6 +205,53 @@ namespace KSP.Retooled.PhysicsBackend
         }
     }
 
+    /// <summary>Copies what a query reads about bodies and shapes out of the store, in the built world's body order.</summary>
+    [BurstCompile]
+    internal unsafe struct SnapshotQueryDataJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.BodyData* Store;
+
+        [ReadOnly]
+        public NativeArray<RigidBody> Bodies;
+
+        public NativeArray<QueryBody> QueryBodies;
+        public NativeArray<QueryShape> QueryShapes;
+        public uint EngineObjectIdOffset;
+
+        public void Execute()
+        {
+            int nextShape = 0;
+            for (int i = 0; i < Bodies.Length; i++)
+            {
+                Entity entity = Bodies[i].Entity;
+                if (entity.Version == 0)
+                {
+                    QueryBodies[i] = default;
+                    continue;
+                }
+
+                NativeStore.BodyData* body = Store + entity.Index;
+                QueryBodies[i] = new QueryBody
+                {
+                    FirstShape = nextShape,
+                    SingleShape = ColliderBuilder.FirstSupported(body),
+                    IsStatic = (body->flags & NativeStore.BodyFlags.Static) != 0 ? 1 : 0,
+                };
+
+                for (int s = 0; s < body->shapeCount; s++)
+                {
+                    NativeStore.ShapeData* shape = body->shapes[s];
+                    QueryShapes[nextShape++] = new QueryShape
+                    {
+                        EngineObjectId = shape->userData != null ? *(ulong*)((byte*)shape->userData + EngineObjectIdOffset) : 0,
+                        Flags = shape->flags,
+                    };
+                }
+            }
+        }
+    }
+
     /// <summary>Publishes the solved motions to the store as body poses and world-space velocities.</summary>
     [BurstCompile]
     internal unsafe struct WriteBackJob : IJobParallelFor

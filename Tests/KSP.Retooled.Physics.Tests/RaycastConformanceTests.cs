@@ -1,4 +1,6 @@
 using NUnit.Framework;
+using Unity.Collections;
+using Unity.Jobs;
 using UnityEngine;
 
 namespace KSP.Retooled.PhysicsBackend.Tests
@@ -130,6 +132,118 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(Vector3.zero, Vector3.one * 4.0f);
 
             Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.False);
+        }
+
+        [Test]
+        public void ARayFromAJobFindsABodyAStepMoved()
+        {
+            Rigidbody body = WeightlessBox(new Vector3(0.0f, 0.0f, 5.0f));
+            body.linearVelocity = new Vector3(0.0f, 0.0f, 10.0f);
+            Simulate(10);
+
+            RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
+
+            Assert.That(hit.collider, Is.SameAs(body.GetComponent<Collider>()));
+            Assert.That(hit.distance, Is.EqualTo(4.5f + 10.0f * Step * 10).Within(0.01f));
+        }
+
+        [Test]
+        public void ARayFromAJobFindsATransformMovedByHand()
+        {
+            GameObject box = Box(Vector3.zero, Vector3.one);
+            box.transform.position = new Vector3(0.0f, 0.0f, 7.0f);
+            Physics.SyncTransforms();
+            BackendHost.SyncQueryWorlds();
+
+            RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
+
+            Assert.That(hit.distance, Is.EqualTo(6.5f).Within(Tolerance));
+        }
+
+        [Test]
+        public void ARayFromAJobSeesACompoundBodyCreatedJustBefore()
+        {
+            GameObject root = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
+            GameObject child = Track(new GameObject("child"));
+            child.transform.SetParent(root.transform, false);
+            child.transform.localPosition = new Vector3(0.0f, 3.0f, 0.0f);
+            BoxCollider childCollider = child.AddComponent<BoxCollider>();
+            root.AddComponent<Rigidbody>();
+            Physics.SyncTransforms();
+            BackendHost.SyncQueryWorlds();
+
+            RaycastHit hit = RayFromAJob(new Vector3(0.0f, 3.0f, 0.0f), Vector3.forward, 100.0f);
+
+            Assert.That(hit.collider, Is.SameAs(childCollider));
+        }
+
+        [Test]
+        public void ARayFromAJobMissesABodyDestroyedJustBefore()
+        {
+            GameObject near = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
+            GameObject far = Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
+            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+
+            Object.DestroyImmediate(near);
+            BackendHost.SyncQueryWorlds();
+
+            RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
+            Assert.That(hit.collider, Is.SameAs(far.GetComponent<Collider>()));
+        }
+
+        [Test]
+        public void ARayFromAJobSurvivesABodyDestroyedWithoutASync()
+        {
+            GameObject near = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
+            Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
+            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+
+            Object.DestroyImmediate(near);
+            RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
+
+            // PhysX finds the far box and the backend may still report the old near one, which reads back as no collider.
+            Assert.That(hit.collider == null || hit.distance > 8.0f, Is.True, $"hit {hit.collider} at {hit.distance}");
+        }
+
+        [Test]
+        public void AColliderThatCollidesWithNothingStillStopsRays()
+        {
+            GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
+            box.GetComponent<BoxCollider>().excludeLayers = ~0;
+            Physics.SyncTransforms();
+
+            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+        }
+
+        [Test]
+        public void AColliderThatCollidesWithNothingStaysOutOfContacts()
+        {
+            Ground();
+            Rigidbody body = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
+            body.GetComponent<BoxCollider>().excludeLayers = ~0;
+
+            Simulate(100);
+
+            Assert.That(body.position.y, Is.LessThan(-1.0f), "fell through the ground");
+        }
+
+        private static RaycastHit RayFromAJob(Vector3 origin, Vector3 direction, float distance)
+        {
+            using NativeArray<RaycastCommand> commands = new NativeArray<RaycastCommand>(32, Allocator.TempJob);
+            using NativeArray<RaycastHit> hits = new NativeArray<RaycastHit>(32, Allocator.TempJob);
+            NativeArray<RaycastCommand> rays = commands;
+            for (int i = 0; i < rays.Length; i++)
+            {
+                rays[i] = new RaycastCommand(origin, direction, QueryParameters.Default, distance);
+            }
+
+            RaycastCommand.ScheduleBatch(commands, hits, 1, 1).Complete();
+            for (int i = 1; i < hits.Length; i++)
+            {
+                Assert.That(hits[i].collider, Is.SameAs(hits[0].collider), "rays of one batch agree");
+            }
+
+            return hits[0];
         }
 
         [Test]

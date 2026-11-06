@@ -47,6 +47,8 @@ namespace Retooled
         World* world = AsWorld(object);
         if (g_Managed.destroyWorld != nullptr)
         {
+            // Waits out a query still reading what managed is about to free.
+            std::unique_lock lock(world->queryLock);
             g_Managed.destroyWorld(&world->data);
         }
 
@@ -105,7 +107,6 @@ namespace Retooled
 
         std::unique_lock lock(world->queryLock);
         g_Managed.simulate(&world->data, command.deltaTime);
-        MarkQueryDirty(world);
         command.ranSimulation = true;
     }
 
@@ -172,7 +173,7 @@ namespace Retooled
         data.bodies[body->index] = hot;
 
         data.staticsVersion++;
-        data.queryDirty = 1;
+        MarkQueryDirty(world);
         command.outBody = body;
     }
 
@@ -210,7 +211,7 @@ namespace Retooled
 
         delete body;
         data.staticsVersion++;
-        data.queryDirty = 1;
+        MarkQueryDirty(world);
     }
 
     static void CreateArticulation(void*, const Context&, WorldCmd::CreateArticulation& command)

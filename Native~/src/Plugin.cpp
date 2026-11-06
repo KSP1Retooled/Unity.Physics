@@ -4,6 +4,8 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <mutex>
+#include <thread>
 #include <utility>
 
 #include "IUnityLog.h"
@@ -16,6 +18,7 @@ namespace Retooled
 {
     StoreGlobals g_Globals{};
     ManagedCallbacks g_Managed{};
+    std::thread::id g_MainThread;
     std::vector<World*> g_Worlds;
     std::unordered_set<uint32_t> g_IgnoredPairs;
 
@@ -176,11 +179,24 @@ namespace Retooled
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_Attach(const ManagedCallbacks* callbacks)
     {
         g_Managed = *callbacks;
+        g_MainThread = std::this_thread::get_id();
+    }
+
+    extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_SyncQueryWorlds()
+    {
+        SyncAllQueryWorlds();
     }
 
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_Detach()
     {
         g_Managed = {};
+
+        // A query reads the callbacks under the world's lock, so passing through each lock waits out any query already
+        // running, and managed can free what those queries read.
+        for (World* world : g_Worlds)
+        {
+            std::unique_lock lock(world->queryLock);
+        }
     }
 
     extern "C" UNITY_INTERFACE_EXPORT const StoreGlobals* UNITY_INTERFACE_API RetooledPhysics_Globals()

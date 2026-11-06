@@ -8,8 +8,9 @@
 // lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
 // is destroyed; a Body never does.
 //
-// Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, so
-// anything that reallocates or reorders the dense array takes World::queryLock exclusively, and queries hold it shared.
+// Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, and they
+// read only the query world, a snapshot managed builds on the main thread and holds nothing of the live store. Replacing
+// that snapshot takes World::queryLock exclusively, and queries hold it shared.
 
 #pragma once
 
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <shared_mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -173,13 +175,15 @@ namespace Retooled
 
         // Bumped whenever a static body or the set of bodies changes, so the static tree is rebuilt only then.
         uint32_t staticsVersion;
-        // Non-zero when store state moved on from the last built world, so a query must rebuild it first.
+        // Non-zero when store state moved on from the query world, so the main thread must rebuild it before reading it.
         uint32_t queryDirty;
 
         World* owner;
+        // What managed hands the ray cast function, null while no built world can be read. Guarded by queryLock.
+        void* queryWorld;
     };
 
-    static_assert(sizeof(WorldData) == 64, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 72, "NativeStore.WorldData mirrors this layout");
 
     // Mirrored. What every world shares.
     struct StoreGlobals
@@ -217,14 +221,27 @@ namespace Retooled
 
     static_assert(sizeof(RayCastHit) == 48, "NativeStore.RayCastHit mirrors this layout");
 
+    enum QueryWorldBuild : int32_t
+    {
+        // The build failed and nothing is published, so queries report no hit.
+        kQueryWorldFailed = 0,
+        kQueryWorldBuilt = 1,
+        // The main thread is running a job it picked up while waiting, where a build can't run. What was published stays.
+        kQueryWorldDeferred = 2,
+    };
+
     // Mirrored. The managed core's entry points, called on the thread that issued the command. Null until attached.
     struct ManagedCallbacks
     {
         void (*simulate)(WorldData* world, float deltaTime);
-        // Brings the world's query structures up to date with the store. Called with queryLock held exclusively.
-        void (*buildQueryWorld)(WorldData* world);
-        // Returns non-zero and fills hit when the ray hits something. Called with queryLock held shared.
-        int32_t (*rayCast)(WorldData* world, const RayCastInput* input, RayCastHit* hit);
+        // Brings the world's query structures up to date with the store and returns a QueryWorldBuild. Called with
+        // queryLock held exclusively, on the main thread only: the build needs Allocator.Temp, job scheduling and write
+        // access to native containers, and a job worker has none of them.
+        int32_t (*buildQueryWorld)(WorldData* world);
+        // Returns non-zero and fills hit when the ray hits something. Called with queryLock held shared, on any thread.
+        // This is a Burst function, so no thread pays a Mono transition once it has compiled; until then it is a stub
+        // that runs the same code in Mono.
+        int32_t (*rayCast)(void* queryWorld, const RayCastInput* input, RayCastHit* hit);
         // Frees everything managed holds for a world that is going away.
         void (*destroyWorld)(WorldData* world);
     };
@@ -278,6 +295,12 @@ namespace Retooled
 
     extern StoreGlobals g_Globals;
     extern ManagedCallbacks g_Managed;
+
+    // The thread managed attached on, set before any callback can run.
+    extern std::thread::id g_MainThread;
+
+    // Brings every world's query world up to date with its store. Main thread only.
+    void SyncAllQueryWorlds();
 
     // Every world, for managed to walk when it attaches or detaches.
     extern std::vector<World*> g_Worlds;

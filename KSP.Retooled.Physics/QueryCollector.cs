@@ -14,16 +14,16 @@ namespace KSP.Retooled.PhysicsBackend
         internal const float MaxRayLength = 1e7f;
 
         private readonly NativeArray<RigidBody> bodies;
-        private readonly NativeStore.BodyData* store;
+        private readonly QueryBody* queryBodies;
+        private readonly QueryShape* queryShapes;
         private readonly uint filterOptions;
-        private readonly uint engineObjectIdOffset;
 
-        internal QueryCollector(PhysicsWorld world, NativeStore.WorldData* store, uint filterOptions)
+        internal QueryCollector(QueryWorld* world, uint filterOptions)
         {
-            bodies = world.Bodies;
-            this.store = store->bodies;
+            bodies = world->Collision.Bodies;
+            queryBodies = world->Bodies;
+            queryShapes = world->Shapes;
             this.filterOptions = filterOptions;
-            engineObjectIdOffset = NativeStore.RetooledPhysics_Globals()->engineObjectIdOffset;
             MaxFraction = 1.0f;
             NumHits = 0;
             Hit = default;
@@ -48,21 +48,20 @@ namespace KSP.Retooled.PhysicsBackend
                 return false;
             }
 
-            NativeStore.BodyData* body = store + rigidBody.Entity.Index;
-            bool isStatic = (body->flags & NativeStore.BodyFlags.Static) != 0;
-            uint wanted = isStatic ? NativeStore.QueryUseStaticBodies : NativeStore.QueryUseDynamicBodies;
+            QueryBody* body = queryBodies + hit.RigidBodyIndex;
+            uint wanted = body->IsStatic != 0 ? NativeStore.QueryUseStaticBodies : NativeStore.QueryUseDynamicBodies;
             if ((filterOptions & wanted) == 0)
             {
                 return false;
             }
 
-            NativeStore.ShapeData* shape = ShapeOf(body, rigidBody, hit.ColliderKey);
-            if ((shape->flags & NativeStore.ShapeFlagSceneQuery) == 0)
+            QueryShape* shape = queryShapes + body->FirstShape + ShapeIndexOf(body, rigidBody, hit.ColliderKey);
+            if ((shape->Flags & NativeStore.ShapeFlagSceneQuery) == 0)
             {
                 return false;
             }
 
-            bool trigger = (shape->flags & NativeStore.ShapeFlagTrigger) != 0;
+            bool trigger = (shape->Flags & NativeStore.ShapeFlagTrigger) != 0;
             if (trigger && (filterOptions & NativeStore.QueryUseTriggerShapes) == 0)
             {
                 return false;
@@ -75,27 +74,21 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             Hit = hit;
-            HitEngineObjectId = *(ulong*)((byte*)shape->userData + engineObjectIdOffset);
+            HitEngineObjectId = shape->EngineObjectId;
             MaxFraction = hit.Fraction;
             NumHits = 1;
             return true;
         }
 
-        private static NativeStore.ShapeData* ShapeOf(NativeStore.BodyData* body, RigidBody rigidBody, ColliderKey key)
+        private static int ShapeIndexOf(QueryBody* body, RigidBody rigidBody, ColliderKey key)
         {
             if (rigidBody.Collider.Value.Type != ColliderType.Compound)
             {
-                for (int i = 0; i < body->shapeCount; i++)
-                {
-                    if (ColliderBuilder.IsSupported(body->shapes[i]))
-                    {
-                        return body->shapes[i];
-                    }
-                }
+                return body->SingleShape;
             }
 
             rigidBody.Collider.Value.GetLeaf(key, out ChildCollider leaf);
-            return body->shapes[leaf.Entity.Index];
+            return leaf.Entity.Index;
         }
     }
 }

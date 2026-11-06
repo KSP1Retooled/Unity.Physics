@@ -23,6 +23,11 @@ namespace KSP.Retooled.PhysicsBackend
         internal const uint QueryUseStaticBodies = 1 << 1;
         internal const uint QueryUseTriggerShapes = 1 << 2;
 
+        // QueryWorldBuild in Store.h.
+        internal const int QueryWorldFailed = 0;
+        internal const int QueryWorldBuilt = 1;
+        internal const int QueryWorldDeferred = 2;
+
         internal const uint CombineAverage = 0;
         internal const uint CombineMultiply = 1;
         internal const uint CombineMinimum = 2;
@@ -146,6 +151,7 @@ namespace KSP.Retooled.PhysicsBackend
             public uint queryDirty;
 
             public IntPtr owner;
+            public QueryWorld* queryWorld;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -178,9 +184,7 @@ namespace KSP.Retooled.PhysicsBackend
 
         internal delegate void SimulateCallback(WorldData* world, float deltaTime);
 
-        internal delegate void BuildQueryWorldCallback(WorldData* world);
-
-        internal delegate int RayCastCallback(WorldData* world, RayCastInput* input, RayCastHit* hit);
+        internal delegate int BuildQueryWorldCallback(WorldData* world);
 
         internal delegate void DestroyWorldCallback(WorldData* world);
 
@@ -210,6 +214,9 @@ namespace KSP.Retooled.PhysicsBackend
 
         [DllImport(Library)]
         internal static extern WorldData* RetooledPhysics_GetWorld(int index);
+
+        [DllImport(Library)]
+        internal static extern void RetooledPhysics_SyncQueryWorlds();
 
         /// <summary>The first struct whose size differs from the plugin's, or null when all agree.</summary>
         internal static string FirstSizeMismatch()

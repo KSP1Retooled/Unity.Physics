@@ -98,6 +98,20 @@ namespace KSP.Retooled.PhysicsBackend
             return compound.GetUnsafePtr();
         }
 
+        /// <summary>The index of the shape a body's collider stands for when it isn't a compound.</summary>
+        internal static int FirstSupported(NativeStore.BodyData* body)
+        {
+            for (int i = 0; i < body->shapeCount; i++)
+            {
+                if (IsSupported(body->shapes[i]))
+                {
+                    return i;
+                }
+            }
+
+            return 0;
+        }
+
         internal static bool IsSupported(NativeStore.ShapeData* shape)
         {
             return shape->geometryType == NativeStore.GeometryBox
@@ -107,10 +121,12 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static BlobAssetReference<Collider> Create(NativeStore.ShapeData* shape, float3 center, quaternion orientation)
         {
+            // Unity Physics applies a query's filter both ways, so a collider that collides with nothing would also be
+            // invisible to every ray. Such a collider opens its filter here and gives up the contacts in MaterialOf.
             CollisionFilter filter = new CollisionFilter
             {
                 BelongsTo = shape->belongsTo,
-                CollidesWith = shape->collidesWith,
+                CollidesWith = shape->collidesWith != 0 ? shape->collidesWith : uint.MaxValue,
                 GroupIndex = 0,
             };
 
@@ -163,7 +179,11 @@ namespace KSP.Retooled.PhysicsBackend
                 RestitutionCombinePolicy = CombinePolicy(source->bounceCombine),
             };
 
-            if ((shape->flags & NativeStore.ShapeFlagTrigger) != 0)
+            if (shape->collidesWith == 0)
+            {
+                material.CollisionResponse = CollisionResponsePolicy.None;
+            }
+            else if ((shape->flags & NativeStore.ShapeFlagTrigger) != 0)
             {
                 material.CollisionResponse = CollisionResponsePolicy.RaiseTriggerEvents;
             }

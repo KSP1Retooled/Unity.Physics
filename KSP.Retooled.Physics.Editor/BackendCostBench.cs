@@ -23,6 +23,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
         private const int FastCalls = 2_000_000;
         private const int SlowCalls = 100_000;
         private const float DeltaTime = 0.02f;
+        private const double BurstWaitSeconds = 120.0;
 
         private static readonly StringBuilder Report = new StringBuilder("case,calls,ns_per_call,best_ns\n");
 
@@ -133,6 +134,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             });
             Physics.Simulate(DeltaTime);
 
+            WaitForBurstQueries(body);
             Measure("Physics.Raycast hit", SlowCalls, () =>
             {
                 Vector3 origin = body.position + new Vector3(0.0f, 0.0f, -5.0f);
@@ -150,6 +152,34 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             string file = Path.Combine(folder, $"cost-{(BackendInfo.IsRetooled ? "retooled" : "physx")}.csv");
             File.WriteAllText(file, Report.ToString());
             Debug.Log($"[CostBench] wrote {file} ({sink})");
+        }
+
+        /// <summary>
+        /// Holds the bench until queries stop running in Mono, or reports that they did not, so the raycast number says
+        /// which code it measured.
+        /// </summary>
+        private static void WaitForBurstQueries(Rigidbody body)
+        {
+            if (!BackendInfo.IsRetooled)
+            {
+                return;
+            }
+
+            Stopwatch watch = Stopwatch.StartNew();
+            while (watch.Elapsed.TotalSeconds < BurstWaitSeconds)
+            {
+                long before = BackendHost.ManagedQueries;
+                Physics.Raycast(body.position + new Vector3(0.0f, 0.0f, -5.0f), Vector3.forward, 10.0f);
+                if (BackendHost.ManagedQueries == before)
+                {
+                    Debug.Log($"[CostBench] queries run in Burst after {watch.Elapsed.TotalSeconds:F1} s");
+                    return;
+                }
+
+                System.Threading.Thread.Sleep(50);
+            }
+
+            Debug.LogWarning($"[CostBench] queries still run in Mono after {BurstWaitSeconds} s");
         }
 
         /// <summary>A floating origin shift: every body's transform moves, and a sync hands them all to the backend.</summary>
