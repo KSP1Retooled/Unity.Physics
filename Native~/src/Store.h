@@ -4,13 +4,14 @@
 // and offset check here and in NativeStore.Validate. RetooledPhysics_StructSize reports the sizes, and managed attach
 // refuses to run on a mismatch.
 //
-// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, World*). Hot body state
-// lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
+// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, World*). Hot body
+// state lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
 // is destroyed; a Body never does.
 //
 // Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, and they
 // read only the query world, a snapshot managed builds on the main thread and holds nothing of the live store. Replacing
-// that snapshot takes World::queryLock exclusively, and queries hold it shared.
+// that snapshot takes World::queryLock exclusively, and queries hold it shared. Mesh cooking can arrive from worker
+// threads too: a cook touches only its own new record, and a mesh's reference count is the one thing threads share.
 
 #pragma once
 
@@ -28,6 +29,7 @@ namespace Retooled
 {
     struct Body;
     struct Joint;
+    struct Mesh;
     struct Shape;
     struct World;
 
@@ -120,7 +122,8 @@ namespace Retooled
     static_assert(offsetof(BodyData, targetRotation) == 272);
     static_assert(offsetof(BodyData, owner) == 304);
 
-    // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode.
+    // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
+    // one reference and each shape using the material another, because Unity releases a material while shapes still use it.
     struct MaterialData
     {
         float dynamicFriction;
@@ -128,7 +131,7 @@ namespace Retooled
         float bounciness;
         uint32_t frictionCombine;
         uint32_t bounceCombine;
-        uint32_t reserved0;
+        uint32_t references;
         void* userData;
     };
 
@@ -150,13 +153,39 @@ namespace Retooled
         uint32_t ignorePairId;
         uint32_t collisionDisabled;
 
-        void* mesh; // the cooked mesh or height field of the geometry, when it has one
-        const MaterialData* material;
+        void* mesh; // the Mesh or height field of the geometry, when it has one. A shape holds a reference to a Mesh.
+        MaterialData* material; // never null, and the shape holds a reference
         void* userData;
         Shape* owner;
     };
 
     static_assert(sizeof(ShapeData) == 96, "NativeStore.ShapeData mirrors this layout");
+
+    // Mirrored. A cooked mesh as managed reads it to build colliders. The vertices are welded and unscaled. The triangles
+    // are clean, or the faces of the hull when convex, and index the vertices three at a time. A mesh with no triangles has
+    // no collider.
+    struct MeshData
+    {
+        const Float3* vertices;
+        const uint32_t* triangles;
+        uint32_t vertexCount;
+        uint32_t triangleCount;
+        uint32_t convex;
+        uint32_t reserved0;
+        Float3 lower;
+        Float3 upper;
+    };
+
+    static_assert(sizeof(MeshData) == 56, "NativeStore.MeshData mirrors this layout");
+
+    // The solid a mesh bounds, unscaled. Volume is 0 when it bounds none. The covariance is the mean of (x - centroid)
+    // (x - centroid)^T over the solid, which is what a scale transforms simply: xx yy zz xy xz yz.
+    struct MeshMoments
+    {
+        float volume;
+        Float3 centroid;
+        float covariance[6];
+    };
 
     // Mirrored. One physics scene.
     struct WorldData
@@ -247,6 +276,18 @@ namespace Retooled
     };
 
     static_assert(sizeof(ManagedCallbacks) == 32, "NativeStore.ManagedCallbacks mirrors this layout");
+
+    // A cooked mesh, and the handle Unity holds. data comes first, so a ShapeData::mesh pointer is also a MeshData pointer.
+    // Unity holds one reference and each shape using the mesh another, because a mesh goes away with its Mesh asset while
+    // colliders can still use it. Nothing changes after cooking, so any thread can read it.
+    struct Mesh
+    {
+        MeshData data{};
+        MeshMoments moments{};
+        std::vector<Float3> vertices;
+        std::vector<uint32_t> triangles;
+        std::atomic<uint32_t> references{1};
+    };
 
     // The cold half of a body, and the handle Unity holds.
     struct Body

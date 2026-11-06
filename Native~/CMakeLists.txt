@@ -25,6 +25,7 @@ add_library(RetooledPhysics SHARED
     src/World.cpp
     src/Body.cpp
     src/Shape.cpp
+    src/Mesh.cpp
     src/Joint.cpp
     src/Query.cpp
     src/Vehicle.cpp

@@ -21,6 +21,29 @@ namespace Retooled
         nullptr,
     };
 
+    MaterialData* DefaultMaterial()
+    {
+        return &s_DefaultMaterial;
+    }
+
+    void RetainMaterial(MaterialData* material)
+    {
+        if (material != nullptr && material != &s_DefaultMaterial)
+        {
+            std::atomic_ref<uint32_t>(material->references).fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void ReleaseMaterial(MaterialData* material)
+    {
+        if (material != nullptr
+            && material != &s_DefaultMaterial
+            && std::atomic_ref<uint32_t>(material->references).fetch_sub(1, std::memory_order_acq_rel) == 1)
+        {
+            delete material;
+        }
+    }
+
     static void InitializeSdk(void*, const Context&, SdkData::InitializeSdk& command)
     {
         g_Globals.engineObjectIdOffset = command.engineObjectIdOffset;
@@ -70,16 +93,13 @@ namespace Retooled
     {
         auto* material = new Retooled::MaterialData(s_DefaultMaterial);
         material->userData = command.userData;
+        material->references = 1;
         command.outMaterial = material;
     }
 
-    static void ReleaseMaterial(void* object, const Context&, MaterialCmd::ReleaseMaterial&)
+    static void ReleaseMaterialCommand(void* object, const Context&, MaterialCmd::ReleaseMaterial&)
     {
-        auto* material = static_cast<Retooled::MaterialData*>(object);
-        if (material != &s_DefaultMaterial)
-        {
-            delete material;
-        }
+        ReleaseMaterial(static_cast<Retooled::MaterialData*>(object));
     }
 
     static void GetDefaultMaterial(void*, const Context&, MaterialCmd::GetDefaultMaterial& command)
@@ -140,7 +160,7 @@ namespace Retooled
         Bind<SdkData::GetIsVisualDebuggerConnected, GetIsVisualDebuggerConnected>(table);
         Bind<SdkData::SetVisualDebuggerViewport, SetVisualDebuggerViewport>(table);
         Bind<MaterialCmd::CreateMaterial, CreateMaterial>(table);
-        Bind<MaterialCmd::ReleaseMaterial, ReleaseMaterial>(table);
+        Bind<MaterialCmd::ReleaseMaterial, ReleaseMaterialCommand>(table);
         Bind<MaterialCmd::GetDefaultMaterial, GetDefaultMaterial>(table);
         Bind<MaterialCmd::SetImprovedPatchFrictionEnabledGlobal, SetImprovedPatchFriction>(table);
         Bind<MaterialCmd::SetMaterialConfiguration, SetMaterialConfiguration>(table);

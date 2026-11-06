@@ -91,6 +91,7 @@ namespace Retooled
     void BindWorldCommands(FunctionBinding* table);
     void BindBodyCommands(FunctionBinding* table);
     void BindShapeCommands(FunctionBinding* table);
+    void BindMeshCommands(FunctionBinding* table);
     void BindQueryCommands(FunctionBinding* table);
     void BindJointCommands(FunctionBinding* table);
     void BindExtensionCommands(FunctionBinding* table);
@@ -107,6 +108,21 @@ namespace Retooled
     // Detaches a body's shapes when the body goes away; the shapes outlive it until Unity destroys them.
     void DetachAllShapes(Body* body);
 
+    inline bool IsMeshGeometry(const ShapeData& shape)
+    {
+        const auto type = static_cast<Physics::GeometryType>(shape.geometryType);
+        return type == Physics::GeometryType::ConvexMesh || type == Physics::GeometryType::TriangleMesh;
+    }
+
+    // Meshes and materials are reference counted (see Store.h), and these accept null where a reference may be missing.
+    void RetainMesh(Mesh* mesh);
+    void ReleaseMesh(Mesh* mesh);
+    void RetainMaterial(MaterialData* material);
+    void ReleaseMaterial(MaterialData* material);
+
+    // What a shape uses when Unity gives it no material.
+    MaterialData* DefaultMaterial();
+
     // The straight part of a capsule. Despite its name in the plugin API, CapsuleGeometry::height holds half of this,
     // like PxCapsuleGeometry::halfHeight.
     inline float CapsuleCylinderLength(const ShapeData& shape)
@@ -114,9 +130,9 @@ namespace Retooled
         return 2.0f * shape.extents.y;
     }
 
-    // Mass properties of one shape about its own origin, in its own frame, for a density of 1. False for shapes
-    // the mass calculation skips.
-    bool ShapeMassProperties(const ShapeData& shape, float& volume, Float3& inertiaPerUnitMass);
+    // What the mass calculation needs of one shape, in the shape's own frame: its volume, its centre of mass, and its
+    // inertia per unit mass about that centre. False for shapes the calculation skips.
+    bool ShapeMassProperties(const ShapeData& shape, float& volume, Float3& center, float (&inertiaPerUnitMass)[3][3]);
 
     // The shape's world-space axis-aligned bounds under a body pose.
     void ShapeWorldBounds(const ShapeData& shape, const Float3& bodyPosition, const Float4& bodyRotation, Float3& min, Float3& max);

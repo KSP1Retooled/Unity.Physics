@@ -1,4 +1,5 @@
 using Unity.Collections;
+using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
 
@@ -17,9 +18,11 @@ namespace KSP.Retooled.PhysicsBackend
         private readonly QueryBody* queryBodies;
         private readonly QueryShape* queryShapes;
         private readonly uint filterOptions;
+        private readonly float3 rayDirection;
 
-        internal QueryCollector(QueryWorld* world, uint filterOptions)
+        internal QueryCollector(QueryWorld* world, uint filterOptions, float3 rayDirection)
         {
+            this.rayDirection = rayDirection;
             bodies = world->Collision.Bodies;
             queryBodies = world->Bodies;
             queryShapes = world->Shapes;
@@ -73,6 +76,11 @@ namespace KSP.Retooled.PhysicsBackend
                 return false;
             }
 
+            if ((filterOptions & NativeStore.QueryAllowBackfaces) == 0 && IsBackface(rigidBody, hit.ColliderKey))
+            {
+                return false;
+            }
+
             Hit = hit;
             HitEngineObjectId = shape->EngineObjectId;
             MaxFraction = hit.Fraction;
@@ -87,8 +95,32 @@ namespace KSP.Retooled.PhysicsBackend
                 return body->SingleShape;
             }
 
-            rigidBody.Collider.Value.GetLeaf(key, out ChildCollider leaf);
-            return leaf.Entity.Index;
+            // One level down only: a compound's child knows its entity, and a polygon inside a mesh child doesn't.
+            rigidBody.Collider.Value.GetChild(ref key, out ChildCollider child);
+            return child.Entity.Index;
+        }
+
+        /// <summary>
+        /// Whether the ray met a triangle mesh from behind. Unity Physics hits polygons from both sides and turns the hit's
+        /// normal to face the ray, so only the polygon's own winding can say, and a hit refused here lets the ray go on.
+        /// </summary>
+        private bool IsBackface(RigidBody rigidBody, ColliderKey key)
+        {
+            Collider* root = (Collider*)rigidBody.Collider.GetUnsafePtr();
+            if (!Collider.GetLeafCollider(out ChildCollider leaf, root, key, rigidBody.WorldFromBody))
+            {
+                return false;
+            }
+
+            Collider* collider = leaf.Collider;
+            if (collider->Type != ColliderType.Triangle && collider->Type != ColliderType.Quad)
+            {
+                return false;
+            }
+
+            BlobArray.Accessor<float3> vertices = ((PolygonCollider*)collider)->Vertices;
+            float3 normal = math.cross(vertices[1] - vertices[0], vertices[2] - vertices[0]);
+            return math.dot(math.rotate(leaf.TransformFromChild.rot, normal), rayDirection) > 0.0f;
         }
     }
 }

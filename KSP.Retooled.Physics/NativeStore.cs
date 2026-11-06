@@ -16,12 +16,15 @@ namespace KSP.Retooled.PhysicsBackend
         internal const uint GeometrySphere = 1;
         internal const uint GeometryCapsule = 3;
         internal const uint GeometryBox = 4;
+        internal const uint GeometryConvexMesh = 5;
+        internal const uint GeometryTriangleMesh = 6;
         internal const uint ShapeFlagSceneQuery = 1 << 0;
         internal const uint ShapeFlagTrigger = 1 << 1;
 
         internal const uint QueryUseDynamicBodies = 1 << 0;
         internal const uint QueryUseStaticBodies = 1 << 1;
         internal const uint QueryUseTriggerShapes = 1 << 2;
+        internal const uint QueryAllowBackfaces = 1 << 4;
 
         // QueryWorldBuild in Store.h.
         internal const int QueryWorldFailed = 0;
@@ -108,7 +111,7 @@ namespace KSP.Retooled.PhysicsBackend
             public float bounciness;
             public uint frictionCombine;
             public uint bounceCombine;
-            private readonly uint reserved0;
+            public uint references;
             public void* userData;
         }
 
@@ -131,6 +134,19 @@ namespace KSP.Retooled.PhysicsBackend
             public MaterialData* material;
             public void* userData;
             public IntPtr owner;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MeshData
+        {
+            public float3* vertices;
+            public int3* triangles;
+            public uint vertexCount;
+            public uint triangleCount;
+            public uint convex;
+            private readonly uint reserved0;
+            public float3 lower;
+            public float3 upper;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -218,6 +234,15 @@ namespace KSP.Retooled.PhysicsBackend
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
+        [DllImport(Library)]
+        internal static extern int RetooledPhysics_CookStream(float3* vertices, int vertexCount, int* indices, int indexCount, int convex, byte* output, int capacity);
+
+        [DllImport(Library)]
+        internal static extern MeshData* RetooledPhysics_LoadStream(byte* stream, int size, int convex);
+
+        [DllImport(Library)]
+        internal static extern void RetooledPhysics_ReleaseMesh(MeshData* mesh);
+
         /// <summary>The first struct whose size differs from the plugin's, or null when all agree.</summary>
         internal static string FirstSizeMismatch()
         {
@@ -231,6 +256,7 @@ namespace KSP.Retooled.PhysicsBackend
                 sizeof(RayCastInput),
                 sizeof(RayCastHit),
                 sizeof(ManagedCallbacks),
+                sizeof(MeshData),
             };
 
             string[] names =
@@ -243,6 +269,7 @@ namespace KSP.Retooled.PhysicsBackend
                 nameof(RayCastInput),
                 nameof(RayCastHit),
                 nameof(ManagedCallbacks),
+                nameof(MeshData),
             };
 
             for (int i = 0; i < sizes.Length; i++)

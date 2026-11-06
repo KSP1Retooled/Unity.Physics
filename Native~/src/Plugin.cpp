@@ -171,6 +171,8 @@ namespace Retooled
                 return sizeof(RayCastHit);
             case 7:
                 return sizeof(ManagedCallbacks);
+            case 8:
+                return sizeof(MeshData);
             default:
                 return -1;
         }

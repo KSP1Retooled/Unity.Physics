@@ -564,20 +564,23 @@ namespace Retooled
         {
             const ShapeData* shape;
             float volume;
-            Float3 inertiaPerUnitMass;
+            Float3 center; // in the body's frame
+            float inertiaPerUnitMass[3][3]; // in the shape's frame
         };
 
         std::vector<Piece> pieces;
         float totalVolume = 0.0f;
         for (const Shape* shape : body->shapes)
         {
-            float volume = 0.0f;
-            Float3 inertia{};
+            Piece piece{};
+            Float3 localCenter{};
             if ((shape->data.flags & static_cast<uint32_t>(Physics::ShapeFlags::Trigger)) == 0
-                && ShapeMassProperties(shape->data, volume, inertia))
+                && ShapeMassProperties(shape->data, piece.volume, localCenter, piece.inertiaPerUnitMass))
             {
-                pieces.push_back({&shape->data, volume, inertia});
-                totalVolume += volume;
+                piece.shape = &shape->data;
+                piece.center = Add(shape->data.localPosition, Rotate(shape->data.localRotation, localCenter));
+                pieces.push_back(piece);
+                totalVolume += piece.volume;
             }
         }
 
@@ -592,7 +595,7 @@ namespace Retooled
         Float3 center{};
         for (const Piece& piece : pieces)
         {
-            center = Add(center, Scale(piece.shape->localPosition, piece.volume / totalVolume));
+            center = Add(center, Scale(piece.center, piece.volume / totalVolume));
         }
 
         if (overrides.overrideCenterOfMass)
@@ -614,8 +617,7 @@ namespace Retooled
             const double pieceMass = hot.mass * piece.volume / totalVolume;
             const Float4& q = piece.shape->localRotation;
             const Float3 axes[3] = {Rotate(q, {1, 0, 0}), Rotate(q, {0, 1, 0}), Rotate(q, {0, 0, 1})};
-            const float moments[3] = {piece.inertiaPerUnitMass.x, piece.inertiaPerUnitMass.y, piece.inertiaPerUnitMass.z};
-            const Float3 offset = Subtract(piece.shape->localPosition, center);
+            const Float3 offset = Subtract(piece.center, center);
             const float* d = &offset.x;
             const double offsetSquared = Dot(offset, offset);
 
@@ -624,10 +626,13 @@ namespace Retooled
                 for (int column = 0; column < 3; column++)
                 {
                     double value = (row == column ? offsetSquared : 0.0) - static_cast<double>(d[row]) * d[column];
-                    for (int axis = 0; axis < 3; axis++)
+                    for (int first = 0; first < 3; first++)
                     {
-                        const float* a = &axes[axis].x;
-                        value += static_cast<double>(a[row]) * moments[axis] * a[column];
+                        for (int second = 0; second < 3; second++)
+                        {
+                            value += static_cast<double>((&axes[first].x)[row]) * piece.inertiaPerUnitMass[first][second]
+                                * (&axes[second].x)[column];
+                        }
                     }
 
                     tensor.m[row][column] += pieceMass * value;

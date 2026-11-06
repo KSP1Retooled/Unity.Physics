@@ -1,0 +1,173 @@
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+using Debug = UnityEngine.Debug;
+
+namespace KSP.Retooled.PhysicsBackend.Editor
+{
+    /// <summary>
+    /// What a MeshCollider costs on the selected backend: the cook, and the first use that builds its collider. Meshes are the
+    /// game's own, plus a PQS-sized grid and a sphere. Run with `unity exec --backend`; lines start with [MeshBench].
+    /// </summary>
+    public static class MeshCookBench
+    {
+        private const int Rounds = 5;
+        private const double BurstWaitSeconds = 60.0;
+
+        public static void Run()
+        {
+            Physics.simulationMode = SimulationMode.Script;
+            Physics.autoSyncTransforms = false;
+
+            List<Mesh> game = GameCollisionMeshes();
+            Debug.Log($"[MeshBench] {game.Count} game meshes, median {Median(game.Select(m => (double)m.vertexCount)):F0} vertices, "
+                + $"largest {game.Select(m => m.vertexCount).DefaultIfEmpty(0).Max()}");
+
+            Mesh grid = Grid(15);
+            Mesh sphere = Sphere();
+
+            // The first passes run in Mono until Burst delivers, which the later passes show.
+            Stopwatch wait = Stopwatch.StartNew();
+            while (wait.Elapsed.TotalSeconds < BurstWaitSeconds)
+            {
+                BuildOnce(grid, false);
+                System.Threading.Thread.Sleep(500);
+            }
+
+            MeasureCook("cook convex, game meshes", game, true);
+            MeasureCook("cook triangle, game meshes", game, false);
+            MeasureCook("cook triangle, 15x15 grid", new List<Mesh> { grid }, false);
+            MeasureCook("cook convex, sphere", new List<Mesh> { sphere }, true);
+            MeasureBuild("first use convex, game meshes", game, true);
+            MeasureBuild("first use triangle, game meshes", game, false);
+            MeasureBuild("first use triangle, 15x15 grid", new List<Mesh> { grid }, false);
+            MeasureBuild("first use convex, sphere", new List<Mesh> { sphere }, true);
+        }
+
+        private static List<Mesh> GameCollisionMeshes()
+        {
+            HashSet<Mesh> meshes = new HashSet<Mesh>();
+            foreach (string guid in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets/KSP" }))
+            {
+                GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(guid));
+                if (prefab == null)
+                {
+                    continue;
+                }
+
+                foreach (MeshCollider collider in prefab.GetComponentsInChildren<MeshCollider>(true))
+                {
+                    if (collider.sharedMesh != null)
+                    {
+                        meshes.Add(collider.sharedMesh);
+                    }
+                }
+            }
+
+            return meshes.ToList();
+        }
+
+        private static void MeasureCook(string name, List<Mesh> meshes, bool convex)
+        {
+            if (meshes.Count == 0)
+            {
+                return;
+            }
+
+            List<double> samples = new List<double>();
+            for (int round = 0; round < Rounds; round++)
+            {
+                Stopwatch watch = Stopwatch.StartNew();
+                foreach (Mesh mesh in meshes)
+                {
+                    Physics.BakeMesh(mesh.GetEntityId(), convex);
+                }
+
+                samples.Add(watch.Elapsed.TotalMilliseconds * 1000.0 / meshes.Count);
+            }
+
+            Debug.Log($"[MeshBench] {name}: {Median(samples):F1} us per mesh over {meshes.Count}");
+        }
+
+        private static void MeasureBuild(string name, List<Mesh> meshes, bool convex)
+        {
+            if (meshes.Count == 0)
+            {
+                return;
+            }
+
+            List<double> samples = new List<double>();
+            for (int round = 0; round < Rounds; round++)
+            {
+                double total = 0.0;
+                foreach (Mesh mesh in meshes)
+                {
+                    total += BuildOnce(mesh, convex);
+                }
+
+                samples.Add(total * 1000.0 / meshes.Count);
+            }
+
+            Debug.Log($"[MeshBench] {name}: {Median(samples):F1} us per mesh over {meshes.Count}");
+        }
+
+        /// <summary>Milliseconds the first query after adding a collider took, which is its blob plus one rebuild of an empty world.</summary>
+        private static double BuildOnce(Mesh mesh, bool convex)
+        {
+            GameObject gameObject = new GameObject("bench");
+            MeshCollider collider = gameObject.AddComponent<MeshCollider>();
+            collider.convex = convex;
+            collider.sharedMesh = mesh;
+            Physics.SyncTransforms();
+
+            Stopwatch watch = Stopwatch.StartNew();
+            Physics.Raycast(new Vector3(0.0f, 100.0f, 0.0f), Vector3.down, 200.0f);
+            double elapsed = watch.Elapsed.TotalMilliseconds;
+
+            Object.DestroyImmediate(gameObject);
+            return elapsed;
+        }
+
+        private static double Median(IEnumerable<double> values)
+        {
+            List<double> sorted = values.OrderBy(v => v).ToList();
+            return sorted.Count == 0 ? 0.0 : sorted[sorted.Count / 2];
+        }
+
+        private static Mesh Grid(int cells)
+        {
+            List<Vector3> vertices = new List<Vector3>();
+            List<int> triangles = new List<int>();
+            for (int z = 0; z <= cells; z++)
+            {
+                for (int x = 0; x <= cells; x++)
+                {
+                    vertices.Add(new Vector3(x, Mathf.PerlinNoise(x * 0.3f, z * 0.3f) * 2.0f, z));
+                }
+            }
+
+            for (int z = 0; z < cells; z++)
+            {
+                for (int x = 0; x < cells; x++)
+                {
+                    int corner = z * (cells + 1) + x;
+                    int next = corner + cells + 1;
+                    triangles.AddRange(new[] { corner, next, next + 1, corner, next + 1, corner + 1 });
+                }
+            }
+
+            Mesh mesh = new Mesh { vertices = vertices.ToArray(), triangles = triangles.ToArray() };
+            return mesh;
+        }
+
+        private static Mesh Sphere()
+        {
+            GameObject primitive = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            Mesh mesh = primitive.GetComponent<MeshFilter>().sharedMesh;
+            Object.DestroyImmediate(primitive);
+            return mesh;
+        }
+    }
+}

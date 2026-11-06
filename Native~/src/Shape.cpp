@@ -1,8 +1,9 @@
 // Shape commands. They address the shape through the object handle, and the owning body and world through the context.
-// Mesh and height field commands are stubs: cooking fails cleanly, so a MeshCollider loads as an empty collider.
+// Mesh.cpp holds the mesh commands. Height field commands are stubs, so a TerrainCollider has no collision.
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numbers>
 
 #include "Commands.h"
@@ -24,9 +25,18 @@ namespace Retooled
         }
     }
 
+    static void SetShapeMaterial(Shape* shape, MaterialData* material)
+    {
+        MaterialData* next = material != nullptr ? material : DefaultMaterial();
+        RetainMaterial(next);
+        ReleaseMaterial(shape->data.material);
+        shape->data.material = next;
+    }
+
     static void StoreGeometry(Shape* shape, const Physics::ShapeGeometry& geometry)
     {
         ShapeData& data = shape->data;
+        Mesh* previousMesh = IsMeshGeometry(data) ? static_cast<Mesh*>(data.mesh) : nullptr;
         data.geometryType = static_cast<uint32_t>(geometry.type);
         data.extents = {};
         data.mesh = nullptr;
@@ -51,6 +61,7 @@ namespace Retooled
                 const Physics::Vec3& scale = geometry.meshGeometry.scale;
                 data.extents = {scale.x, scale.y, scale.z};
                 data.mesh = geometry.meshGeometry.mesh;
+                RetainMesh(static_cast<Mesh*>(data.mesh));
                 break;
             }
             case Physics::GeometryType::Terrain:
@@ -63,6 +74,8 @@ namespace Retooled
             default:
                 break;
         }
+
+        ReleaseMesh(previousMesh);
     }
 
     static Physics::ShapeGeometry LoadGeometry(const ShapeData& data)
@@ -97,20 +110,59 @@ namespace Retooled
         return geometry;
     }
 
-    bool ShapeMassProperties(const ShapeData& shape, float& volume, Float3& inertiaPerUnitMass)
+    static void SetDiagonal(float (&tensor)[3][3], float x, float y, float z)
+    {
+        std::memset(tensor, 0, sizeof(tensor));
+        tensor[0][0] = x;
+        tensor[1][1] = y;
+        tensor[2][2] = z;
+    }
+
+    // A scale s moves x to s x, so the covariance's (i, j) entry gains s_i s_j. The inertia of a unit mass about its
+    // centre is trace(C) I - C.
+    static bool MeshMassProperties(const ShapeData& shape, float& volume, Float3& center, float (&inertiaPerUnitMass)[3][3])
+    {
+        const Mesh* mesh = static_cast<const Mesh*>(shape.mesh);
+        if (mesh == nullptr || mesh->moments.volume <= 0.0f)
+        {
+            return false;
+        }
+
+        const MeshMoments& moments = mesh->moments;
+        const Float3& s = shape.extents;
+        volume = moments.volume * std::abs(s.x * s.y * s.z);
+        center = {moments.centroid.x * s.x, moments.centroid.y * s.y, moments.centroid.z * s.z};
+
+        const float xx = moments.covariance[0] * s.x * s.x;
+        const float yy = moments.covariance[1] * s.y * s.y;
+        const float zz = moments.covariance[2] * s.z * s.z;
+        const float xy = moments.covariance[3] * s.x * s.y;
+        const float xz = moments.covariance[4] * s.x * s.z;
+        const float yz = moments.covariance[5] * s.y * s.z;
+        inertiaPerUnitMass[0][0] = yy + zz;
+        inertiaPerUnitMass[1][1] = xx + zz;
+        inertiaPerUnitMass[2][2] = xx + yy;
+        inertiaPerUnitMass[0][1] = inertiaPerUnitMass[1][0] = -xy;
+        inertiaPerUnitMass[0][2] = inertiaPerUnitMass[2][0] = -xz;
+        inertiaPerUnitMass[1][2] = inertiaPerUnitMass[2][1] = -yz;
+        return volume > 0.0f;
+    }
+
+    bool ShapeMassProperties(const ShapeData& shape, float& volume, Float3& center, float (&inertiaPerUnitMass)[3][3])
     {
         const float pi = std::numbers::pi_v<float>;
+        center = {};
         switch (static_cast<Physics::GeometryType>(shape.geometryType))
         {
             case Physics::GeometryType::Box:
             {
                 const Float3& h = shape.extents;
                 volume = 8.0f * h.x * h.y * h.z;
-                inertiaPerUnitMass = {
+                SetDiagonal(
+                    inertiaPerUnitMass,
                     (h.y * h.y + h.z * h.z) / 3.0f,
                     (h.x * h.x + h.z * h.z) / 3.0f,
-                    (h.x * h.x + h.y * h.y) / 3.0f,
-                };
+                    (h.x * h.x + h.y * h.y) / 3.0f);
                 return true;
             }
             case Physics::GeometryType::Sphere:
@@ -118,7 +170,7 @@ namespace Retooled
                 const float r = shape.extents.x;
                 volume = 4.0f / 3.0f * pi * r * r * r;
                 const float i = 0.4f * r * r;
-                inertiaPerUnitMass = {i, i, i};
+                SetDiagonal(inertiaPerUnitMass, i, i, i);
                 return true;
             }
             case Physics::GeometryType::Capsule:
@@ -132,35 +184,42 @@ namespace Retooled
                 const float axial = cylinder * r * r / 2.0f + spheres * 0.4f * r * r;
                 const float transverse = cylinder * (h * h / 12.0f + r * r / 4.0f)
                     + spheres * (0.4f * r * r + h * h / 4.0f + 3.0f * h * r / 8.0f);
-                inertiaPerUnitMass = {axial / volume, transverse / volume, transverse / volume};
+                SetDiagonal(inertiaPerUnitMass, axial / volume, transverse / volume, transverse / volume);
                 return true;
             }
+            case Physics::GeometryType::ConvexMesh:
+            case Physics::GeometryType::TriangleMesh:
+                return MeshMassProperties(shape, volume, center, inertiaPerUnitMass);
             default:
                 return false;
         }
     }
 
+    // The half extents of the world-aligned box around a box of the given half extents.
+    static Float3 RotatedHalfExtents(const Float4& rotation, const Float3& half)
+    {
+        const Float3 x = Rotate(rotation, {half.x, 0, 0});
+        const Float3 y = Rotate(rotation, {0, half.y, 0});
+        const Float3 z = Rotate(rotation, {0, 0, half.z});
+        return {
+            std::abs(x.x) + std::abs(y.x) + std::abs(z.x),
+            std::abs(x.y) + std::abs(y.y) + std::abs(z.y),
+            std::abs(x.z) + std::abs(y.z) + std::abs(z.z),
+        };
+    }
+
     void ShapeWorldBounds(const ShapeData& shape, const Float3& bodyPosition, const Float4& bodyRotation, Float3& lower, Float3& upper)
     {
         const Float3 offset = Rotate(bodyRotation, shape.localPosition);
-        const Float3 center = {bodyPosition.x + offset.x, bodyPosition.y + offset.y, bodyPosition.z + offset.z};
+        Float3 center = {bodyPosition.x + offset.x, bodyPosition.y + offset.y, bodyPosition.z + offset.z};
         const Float4 rotation = Multiply(bodyRotation, shape.localRotation);
 
         Float3 half{};
         switch (static_cast<Physics::GeometryType>(shape.geometryType))
         {
             case Physics::GeometryType::Box:
-            {
-                const Float3 x = Rotate(rotation, {shape.extents.x, 0, 0});
-                const Float3 y = Rotate(rotation, {0, shape.extents.y, 0});
-                const Float3 z = Rotate(rotation, {0, 0, shape.extents.z});
-                half = {
-                    std::abs(x.x) + std::abs(y.x) + std::abs(z.x),
-                    std::abs(x.y) + std::abs(y.y) + std::abs(z.y),
-                    std::abs(x.z) + std::abs(y.z) + std::abs(z.z),
-                };
+                half = RotatedHalfExtents(rotation, shape.extents);
                 break;
-            }
             case Physics::GeometryType::Sphere:
                 half = {shape.extents.x, shape.extents.x, shape.extents.x};
                 break;
@@ -169,6 +228,30 @@ namespace Retooled
                 const float r = shape.extents.x;
                 const Float3 axis = Rotate(rotation, {CapsuleCylinderLength(shape) / 2.0f, 0, 0});
                 half = {std::abs(axis.x) + r, std::abs(axis.y) + r, std::abs(axis.z) + r};
+                break;
+            }
+            case Physics::GeometryType::ConvexMesh:
+            case Physics::GeometryType::TriangleMesh:
+            {
+                if (shape.mesh == nullptr)
+                {
+                    break;
+                }
+
+                const MeshData& mesh = *static_cast<const MeshData*>(shape.mesh);
+                const Float3& s = shape.extents;
+                const Float3 middle = {
+                    (mesh.lower.x + mesh.upper.x) * 0.5f * s.x,
+                    (mesh.lower.y + mesh.upper.y) * 0.5f * s.y,
+                    (mesh.lower.z + mesh.upper.z) * 0.5f * s.z,
+                };
+                const Float3 shifted = Rotate(rotation, middle);
+                center = {center.x + shifted.x, center.y + shifted.y, center.z + shifted.z};
+                half = RotatedHalfExtents(rotation, {
+                    (mesh.upper.x - mesh.lower.x) * 0.5f * std::abs(s.x),
+                    (mesh.upper.y - mesh.lower.y) * 0.5f * std::abs(s.y),
+                    (mesh.upper.z - mesh.lower.z) * 0.5f * std::abs(s.z),
+                });
                 break;
             }
             default:
@@ -185,7 +268,7 @@ namespace Retooled
         shape->data.owner = shape;
         shape->data.localRotation = {0.0f, 0.0f, 0.0f, 1.0f};
         shape->data.flags = static_cast<uint32_t>(command.flags);
-        shape->data.material = static_cast<const MaterialData*>(command.materialPtr);
+        SetShapeMaterial(shape, static_cast<MaterialData*>(command.materialPtr));
         shape->data.userData = command.userData;
         StoreGeometry(shape, command.geom);
         command.value = shape;
@@ -204,6 +287,12 @@ namespace Retooled
             MarkColliderDirty(body);
         }
 
+        if (IsMeshGeometry(shape->data))
+        {
+            ReleaseMesh(static_cast<Mesh*>(shape->data.mesh));
+        }
+
+        ReleaseMaterial(shape->data.material);
         delete shape;
     }
 
@@ -264,7 +353,7 @@ namespace Retooled
     static void SetMaterial(void* object, const Context&, ShapeCmd::SetMaterial& command)
     {
         Shape* shape = AsShape(object);
-        shape->data.material = static_cast<const MaterialData*>(command.value);
+        SetShapeMaterial(shape, static_cast<MaterialData*>(command.value));
         TouchBody(shape);
     }
 
@@ -376,18 +465,6 @@ namespace Retooled
         }
     }
 
-    static void CookCollisionMesh(void*, const Context&, ShapeCmd::CookCollisionMesh& command)
-    {
-        LogUnimplementedOnce(kShapeCategory, static_cast<uint32_t>(ShapeCmd::CookCollisionMesh::command));
-        command.onMeshReadyCallback(Physics::CookingError::Failed, "RetooledPhysics does not cook meshes yet", command.dataContext, nullptr);
-    }
-
-    static void CookCollisionMeshStream(void*, const Context&, ShapeCmd::CookCollisionMeshStream& command)
-    {
-        LogUnimplementedOnce(kShapeCategory, static_cast<uint32_t>(ShapeCmd::CookCollisionMeshStream::command));
-        command.onStreamReadyCallback(Physics::CookingError::Failed, "RetooledPhysics does not cook meshes yet", command.dataContext, nullptr, 0);
-    }
-
     static void GetGeometryType(void* object, const Context&, ShapeCmd::GetGeometryType& command)
     {
         command.value = static_cast<Physics::GeometryType>(AsShape(object)->data.geometryType);
@@ -439,15 +516,12 @@ namespace Retooled
         Bind<ShapeCmd::ShouldIgnoreCollision, ShouldIgnoreCollision>(table);
         Bind<ShapeCmd::IgnoreCollision, IgnoreCollision>(table);
         Bind<ShapeCmd::CleanupIgnoredColliders, CleanupIgnoredColliders>(table);
-        Bind<ShapeCmd::CookCollisionMesh, CookCollisionMesh>(table);
-        Bind<ShapeCmd::CookCollisionMeshStream, CookCollisionMeshStream>(table);
         Bind<ShapeCmd::GetGeometryType, GetGeometryType>(table);
         Bind<ShapeCmd::SetGeometry, SetGeometry>(table);
         Bind<ShapeCmd::GetGeometry, GetGeometry>(table);
 
-        BindStub<ShapeCmd::ExtractCollisionMeshData>(table);
-        BindStub<ShapeCmd::CreateCollisionMeshFromStream>(table);
+        BindMeshCommands(table);
+
         BindStub<ShapeCmd::CreateHeightField>(table);
-        BindStub<ShapeCmd::RemapTriangleIndexToSourceIndex>(table);
     }
 }

@@ -1,6 +1,8 @@
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
@@ -40,8 +42,10 @@ namespace KSP.Retooled.PhysicsBackend
                     continue;
                 }
 
+                // A build that throws leaves the body with its last collider, and still asking for a new one.
+                void* collider = Build(body);
                 Release(body->collider);
-                body->collider = Build(body);
+                body->collider = collider;
                 body->flags &= ~NativeStore.BodyFlags.ColliderDirty;
             }
         }
@@ -71,31 +75,39 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             var children = new NativeArray<CompoundCollider.ColliderBlobInstance>(usable, Allocator.Temp);
-            int next = 0;
-            for (int i = 0; i < body->shapeCount; i++)
+            try
             {
-                NativeStore.ShapeData* shape = body->shapes[i];
-                if (!IsSupported(shape))
+                int next = 0;
+                for (int i = 0; i < body->shapeCount; i++)
                 {
-                    continue;
+                    NativeStore.ShapeData* shape = body->shapes[i];
+                    if (!IsSupported(shape))
+                    {
+                        continue;
+                    }
+
+                    children[next++] = new CompoundCollider.ColliderBlobInstance
+                    {
+                        Collider = Create(shape, float3.zero, quaternion.identity),
+                        CompoundFromChild = new RigidTransform(shape->localRotation, shape->localPosition),
+                        Entity = new Entity { Index = i, Version = 1 },
+                    };
                 }
 
-                children[next++] = new CompoundCollider.ColliderBlobInstance
-                {
-                    Collider = Create(shape, float3.zero, quaternion.identity),
-                    CompoundFromChild = new RigidTransform(shape->localRotation, shape->localPosition),
-                    Entity = new Entity { Index = i, Version = 1 },
-                };
+                return CompoundCollider.Create(children).GetUnsafePtr();
             }
-
-            BlobAssetReference<Collider> compound = CompoundCollider.Create(children);
-            foreach (CompoundCollider.ColliderBlobInstance child in children)
+            finally
             {
-                child.Collider.Dispose();
-            }
+                foreach (CompoundCollider.ColliderBlobInstance child in children)
+                {
+                    if (child.Collider.IsCreated)
+                    {
+                        child.Collider.Dispose();
+                    }
+                }
 
-            children.Dispose();
-            return compound.GetUnsafePtr();
+                children.Dispose();
+            }
         }
 
         /// <summary>The index of the shape a body's collider stands for when it isn't a compound.</summary>
@@ -114,9 +126,20 @@ namespace KSP.Retooled.PhysicsBackend
 
         internal static bool IsSupported(NativeStore.ShapeData* shape)
         {
-            return shape->geometryType == NativeStore.GeometryBox
-                || shape->geometryType == NativeStore.GeometrySphere
-                || shape->geometryType == NativeStore.GeometryCapsule;
+            switch (shape->geometryType)
+            {
+                case NativeStore.GeometryBox:
+                case NativeStore.GeometrySphere:
+                case NativeStore.GeometryCapsule:
+                    return true;
+                case NativeStore.GeometryConvexMesh:
+                case NativeStore.GeometryTriangleMesh:
+                    return shape->mesh != null
+                        && ((NativeStore.MeshData*)shape->mesh)->triangleCount != 0
+                        && math.all(shape->extents != 0.0f);
+                default:
+                    return false;
+            }
         }
 
         private static BlobAssetReference<Collider> Create(NativeStore.ShapeData* shape, float3 center, quaternion orientation)
@@ -152,6 +175,10 @@ namespace KSP.Retooled.PhysicsBackend
                     return SphereCollider.Create(sphere, filter, material);
                 }
 
+                case NativeStore.GeometryConvexMesh:
+                case NativeStore.GeometryTriangleMesh:
+                    return CreateMesh(shape, center, orientation, filter, material);
+
                 default:
                 {
                     // The extents hold the radius and half of the cylinder's length, along local X as in PhysX.
@@ -165,6 +192,88 @@ namespace KSP.Retooled.PhysicsBackend
 
                     return CapsuleCollider.Create(capsule, filter, material);
                 }
+            }
+        }
+
+        private static BlobAssetReference<Collider> CreateMesh(
+            NativeStore.ShapeData* shape,
+            float3 center,
+            quaternion orientation,
+            CollisionFilter filter,
+            Material material)
+        {
+            void* collider = null;
+            new MeshColliderJob
+            {
+                Mesh = (NativeStore.MeshData*)shape->mesh,
+                Scale = shape->extents,
+                Center = center,
+                Orientation = orientation,
+                Filter = filter,
+                Material = material,
+                Result = &collider,
+            }.Run();
+
+            return FromPointer(collider);
+        }
+
+        /// <summary>
+        /// Builds one mesh's blob, with the shape's scale and pose baked in, since Unity Physics has neither per collider.
+        /// A job so that Burst runs it: a mesh's hierarchy or hull is far slower to build in Mono.
+        /// </summary>
+        [BurstCompile]
+        private struct MeshColliderJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public NativeStore.MeshData* Mesh;
+
+            public float3 Scale;
+            public float3 Center;
+            public quaternion Orientation;
+            public CollisionFilter Filter;
+            public Material Material;
+
+            [NativeDisableUnsafePtrRestriction]
+            public void** Result;
+
+            public void Execute()
+            {
+                int vertexCount = (int)Mesh->vertexCount;
+                var vertices = new NativeArray<float3>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    vertices[i] = Center + math.rotate(Orientation, Mesh->vertices[i] * Scale);
+                }
+
+                BlobAssetReference<Collider> collider;
+                if (Mesh->convex != 0)
+                {
+                    // PhysX collides with the hull as it stands, so nothing is rounded off or merged.
+                    ConvexHullGenerationParameters exact = new ConvexHullGenerationParameters
+                    {
+                        BevelRadius = 0.0f,
+                        SimplificationTolerance = 0.0f,
+                        MinimumAngle = 0.0f,
+                    };
+
+                    collider = ConvexCollider.Create(vertices, exact, Filter, Material);
+                }
+                else
+                {
+                    // A mirroring scale turns a triangle inside out unless its winding turns too.
+                    bool mirrored = Scale.x * Scale.y * Scale.z < 0.0f;
+                    int triangleCount = (int)Mesh->triangleCount;
+                    var triangles = new NativeArray<int3>(triangleCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    for (int i = 0; i < triangleCount; i++)
+                    {
+                        int3 triangle = Mesh->triangles[i];
+                        triangles[i] = mirrored ? triangle.xzy : triangle;
+                    }
+
+                    collider = MeshCollider.Create(vertices, triangles, Filter, Material);
+                }
+
+                *Result = collider.GetUnsafePtr();
             }
         }
 

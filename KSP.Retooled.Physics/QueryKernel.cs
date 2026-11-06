@@ -128,7 +128,7 @@ namespace KSP.Retooled.PhysicsBackend
                 },
             };
 
-            QueryCollector collector = new QueryCollector(world, input->filterOptions);
+            QueryCollector collector = new QueryCollector(world, input->filterOptions, direction);
             if (!world->Collision.CastRay(ray, ref collector))
             {
                 return 0;
@@ -136,6 +136,8 @@ namespace KSP.Retooled.PhysicsBackend
 
             hit->point = collector.Hit.Position;
             hit->normal = collector.Hit.SurfaceNormal;
+            // A hit names a primitive of the blob, which merges and reorders triangles. Nothing in the game reads the source
+            // triangle or the barycentric coordinates, so mapping back isn't worth the memory, and these stay zero.
             hit->faceId = 0;
             hit->distance = collector.Hit.Fraction * distance;
             hit->uv = float2.zero;
