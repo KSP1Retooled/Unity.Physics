@@ -304,6 +304,7 @@ namespace KSP.Retooled.PhysicsBackend
             try
             {
                 ReleaseWorld(world);
+                WorldKernel.FreeBodies(world, NativeStore.RetooledPhysics_Globals());
             }
             catch (Exception e)
             {

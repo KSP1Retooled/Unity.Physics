@@ -52,7 +52,6 @@ namespace Retooled
         kBodyGravity = 1 << 0,
         kBodyKinematic = 1 << 1,
         kBodySimulated = 1 << 2,
-        kBodyPublicFlagsMask = kBodyGravity | kBodyKinematic | kBodySimulated,
 
         kBodyStatic = 1 << 8,
         kBodySleeping = 1 << 9,
@@ -419,19 +418,13 @@ namespace Retooled
         int32_t flags = 0;
     };
 
-    // The cold half of a world, and the handle Unity holds.
+    // The cold half of a world, and the handle Unity holds. Kernels get it as a WorldData, the first field.
     struct World
     {
         WorldData data{};
         void* userData = nullptr;
         std::shared_mutex queryLock;
     };
-
-    // The body's hot row. It stays valid until a body in the same world is created or destroyed.
-    inline BodyData& Hot(Body* body)
-    {
-        return body->world->data.bodies[body->index];
-    }
 
     extern StoreGlobals g_Globals;
     extern ManagedCallbacks g_Managed;
@@ -447,24 +440,4 @@ namespace Retooled
 
     // Every world, for managed to walk when it attaches or detaches.
     extern std::vector<World*> g_Worlds;
-
-    inline void MarkQueryDirty(World* world)
-    {
-        std::atomic_ref<uint32_t>(world->data.queryDirty).store(1, std::memory_order_release);
-    }
-
-    inline void MarkPoseChanged(Body* body, uint32_t flags)
-    {
-        MarkQueryDirty(body->world);
-        if ((flags & kBodyStatic) != 0)
-        {
-            body->world->data.staticsVersion++;
-        }
-    }
-
-    inline void MarkColliderDirty(Body* body)
-    {
-        Hot(body).flags |= kBodyColliderDirty;
-        MarkPoseChanged(body, Hot(body).flags);
-    }
 }

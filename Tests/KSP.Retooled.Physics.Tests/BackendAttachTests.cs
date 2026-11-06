@@ -1,5 +1,7 @@
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace KSP.Retooled.PhysicsBackend.Tests
 {
@@ -46,6 +48,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 Assert.That(body.position, Is.EqualTo(Vector3.zero), "a detached read answers zero");
                 Assert.That(body.rotation, Is.EqualTo(Quaternion.identity), "a detached rotation is valid");
 
+                // Creating needs the core, and Unity copes with a body it wasn't given: the static one, then the dynamic one.
+                LogAssert.Expect(LogType.Error, new Regex("Could not create Rigidbody actor"));
+                LogAssert.Expect(LogType.Error, new Regex("Could not create Rigidbody actor"));
                 GameObject created = Track(new GameObject("detached"));
                 created.AddComponent<BoxCollider>();
                 created.AddComponent<Rigidbody>();

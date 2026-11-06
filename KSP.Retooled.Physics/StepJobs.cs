@@ -157,7 +157,9 @@ namespace KSP.Retooled.PhysicsBackend
                 angular = float3.zero;
                 if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0 && DeltaTime > 0.0f)
                 {
-                    linear = (body.targetPosition - body.position) / DeltaTime;
+                    // Motion velocities are those of the centre of mass, and a rotation about the body origin moves it.
+                    float3 targetCenter = body.targetPosition + math.rotate(body.targetRotation, body.localCenterOfMass);
+                    linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
                     angular = math.rotate(math.conjugate(worldFromMotion.rot), AngularVelocityTo(body.rotation, body.targetRotation));
                 }
             }
