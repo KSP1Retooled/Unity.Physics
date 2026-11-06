@@ -1,4 +1,5 @@
 using System.Linq;
+using NUnit.Framework;
 using UnityEngine;
 
 namespace KSP.Retooled.PhysicsBackend.Tests
@@ -37,6 +38,43 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Mesh mesh = Object.Instantiate(primitive.GetComponent<MeshFilter>().sharedMesh);
             Object.DestroyImmediate(primitive);
             return mesh;
+        }
+
+        /// <summary>One particle of a system that collides with the world, dropped from a point and left to fall for a second.</summary>
+        protected static ParticleSystem.Particle ParticleAfterASecond(ParticleSystem particles, Vector3 start)
+        {
+            particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particles.useAutoRandomSeed = false;
+            ParticleSystem.MainModule main = particles.main;
+            main.startLifetime = 10.0f;
+            main.startSpeed = 0.0f;
+            main.gravityModifier = 1.0f;
+            main.simulationSpace = ParticleSystemSimulationSpace.World;
+            ParticleSystem.ShapeModule shape = particles.shape;
+            shape.enabled = false;
+            ParticleSystem.EmissionModule emission = particles.emission;
+            emission.rateOverTime = 0.0f;
+            ParticleSystem.CollisionModule collision = particles.collision;
+            collision.enabled = true;
+            collision.type = ParticleSystemCollisionType.World;
+            collision.mode = ParticleSystemCollisionMode.Collision3D;
+            collision.quality = ParticleSystemCollisionQuality.High;
+            collision.bounce = 0.0f;
+            collision.dampen = 0.9f;
+            collision.radiusScale = 0.01f;
+            Physics.SyncTransforms();
+            BackendHost.SyncQueryWorlds();
+
+            particles.Play();
+            particles.Emit(new ParticleSystem.EmitParams { position = start, startSize = 0.1f, startLifetime = 10.0f, applyShapeToPosition = false }, 1);
+            for (int i = 0; i < 50; i++)
+            {
+                particles.Simulate(0.02f, true, false, false);
+            }
+
+            ParticleSystem.Particle[] alive = new ParticleSystem.Particle[1];
+            Assert.That(particles.GetParticles(alive), Is.EqualTo(1));
+            return alive[0];
         }
 
         protected GameObject MeshObject(Mesh mesh, Vector3 position, bool convex)

@@ -535,6 +535,7 @@ namespace KSP.Retooled.PhysicsBackend
             BodyCastAll = 9,
             ClosestPoint = 10,
             Penetration = 11,
+            CastAgainstShape = 12,
         }
 
         [StructLayout(LayoutKind.Sequential)]

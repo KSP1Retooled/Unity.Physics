@@ -114,6 +114,13 @@ namespace Retooled
         std::memcpy(static_cast<void*>(&hit), &output.hit, sizeof(hit));
     }
 
+    // A hit on a shape the caller named comes from the live record, which the query function doesn't read ids from.
+    static void CopyEngineObjectId(const Shape* shape, Physics::QueryHit& hit)
+    {
+        const char* owner = static_cast<const char*>(shape->data.userData);
+        std::memcpy(&hit.userData, owner + g_Globals.engineObjectIdOffset, sizeof(hit.userData));
+    }
+
     static void PackFilter(QueryInput& input, const Physics::QueryFilterData& filter)
     {
         input.layerMask = filter.mask;
@@ -190,8 +197,7 @@ namespace Retooled
         if (Query(WorldOf(shape), kQueryRayAgainstShape, input, output))
         {
             CopyHit(output, command.hit);
-            const char* owner = static_cast<const char*>(shape->data.userData);
-            std::memcpy(&command.hit.userData, owner + g_Globals.engineObjectIdOffset, sizeof(command.hit.userData));
+            CopyEngineObjectId(shape, command.hit);
             command.hitCount = 1;
         }
     }
@@ -349,10 +355,28 @@ namespace Retooled
         }
     }
 
-    template <typename T>
-    static void BindStub(FunctionBinding* table)
+    // Sweeps the geometry against the one shape the command addresses, which is how particles collide once the broadphase
+    // has named the shapes near them.
+    static void ShapeCastAgainstShape(void* object, const Context& ctx, QueryData::ShapeCastAgainstShape& command)
     {
-        table[static_cast<size_t>(T::command)] = &ZeroedStub<T, kQueryCategory>;
+        command.hitCount = 0;
+
+        Shape* shape = static_cast<Shape*>(object);
+        QueryInput input{};
+        PackGeometry(input, command.targetGeometry, command.targetPose);
+        PackFilter(input, command.filter);
+        input.direction = ToFloat3(command.direction);
+        input.maxDistance = command.maxDistance;
+        input.keepInitialOverlaps = command.distanceAsDepth ? 1 : 0;
+        input.shape = shape;
+
+        QueryOutput output{};
+        if (Query(ctx.world != nullptr ? static_cast<World*>(ctx.world) : WorldOf(shape), kQueryCastAgainstShape, input, output))
+        {
+            CopyHit(output, command.hit);
+            CopyEngineObjectId(shape, command.hit);
+            command.hitCount = 1;
+        }
     }
 
     void BindQueryCommands(FunctionBinding* table)
@@ -370,6 +394,6 @@ namespace Retooled
         table[static_cast<size_t>(QueryData::ClosestPointOnShape::command)] = &Bound<QueryData::ClosestPointOnShape, ClosestPointOnShape>;
         table[static_cast<size_t>(QueryData::ComputeShapePenetration::command)] = &Bound<QueryData::ComputeShapePenetration, ComputeShapePenetration>;
 
-        BindStub<QueryData::ShapeCastAgainstShape>(table);
+        table[static_cast<size_t>(QueryData::ShapeCastAgainstShape::command)] = &Bound<QueryData::ShapeCastAgainstShape, ShapeCastAgainstShape>;
     }
 }

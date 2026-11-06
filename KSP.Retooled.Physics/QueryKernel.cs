@@ -204,6 +204,8 @@ namespace KSP.Retooled.PhysicsBackend
                     return ClosestPoint(input, output);
                 case NativeStore.QueryKind.Penetration:
                     return Penetration(input, output);
+                case NativeStore.QueryKind.CastAgainstShape:
+                    return CastAgainstShape(input, output);
                 default:
                     return 0;
             }
@@ -296,7 +298,7 @@ namespace KSP.Retooled.PhysicsBackend
             RigidTransform colliderFromWorld = math.inverse(worldFromCollider);
             float3 direction = math.rotate(colliderFromWorld.rot, worldDirection);
             float3 origin = math.transform(colliderFromWorld, input->position);
-            var collector = new SingleShapeRayCollector(collider, input->filterOptions, direction);
+            var collector = new SingleShapeCollector<RaycastHit>(collider, input->filterOptions, direction);
             collider->CastRay(new RaycastInput { Start = origin, End = origin + direction * distance, Filter = CollisionFilter.Default }, ref collector);
             if (collector.NumHits == 0)
             {
@@ -445,9 +447,11 @@ namespace KSP.Retooled.PhysicsBackend
                 QueryHitRules.Sweep,
                 groupByShape: true);
 
-            world->Collision.CastCollider(CastInput(collider, input->position, input->rotation, direction, distance), ref collector);
-            collector.Finish();
-            ref ClosestSink<ColliderCastHit> sink = ref collector.Sink;
+            ColliderCastInput cast = CastInput(collider, input->position, input->rotation, direction, distance);
+            var refined = new RefinedCastCollector<QueryCollector<ColliderCastHit, ClosestSink<ColliderCastHit>>>(world, collector, cast);
+            world->Collision.CastCollider(cast, ref refined);
+            refined.Inner.Finish();
+            ref ClosestSink<ColliderCastHit> sink = ref refined.Inner.Sink;
             if (sink.Shape == null)
             {
                 return 0;
@@ -477,8 +481,10 @@ namespace KSP.Retooled.PhysicsBackend
                 groupByShape: true,
                 keepInitialOverlaps: input->keepInitialOverlaps != 0);
 
-            world->Collision.CastCollider(CastInput(collider, input->position, input->rotation, direction, distance), ref collector);
-            collector.Finish();
+            ColliderCastInput cast = CastInput(collider, input->position, input->rotation, direction, distance);
+            var refined = new RefinedCastCollector<QueryCollector<ColliderCastHit, CastListSink>>(world, collector, cast);
+            world->Collision.CastCollider(cast, ref refined);
+            refined.Inner.Finish();
         }
 
         private static CastListSink ListSink(NativeStore.QueryInput* input, float3 direction, float distance)
@@ -525,9 +531,11 @@ namespace KSP.Retooled.PhysicsBackend
                 groupByShape: true,
                 ignoredBody: input->body);
 
-            world->Collision.CastCollider(CastInput(collider, worldFromCollider.pos, worldFromCollider.rot, direction, distance), ref collector);
-            collector.Finish();
-            sink = collector.Sink;
+            ColliderCastInput cast = CastInput(collider, worldFromCollider.pos, worldFromCollider.rot, direction, distance);
+            var refined = new RefinedCastCollector<QueryCollector<ColliderCastHit, S>>(world, collector, cast);
+            world->Collision.CastCollider(cast, ref refined);
+            refined.Inner.Finish();
+            sink = refined.Inner.Sink;
         }
 
         private static int CastBody(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
@@ -570,6 +578,66 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 CastShape(world, input, (NativeStore.Shape*)body->shapes[i], ref sink, direction, distance);
             }
+        }
+
+        /// <summary>
+        /// Sweeps a geometry against one shape. A geometry already in the shape is an overlap, which the caller either doesn't
+        /// want, or wants as PhysX's minimum translation: the normal of the shortest way out, and the depth as a negative distance.
+        /// </summary>
+        private static int CastAgainstShape(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        {
+            float3 worldDirection = math.normalizesafe(input->direction);
+            float distance = LengthOf(input);
+            PrimitiveCollider swept = default;
+            PrimitiveCollider primitive = default;
+            Collider* query = swept.Initialize(input->geometryType, input->extents, CollisionFilter.Default);
+            Collider* target = ColliderOf(input->shape, ref primitive, WorldPose(input->shape), out RigidTransform worldFromTarget);
+            if (query == null || target == null || !IsCast(input, worldDirection))
+            {
+                return 0;
+            }
+
+            RigidTransform targetFromWorld = math.inverse(worldFromTarget);
+            float3 direction = math.rotate(targetFromWorld.rot, worldDirection);
+            float3 start = math.transform(targetFromWorld, input->position);
+            quaternion rotation = math.mul(targetFromWorld.rot, input->rotation);
+            var collector = new SingleShapeCollector<ColliderCastHit>(target, input->filterOptions, direction, keepOverlaps: input->keepInitialOverlaps != 0);
+            target->CastCollider(CastInput(query, start, rotation, direction, distance), ref collector);
+            if (collector.NumHits == 0)
+            {
+                return 0;
+            }
+
+            ColliderCastHit hit = collector.Hit;
+            float3 point = hit.Position;
+            float3 normal = collector.Backface ? -hit.SurfaceNormal : hit.SurfaceNormal;
+            float reported = hit.Fraction * distance;
+            if (hit.Fraction <= 0.0f)
+            {
+                var deepest = new ClosestHitCollector<DistanceHit>(TouchDistance);
+                ColliderDistanceInput overlap = new ColliderDistanceInput
+                {
+                    Collider = query,
+                    Transform = new RigidTransform(rotation, start),
+                    MaxDistance = TouchDistance,
+                    Scale = 1.0f,
+                };
+
+                target->CalculateDistance(overlap, ref deepest);
+                point = deepest.ClosestHit.Position;
+                normal = deepest.ClosestHit.SurfaceNormal;
+                reported = math.min(deepest.ClosestHit.Fraction, 0.0f);
+            }
+
+            output->hit = new NativeStore.RayCastHit
+            {
+                point = math.transform(worldFromTarget, point),
+                normal = math.rotate(worldFromTarget.rot, normal),
+                faceId = input->shape->data.geometryType == NativeStore.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
+                distance = reported,
+            };
+
+            return 1;
         }
 
         private static int ClosestPoint(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)

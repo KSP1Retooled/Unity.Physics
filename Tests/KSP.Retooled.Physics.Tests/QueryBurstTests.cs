@@ -93,6 +93,10 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             command[0] = new OverlapSphereCommand(new Vector3(0.0f, 0.0f, 4.0f), 1.0f, QueryParameters.Default);
             OverlapSphereCommand.ScheduleBatch(commands, hits, 1, 2).Complete();
             Assert.That(hits[0].collider, Is.SameAs(box));
+
+            Box(new Vector3(0.0f, -20.0f, 0.0f), new Vector3(20.0f, 1.0f, 20.0f));
+            ParticleSystem particles = Track(new GameObject("particles")).AddComponent<ParticleSystem>();
+            Assert.That(ParticleAfterASecond(particles, new Vector3(0.0f, -18.0f, 0.0f)).position.y, Is.EqualTo(-19.5f).Within(0.1f));
         }
     }
 }

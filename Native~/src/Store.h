@@ -432,6 +432,7 @@ namespace Retooled
         kQueryBodyCastAll = 9,
         kQueryClosestPoint = 10,
         kQueryPenetration = 11,
+        kQueryCastAgainstShape = 12,
     };
 
     // Mirrored. A query's input. What a kind doesn't use stays zero. A geometry reads as a ShapeData's does: the type and the

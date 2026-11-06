@@ -218,6 +218,24 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void ParticlesLandOnAWorldCollider()
+        {
+            Box(new Vector3(0.0f, -2.0f, 0.0f), new Vector3(20.0f, 1.0f, 20.0f));
+            ParticleSystem particles = Track(new GameObject("particles")).AddComponent<ParticleSystem>();
+
+            Assert.That(ParticleAfterASecond(particles, Vector3.zero).position.y, Is.EqualTo(-1.5f).Within(0.1f));
+        }
+
+        [Test]
+        public void ParticlesStartingInAColliderComeOutOfIt()
+        {
+            Box(new Vector3(0.0f, -2.0f, 0.0f), new Vector3(20.0f, 1.0f, 20.0f));
+            ParticleSystem particles = Track(new GameObject("particles")).AddComponent<ParticleSystem>();
+
+            Assert.That(ParticleAfterASecond(particles, new Vector3(0.0f, -1.6f, 0.0f)).position.y, Is.EqualTo(-1.5f).Within(0.01f));
+        }
+
+        [Test]
         public void AnOverlapFromAJobSkipsAColliderDestroyedWithoutASync()
         {
             GameObject near = Box(Vector3.zero, Vector3.one);

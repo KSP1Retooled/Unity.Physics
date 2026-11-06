@@ -321,21 +321,118 @@ namespace KSP.Retooled.PhysicsBackend
         }
     }
 
-    /// <summary>A ray against one shape, which PhysX treats like a ray against the scene that holds only that shape.</summary>
-    internal unsafe struct SingleShapeRayCollector : ICollector<RaycastHit>
+    /// <summary>
+    /// Holds a cast to the contact it reports. Unity Physics gives up on a cast after ten advances and calls wherever that left
+    /// it a hit, which a cast grazing a shape can reach well short of the shape or without ever touching it. Casting on from
+    /// there against that one leaf either arrives or finds that the query passes by, in which case there was no hit.
+    /// </summary>
+    internal unsafe struct RefinedCastCollector<C> : ICollector<ColliderCastHit>
+        where C : struct, ICollector<ColliderCastHit>
     {
-        internal RaycastHit Hit;
+        // Each pass is another ten advances.
+        private const int MaxPasses = 4;
+
+        internal C Inner;
+
+        private readonly NativeArray<RigidBody> bodies;
+        private readonly Collider* query;
+        private readonly quaternion orientation;
+        private readonly float3 start;
+        private readonly float3 end;
+
+        internal RefinedCastCollector(QueryWorld* world, C inner, ColliderCastInput input)
+        {
+            Inner = inner;
+            bodies = world->Collision.Bodies;
+            query = input.Collider;
+            orientation = input.Orientation;
+            start = input.Start;
+            end = input.End;
+        }
+
+        public bool EarlyOutOnFirstHit => Inner.EarlyOutOnFirstHit;
+
+        public float MaxFraction => Inner.MaxFraction;
+
+        public int NumHits => Inner.NumHits;
+
+        public bool AddHit(ColliderCastHit hit)
+        {
+            if (hit.Fraction > 0.0f && !Refine(ref hit))
+            {
+                return false;
+            }
+
+            return Inner.AddHit(hit);
+        }
+
+        private bool Refine(ref ColliderCastHit hit)
+        {
+            RigidBody body = bodies[hit.RigidBodyIndex];
+            if (!Collider.GetLeafCollider(out ChildCollider leaf, (Collider*)body.Collider.GetUnsafePtr(), hit.ColliderKey, body.WorldFromBody))
+            {
+                return true;
+            }
+
+            RigidTransform worldFromLeaf = leaf.TransformFromChild;
+            RigidTransform leafFromWorld = math.inverse(worldFromLeaf);
+            float3 from = math.transform(leafFromWorld, start);
+            float3 to = math.transform(leafFromWorld, end);
+            quaternion rotation = math.mul(leafFromWorld.rot, orientation);
+            float fraction = hit.Fraction;
+            for (int pass = 0; pass < MaxPasses; pass++)
+            {
+                ColliderCastInput onward = new ColliderCastInput
+                {
+                    Collider = query,
+                    Orientation = rotation,
+                    Start = math.lerp(from, to, fraction),
+                    End = to,
+                };
+
+                var closest = new ClosestHitCollector<ColliderCastHit>(1.0f);
+                if (!leaf.Collider->CastCollider(onward, ref closest))
+                {
+                    return false;
+                }
+
+                ColliderCastHit found = closest.ClosestHit;
+                hit.Position = math.transform(worldFromLeaf, found.Position);
+                hit.SurfaceNormal = math.rotate(worldFromLeaf.rot, found.SurfaceNormal);
+                if (found.Fraction <= 0.0f)
+                {
+                    break;
+                }
+
+                fraction += (1.0f - fraction) * found.Fraction;
+                hit.Fraction = fraction;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A ray or a cast against one shape, which PhysX treats like a query of a scene that holds only that shape. A ray that
+    /// starts inside the shape misses it, and a cast that does reports the overlap only if asked to keep overlaps.
+    /// </summary>
+    internal unsafe struct SingleShapeCollector<T> : ICollector<T>
+        where T : unmanaged, IQueryResult
+    {
+        internal T Hit;
         internal bool Backface;
 
         private readonly Collider* root;
         private readonly uint filterOptions;
         private readonly float3 direction;
+        private readonly bool keepOverlaps;
 
-        internal SingleShapeRayCollector(Collider* root, uint filterOptions, float3 direction)
+        internal SingleShapeCollector(Collider* root, uint filterOptions, float3 direction, bool keepOverlaps = false)
         {
             this.root = root;
             this.filterOptions = filterOptions;
             this.direction = direction;
+            this.keepOverlaps = keepOverlaps;
             Hit = default;
             Backface = false;
             MaxFraction = 1.0f;
@@ -348,9 +445,9 @@ namespace KSP.Retooled.PhysicsBackend
 
         public int NumHits { get; private set; }
 
-        public bool AddHit(RaycastHit hit)
+        public bool AddHit(T hit)
         {
-            if (hit.Fraction <= 0.0f)
+            if (hit.Fraction <= 0.0f && !keepOverlaps)
             {
                 return false;
             }
