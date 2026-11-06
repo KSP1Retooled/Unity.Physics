@@ -14,11 +14,41 @@ namespace KSP.Retooled.PhysicsBackend.Tests
     public class StepThreadTests : PhysicsScene
     {
         private const double PhaseSeconds = 10.0;
+        private const double KernelCompileSeconds = 120.0;
 
         [SetUp]
         public void RequireTheBackend()
         {
             Assume.That(BackendInfo.IsRetooled, "needs --backend retooled");
+        }
+
+        /// <summary>
+        /// One command of each kernel. A kernel that Burst refused would stay in Mono for good with nothing else to show it,
+        /// and a player build would fail on the same error.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator EveryKernelLeavesMonoOnceItsCompileLands()
+        {
+            Assume.That(BurstCompiler.IsEnabled, "this run has Burst off");
+
+            Rigidbody body = WeightlessBox(Vector3.zero);
+            Collider collider = body.GetComponent<Collider>();
+            Stopwatch wait = Stopwatch.StartNew();
+            while (true)
+            {
+                long before = BackendHost.ManagedCommands;
+                body.linearVelocity = Vector3.right;
+                collider.isTrigger = !collider.isTrigger;
+                Object.DestroyImmediate(Box(new Vector3(5.0f, 0.0f, 0.0f), Vector3.one));
+                if (BackendHost.ManagedCommands == before)
+                {
+                    Debug.Log($"Kernels in Burst after {wait.Elapsed.TotalSeconds:F1} s here, {before} commands ran in Mono before that");
+                    yield break;
+                }
+
+                Assert.That(wait.Elapsed.TotalSeconds, Is.LessThan(KernelCompileSeconds), "the kernels are still in Mono");
+                yield return null;
+            }
         }
 
         [Test]

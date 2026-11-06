@@ -24,6 +24,7 @@ namespace Retooled
 
     static IUnityLog* s_Log;
     static bool s_Registered;
+    static std::atomic<bool> s_Attached;
 
     static std::array<FunctionBinding, static_cast<size_t>(PhysicsCommands::SDK::Count)> s_Sdk;
     static std::array<FunctionBinding, static_cast<size_t>(PhysicsCommands::World::Count)> s_World;
@@ -119,7 +120,7 @@ namespace Retooled
     static void ProcessCommand(void* object, const Context& ctx, const uint32_t function, Command& command)
     {
         const uint32_t id = function & kReverseFullMask;
-        if (g_Managed.simulate == nullptr)
+        if (!s_Attached.load(std::memory_order_relaxed))
         {
             NoteDetachedCommand((function & kFullMask) >> kMaskOffsetSize, id);
         }
@@ -244,6 +245,7 @@ namespace Retooled
         }
 
         g_MainThread = std::this_thread::get_id();
+        s_Attached.store(true, std::memory_order_relaxed);
         LogDetachedCommands();
         FinishQueuedMeshes();
     }
@@ -255,6 +257,7 @@ namespace Retooled
 
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_Detach()
     {
+        s_Attached.store(false, std::memory_order_relaxed);
         {
             std::unique_lock lock(g_MeshLock);
             g_Managed = {};

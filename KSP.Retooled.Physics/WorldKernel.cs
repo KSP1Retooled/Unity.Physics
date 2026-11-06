@@ -83,6 +83,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
         {
             ranInMono = true;
+            BackendHost.NoteManagedCommand();
             try
             {
                 Execute((WorldCommand)command, (NativeStore.WorldData*)handle, args, globals);

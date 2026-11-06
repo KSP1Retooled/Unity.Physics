@@ -13,7 +13,7 @@ namespace KSP.Retooled.PhysicsBackend
     /// <summary>
     /// Connects the managed core to the plugin. The plugin's store outlives a domain reload and everything managed holds
     /// can be rebuilt from it, so a reload is a detach, which frees managed state, followed by an attach. Until then the
-    /// plugin answers with no simulation and no hits.
+    /// plugin answers with no simulation and no hits, and every command that needs the core is a no-op answering zero.
     /// </summary>
     /// <remarks>
     /// The player runs on Mono, so the callbacks are delegates kept alive in statics and marked for reverse P/Invoke.
@@ -39,6 +39,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static long managedJobRuns;
         private static long managedQueries;
         private static long managedCooks;
+        private static long managedCommands;
 
         /// <summary>
         /// Bodies a force job has handled in its Mono form, which it runs until the async Burst compile has delivered it.
@@ -50,6 +51,9 @@ namespace KSP.Retooled.PhysicsBackend
 
         /// <summary>Mesh cooks that ran in Mono, which they do until the async Burst compile has delivered the cook function.</summary>
         public static long ManagedCooks => Interlocked.Read(ref managedCooks);
+
+        /// <summary>Body, shape and world commands that ran in Mono, which they do until the async Burst compile has delivered their kernels.</summary>
+        public static long ManagedCommands => Interlocked.Read(ref managedCommands);
 
         /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
         public static int LastStepThreadId { get; private set; }
@@ -145,6 +149,11 @@ namespace KSP.Retooled.PhysicsBackend
         internal static void NoteManagedCook()
         {
             Interlocked.Increment(ref managedCooks);
+        }
+
+        internal static void NoteManagedCommand()
+        {
+            Interlocked.Increment(ref managedCommands);
         }
 
         internal static void NoteManagedQuery()
