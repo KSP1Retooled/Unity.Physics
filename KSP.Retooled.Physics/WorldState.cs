@@ -36,6 +36,8 @@ namespace KSP.Retooled.PhysicsBackend
         private NativeList<ManifoldRecord> manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
         private NativeList<ManifoldPoint> manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
         private NativeHashMap<ShapePairKey, ShapePairState> touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+        private NativeHashMap<PersistentManifoldKey, float> lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
+        private NativeHashMap<JacobianKey, float2> warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
         private uint stepCount;
         private uint builtStaticsVersion;
         private uint builtMaterialVersion;
@@ -78,6 +80,8 @@ namespace KSP.Retooled.PhysicsBackend
             manifolds.Dispose();
             manifoldPoints.Dispose();
             touching.Dispose();
+            lastImpulses.Dispose();
+            warmStarts.Dispose();
         }
 
         /// <summary>One simulation step: integrate forces, build, solve, write back.</summary>
@@ -134,6 +138,7 @@ namespace KSP.Retooled.PhysicsBackend
                 Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
                 Records = manifolds,
                 Points = manifoldPoints,
+                LastImpulses = lastImpulses,
                 DeltaTime = deltaTime,
             }.Schedule(singleton, ref world, built);
 
@@ -145,7 +150,15 @@ namespace KSP.Retooled.PhysicsBackend
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
             }.Schedule(built);
 
+            built = new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
             built = simulation.ScheduleCreateJacobiansJobs(input, built).FinalExecutionHandle;
+            built = new WarmStartJob
+            {
+                WarmStarts = warmStarts,
+                Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
+                MotionCount = dynamicIndices.Length,
+            }.Schedule(singleton, ref world, built);
+
             simulation.ScheduleSolveAndIntegrateJobs(input, built);
             simulation.FinalJobHandle.Complete();
 
@@ -170,6 +183,8 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 new ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
             }
+
+            new RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
 
             new PublishContactsJob
             {

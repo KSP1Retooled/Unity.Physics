@@ -283,15 +283,8 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static Material MaterialOf(NativeStore.ShapeData* shape)
         {
-            NativeStore.MaterialData* source = shape->material;
-            Material material = new Material
-            {
-                Friction = source->dynamicFriction,
-                Restitution = source->bounciness,
-                FrictionCombinePolicy = CombinePolicy(source->frictionCombine),
-                RestitutionCombinePolicy = CombinePolicy(source->bounceCombine),
-            };
-
+            // Friction and restitution are set per manifold by ReadContactsJob, which sees both shapes.
+            Material material = default;
             if (shape->collidesWith == 0)
             {
                 material.CollisionResponse = CollisionResponsePolicy.None;
@@ -311,22 +304,6 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             return material;
-        }
-
-        // Unity Physics has no multiply; the geometric mean is the closest of its policies.
-        private static Material.CombinePolicy CombinePolicy(uint mode)
-        {
-            switch (mode)
-            {
-                case NativeStore.CombineMinimum:
-                    return Material.CombinePolicy.Minimum;
-                case NativeStore.CombineMaximum:
-                    return Material.CombinePolicy.Maximum;
-                case NativeStore.CombineMultiply:
-                    return Material.CombinePolicy.GeometricMean;
-                default:
-                    return Material.CombinePolicy.ArithmeticMean;
-            }
         }
     }
 }

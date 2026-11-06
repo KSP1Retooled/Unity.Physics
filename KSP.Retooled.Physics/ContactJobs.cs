@@ -35,6 +35,11 @@ namespace KSP.Retooled.PhysicsBackend
         public float3 LinearVelocityB;
         public float3 AngularVelocityB;
 
+        // As the narrow phase gave it, which is how the solver's jacobian knows it.
+        public float3 BuiltNormal;
+
+        // What the solve starts from and what it ended on; the first is left out of what the solver's event says.
+        public float WarmImpulse;
         public float Impulse;
         public bool Touching;
         public bool Trigger;
@@ -63,6 +68,57 @@ namespace KSP.Retooled.PhysicsBackend
         public override int GetHashCode()
         {
             return (int)math.hash(new int4(BodyA, BodyB, (int)KeyA, (int)KeyB));
+        }
+    }
+
+    /// <summary>What identifies a manifold from one step to the next, when bodies have moved in the built world.</summary>
+    internal unsafe struct PersistentManifoldKey : IEquatable<PersistentManifoldKey>
+    {
+        public NativeStore.ShapeData* ShapeA;
+        public NativeStore.ShapeData* ShapeB;
+        public uint KeyA;
+        public uint KeyB;
+
+        internal static PersistentManifoldKey Of(ref ManifoldRecord record)
+        {
+            return new PersistentManifoldKey
+            {
+                ShapeA = record.ShapeA,
+                ShapeB = record.ShapeB,
+                KeyA = record.BuiltKeys.ColliderKeyA.Value,
+                KeyB = record.BuiltKeys.ColliderKeyB.Value,
+            };
+        }
+
+        public bool Equals(PersistentManifoldKey other)
+        {
+            return ShapeA == other.ShapeA && ShapeB == other.ShapeB && KeyA == other.KeyA && KeyB == other.KeyB;
+        }
+
+        public override int GetHashCode()
+        {
+            return ((IntPtr)ShapeA).GetHashCode() * 397 ^ ((IntPtr)ShapeB).GetHashCode() * 31 ^ (int)math.hash(new uint2(KeyA, KeyB));
+        }
+    }
+
+    /// <summary>
+    /// What finds a manifold from its jacobian, which names its bodies but not its colliders. Manifolds of one body pair with
+    /// the same normal, such as a box on two coplanar triangles, come to one key and share out their impulse.
+    /// </summary>
+    internal struct JacobianKey : IEquatable<JacobianKey>
+    {
+        public int BodyA;
+        public int BodyB;
+        public float3 Normal;
+
+        public bool Equals(JacobianKey other)
+        {
+            return BodyA == other.BodyA && BodyB == other.BodyB && Normal.Equals(other.Normal);
+        }
+
+        public override int GetHashCode()
+        {
+            return (int)math.hash(new int2(BodyA, BodyB)) ^ Normal.GetHashCode();
         }
     }
 
@@ -99,11 +155,16 @@ namespace KSP.Retooled.PhysicsBackend
     /// <summary>
     /// Runs between the narrow phase and the solver over every point of every manifold. Physics.IgnoreCollision acts here,
     /// because a manifold names the leaves that touched, so the pairs of a compound can be told apart, which a filter on body
-    /// pairs can't do. The manifolds it keeps are what the step's events and sleeping work from.
+    /// pairs can't do. So do friction and restitution, which need both shapes' materials and the points that touched. The
+    /// manifolds it keeps are what the step's events and sleeping work from.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadContactsJob : IContactsJob
     {
+        // Measured against PhysX: a 0.015 m box slides on one anchor and a 0.02 m box on two, and their diagonals are 0.021 m
+        // and 0.028 m. Points nearer each other than this share an anchor.
+        private const float FrictionOffsetThreshold = 0.025f;
+
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.BodyData* Store;
 
@@ -119,6 +180,9 @@ namespace KSP.Retooled.PhysicsBackend
         [NativeDisableContainerSafetyRestriction]
         public NativeList<ManifoldPoint> Points;
 
+        [ReadOnly]
+        public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
+
         public float DeltaTime;
 
         private bool skipping;
@@ -131,9 +195,15 @@ namespace KSP.Retooled.PhysicsBackend
                 skipping = !Begin(ref header);
             }
 
-            if (!skipping)
+            if (skipping)
             {
-                Add(contact.Position, contact.Distance);
+                return;
+            }
+
+            Add(contact.Position, contact.Distance);
+            if (contact.Index == header.NumContacts - 1)
+            {
+                SetCoefficients(ref header, ref Records.ElementAt(Records.Length - 1));
             }
         }
 
@@ -177,6 +247,7 @@ namespace KSP.Retooled.PhysicsBackend
                 BuiltKeys = new ColliderKeyPair { ColliderKeyA = header.ColliderKeyA, ColliderKeyB = header.ColliderKeyB },
                 FirstPoint = Points.Length,
                 Normal = normal,
+                BuiltNormal = header.Normal,
                 LinearVelocityA = first.linearVelocity,
                 AngularVelocityA = first.angularVelocity,
                 LinearVelocityB = second.linearVelocity,
@@ -197,6 +268,105 @@ namespace KSP.Retooled.PhysicsBackend
             // reports next step. The pair touches in the step that spends the impact, so that its event carries the impulse.
             float closing = record.Trigger ? 0.0f : math.max(ClosingSpeed(ref record, position), 0.0f);
             record.Touching |= distance - closing * DeltaTime <= touchDistance;
+        }
+
+        /// <summary>
+        /// Gives a manifold the coefficients PhysX would solve it with. A material pair can't say this: Unity Physics has no
+        /// multiply, ranks the combine modes differently and keeps one friction, and only here is the number of anchors known.
+        /// </summary>
+        private void SetCoefficients(ref ModifiableContactHeader header, ref ManifoldRecord record)
+        {
+            if (record.Trigger)
+            {
+                return;
+            }
+
+            NativeStore.MaterialData* a = record.ShapeA->material;
+            NativeStore.MaterialData* b = record.ShapeB->material;
+            float anchors = FrictionAnchors(ref record);
+            float dynamicFriction = Combine(a->dynamicFriction, b->dynamicFriction, a->frictionCombine, b->frictionCombine);
+            float staticFriction = Combine(a->staticFriction, b->staticFriction, a->frictionCombine, b->frictionCombine);
+
+            bool sticks = InFrictionCone(ref record, anchors * staticFriction);
+            header.CoefficientOfFriction = anchors * (sticks ? staticFriction : dynamicFriction);
+            header.CoefficientOfRestitution = Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine);
+
+            // With substeps, a bouncy contact's rows stay shut until it bounces, so they couldn't take back a warm start.
+            if (header.CoefficientOfRestitution <= 0.0f)
+            {
+                LastImpulses.TryGetValue(PersistentManifoldKey.Of(ref record), out record.WarmImpulse);
+            }
+        }
+
+        /// <summary>
+        /// PhysX anchors a patch's friction at its first point and the point farthest from it, and each anchor may spend the
+        /// coefficient times the patch's whole normal impulse. So a patch with two anchors holds twice what the coefficient
+        /// says, a sphere's single point holds what it says, and Unity Physics' one row at the manifold's centre is given the
+        /// sum of the two.
+        /// </summary>
+        private float FrictionAnchors(ref ManifoldRecord record)
+        {
+            float3 first = Points[record.FirstPoint].Position;
+            float farthest = 0.0f;
+            for (int i = 1; i < record.PointCount; i++)
+            {
+                farthest = math.max(farthest, math.distancesq(first, Points[record.FirstPoint + i].Position));
+            }
+
+            return farthest > FrictionOffsetThreshold * FrictionOffsetThreshold ? 2.0f : 1.0f;
+        }
+
+        /// <summary>
+        /// Whether this step's velocities stay inside the cone of a coefficient, which decides between static and dynamic
+        /// friction. PhysX decides it by the impulse the solve asks for. Both impulses would stop their own velocity through
+        /// the same effective mass, so comparing the velocities at the patch's centre comes to the same thing.
+        /// </summary>
+        private bool InFrictionCone(ref ManifoldRecord record, float coefficient)
+        {
+            float3 center = float3.zero;
+            for (int i = 0; i < record.PointCount; i++)
+            {
+                center += Points[record.FirstPoint + i].Position;
+            }
+
+            center /= record.PointCount;
+            float3 velocityA = PointVelocity(ref Store[record.RowA], record.LinearVelocityA, record.AngularVelocityA, center);
+            float3 velocityB = PointVelocity(ref Store[record.RowB], record.LinearVelocityB, record.AngularVelocityB, center);
+            float3 relative = velocityB - velocityA;
+            float closing = math.dot(relative, record.Normal);
+            float3 sliding = relative - closing * record.Normal;
+            return math.lengthsq(sliding) <= math.square(coefficient * math.max(closing, 0.0f));
+        }
+
+        /// <summary>PhysX's rule for a pair: the mode that ranks higher wins, and maximum outranks multiply, minimum, average.</summary>
+        private static float Combine(float a, float b, uint modeA, uint modeB)
+        {
+            switch (CombineRank(modeA) >= CombineRank(modeB) ? modeA : modeB)
+            {
+                case NativeStore.CombineMaximum:
+                    return math.max(a, b);
+                case NativeStore.CombineMultiply:
+                    return a * b;
+                case NativeStore.CombineMinimum:
+                    return math.min(a, b);
+                default:
+                    return (a + b) * 0.5f;
+            }
+        }
+
+        private static int CombineRank(uint mode)
+        {
+            switch (mode)
+            {
+                case NativeStore.CombineMaximum:
+                    return 3;
+                case NativeStore.CombineMultiply:
+                    return 2;
+                case NativeStore.CombineMinimum:
+                    return 1;
+                default:
+                    return 0;
+            }
         }
 
         private float ClosingSpeed(ref ManifoldRecord record, float3 position)
@@ -242,6 +412,125 @@ namespace KSP.Retooled.PhysicsBackend
     }
 
     /// <summary>
+    /// Finds each warm start its jacobian's key, once the step's manifolds are known. The value holds the impulse and the
+    /// number of contact points that share it.
+    /// </summary>
+    [BurstCompile]
+    internal struct IndexWarmStartsJob : IJob
+    {
+        [ReadOnly]
+        [NativeDisableContainerSafetyRestriction]
+        public NativeList<ManifoldRecord> Records;
+
+        public NativeHashMap<JacobianKey, float2> WarmStarts;
+
+        public void Execute()
+        {
+            WarmStarts.Clear();
+            for (int i = 0; i < Records.Length; i++)
+            {
+                ManifoldRecord record = Records[i];
+                if (record.WarmImpulse <= 0.0f)
+                {
+                    continue;
+                }
+
+                JacobianKey key = new JacobianKey
+                {
+                    BodyA = record.BuiltPair.BodyIndexA,
+                    BodyB = record.BuiltPair.BodyIndexB,
+                    Normal = record.BuiltNormal,
+                };
+
+                WarmStarts.TryGetValue(key, out float2 shared);
+                WarmStarts[key] = shared + new float2(record.WarmImpulse, record.PointCount);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Starts each contact from most of the normal impulse it ended the last step on, spread evenly over its points, as the
+    /// events only give a manifold's total. Unity Physics solves friction in every iteration from the first, and a cold start
+    /// has the points of a manifold pulling the bodies about for most of the iterations, which friction takes for slipping
+    /// and spends itself on. A body on another dynamic body then keeps whatever slip that leaves, step after step.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct WarmStartJob : IJacobiansJob
+    {
+        // Less than all of it, because a manifold with nothing left to add raises no event and would start cold next step.
+        private const float Fraction = 0.95f;
+
+        [ReadOnly]
+        public NativeHashMap<JacobianKey, float2> WarmStarts;
+
+        [NativeDisableUnsafePtrRestriction]
+        public MotionVelocity* Motions;
+
+        public int MotionCount;
+
+        public void Execute(ref ModifiableJacobianHeader header, ref ModifiableContactJacobian jacobian)
+        {
+            JacobianKey key = new JacobianKey { BodyA = header.BodyIndexA, BodyB = header.BodyIndexB, Normal = jacobian.Normal };
+            if ((header.Flags & JacobianFlags.Disabled) != 0 || !WarmStarts.TryGetValue(key, out float2 shared))
+            {
+                return;
+            }
+
+            float impulse = Fraction * shared.x / shared.y;
+            for (int i = 0; i < jacobian.NumContacts; i++)
+            {
+                ContactJacAngAndVelToReachCp point = header.GetAngularJacobian(i);
+                point.Jac.Impulse = impulse;
+                header.SetAngularJacobian(i, point);
+
+                Push(header.BodyIndexA, impulse * jacobian.Normal, impulse * point.Jac.AngularA);
+                Push(header.BodyIndexB, -impulse * jacobian.Normal, impulse * point.Jac.AngularB);
+            }
+        }
+
+        public void Execute(ref ModifiableJacobianHeader header, ref ModifiableTriggerJacobian jacobian)
+        {
+        }
+
+        private void Push(int body, float3 linearImpulse, float3 angularImpulse)
+        {
+            if (body < MotionCount)
+            {
+                ref MotionVelocity motion = ref Motions[body];
+                motion.LinearVelocity += linearImpulse * motion.InverseMass;
+                motion.AngularVelocity += angularImpulse * motion.InverseInertia;
+            }
+        }
+    }
+
+    /// <summary>Keeps each manifold's impulse for the warm start of the next step.</summary>
+    [BurstCompile]
+    internal struct RememberImpulsesJob : IJob
+    {
+        // A heavy body on a light one rings for steps on end, and a start that follows every swing feeds the ringing.
+        private const float Smoothing = 0.25f;
+
+        [ReadOnly]
+        public NativeList<ManifoldRecord> Records;
+
+        public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
+
+        public void Execute()
+        {
+            LastImpulses.Clear();
+            for (int i = 0; i < Records.Length; i++)
+            {
+                ManifoldRecord record = Records[i];
+                if (!record.Trigger && record.Impulse > 0.0f)
+                {
+                    float last = record.WarmImpulse > 0.0f ? record.WarmImpulse : record.Impulse;
+                    LastImpulses[PersistentManifoldKey.Of(ref record)] = math.lerp(last, record.Impulse, Smoothing);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Gives each manifold the impulse the solver spent on it. Without dynamic bodies there's no solve and no event stream,
     /// so a step without them doesn't run this.
     /// </summary>
@@ -271,7 +560,8 @@ namespace KSP.Retooled.PhysicsBackend
                 if (byKey.TryGetValue(KeyOf(pair, keys), out int index))
                 {
                     float impulse = collision.CalculateDetails(ref Built).EstimatedImpulse;
-                    Records.ElementAt(index).Impulse = math.isfinite(impulse) ? impulse : 0.0f;
+                    ref ManifoldRecord record = ref Records.ElementAt(index);
+                    record.Impulse = math.isfinite(impulse) ? impulse + record.WarmImpulse : 0.0f;
                 }
             }
         }
