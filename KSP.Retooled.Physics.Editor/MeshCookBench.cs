@@ -13,8 +13,12 @@ namespace KSP.Retooled.PhysicsBackend.Editor
     /// </summary>
     public static class MeshCookBench
     {
-        private const int Rounds = 5;
-        private const double BurstWaitSeconds = 60.0;
+        private const int Rounds = 3;
+        private const double BurstWaitSeconds = 45.0;
+
+        // The sample the medians come from, and the size above which a mesh isn't one a part would use.
+        private const int SampleSize = 200;
+        private const int MaximumVertices = 2000;
 
         public static void Run()
         {
@@ -25,16 +29,25 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             Debug.Log($"[MeshBench] {game.Count} game meshes, median {Median(game.Select(m => (double)m.vertexCount)):F0} vertices, "
                 + $"largest {game.Select(m => m.vertexCount).DefaultIfEmpty(0).Max()}");
 
+            Mesh largest = game.OrderByDescending(m => m.vertexCount).FirstOrDefault();
+            game = game.Where(m => m.vertexCount <= MaximumVertices).OrderBy(m => m.GetEntityId().GetHashCode()).Take(SampleSize).ToList();
+            Debug.Log($"[MeshBench] sample of {game.Count}, median {Median(game.Select(m => (double)m.vertexCount)):F0} vertices");
+
             Mesh grid = Grid(15);
             Mesh sphere = Sphere();
 
-            // The first passes run in Mono until Burst delivers, which the later passes show.
+            // Cooks and builds run in Mono until Burst delivers them.
             Stopwatch wait = Stopwatch.StartNew();
-            while (wait.Elapsed.TotalSeconds < BurstWaitSeconds)
+            long managed = -1;
+            while (wait.Elapsed.TotalSeconds < BurstWaitSeconds && managed != BackendHost.ManagedCooks)
             {
+                managed = BackendHost.ManagedCooks;
+                MeasureCook("warming up", new List<Mesh> { grid }, false, false);
                 BuildOnce(grid, false);
-                System.Threading.Thread.Sleep(500);
+                System.Threading.Thread.Sleep(2000);
             }
+
+            Debug.Log($"[MeshBench] Burst wait {wait.Elapsed.TotalSeconds:F0} s");
 
             long managedBefore = BackendHost.ManagedCooks;
             MeasureCook("cook convex, game meshes", game, true);
@@ -45,6 +58,11 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             MeasureBuild("first use triangle, game meshes", game, false);
             MeasureBuild("first use triangle, 15x15 grid", new List<Mesh> { grid }, false);
             MeasureBuild("first use convex, sphere", new List<Mesh> { sphere }, true);
+            if (largest != null)
+            {
+                MeasureCook($"cook convex, largest mesh of {largest.vertexCount}", new List<Mesh> { largest }, true);
+            }
+
             Debug.Log($"[MeshBench] {BackendHost.ManagedCooks - managedBefore} of the measured cooks ran in Mono");
         }
 
@@ -71,7 +89,8 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             return meshes.ToList();
         }
 
-        private static void MeasureCook(string name, List<Mesh> meshes, bool convex)
+        /// <summary>Unity keeps a mesh's bake, so each round cooks fresh copies.</summary>
+        private static void MeasureCook(string name, List<Mesh> meshes, bool convex, bool report = true)
         {
             if (meshes.Count == 0)
             {
@@ -81,16 +100,21 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             List<double> samples = new List<double>();
             for (int round = 0; round < Rounds; round++)
             {
+                List<Mesh> copies = meshes.Select(Object.Instantiate).ToList();
                 Stopwatch watch = Stopwatch.StartNew();
-                foreach (Mesh mesh in meshes)
+                foreach (Mesh mesh in copies)
                 {
                     Physics.BakeMesh(mesh.GetEntityId(), convex);
                 }
 
                 samples.Add(watch.Elapsed.TotalMilliseconds * 1000.0 / meshes.Count);
+                copies.ForEach(Object.DestroyImmediate);
             }
 
-            Debug.Log($"[MeshBench] {name}: {Median(samples):F1} us per mesh over {meshes.Count}");
+            if (report)
+            {
+                Debug.Log($"[MeshBench] {name}: {Median(samples):F1} us per mesh over {meshes.Count}");
+            }
         }
 
         private static void MeasureBuild(string name, List<Mesh> meshes, bool convex)

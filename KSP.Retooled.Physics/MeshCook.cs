@@ -49,8 +49,8 @@ namespace KSP.Retooled.PhysicsBackend
 
         /// <summary>
         /// Writes the cooked mesh to the output, whose memory the caller owns. With no bytes given it only reports, in size, a
-        /// capacity that should be enough. A hull can still need more, since faces that rounding left non-manifold don't obey
-        /// the usual count: then nothing is written, the status says so, and size gives the capacity to call again with.
+        /// capacity that should be enough. Should a cook need more, nothing is written, the status says so, and size gives the
+        /// capacity to call again with.
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true, FloatMode = FloatMode.Strict)]
         [MonoPInvokeCallback(typeof(CookFunction))]
@@ -320,13 +320,17 @@ namespace KSP.Retooled.PhysicsBackend
             return StatusOk;
         }
 
+        /// <summary>A hull triangle, with the faces across AB, BC and CA. Stamp marks the last point that saw it.</summary>
         private struct HullFace
         {
             public int A;
             public int B;
             public int C;
+            public int3 Neighbors;
             public double3 Normal;
             public double Offset;
+            public int Stamp;
+            public int Alive;
 
             public double Distance(double3 point)
             {
@@ -334,7 +338,7 @@ namespace KSP.Retooled.PhysicsBackend
             }
         }
 
-        private static HullFace MakeFace(double3* points, int a, int b, int c)
+        private static void SetGeometry(HullFace* face, double3* points, int a, int b, int c)
         {
             double3 normal = math.cross(points[b] - points[a], points[c] - points[a]);
             double length = math.length(normal);
@@ -343,43 +347,26 @@ namespace KSP.Retooled.PhysicsBackend
                 normal /= length;
             }
 
-            return new HullFace { A = a, B = b, C = c, Normal = normal, Offset = math.dot(normal, points[a]) };
+            face->A = a;
+            face->B = b;
+            face->C = c;
+            face->Normal = normal;
+            face->Offset = math.dot(normal, points[a]);
+            face->Stamp = -1;
+            face->Alive = 1;
         }
 
-        private static ulong EdgeKey(int from, int to)
+        private static double PlaneDistance(double3* points, int a, int b, int c, double3 point)
         {
-            return ((ulong)(uint)from << 32) | (uint)to;
-        }
-
-        private static bool ContainsEdge(ulong* sorted, int count, ulong edge)
-        {
-            int low = 0;
-            int high = count - 1;
-            while (low <= high)
-            {
-                int middle = (low + high) / 2;
-                if (sorted[middle] == edge)
-                {
-                    return true;
-                }
-
-                if (sorted[middle] < edge)
-                {
-                    low = middle + 1;
-                }
-                else
-                {
-                    high = middle - 1;
-                }
-            }
-
-            return false;
+            HullFace face = default;
+            SetGeometry(&face, points, a, b, c);
+            return face.Distance(point);
         }
 
         /// <summary>
-        /// Incremental convex hull, written to triangles. It is quadratic at worst, which collision meshes are too small to
-        /// notice, and doubles keep the visibility tests honest for float input. Returns how many points span the input: 4 for
-        /// a solid, whose hull was written; 3 for a plane, with those three in seeds; fewer for a line or a point.
+        /// Incremental convex hull, written to triangles. It scans the faces for each point, which is quadratic at worst, and
+        /// doubles keep the visibility tests honest for float input. Returns how many points span the input: 4 for a solid, whose
+        /// hull was written; 3 for a plane, with those three in seeds; fewer for a line or a point.
         /// </summary>
         private static int BuildHull(ref UnsafeList<float3> vertices, ref UnsafeList<int> triangles, ref int3 seeds)
         {
@@ -455,11 +442,10 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             seeds = new int3(first, second, third);
-            HullFace face = MakeFace(points, first, second, third);
             best = epsilon;
             for (int i = 0; i < count; i++)
             {
-                double distance = math.abs(face.Distance(points[i]));
+                double distance = math.abs(PlaneDistance(points, first, second, third, points[i]));
                 if (distance > best)
                 {
                     best = distance;
@@ -470,22 +456,45 @@ namespace KSP.Retooled.PhysicsBackend
             return fourth == first ? 3 : 4;
         }
 
+        /// <summary>
+        /// Grows the first tetrahedron one point at a time. What a point sees is flooded across neighbours from the face it
+        /// sees best, because a plain test of every face can, near-coplanar, pick faces that aren't connected, and the surface
+        /// then stops being closed and its face count can run away. A point whose horizon touches itself is within rounding of
+        /// the hull, and it is left out.
+        /// </summary>
         private static void WriteHull(double3* points, int count, int3 seeds, int fourth, double epsilon, ref UnsafeList<int> triangles)
         {
             // Wind the first tetrahedron outward: its fourth point has to lie behind the base.
-            bool above = MakeFace(points, seeds.x, seeds.y, seeds.z).Distance(points[fourth]) > 0.0;
+            bool above = PlaneDistance(points, seeds.x, seeds.y, seeds.z, points[fourth]) > 0.0;
             int p0 = seeds.x;
             int p1 = above ? seeds.z : seeds.y;
             int p2 = above ? seeds.y : seeds.z;
             int p3 = fourth;
 
             var faces = new UnsafeList<HullFace>(64, Allocator.Persistent);
-            var kept = new UnsafeList<HullFace>(64, Allocator.Persistent);
-            var visibleEdges = new UnsafeList<ulong>(64, Allocator.Persistent);
-            faces.Add(MakeFace(points, p0, p1, p2));
-            faces.Add(MakeFace(points, p0, p3, p1));
-            faces.Add(MakeFace(points, p1, p3, p2));
-            faces.Add(MakeFace(points, p2, p3, p0));
+            faces.Resize(4);
+            SetGeometry(faces.Ptr + 0, points, p0, p1, p2);
+            SetGeometry(faces.Ptr + 1, points, p0, p3, p1);
+            SetGeometry(faces.Ptr + 2, points, p1, p3, p2);
+            SetGeometry(faces.Ptr + 3, points, p2, p3, p0);
+            faces.Ptr[0].Neighbors = new int3(1, 2, 3);
+            faces.Ptr[1].Neighbors = new int3(3, 2, 0);
+            faces.Ptr[2].Neighbors = new int3(1, 3, 0);
+            faces.Ptr[3].Neighbors = new int3(2, 1, 0);
+
+            var free = new UnsafeList<int>(64, Allocator.Persistent);
+            var visible = new UnsafeList<int>(64, Allocator.Persistent);
+            var horizon = new UnsafeList<int3>(64, Allocator.Persistent); // from, to, the face beyond
+            var created = new UnsafeList<int>(64, Allocator.Persistent);
+            var startingAt = new UnsafeList<int>(count, Allocator.Persistent);
+            var endingAt = new UnsafeList<int>(count, Allocator.Persistent);
+            startingAt.Resize(count);
+            endingAt.Resize(count);
+            for (int i = 0; i < count; i++)
+            {
+                startingAt[i] = Unused;
+                endingAt[i] = Unused;
+            }
 
             for (int point = 0; point < count; point++)
             {
@@ -494,58 +503,171 @@ namespace KSP.Retooled.PhysicsBackend
                     continue;
                 }
 
-                visibleEdges.Clear();
-                kept.Clear();
-                for (int i = 0; i < faces.Length; i++)
-                {
-                    HullFace face = faces[i];
-                    if (face.Distance(points[point]) > epsilon)
-                    {
-                        visibleEdges.Add(EdgeKey(face.A, face.B));
-                        visibleEdges.Add(EdgeKey(face.B, face.C));
-                        visibleEdges.Add(EdgeKey(face.C, face.A));
-                    }
-                    else
-                    {
-                        kept.Add(face);
-                    }
-                }
-
-                if (visibleEdges.IsEmpty)
+                int nearest = FindVisibleFace(ref faces, points[point], epsilon);
+                if (nearest == Unused)
                 {
                     continue;
                 }
 
-                // A directed edge whose reverse isn't visible lies on the horizon, and gets a new face to this point.
-                NativeSortExtension.Sort(visibleEdges.Ptr, visibleEdges.Length);
-                for (int i = 0; i < visibleEdges.Length; i++)
+                FloodVisible(ref faces, points[point], point, nearest, epsilon, ref visible, ref horizon);
+                if (ClaimHorizon(ref horizon, ref startingAt, ref endingAt))
                 {
-                    ulong edge = visibleEdges[i];
-                    int from = (int)(edge >> 32);
-                    int to = (int)(uint)edge;
-                    if (!ContainsEdge(visibleEdges.Ptr, visibleEdges.Length, EdgeKey(to, from)))
-                    {
-                        kept.Add(MakeFace(points, from, to, point));
-                    }
+                    AddFan(ref faces, points, point, ref visible, ref horizon, ref free, ref created, ref startingAt, ref endingAt);
                 }
 
-                UnsafeList<HullFace> swap = faces;
-                faces = kept;
-                kept = swap;
+                for (int i = 0; i < horizon.Length; i++)
+                {
+                    startingAt[horizon[i].x] = Unused;
+                    endingAt[horizon[i].y] = Unused;
+                }
             }
 
             triangles.Clear();
             for (int i = 0; i < faces.Length; i++)
             {
-                HullFace face = faces[i];
-                triangles.Add(face.A);
-                triangles.Add(face.B);
-                triangles.Add(face.C);
+                if (faces[i].Alive != 0)
+                {
+                    triangles.Add(faces[i].A);
+                    triangles.Add(faces[i].B);
+                    triangles.Add(faces[i].C);
+                }
             }
 
             faces.Dispose();
-            kept.Dispose();
-            visibleEdges.Dispose();
+            free.Dispose();
+            visible.Dispose();
+            horizon.Dispose();
+            created.Dispose();
+            startingAt.Dispose();
+            endingAt.Dispose();
+        }
+
+        private static int FindVisibleFace(ref UnsafeList<HullFace> faces, double3 point, double epsilon)
+        {
+            int nearest = Unused;
+            double best = epsilon;
+            for (int i = 0; i < faces.Length; i++)
+            {
+                if (faces.Ptr[i].Alive != 0)
+                {
+                    double distance = faces.Ptr[i].Distance(point);
+                    if (distance > best)
+                    {
+                        best = distance;
+                        nearest = i;
+                    }
+                }
+            }
+
+            return nearest;
+        }
+
+        private static void FloodVisible(
+            ref UnsafeList<HullFace> faces,
+            double3 point,
+            int stamp,
+            int start,
+            double epsilon,
+            ref UnsafeList<int> visible,
+            ref UnsafeList<int3> horizon)
+        {
+            visible.Clear();
+            horizon.Clear();
+            visible.Add(start);
+            faces.Ptr[start].Stamp = stamp;
+            for (int next = 0; next < visible.Length; next++)
+            {
+                HullFace* face = faces.Ptr + visible[next];
+                for (int edge = 0; edge < 3; edge++)
+                {
+                    int neighbor = face->Neighbors[edge];
+                    HullFace* other = faces.Ptr + neighbor;
+                    if (other->Stamp != stamp && other->Distance(point) > epsilon)
+                    {
+                        other->Stamp = stamp;
+                        visible.Add(neighbor);
+                    }
+                }
+            }
+
+            for (int i = 0; i < visible.Length; i++)
+            {
+                HullFace* face = faces.Ptr + visible[i];
+                for (int edge = 0; edge < 3; edge++)
+                {
+                    int neighbor = face->Neighbors[edge];
+                    if (faces.Ptr[neighbor].Stamp != stamp)
+                    {
+                        int from = edge == 0 ? face->A : edge == 1 ? face->B : face->C;
+                        int to = edge == 0 ? face->B : edge == 1 ? face->C : face->A;
+                        horizon.Add(new int3(from, to, neighbor));
+                    }
+                }
+            }
+        }
+
+        /// <summary>Records where each horizon edge starts and ends, and returns false if the horizon isn't a simple loop.</summary>
+        private static bool ClaimHorizon(ref UnsafeList<int3> horizon, ref UnsafeList<int> startingAt, ref UnsafeList<int> endingAt)
+        {
+            bool simple = true;
+            for (int i = 0; i < horizon.Length; i++)
+            {
+                int3 edge = horizon[i];
+                simple &= startingAt[edge.x] == Unused && endingAt[edge.y] == Unused;
+                startingAt[edge.x] = i;
+                endingAt[edge.y] = i;
+            }
+
+            return simple;
+        }
+
+        private static void AddFan(
+            ref UnsafeList<HullFace> faces,
+            double3* points,
+            int point,
+            ref UnsafeList<int> visible,
+            ref UnsafeList<int3> horizon,
+            ref UnsafeList<int> free,
+            ref UnsafeList<int> created,
+            ref UnsafeList<int> startingAt,
+            ref UnsafeList<int> endingAt)
+        {
+            for (int i = 0; i < visible.Length; i++)
+            {
+                faces.Ptr[visible[i]].Alive = 0;
+                free.Add(visible[i]);
+            }
+
+            created.Clear();
+            for (int i = 0; i < horizon.Length; i++)
+            {
+                int slot;
+                if (free.IsEmpty)
+                {
+                    slot = faces.Length;
+                    faces.Resize(slot + 1);
+                }
+                else
+                {
+                    slot = free[free.Length - 1];
+                    free.Resize(free.Length - 1);
+                }
+
+                created.Add(slot);
+            }
+
+            for (int i = 0; i < horizon.Length; i++)
+            {
+                int3 edge = horizon[i];
+                HullFace* face = faces.Ptr + created[i];
+                SetGeometry(face, points, edge.x, edge.y, point);
+                face->Neighbors = new int3(edge.z, created[startingAt[edge.y]], created[endingAt[edge.x]]);
+
+                // The face beyond the horizon pointed at a face that just went away.
+                HullFace* beyond = faces.Ptr + edge.z;
+                int across = beyond->A == edge.y ? 0 : beyond->B == edge.y ? 1 : 2;
+                beyond->Neighbors[across] = created[i];
+            }
         }
 
         /// <summary>

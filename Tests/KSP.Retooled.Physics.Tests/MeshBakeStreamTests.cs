@@ -210,6 +210,43 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void AHullOfANoisyNearlyFlatCloudStaysSmall()
+        {
+            // Points within rounding of one another's faces are what makes a naive hull lose its surface.
+            var random = new Unity.Mathematics.Random(1234);
+            float3[] vertices = new float3[2000];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                float2 flat = random.NextFloat2(-1.0f, 1.0f);
+                vertices[i] = new float3(flat.x, random.NextFloat(-1e-6f, 1e-6f) + flat.y * 0.25f, flat.y);
+            }
+
+            CookStatus(vertices, new[] { 0, 1, 2 }, true, out byte[] stream);
+
+            Assert.That(Accepted(stream, true), Is.True);
+            // The cloud is flat to within rounding, so it gains thickness, which doubles its points.
+            Assert.That(Header(stream).triangleCount, Is.LessThan(vertices.Length * 4u));
+        }
+
+        [Test]
+        public void AHullOfASphereKeepsItsVolume()
+        {
+            var random = new Unity.Mathematics.Random(99);
+            float3[] vertices = new float3[3000];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                vertices[i] = random.NextFloat3Direction();
+            }
+
+            byte[] stream = Cook(vertices, new[] { 0, 1, 2 }, true);
+
+            NativeStore.MeshData mesh = Header(stream);
+            Assert.That(mesh.vertexCount, Is.EqualTo(vertices.Length));
+            Assert.That(mesh.triangleCount, Is.EqualTo(vertices.Length * 2 - 4));
+            Assert.That(mesh.moments.volume, Is.EqualTo(4.0f / 3.0f * math.PI).Within(0.02f));
+        }
+
+        [Test]
         public void ALineHasNoConvexCollider()
         {
             float3[] vertices = { new float3(0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(2.0f, 0.0f, 0.0f) };
