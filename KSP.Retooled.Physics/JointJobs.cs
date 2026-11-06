@@ -431,17 +431,6 @@ namespace KSP.Retooled.PhysicsBackend
                 float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                 float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
                 Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                if (drive->driveMaxForce >= JointConstraints.UnlimitedForce)
-                {
-                    // A rotation motor reads its angle from Quaternion.ToAngleAxis, which returns zero below about 0.6 mrad, where
-                    // stiff part joints rest, and nearly a full turn when the relative rotation comes out negated, which nothing
-                    // in the package rules out. Only a motor can cap its impulse, so uncapped drives hold their angle as a soft
-                    // two-sided limit instead.
-                    float target = angles[index] + offset;
-                    Add(Constraint.Twist(index, new FloatRange(target, target), Constraint.DefaultMaxImpulse, frequency, damping));
-                    return;
-                }
-
                 Add(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive), frequency, damping)));
             }
             else if (drive->driveDamper > 0.0f)

@@ -123,7 +123,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
-        public void ADriveIgnoresWhichSignARotationComesIn([Values] bool ofInertia)
+        public void ADriveIgnoresWhichSignARotationComesIn([Values(1e20f, 1e6f)] float maximumForce, [Values] bool ofInertia)
         {
             tilt = Quaternion.FromToRotation(Vector3.up, new Vector3(-0.8231264f, -0.0016914f, 0.567856f));
 
@@ -135,6 +135,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             // With an axis locked the drives can't be one soft rotation, and each axis left free holds its own.
             ConfigurableJoint joint = PartJoint(arm, mount, new Vector3(0.0f, 0.5f, 0.0f), 60000.0f);
             joint.angularZMotion = ConfigurableJointMotion.Locked;
+            JointDrive angular = joint.angularXDrive;
+            angular.maximumForce = maximumForce;
+            joint.angularXDrive = joint.angularYZDrive = angular;
 
             Physics.gravity = Vector3.zero;
             Simulate(5);
