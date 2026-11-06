@@ -32,13 +32,18 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 NativeStore.CookOutput output = default;
                 MeshCook.Cook(&input, &output);
 
-                byte[] buffer = new byte[output.size];
-                fixed (byte* b = buffer)
+                byte[] buffer;
+                do
                 {
-                    output.bytes = b;
-                    output.capacity = output.size;
-                    MeshCook.Cook(&input, &output);
+                    buffer = new byte[output.size];
+                    fixed (byte* b = buffer)
+                    {
+                        output.bytes = b;
+                        output.capacity = output.size;
+                        MeshCook.Cook(&input, &output);
+                    }
                 }
+                while (output.status == MeshCook.StatusNeedsCapacity);
 
                 System.Array.Resize(ref buffer, (int)output.size);
                 stream = buffer;
@@ -176,6 +181,32 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             Assert.That(mesh.vertexCount, Is.EqualTo(8));
             Assert.That(mesh.upper.y, Is.EqualTo(0.2f).Within(1e-5f));
+        }
+
+        [Test]
+        public void AHullOfManyCoplanarPointsKeepsItsVolumeAndFits()
+        {
+            const int Cells = 12;
+            var vertices = new System.Collections.Generic.List<float3>();
+            for (int x = 0; x <= Cells; x++)
+            {
+                for (int y = 0; y <= Cells; y++)
+                {
+                    for (int z = 0; z <= Cells; z++)
+                    {
+                        bool onSurface = x == 0 || x == Cells || y == 0 || y == Cells || z == 0 || z == Cells;
+                        if (onSurface)
+                        {
+                            vertices.Add(new float3(x, y, z) / Cells);
+                        }
+                    }
+                }
+            }
+
+            byte[] stream = Cook(vertices.ToArray(), new[] { 0, 1, 2 }, true);
+
+            Assert.That(Accepted(stream, true), Is.True);
+            Assert.That(Header(stream).moments.volume, Is.EqualTo(1.0f).Within(1e-4f));
         }
 
         [Test]

@@ -36,6 +36,7 @@ namespace KSP.Retooled.PhysicsBackend
         internal const int StatusEmpty = 1;
         internal const int StatusBadVertices = 2;
         internal const int StatusBadIndices = 3;
+        internal const int StatusNeedsCapacity = 4;
 
         private const uint EmptySlot = 0xffffffffu;
         private const int Unused = -1;
@@ -47,8 +48,9 @@ namespace KSP.Retooled.PhysicsBackend
         internal delegate int ValidateFunction(byte* stream, long size, int convex);
 
         /// <summary>
-        /// Writes the cooked mesh to the output. With no bytes given it only reports, in size, a capacity that is enough,
-        /// so the caller owns the memory and this code needs no allocator of the caller's.
+        /// Writes the cooked mesh to the output, whose memory the caller owns. With no bytes given it only reports, in size, a
+        /// capacity that should be enough. A hull can still need more, since faces that rounding left non-manifold don't obey
+        /// the usual count: then nothing is written, the status says so, and size gives the capacity to call again with.
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true, FloatMode = FloatMode.Strict)]
         [MonoPInvokeCallback(typeof(CookFunction))]
@@ -67,6 +69,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static void CookInMono(NativeStore.CookInput* input, NativeStore.CookOutput* output, ref bool ranInMono)
         {
             ranInMono = true;
+            BackendHost.NoteManagedCook();
             try
             {
                 Run(input, output);
@@ -116,7 +119,7 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static void Run(NativeStore.CookInput* input, NativeStore.CookOutput* output)
         {
-            // Flat meshes double their vertices. A hull of n points has fewer than 2n triangles.
+            // Flat meshes double their vertices. A hull of n points normally has fewer than 2n triangles.
             int vertexCapacity = (int)input->vertexCount * 2;
             int triangleCapacity = math.max(vertexCapacity * 2, (int)input->indexCount);
             if (output->bytes == null)
@@ -143,7 +146,16 @@ namespace KSP.Retooled.PhysicsBackend
             output->size = 0;
             if (status <= StatusEmpty)
             {
-                output->size = Write(ref vertices, ref triangles, input->convex != 0, moments, output->bytes);
+                long size = sizeof(NativeStore.MeshData) + vertices.Length * (long)sizeof(float3) + triangles.Length * (long)sizeof(int);
+                output->size = size;
+                if (size > output->capacity)
+                {
+                    output->status = StatusNeedsCapacity;
+                }
+                else
+                {
+                    Write(ref vertices, ref triangles, input->convex != 0, moments, output->bytes);
+                }
             }
 
             vertices.Dispose();
@@ -660,7 +672,7 @@ namespace KSP.Retooled.PhysicsBackend
             };
         }
 
-        private static long Write(
+        private static void Write(
             ref UnsafeList<float3> vertices,
             ref UnsafeList<int> triangles,
             bool convex,
@@ -704,8 +716,6 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 UnsafeUtility.MemCpy(output + sizeof(NativeStore.MeshData) + vertexBytes, triangles.Ptr, indexBytes);
             }
-
-            return sizeof(NativeStore.MeshData) + vertexBytes + indexBytes;
         }
     }
 }

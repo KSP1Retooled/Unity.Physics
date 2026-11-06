@@ -36,6 +36,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                 System.Threading.Thread.Sleep(500);
             }
 
+            long managedBefore = BackendHost.ManagedCooks;
             MeasureCook("cook convex, game meshes", game, true);
             MeasureCook("cook triangle, game meshes", game, false);
             MeasureCook("cook triangle, 15x15 grid", new List<Mesh> { grid }, false);
@@ -44,6 +45,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             MeasureBuild("first use triangle, game meshes", game, false);
             MeasureBuild("first use triangle, 15x15 grid", new List<Mesh> { grid }, false);
             MeasureBuild("first use convex, sphere", new List<Mesh> { sphere }, true);
+            Debug.Log($"[MeshBench] {BackendHost.ManagedCooks - managedBefore} of the measured cooks ran in Mono");
         }
 
         private static List<Mesh> GameCollisionMeshes()

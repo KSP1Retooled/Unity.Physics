@@ -526,8 +526,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
 
                 Simulate(100);
-                Debug.Log($"non-convex dynamic body settled at {body.position.y} isKinematic {body.isKinematic} "
-                    + $"inertia {body.inertiaTensor} ray {RayDistance(new Vector3(0.1f, 20.0f, 0.1f), Vector3.down)}");
+                // Unity keeps such a shape away from the body: it neither lands nor takes rays, and the ray reaches the ground.
+                Assert.That(body.position.y, Is.LessThan(0.0f));
+                Assert.That(RayDistance(new Vector3(0.1f, 20.0f, 0.1f), Vector3.down), Is.EqualTo(20.0f).Within(1e-3f));
             }
             finally
             {

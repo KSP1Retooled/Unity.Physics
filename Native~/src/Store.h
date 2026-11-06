@@ -211,9 +211,11 @@ namespace Retooled
         kMeshCookEmpty = 1,
         kMeshCookBadVertices = 2,
         kMeshCookBadIndices = 3,
+        kMeshCookNeedsCapacity = 4,
     };
 
-    // Mirrored. With null bytes the cook reports a sufficient capacity in size. Otherwise it fills bytes, size and status.
+    // Mirrored. With null bytes the cook reports a likely capacity in size. Otherwise it fills bytes, size and status, or
+    // leaves bytes alone and asks for the capacity in size with kMeshCookNeedsCapacity.
     struct CookOutput
     {
         uint8_t* bytes;

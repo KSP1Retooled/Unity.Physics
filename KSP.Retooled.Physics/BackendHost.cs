@@ -35,6 +35,7 @@ namespace KSP.Retooled.PhysicsBackend
         private static bool attached;
         private static long managedJobRuns;
         private static long managedQueries;
+        private static long managedCooks;
 
         /// <summary>
         /// Bodies a force job has handled in its Mono form, which it runs until the async Burst compile has delivered it.
@@ -43,6 +44,9 @@ namespace KSP.Retooled.PhysicsBackend
 
         /// <summary>Queries that ran in Mono, which they do until the async Burst compile has delivered the query functions.</summary>
         public static long ManagedQueries => Interlocked.Read(ref managedQueries);
+
+        /// <summary>Mesh cooks that ran in Mono, which they do until the async Burst compile has delivered the cook function.</summary>
+        public static long ManagedCooks => Interlocked.Read(ref managedCooks);
 
         /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
         public static int LastStepThreadId { get; private set; }
@@ -130,6 +134,11 @@ namespace KSP.Retooled.PhysicsBackend
         internal static void NoteManagedJobRun()
         {
             Interlocked.Increment(ref managedJobRuns);
+        }
+
+        internal static void NoteManagedCook()
+        {
+            Interlocked.Increment(ref managedCooks);
         }
 
         internal static void NoteManagedQuery()
