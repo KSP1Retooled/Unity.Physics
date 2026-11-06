@@ -94,6 +94,7 @@ namespace KSP.Retooled.PhysicsBackend
         private PhysicsJoint pending;
         private int pendingCount;
         private bool emitted;
+        private bool direct;
 
         public void Execute()
         {
@@ -128,9 +129,8 @@ namespace KSP.Retooled.PhysicsBackend
             };
             pendingCount = 0;
             emitted = false;
+            direct = !HeldInPlace(joint->body0) || !HeldInPlace(joint->body1);
 
-            // A joint picks its solver here: SolverType on what this emits, with EnableDirectSolver on the built world and
-            // DirectSolverSettings on the step input. Everything is iterative for now.
             switch (joint->type)
             {
                 case NativeStore.JointTypeFixed:
@@ -164,6 +164,13 @@ namespace KSP.Retooled.PhysicsBackend
             Flush();
         }
 
+        /// <summary>The direct solver refuses a joint with no constraints, or with nothing on either side that can move.</summary>
+        private static bool HeldInPlace(NativeStore.Body* body)
+        {
+            const NativeStore.BodyFlags held = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
+            return body == null || (StoreOps.Hot(body)->flags & held) != 0;
+        }
+
         private int BuiltIndex(NativeStore.Body* body)
         {
             return body == null ? AnchorIndex : BuiltIndices[(int)body->index];
@@ -184,6 +191,7 @@ namespace KSP.Retooled.PhysicsBackend
             if (pendingCount > 0)
             {
                 pending.Constraints.Length = (byte)pendingCount;
+                pending.SolverType = direct ? SolverType.Direct : SolverType.Iterative;
                 Output.Add(pending);
                 pendingCount = 0;
                 emitted = true;
@@ -203,7 +211,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (joint->hingeMotorMaxForce > 0.0f && !MotorCoasts(joint))
             {
-                Add(Constraint.AngularVelocityMotor(joint->hingeMotorTargetVelocity, joint->hingeMotorMaxForce * DeltaTime,
+                Add(Constraint.AngularVelocityMotor(joint->hingeMotorTargetVelocity, joint->hingeMotorMaxForce * DeltaTime / WorldState.Substeps,
                     Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio));
             }
         }
@@ -225,7 +233,19 @@ namespace KSP.Retooled.PhysicsBackend
         {
             NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
             Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
+            direct = false;
             Add(Constraint.LimitedDistance(new FloatRange(axis->min, axis->max), ReportEveryImpulse, frequency, damping));
+        }
+
+        /// <summary>
+        /// A drive too strong for any force to move, with nothing to aim at, is a lock. Stock part joints hold their position
+        /// this way, and only a lock reports the force that breaks them.
+        /// </summary>
+        private static bool HeldByDrive(NativeStore.JointData* joint, int index)
+        {
+            NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + index);
+            return axis->driveSpring >= JointConstraints.UnlimitedForce && axis->driveMaxForce >= JointConstraints.UnlimitedForce
+                && joint->targetPosition[index] == 0.0f && joint->targetLinearVelocity[index] == 0.0f;
         }
 
         private void AddLinearDof(NativeStore.JointData* joint)
@@ -235,8 +255,9 @@ namespace KSP.Retooled.PhysicsBackend
             for (int i = 0; i < 3; i++)
             {
                 uint dofLock = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i)->dofLock;
-                locked[i] = dofLock == NativeStore.DofLocked;
-                limited[i] = dofLock == NativeStore.DofLimited;
+                bool held = HeldByDrive(joint, i);
+                locked[i] = dofLock == NativeStore.DofLocked || held;
+                limited[i] = dofLock == NativeStore.DofLimited && !held;
             }
 
             if (math.any(locked))
@@ -246,6 +267,10 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (math.any(limited))
             {
+                // The direct solver only engages a linear limit once it is passed, then pushes back with a velocity nothing takes
+                // out again, so a body arriving fast rebounds. The iterative solver stops it dead, as PhysX does.
+                direct = false;
+
                 // Unity's linear limit is one distance over the limited axes together, which is what these constraints measure.
                 NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
                 Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
@@ -339,7 +364,7 @@ namespace KSP.Retooled.PhysicsBackend
             for (int i = 0; i < 3; i++)
             {
                 NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i);
-                if (axis->dofLock == NativeStore.DofLocked || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
+                if (axis->dofLock == NativeStore.DofLocked || HeldByDrive(joint, i) || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
                 {
                     continue;
                 }
@@ -406,6 +431,16 @@ namespace KSP.Retooled.PhysicsBackend
                 float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                 float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
                 Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
+                if (drive->driveMaxForce >= JointConstraints.UnlimitedForce)
+                {
+                    // A rotation motor reads its angle from Quaternion.ToAngleAxis, which returns zero below about 0.6 mrad and
+                    // then jumps, and stiff part joints rest in that range. Only a motor can cap its impulse, so uncapped drives
+                    // hold their angle as a soft two-sided limit instead.
+                    float target = angles[index] + offset;
+                    Add(Constraint.Twist(index, new FloatRange(target, target), Constraint.DefaultMaxImpulse, frequency, damping));
+                    return;
+                }
+
                 Add(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive), frequency, damping)));
             }
             else if (drive->driveDamper > 0.0f)
@@ -429,10 +464,10 @@ namespace KSP.Retooled.PhysicsBackend
             return motor;
         }
 
-        /// <summary>A motor's impulse accumulates over the whole step, substeps included, and starts over at the next.</summary>
+        /// <summary>The direct solver limits a motor's impulse in each substep on its own.</summary>
         private float MaxImpulse(NativeStore.JointAxis* drive)
         {
-            return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : drive->driveMaxForce * DeltaTime;
+            return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : drive->driveMaxForce * DeltaTime / WorldState.Substeps;
         }
 
         /// <summary>

@@ -175,30 +175,68 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
         }
 
+        // The ignore table is the store's, shared with every live collider, so ids have to come from it and go back to it.
+        private uint[] NewIds(int count)
+        {
+            uint[] ids = new uint[count];
+            for (int i = 0; i < count; i += 2)
+            {
+                NativeStore.CommandArgs args = default;
+                args.enabled = 1;
+                ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
+                ids[i] = args.value;
+                if (i + 1 < count)
+                {
+                    ids[i + 1] = args.value2;
+                }
+
+                SetIgnored(args.value, args.value2, false);
+            }
+
+            return ids;
+        }
+
+        private void Destroyed(uint id)
+        {
+            NativeStore.CommandArgs cleanup = default;
+            cleanup.value = id;
+            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+        }
+
         [Test]
         public void IgnoredPairsAreRememberedInEitherOrderUntilCleared()
         {
-            SetIgnored(7, 3, true);
-            SetIgnored(3, 9, true);
-            SetIgnored(1, 2, true);
-            SetIgnored(7, 3, true);
+            uint[] ids = NewIds(6);
+            uint a = ids[0];
+            uint b = ids[1];
+            uint c = ids[2];
+            uint d = ids[3];
+            uint e = ids[4];
+            uint f = ids[5];
 
-            Assert.That(IsIgnored(3, 7), Is.True);
-            Assert.That(IsIgnored(9, 3), Is.True);
-            Assert.That(IsIgnored(1, 2), Is.True);
-            Assert.That(IsIgnored(3, 8), Is.False);
+            SetIgnored(e, c, true);
+            SetIgnored(c, f, true);
+            SetIgnored(a, b, true);
+            SetIgnored(e, c, true);
 
-            SetIgnored(3, 7, false);
-            Assert.That(IsIgnored(7, 3), Is.False);
-            Assert.That(IsIgnored(3, 9), Is.True, "only that pair");
+            Assert.That(IsIgnored(c, e), Is.True);
+            Assert.That(IsIgnored(f, c), Is.True);
+            Assert.That(IsIgnored(a, b), Is.True);
+            Assert.That(IsIgnored(c, d), Is.False);
 
-            NativeStore.CommandArgs cleanup = default;
-            cleanup.value = 3;
-            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
-            Assert.That(IsIgnored(3, 9), Is.False, "every pair of a destroyed collider goes");
-            Assert.That(IsIgnored(1, 2), Is.True, "and no other");
+            SetIgnored(c, e, false);
+            Assert.That(IsIgnored(e, c), Is.False);
+            Assert.That(IsIgnored(c, f), Is.True, "only that pair");
 
-            SetIgnored(1, 2, false);
+            Destroyed(c);
+            Assert.That(IsIgnored(c, f), Is.False, "every pair of a destroyed collider goes");
+            Assert.That(IsIgnored(a, b), Is.True, "and no other");
+
+            Destroyed(a);
+            Destroyed(b);
+            Destroyed(d);
+            Destroyed(e);
+            Destroyed(f);
         }
 
         [Test]
@@ -234,35 +272,34 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [Test]
         public void ManyIgnoredPairsSurviveGrowingAndRestoring()
         {
-            const uint Count = 400;
-            for (uint i = 1; i <= Count; i++)
+            const int Count = 400;
+            uint[] ids = NewIds(Count);
+            for (int i = 0; i < Count; i++)
             {
-                for (uint j = i + 1; j <= Count; j += 3)
+                for (int j = i + 1; j < Count; j += 3)
                 {
-                    SetIgnored(i, j, true);
+                    SetIgnored(ids[i], ids[j], true);
                 }
             }
 
-            for (uint i = 1; i <= Count; i += 2)
+            for (int i = 0; i < Count; i += 2)
             {
-                for (uint j = i + 1; j <= Count; j += 3)
+                for (int j = i + 1; j < Count; j += 3)
                 {
-                    SetIgnored(j, i, false);
+                    SetIgnored(ids[j], ids[i], false);
                 }
             }
 
-            Assert.That(IsIgnored(1, 2), Is.False);
-            Assert.That(IsIgnored(2, 3), Is.True);
-            Assert.That(IsIgnored(2, 4), Is.False);
+            Assert.That(IsIgnored(ids[0], ids[1]), Is.False);
+            Assert.That(IsIgnored(ids[1], ids[2]), Is.True);
+            Assert.That(IsIgnored(ids[1], ids[3]), Is.False);
 
-            NativeStore.CommandArgs cleanup = default;
-            for (uint i = 1; i <= Count; i++)
+            foreach (uint id in ids)
             {
-                cleanup.value = i;
-                ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+                Destroyed(id);
             }
 
-            Assert.That(IsIgnored(2, 3), Is.False);
+            Assert.That(IsIgnored(ids[1], ids[2]), Is.False);
         }
 
         [Test]

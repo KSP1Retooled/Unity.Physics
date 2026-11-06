@@ -14,7 +14,7 @@ namespace KSP.Retooled.PhysicsBackend
     internal sealed unsafe class WorldState : IDisposable
     {
         private const int SolverIterations = 8;
-        private const int Substeps = 4;
+        internal const int Substeps = 4;
 
         private const int ParallelBatchSize = 64;
 
@@ -116,6 +116,7 @@ namespace KSP.Retooled.PhysicsBackend
                 Gravity = gravity,
                 NumSubsteps = Substeps,
                 NumSolverIterations = SolverIterations,
+                DirectSolverSettings = Solver.DirectSolverSettings.Default,
                 SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                 MaxDynamicDepenetrationVelocity = SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
                 MaxStaticDepenetrationVelocity = SimulationStepInput.DefaultMaxStaticDepenetrationVelocity,
@@ -366,6 +367,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             world.Reset(staticIndices.Length + 1, dynamicIndices.Length, builtJoints.Length);
             world.DynamicsWorld.Joints.CopyFrom(builtJoints.AsArray());
+            world.DynamicsWorld.EnableDirectSolver = true;
 
             return new BuildBodiesJob
             {
