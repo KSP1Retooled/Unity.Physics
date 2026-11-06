@@ -418,6 +418,52 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void LinearDriveCountsForNothingInCurrentForce()
+        {
+            Rigidbody body = DynamicBox(new Vector3(0.0f, 5.0f, 0.0f), 3.0f);
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, new Vector3(0.0f, 5.0f, 0.0f));
+            joint.yMotion = ConfigurableJointMotion.Free;
+            joint.yDrive = new JointDrive { positionSpring = 1e5f, positionDamper = 1e3f, maximumForce = 1000.0f };
+
+            Simulate(100);
+
+            Assert.That(body.position.y, Is.EqualTo(5.0f).Within(0.01f));
+            AssertVector(Vector3.zero, joint.currentForce, 0.5f, "force");
+        }
+
+        [Test]
+        public void AngularDriveCountsForNothingInCurrentTorque()
+        {
+            Rigidbody body = DynamicBox(new Vector3(2.0f, 5.0f, 0.0f), 3.0f);
+            ConfigurableJoint joint = Lock(body, null, new Vector3(-2.0f, 0.0f, 0.0f), new Vector3(0.0f, 5.0f, 0.0f));
+            joint.axis = Vector3.forward;
+            joint.secondaryAxis = Vector3.up;
+            joint.angularXMotion = ConfigurableJointMotion.Free;
+            joint.angularXDrive = new JointDrive { positionSpring = 1e5f, positionDamper = 1e3f, maximumForce = 1000.0f };
+
+            Simulate(100);
+
+            Assert.That(body.position.x, Is.EqualTo(2.0f).Within(0.01f));
+            AssertVector(Vector3.zero, joint.currentTorque, 0.5f, "torque");
+        }
+
+        [Test]
+        public void SoftRotationDriveCountsForNothingInCurrentTorque()
+        {
+            Rigidbody body = DynamicBox(new Vector3(2.0f, 5.0f, 0.0f), 3.0f);
+            ConfigurableJoint joint = Lock(body, null, new Vector3(-2.0f, 0.0f, 0.0f), new Vector3(0.0f, 5.0f, 0.0f));
+            joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Free;
+            JointDrive drive = new JointDrive { positionSpring = 1e5f, positionDamper = 1e3f, maximumForce = float.MaxValue };
+            joint.angularXDrive = drive;
+            joint.angularYZDrive = drive;
+
+            Simulate(100);
+
+            Assert.That(body.position.x, Is.EqualTo(2.0f).Within(0.01f));
+            AssertVector(Vector3.zero, joint.currentTorque, 0.5f, "torque");
+        }
+
+        [Test]
         public void FixedJointBetweenMovingBodiesReportsNoForceWithoutLoad()
         {
             Rigidbody first = Weightless(Vector3.zero);
@@ -541,6 +587,27 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Simulate(50);
 
             Assert.That(body.position.y, Is.LessThan(4.5f));
+        }
+
+        [Test]
+        public void AnImpulseBreaksAJointByItsForceOverTheStep()
+        {
+            foreach (float impulse in new[] { 10.0f, 30.0f })
+            {
+                Rigidbody body = WeightlessBox(new Vector3(impulse, 0.0f, 0.0f));
+                ConfigurableJoint joint = Lock(body, null, Vector3.zero, new Vector3(impulse, 0.0f, 0.0f));
+                joint.breakForce = 1000.0f;
+                Simulate();
+
+                body.AddForce(new Vector3(0.0f, impulse, 0.0f), ForceMode.Impulse);
+                Simulate();
+
+                // The joint soaked up that impulse in the step it broke, so a push shows whether it is still there.
+                body.AddForce(new Vector3(0.0f, 1.0f, 0.0f), ForceMode.Impulse);
+                Simulate(25);
+
+                Assert.That(body.position.y > 0.1f, Is.EqualTo(impulse > 20.0f), $"impulse {impulse}");
+            }
         }
 
         [Test]

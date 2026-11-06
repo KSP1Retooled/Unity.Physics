@@ -33,12 +33,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             Rigidbody body = WeightlessBox(Vector3.zero);
             Collider collider = body.GetComponent<Collider>();
+            ConfigurableJoint joint = body.gameObject.AddComponent<ConfigurableJoint>();
             Stopwatch wait = Stopwatch.StartNew();
             while (true)
             {
                 long before = BackendHost.ManagedCommands;
                 body.linearVelocity = Vector3.right;
                 collider.isTrigger = !collider.isTrigger;
+                joint.breakForce = joint.breakForce > 1.0f ? 1.0f : 2.0f;
                 Object.DestroyImmediate(Box(new Vector3(5.0f, 0.0f, 0.0f), Vector3.one));
                 if (BackendHost.ManagedCommands == before)
                 {

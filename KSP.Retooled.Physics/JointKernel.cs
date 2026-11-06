@@ -135,6 +135,7 @@ namespace KSP.Retooled.PhysicsBackend
                 case JointCommand.SetActors:
                     joint->body0 = ((NativeStore.ActorDescriptor*)a->pointer)[0].actor;
                     joint->body1 = ((NativeStore.ActorDescriptor*)a->pointer)[1].actor;
+                    joint->state &= ~NativeStore.JointState.BodyDestroyed;
                     break;
                 case JointCommand.GetActors:
                     Describe(joint->body0, (NativeStore.ActorDescriptor*)a->pointer);

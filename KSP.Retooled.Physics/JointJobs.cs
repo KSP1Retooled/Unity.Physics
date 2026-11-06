@@ -129,7 +129,7 @@ namespace KSP.Retooled.PhysicsBackend
             {
                 case NativeStore.JointTypeFixed:
                     Add(Constraint.BallAndSocket(ReportEveryImpulse));
-                    AddLockedAngles(new bool3(true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio);
+                    AddLockedAngles(new bool3(true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
                     break;
                 case NativeStore.JointTypeHinge:
                     AddHinge(joint);
@@ -187,7 +187,7 @@ namespace KSP.Retooled.PhysicsBackend
         private void AddHinge(NativeStore.JointData* joint)
         {
             Add(Constraint.BallAndSocket(ReportEveryImpulse));
-            AddLockedAngles(new bool3(false, true, true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio);
+            AddLockedAngles(new bool3(false, true, true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
 
             if ((joint->state & NativeStore.JointState.HingeLimitEnabled) != 0)
             {
@@ -274,7 +274,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (math.any(locked))
             {
-                AddLockedAngles(locked, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio);
+                AddLockedAngles(locked, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
             }
 
             NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
@@ -316,13 +316,13 @@ namespace KSP.Retooled.PhysicsBackend
         /// these: AngularLimit3DJacobian adds its error, not its impulse, and AngularLimit2DJacobian adds along an axis that
         /// follows the error, which sums to nothing meaningful. A joint's torque and its break test need that number.
         /// </summary>
-        private void AddLockedAngles(bool3 locked, float frequency, float damping)
+        private void AddLockedAngles(bool3 locked, float frequency, float damping, float3 impulseThreshold)
         {
             for (int i = 0; i < 3; i++)
             {
                 if (locked[i])
                 {
-                    Add(Constraint.Twist(i, new FloatRange(0.0f, 0.0f), ReportEveryImpulse, frequency, damping));
+                    Add(Constraint.Twist(i, new FloatRange(0.0f, 0.0f), impulseThreshold, frequency, damping));
                 }
             }
         }
@@ -364,27 +364,12 @@ namespace KSP.Retooled.PhysicsBackend
 
         private void AddAngularDrives(NativeStore.JointData* joint)
         {
-            NativeStore.JointAxis* slerp = NativeStore.AxisOf(joint, NativeStore.AxisSlerp);
             NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
             NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
-            bool anyLocked = false;
-            for (int i = 0; i < 3; i++)
+            NativeStore.JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+            if (wholeRotation != null)
             {
-                anyLocked |= NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked;
-            }
-
-            // Unity leaves the other drives in place when it switches to slerp, so a slerp drive with any strength outranks them.
-            bool hasSlerp = !anyLocked && (slerp->driveSpring > 0.0f || slerp->driveDamper > 0.0f);
-            bool sameDrive = twist->driveSpring == swing->driveSpring && twist->driveDamper == swing->driveDamper;
-            bool noForceLimit = twist->driveMaxForce >= JointConstraints.UnlimitedForce && swing->driveMaxForce >= JointConstraints.UnlimitedForce;
-
-            if (hasSlerp)
-            {
-                AddSoftRotation(joint, slerp);
-            }
-            else if (!anyLocked && sameDrive && noForceLimit && twist->driveSpring > 0.0f)
-            {
-                AddSoftRotation(joint, twist);
+                AddSoftRotation(joint, wholeRotation);
             }
             else
             {
@@ -395,8 +380,8 @@ namespace KSP.Retooled.PhysicsBackend
         }
 
         /// <summary>
-        /// A spring and damper that hold the whole rotation at its target. Its constraints report their torque, and it solves
-        /// the same way a locked joint does, unlike three separate motors.
+        /// A spring and damper that hold the whole rotation at its target, solved the way a locked joint is, unlike three
+        /// separate motors. It is a drive, so its constraints report nothing.
         /// </summary>
         private void AddSoftRotation(NativeStore.JointData* joint, NativeStore.JointAxis* drive)
         {
@@ -409,7 +394,7 @@ namespace KSP.Retooled.PhysicsBackend
             pending.AFromJoint = new MTransform(math.mul(joint->rotation1, math.conjugate(target)), joint->position1);
             float mass = JointConstraints.AngularMass(joint, 1);
             Softness(spring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-            AddLockedAngles(new bool3(true), frequency, damping);
+            AddLockedAngles(new bool3(true), frequency, damping, Constraint.DefaultMaxImpulse);
             Flush();
 
             pending.AFromJoint = new MTransform(joint->rotation1, joint->position1);
@@ -503,8 +488,9 @@ namespace KSP.Retooled.PhysicsBackend
     /// <summary>
     /// Reads what the joints' constraints applied from the step's impulse events, which arrive once per constraint with the
     /// impulse of the whole step, then breaks the joints over their limits. A constraint's impulse acts on body A, the
-    /// connected body, and Unity reports what acts on the joint's owner. A broken joint stops constraining from the next step
-    /// and waits in the world's break list for whatever publishes the step's results.
+    /// connected body, and Unity reports what acts on the joint's owner. Drives count for neither, as under PhysX, so they
+    /// raise no events. A broken joint stops constraining from the next step and waits in the world's break list for
+    /// whatever publishes the step's results.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadJointForcesJob : IJob
@@ -577,8 +563,9 @@ namespace KSP.Retooled.PhysicsBackend
     {
         internal const NativeStore.JointState Inactive = NativeStore.JointState.Broken | NativeStore.JointState.BodyDestroyed;
 
-        // Unity's "no limit" arrives as float.MaxValue, which a step's impulse can't be derived from.
-        internal const float UnlimitedForce = 1e30f;
+        // Past this a drive's force limit can't matter, and a step's impulse couldn't be derived from it in a float. Stock joints
+        // use 1e20 and Unity's default is float.MaxValue.
+        internal const float UnlimitedForce = 1e15f;
 
         private static float InverseMass(NativeStore.Body* body)
         {
@@ -620,6 +607,34 @@ namespace KSP.Retooled.PhysicsBackend
             local[axis] = 1.0f;
             float3 world = math.rotate(WorldRotation0(joint), local);
             return 1.0f / math.max(InverseInertia(joint->body0, world) + InverseInertia(joint->body1, world), 1e-9f);
+        }
+
+        /// <summary>
+        /// The drive that holds the whole rotation in one constraint set, or null when each axis needs a motor of its own.
+        /// Unity leaves the other drives in place when it switches to slerp, so a slerp drive with any strength outranks them.
+        /// The soft constraints can't honour a force limit, so one that matters takes the motors.
+        /// </summary>
+        internal static NativeStore.JointAxis* WholeRotationDrive(NativeStore.JointData* joint)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                {
+                    return null;
+                }
+            }
+
+            NativeStore.JointAxis* slerp = NativeStore.AxisOf(joint, NativeStore.AxisSlerp);
+            if (slerp->driveSpring > 0.0f || slerp->driveDamper > 0.0f)
+            {
+                return slerp;
+            }
+
+            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
+            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
+            bool sameDrive = twist->driveSpring == swing->driveSpring && twist->driveDamper == swing->driveDamper;
+            bool noForceLimit = twist->driveMaxForce >= UnlimitedForce && swing->driveMaxForce >= UnlimitedForce;
+            return sameDrive && noForceLimit && twist->driveSpring > 0.0f ? twist : null;
         }
 
         internal static quaternion WorldRotation0(NativeStore.JointData* joint)
