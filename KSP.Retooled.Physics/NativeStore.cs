@@ -1,8 +1,11 @@
 using System;
 using System.Runtime.InteropServices;
 using KSP.Retooled.Components.Physics;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
+using Unity.Physics;
+using Unity.Transforms;
 
 namespace KSP.Retooled.Physics
 {
@@ -59,18 +62,22 @@ namespace KSP.Retooled.Physics
         {
             public Body* owner;
             public ShapeData** shapes;
-            public void* collider;
+            public BodyFlags flags;
+            public uint shapeCount;
 
-            public BodyPose* pose;
-            public BodyVelocity* velocity;
-            public BodyMass* mass;
+            // The plugin only knows the fields above, so everything from here on is free to change without building it.
+            public LocalTransform* pose;
+            public PhysicsVelocity* velocity;
+            public PhysicsMass* mass;
+            public BodyMass* bodyMass;
+            public PhysicsDamping* damping;
             public BodyLimits* limits;
             public BodySleep* sleep;
             public BodyForces* forces;
             public BodyTarget* target;
 
-            public BodyFlags flags;
-            public uint shapeCount;
+            /// <summary>The body's Unity.Physics collider. A null blob means no collider, or that a rebuild is due.</summary>
+            public PhysicsCollider* collider;
 
             public Entity entity;
             public int orderVersion;
@@ -81,13 +88,16 @@ namespace KSP.Retooled.Physics
         [StructLayout(LayoutKind.Sequential)]
         internal struct BodyHome
         {
-            public BodyPose pose;
-            public BodyVelocity velocity;
-            public BodyMass mass;
+            public LocalTransform pose;
+            public PhysicsVelocity velocity;
+            public PhysicsMass mass;
+            public BodyMass bodyMass;
+            public PhysicsDamping damping;
             public BodyLimits limits;
             public BodySleep sleep;
             public BodyForces forces;
             public BodyTarget target;
+            public PhysicsCollider collider;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -102,6 +112,8 @@ namespace KSP.Retooled.Physics
             public int collisionDetectionMode;
             public uint positionIterations;
             public uint velocityIterations;
+
+            // As in BodyData, the plugin only knows the fields above.
             public BodyHome home;
         }
 
@@ -479,6 +491,8 @@ namespace KSP.Retooled.Physics
             public uint engineObjectIdOffset;
 
             public uint jointDataSize;
+            public uint bodyDataSize;
+            public uint bodySize;
             private readonly uint reserved0;
 
             public IgnoreTable* ignoreTable;
@@ -651,7 +665,7 @@ namespace KSP.Retooled.Physics
         {
             int[] sizes =
             {
-                sizeof(BodyData),
+                UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.pose))),
                 sizeof(ShapeData),
                 sizeof(MaterialData),
                 sizeof(WorldData),
@@ -662,7 +676,7 @@ namespace KSP.Retooled.Physics
                 sizeof(MeshData),
                 sizeof(CookInput),
                 sizeof(CookOutput),
-                sizeof(Body),
+                UnsafeUtility.GetFieldOffset(typeof(Body).GetField(nameof(Body.home))),
                 sizeof(Shape),
                 sizeof(CommandArgs),
                 (int)BodyCommand.Count,
@@ -712,7 +726,14 @@ namespace KSP.Retooled.Physics
                 return $"{nameof(JointData)} is {sizeof(JointData)} here and {globals->jointDataSize} in the store's joints. Restart Unity";
             }
 
+            if (globals->bodyDataSize != 0 && (globals->bodyDataSize != sizeof(BodyData) || globals->bodySize != sizeof(Body)))
+            {
+                return $"Body records are {sizeof(BodyData)} and {sizeof(Body)} bytes here and {globals->bodyDataSize} and {globals->bodySize} in the store. Restart Unity";
+            }
+
             globals->jointDataSize = (uint)sizeof(JointData);
+            globals->bodyDataSize = (uint)sizeof(BodyData);
+            globals->bodySize = (uint)sizeof(Body);
             return null;
         }
     }

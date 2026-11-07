@@ -170,19 +170,20 @@ namespace KSP.Retooled.Physics
             StoreOps.PointAtHome(hot, body);
             hot->pose->Rotation = a->rotation;
             hot->pose->Position = a->position;
+            hot->pose->Scale = 1.0f;
             hot->flags = (NativeStore.BodyFlags)a->flags | NativeStore.BodyFlags.ColliderDirty;
             if (a->enabled != 0)
             {
                 hot->flags |= NativeStore.BodyFlags.Static;
             }
 
-            hot->mass->Mass = a->scalar;
+            hot->bodyMass->Mass = a->scalar;
             hot->mass->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
-            hot->mass->Inertia = new float3(1.0f);
+            hot->bodyMass->Inertia = new float3(1.0f);
             hot->mass->InverseInertia = new float3(1.0f);
-            hot->mass->InertiaRotation = quaternion.identity;
-            hot->limits->LinearDamping = a->scalar2;
-            hot->limits->AngularDamping = a->scalar3;
+            hot->mass->Transform.rot = quaternion.identity;
+            hot->damping->Linear = a->scalar2;
+            hot->damping->Angular = a->scalar3;
             hot->limits->MaxLinearVelocity = DefaultMaxLinearVelocity;
             hot->limits->MaxAngularVelocity = DefaultMaxAngularVelocity;
             hot->limits->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
@@ -209,7 +210,7 @@ namespace KSP.Retooled.Physics
 
             NativeStore.BodyData* hot = world->bodies + body->index;
             BodyEntities.Release(hot);
-            if (hot->collider != null)
+            if (hot->collider->Value.IsCreated)
             {
                 if (world->deadColliderCount == world->deadColliderCapacity)
                 {
@@ -217,7 +218,7 @@ namespace KSP.Retooled.Physics
                     world->deadColliders = (void**)StoreOps.Reallocate(globals, world->deadColliders, world->deadColliderCapacity * (ulong)sizeof(void*));
                 }
 
-                world->deadColliders[world->deadColliderCount++] = hot->collider;
+                world->deadColliders[world->deadColliderCount++] = hot->collider->Value.GetUnsafePtr();
             }
 
             uint last = --world->bodyCount;

@@ -62,26 +62,17 @@ namespace Retooled
         kBodyColliderDirty = 1 << 11,
     };
 
-    // Mirrored. One rigid body, static or not. The components are managed's to read: they sit in BodyHome or in an
-    // entity's chunk, and the plugin must not keep these pointers or look through them.
+    // The start of one rigid body's row, static or not, mirrored. Managed allocates the rows and keeps its own fields after
+    // these, so changing those needs no plugin build. Rows are StoreGlobals::bodyDataSize apart: walk them with BodyRow.
     struct BodyData
     {
         Body* owner;
         Shape* const* shapes;  // shapeCount entries, owned by the Body
-        void* collider;        // Unity.Physics blob, owned by managed; null means no collider or a rebuild is due
-
-        void* components[7];
-
         uint32_t flags; // BodyStateFlags
         uint32_t shapeCount;
-
-        uint64_t entity; // Unity.Entities.Entity, zero while the components are in the Body
-        int32_t orderVersion;
-        uint32_t reserved0;
     };
 
-    static_assert(sizeof(BodyData) == 104, "NativeStore.BodyData mirrors this layout");
-    static_assert(offsetof(BodyData, flags) == 80);
+    static_assert(sizeof(BodyData) == 24, "NativeStore.BodyData starts with this layout");
 
     // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
     // one reference and each shape using the material another, because Unity releases a material while shapes still use it.
@@ -336,8 +327,11 @@ namespace Retooled
         // Where the EngineObjectId sits inside the object a userData pointer refers to.
         uint32_t engineObjectIdOffset;
 
-        // sizeof(JointData) in the domain that first attached. Managed keeps it here because joints outlive a domain reload.
+        // The sizes of managed's records in the domain that first attached. Managed keeps them here because the records
+        // outlive a domain reload.
         uint32_t jointDataSize;
+        uint32_t bodyDataSize;
+        uint32_t bodySize;
         uint32_t reserved0;
 
         // Which collision pairs Physics.IgnoreCollision switched off. IgnoreTable.cs owns the layout, and it stays on the
@@ -356,7 +350,7 @@ namespace Retooled
         void (*releaseMaterial)(MaterialData* material);
     };
 
-    static_assert(sizeof(StoreGlobals) == 80, "NativeStore.StoreGlobals mirrors this layout");
+    static_assert(sizeof(StoreGlobals) == 88, "NativeStore.StoreGlobals mirrors this layout");
 
     // Mirrored. What one command carries to a kernel and back, which saves a struct and a function pointer per command.
     // The Bind lines in the command files say which field holds what.
@@ -503,7 +497,8 @@ namespace Retooled
         std::atomic<uint32_t> references{1};
     };
 
-    // Mirrored. The cold half of a body, and the handle Unity holds.
+    // The start of the cold half of a body, mirrored, and the handle Unity holds. Managed allocates it and keeps the
+    // body's components after these fields until a world takes them.
     struct Body
     {
         World* world;
@@ -515,10 +510,9 @@ namespace Retooled
         int32_t collisionDetectionMode;
         uint32_t positionIterations;
         uint32_t velocityIterations;
-        std::byte home[288]; // NativeStore.BodyHome
     };
 
-    static_assert(sizeof(Body) == 336, "NativeStore.Body mirrors this layout");
+    static_assert(sizeof(Body) == 48, "NativeStore.Body starts with this layout");
 
     // Mirrored. A shape, and the handle Unity holds. A shape can exist without a body, for use as query geometry.
     struct Shape
@@ -548,6 +542,11 @@ namespace Retooled
     };
 
     extern StoreGlobals g_Globals;
+
+    inline const BodyData* BodyRow(const WorldData& world, uint32_t index)
+    {
+        return reinterpret_cast<const BodyData*>(reinterpret_cast<const std::byte*>(world.bodies) + index * g_Globals.bodyDataSize);
+    }
     extern ManagedCallbacks g_Managed;
 
     // Held shared around a call to the cook functions, and exclusively to change them, so detaching waits for running cooks.

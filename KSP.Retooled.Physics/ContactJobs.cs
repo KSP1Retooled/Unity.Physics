@@ -269,9 +269,9 @@ namespace KSP.Retooled.Physics
                 Normal = normal,
                 BuiltNormal = header.Normal,
                 LinearVelocityA = first.velocity->Linear,
-                AngularVelocityA = first.velocity->Angular,
+                AngularVelocityA = StoreOps.WorldAngularVelocity(first),
                 LinearVelocityB = second.velocity->Linear,
-                AngularVelocityB = second.velocity->Angular,
+                AngularVelocityB = StoreOps.WorldAngularVelocity(second),
                 Trigger = trigger,
             });
 
@@ -412,7 +412,7 @@ namespace KSP.Retooled.Physics
 
         private static float3 PointVelocity(ref NativeStore.BodyData body, float3 linear, float3 angular, float3 position)
         {
-            float3 center = (float3)body.pose->Position + math.rotate(body.pose->Rotation, body.mass->LocalCenterOfMass);
+            float3 center = (float3)body.pose->Position + math.rotate(body.pose->Rotation, body.mass->Transform.pos);
             return linear + math.cross(angular, position - center);
         }
 
@@ -924,7 +924,7 @@ namespace KSP.Retooled.Physics
                 {
                     NativeStore.BodyData* a = World->bodies + rowFirst;
                     NativeStore.BodyData* b = World->bodies + rowSecond;
-                    NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, a->velocity->Angular, b->velocity->Linear, b->velocity->Angular);
+                    NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, StoreOps.WorldAngularVelocity(*a), b->velocity->Linear, StoreOps.WorldAngularVelocity(*b));
                     World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
                     {
                         thisCollider = EngineId(first->userData),

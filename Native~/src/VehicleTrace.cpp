@@ -103,7 +103,7 @@ namespace Retooled
             const WorldData& data = g_Worlds[w]->data;
             for (uint32_t b = 0; b < data.bodyCount && name.empty(); b++)
             {
-                const BodyData& hot = data.bodies[b];
+                const BodyData& hot = *BodyRow(data, b);
                 if (hot.owner == handle)
                 {
                     name = Numbered((hot.flags & kBodyStatic) != 0 ? "static" : "body", s_Names.size());

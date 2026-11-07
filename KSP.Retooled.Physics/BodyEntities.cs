@@ -2,6 +2,8 @@ using KSP.Retooled.Components.Physics;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
+using Unity.Physics;
+using Unity.Transforms;
 
 namespace KSP.Retooled.Physics
 {
@@ -36,13 +38,16 @@ namespace KSP.Retooled.Physics
             ref Binding binding = ref Current.Data;
             binding.Manager = manager;
             binding.Archetype = manager.CreateArchetype(
-                ComponentType.ReadWrite<BodyPose>(),
-                ComponentType.ReadWrite<BodyVelocity>(),
+                ComponentType.ReadWrite<LocalTransform>(),
+                ComponentType.ReadWrite<PhysicsVelocity>(),
+                ComponentType.ReadWrite<PhysicsMass>(),
                 ComponentType.ReadWrite<BodyMass>(),
+                ComponentType.ReadWrite<PhysicsDamping>(),
                 ComponentType.ReadWrite<BodyLimits>(),
                 ComponentType.ReadWrite<BodySleep>(),
                 ComponentType.ReadWrite<BodyForces>(),
-                ComponentType.ReadWrite<BodyTarget>());
+                ComponentType.ReadWrite<BodyTarget>(),
+                ComponentType.ReadWrite<PhysicsCollider>());
             binding.Bound = true;
 
             int worlds = NativeStore.RetooledPhysics_WorldCount();
@@ -56,21 +61,52 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Moves every body back onto itself. The entities go, so that a later bind doesn't leave them behind.</summary>
+        /// <summary>
+        /// Moves every body back onto itself. The entities go, so that a later bind doesn't leave them behind. The world
+        /// is usually being disposed, so whatever Entities refuses on the way, no row may still lead into it afterwards:
+        /// Unity's shutdown sends shape and body commands after the world is gone, and a row reaching a disposed
+        /// EntityManager from one of them takes the process down with the lock file held.
+        /// </summary>
         internal static void Unbind()
         {
             ref Binding binding = ref Current.Data;
             int worlds = NativeStore.RetooledPhysics_WorldCount();
-            for (int w = 0; w < worlds; w++)
+            try
             {
-                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
-                for (uint i = 0; i < world->bodyCount; i++)
+                for (int w = 0; w < worlds; w++)
                 {
-                    Release(world->bodies + i);
+                    NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    for (uint i = 0; i < world->bodyCount; i++)
+                    {
+                        Release(world->bodies + i);
+                    }
                 }
             }
+            finally
+            {
+                for (int w = 0; w < worlds; w++)
+                {
+                    NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    for (uint i = 0; i < world->bodyCount; i++)
+                    {
+                        Abandon(world->bodies + i);
+                    }
+                }
 
-            binding.Bound = false;
+                binding.Bound = false;
+            }
+        }
+
+        /// <summary>Points a row home without its entity's state, for a world that can't give it back.</summary>
+        private static void Abandon(NativeStore.BodyData* hot)
+        {
+            if (hot->entity == Entity.Null)
+            {
+                return;
+            }
+
+            hot->entity = Entity.Null;
+            StoreOps.PointAtHome(hot, hot->owner);
         }
 
         /// <summary>Puts a body on an entity if a world is bound.</summary>
@@ -88,10 +124,13 @@ namespace KSP.Retooled.Physics
             *hot->pose = home->pose;
             *hot->velocity = home->velocity;
             *hot->mass = home->mass;
+            *hot->bodyMass = home->bodyMass;
+            *hot->damping = home->damping;
             *hot->limits = home->limits;
             *hot->sleep = home->sleep;
             *hot->forces = home->forces;
             *hot->target = home->target;
+            *hot->collider = home->collider;
         }
 
         /// <summary>Takes a body off its entity, if it has one, keeping its state.</summary>
@@ -107,10 +146,13 @@ namespace KSP.Retooled.Physics
             home->pose = *hot->pose;
             home->velocity = *hot->velocity;
             home->mass = *hot->mass;
+            home->bodyMass = *hot->bodyMass;
+            home->damping = *hot->damping;
             home->limits = *hot->limits;
             home->sleep = *hot->sleep;
             home->forces = *hot->forces;
             home->target = *hot->target;
+            home->collider = *hot->collider;
 
             Current.Data.Manager.DestroyEntity(hot->entity);
             hot->entity = Entity.Null;
@@ -139,10 +181,9 @@ namespace KSP.Retooled.Physics
             }
 
             // Query builds arrive in the middle of system updates, so this can't be CompleteAllTrackedJobs, which also
-            // invalidates the type handles those systems are holding.
+            // invalidates the type handles those systems are holding. It leaves out the components other packages share,
+            // whose dependencies can reach jobs that have nothing to do with bodies.
             ref EntityManager manager = ref binding.Manager;
-            manager.CompleteDependencyBeforeRW<BodyPose>();
-            manager.CompleteDependencyBeforeRW<BodyVelocity>();
             manager.CompleteDependencyBeforeRW<BodyMass>();
             manager.CompleteDependencyBeforeRW<BodyLimits>();
             manager.CompleteDependencyBeforeRW<BodySleep>();
@@ -158,13 +199,16 @@ namespace KSP.Retooled.Physics
         {
             EntityManager manager = Current.Data.Manager;
             Entity entity = hot->entity;
-            hot->pose = Pointer(manager.GetComponentDataRW<BodyPose>(entity));
-            hot->velocity = Pointer(manager.GetComponentDataRW<BodyVelocity>(entity));
-            hot->mass = Pointer(manager.GetComponentDataRW<BodyMass>(entity));
+            hot->pose = Pointer(manager.GetComponentDataRW<LocalTransform>(entity));
+            hot->velocity = Pointer(manager.GetComponentDataRW<PhysicsVelocity>(entity));
+            hot->mass = Pointer(manager.GetComponentDataRW<PhysicsMass>(entity));
+            hot->bodyMass = Pointer(manager.GetComponentDataRW<BodyMass>(entity));
+            hot->damping = Pointer(manager.GetComponentDataRW<PhysicsDamping>(entity));
             hot->limits = Pointer(manager.GetComponentDataRW<BodyLimits>(entity));
             hot->sleep = Pointer(manager.GetComponentDataRW<BodySleep>(entity));
             hot->forces = Pointer(manager.GetComponentDataRW<BodyForces>(entity));
             hot->target = Pointer(manager.GetComponentDataRW<BodyTarget>(entity));
+            hot->collider = Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity));
 
             // Last, so that a query on a worker never sees a current version with old pointers.
             hot->orderVersion = manager.EntityOrderVersion;

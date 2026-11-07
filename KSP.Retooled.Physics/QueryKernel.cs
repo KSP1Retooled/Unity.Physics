@@ -766,7 +766,7 @@ namespace KSP.Retooled.Physics
             }
 
             NativeStore.BodyData* body = StoreOps.Hot(shape->body);
-            Collider* root = (Collider*)body->collider;
+            Collider* root = (Collider*)body->collider->Value.GetUnsafePtr();
             if (root == null)
             {
                 return null;

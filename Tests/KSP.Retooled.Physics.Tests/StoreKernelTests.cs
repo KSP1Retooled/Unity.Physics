@@ -3,6 +3,7 @@ using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Transforms;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -130,7 +131,7 @@ namespace KSP.Retooled.Physics.Tests
             NativeStore.CommandArgs args = default;
             BodyKernel.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
 
-            float3 inertia = StoreOps.Hot(body)->mass->Inertia;
+            float3 inertia = StoreOps.Hot(body)->bodyMass->Inertia;
             Assert.That(math.all(math.isfinite(inertia)), Is.True, $"inertia {inertia}");
             Assert.That(inertia.x, Is.EqualTo(1.0f / 6.0f).Within(1e-5f), "the box alone");
 
@@ -375,22 +376,28 @@ namespace KSP.Retooled.Physics.Tests
             quaternion targetRotation = quaternion.RotateY(0.5f);
             float3 targetPosition = new float3(0.0f, 2.0f, 0.0f);
 
-            BodyPose pose = new BodyPose { Rotation = quaternion.identity };
-            BodyVelocity bodyVelocity = default;
-            BodyMass mass = new BodyMass { InertiaRotation = quaternion.identity, LocalCenterOfMass = centerOfMass };
+            LocalTransform pose = new LocalTransform { Rotation = quaternion.identity, Scale = 1.0f };
+            PhysicsVelocity bodyVelocity = default;
+            PhysicsMass mass = new PhysicsMass { Transform = new RigidTransform(quaternion.identity, centerOfMass) };
+            BodyMass bodyMass = default;
+            PhysicsDamping damping = default;
             BodyLimits limits = default;
             BodySleep sleep = default;
             BodyForces forces = default;
             BodyTarget target = new BodyTarget { Position = targetPosition, Rotation = targetRotation };
+            PhysicsCollider collider = default;
 
             NativeStore.BodyData body = default;
             body.pose = &pose;
             body.velocity = &bodyVelocity;
             body.mass = &mass;
+            body.bodyMass = &bodyMass;
+            body.damping = &damping;
             body.limits = &limits;
             body.sleep = &sleep;
             body.forces = &forces;
             body.target = &target;
+            body.collider = &collider;
             body.flags = Kinematic | NativeStore.BodyFlags.HasKinematicTarget;
 
             using NativeArray<int> dynamicIndices = new NativeArray<int>(new[] { 0 }, Allocator.TempJob);

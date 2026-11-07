@@ -86,8 +86,8 @@ namespace KSP.Retooled.Physics
             for (uint i = 0; i < store->bodyCount; i++)
             {
                 NativeStore.BodyData* body = store->bodies + i;
-                ColliderBuilder.Release(body->collider);
-                body->collider = null;
+                ColliderBuilder.Release(body->collider->Value.GetUnsafePtr());
+                body->collider->Value = default;
                 body->flags |= NativeStore.BodyFlags.ColliderDirty;
             }
 

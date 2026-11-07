@@ -640,7 +640,7 @@ namespace KSP.Retooled.Physics
                 return 0.0f;
             }
 
-            float3 axis = math.rotate(math.conjugate(math.mul(hot->pose->Rotation, hot->mass->InertiaRotation)), worldAxis);
+            float3 axis = math.rotate(math.conjugate(math.mul(hot->pose->Rotation, hot->mass->Transform.rot)), worldAxis);
             return math.csum(axis * axis * hot->mass->InverseInertia);
         }
 
@@ -717,8 +717,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Body 1's angular velocity relative to body 0, in world space.</summary>
         internal static float3 RelativeAngularVelocity(NativeStore.JointData* joint)
         {
-            float3 first = joint->body0 != null ? StoreOps.Hot(joint->body0)->velocity->Angular : float3.zero;
-            float3 second = joint->body1 != null ? StoreOps.Hot(joint->body1)->velocity->Angular : float3.zero;
+            float3 first = joint->body0 != null ? StoreOps.WorldAngularVelocity(*StoreOps.Hot(joint->body0)) : float3.zero;
+            float3 second = joint->body1 != null ? StoreOps.WorldAngularVelocity(*StoreOps.Hot(joint->body1)) : float3.zero;
             return second - first;
         }
 

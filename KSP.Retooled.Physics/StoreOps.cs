@@ -33,10 +33,44 @@ namespace KSP.Retooled.Physics
             hot->pose = &home->pose;
             hot->velocity = &home->velocity;
             hot->mass = &home->mass;
+            hot->bodyMass = &home->bodyMass;
+            hot->damping = &home->damping;
             hot->limits = &home->limits;
             hot->sleep = &home->sleep;
             hot->forces = &home->forces;
             hot->target = &home->target;
+            hot->collider = &home->collider;
+        }
+
+        /// <summary>
+        /// A body's angular velocity in world space. PhysicsVelocity holds it about the principal axes, which is what a
+        /// Rigidbody's callers never see.
+        /// </summary>
+        internal static float3 WorldAngularVelocity(in NativeStore.BodyData body)
+        {
+            return math.rotate(math.mul(body.pose->Rotation, body.mass->Transform.rot), body.velocity->Angular);
+        }
+
+        internal static void SetWorldAngularVelocity(in NativeStore.BodyData body, float3 angular)
+        {
+            quaternion worldFromInertia = math.mul(body.pose->Rotation, body.mass->Transform.rot);
+            body.velocity->Angular = math.rotate(math.conjugate(worldFromInertia), angular);
+        }
+
+        /// <summary>Moving a body keeps its angular velocity in world space, so the value held about its axes has to follow.</summary>
+        internal static void SetRotation(in NativeStore.BodyData body, quaternion rotation)
+        {
+            float3 angular = WorldAngularVelocity(body);
+            body.pose->Rotation = rotation;
+            SetWorldAngularVelocity(body, angular);
+        }
+
+        /// <summary>As <see cref="SetRotation"/>, for the axes themselves.</summary>
+        internal static void SetInertiaRotation(in NativeStore.BodyData body, quaternion rotation)
+        {
+            float3 angular = WorldAngularVelocity(body);
+            body.mass->Transform.rot = rotation;
+            SetWorldAngularVelocity(body, angular);
         }
 
         internal static void* Reallocate(NativeStore.StoreGlobals* globals, void* memory, ulong size)

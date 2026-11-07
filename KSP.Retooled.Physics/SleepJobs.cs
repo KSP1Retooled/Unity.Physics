@@ -202,9 +202,8 @@ namespace KSP.Retooled.Physics
             float counter = body->sleep->WakeCounter;
             if (counter < StoreOps.WakeCounterReset * 0.5f || counter < DeltaTime)
             {
-                quaternion worldFromInertia = math.mul(body->pose->Rotation, body->mass->InertiaRotation);
                 body->sleep->LinearSum += body->velocity->Linear;
-                body->sleep->AngularSum += math.rotate(math.conjugate(worldFromInertia), body->velocity->Angular);
+                body->sleep->AngularSum += body->velocity->Angular;
 
                 float cluster = 1.0f + math.min(contacts, MaximumCountedContacts);
                 float threshold = cluster * body->sleep->Threshold;
@@ -226,7 +225,7 @@ namespace KSP.Retooled.Physics
         {
             float3 angular = body->sleep->AngularSum;
             float inverseMass = body->mass->InverseMass != 0.0f ? body->mass->InverseMass : 1.0f;
-            float rotational = math.dot(angular * angular, body->mass->Inertia) * inverseMass;
+            float rotational = math.dot(angular * angular, body->bodyMass->Inertia) * inverseMass;
             return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
         }
 

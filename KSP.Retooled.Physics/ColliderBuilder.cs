@@ -48,8 +48,8 @@ namespace KSP.Retooled.Physics
 
                 // A build that throws leaves the body with its last collider, and still asking for a new one.
                 void* collider = Build(body);
-                Release(body->collider);
-                body->collider = collider;
+                Release(body->collider->Value.GetUnsafePtr());
+                body->collider->Value = FromPointer(collider);
                 body->flags &= ~NativeStore.BodyFlags.ColliderDirty;
             }
         }

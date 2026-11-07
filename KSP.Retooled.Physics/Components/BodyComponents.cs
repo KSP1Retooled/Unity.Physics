@@ -3,42 +3,24 @@ using Unity.Mathematics;
 
 namespace KSP.Retooled.Components.Physics;
 
-// All vectors are world space unless named local. Velocities are those of the centre of mass, angular in radians per
-// second.
+// A rigid body's entity holds Unity.Physics' and Unity.Transforms' components where they say what a Rigidbody needs. These
+// hold what they can't. All vectors are world space unless named local.
 
-/// <summary>Where a rigid body is.</summary>
-public struct BodyPose : IComponentData
-{
-    public quaternion Rotation;
-    public float3 Position;
-}
-
-/// <summary>How fast a rigid body is moving.</summary>
-public struct BodyVelocity : IComponentData
-{
-    public float3 Linear;
-    public float3 Angular;
-}
-
-/// <summary>A rigid body's mass distribution. A body that can't be moved has inverses of zero.</summary>
+/// <summary>
+/// The mass and inertia that a Rigidbody hands back, which inverting PhysicsMass wouldn't return exactly, and which can't
+/// be recovered from a body that has inverses of zero.
+/// </summary>
 public struct BodyMass : IComponentData
 {
     public float Mass;
-    public float InverseMass;
 
-    /// <summary>Principal moments of inertia, in the frame <see cref="LocalCenterOfMass"/> and <see cref="InertiaRotation"/> give.</summary>
+    /// <summary>Principal moments of inertia, in the frame that PhysicsMass.Transform gives.</summary>
     public float3 Inertia;
-
-    public float3 InverseInertia;
-    public quaternion InertiaRotation;
-    public float3 LocalCenterOfMass;
 }
 
-/// <summary>What a rigid body's motion loses each step, and the most it may have.</summary>
+/// <summary>The most motion a rigid body may have.</summary>
 public struct BodyLimits : IComponentData
 {
-    public float LinearDamping;
-    public float AngularDamping;
     public float MaxLinearVelocity;
     public float MaxAngularVelocity;
     public float MaxDepenetrationVelocity;
