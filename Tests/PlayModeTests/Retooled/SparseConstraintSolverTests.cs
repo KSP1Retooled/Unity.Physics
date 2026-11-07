@@ -253,6 +253,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 float lower = scenario.Lower[i];
                 float upper = scenario.Upper[i];
                 Assert.That(z[i], Is.InRange(lower - tolerance, upper + tolerance), $"row {i} is outside its bounds");
+                if (lower == upper)
+                {
+                    continue;
+                }
+
                 if (z[i] > lower + tolerance && z[i] < upper - tolerance)
                 {
                     Assert.That(w, Is.EqualTo(0.0).Within(tolerance), $"free row {i} isn't satisfied");
@@ -321,7 +326,6 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             float[] impulses = Solve(scenario, true, out SparseConstraintSolver.Statistics statistics, out bool converged);
 
-            UnityEngine.Debug.Log($"[Pivoting] seed {seed} bound {bound}: {statistics.PivotingIterations} iterations over {scenario.Rows} rows, converged {converged}");
             AssertSolves(scenario, impulses, 5e-3);
             Assert.That(converged, Is.True);
         }
@@ -364,6 +368,26 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             Assert.That(converged, Is.True);
             Assert.That(guided, Is.EqualTo(unguided).Within(1e-3f));
+        }
+
+        [Test]
+        public void RowsWhoseBoundsMeetCostNoPivoting()
+        {
+            Scenario scenario = new Scenario(12);
+            int previous = scenario.AddBody();
+            for (int i = 0; i < 20; i++)
+            {
+                int body = scenario.AddBody();
+                scenario.AddBlock(previous, body, 3);
+                scenario.AddBlock(previous, body, 1, 0.0f);
+                previous = body;
+            }
+
+            float[] impulses = Solve(scenario, true, out SparseConstraintSolver.Statistics statistics, out bool converged);
+
+            Assert.That(converged, Is.True);
+            Assert.That(statistics.PivotingIterations, Is.EqualTo(1));
+            AssertSolves(scenario, impulses, 2e-3);
         }
 
         [Test]

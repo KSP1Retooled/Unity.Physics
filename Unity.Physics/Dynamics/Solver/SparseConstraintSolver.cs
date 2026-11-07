@@ -174,6 +174,17 @@ namespace Unity.Physics
                 UnsafeUtility.MemCpy(state.GetUnsafePtr(), problem.InitialStates, problem.RowCount);
             }
 
+            if (bounded)
+            {
+                for (int row = 0; row < problem.RowCount; row++)
+                {
+                    if (problem.Lower[row] == problem.Upper[row])
+                    {
+                        state[row] = LowerTight;
+                    }
+                }
+            }
+
             int leastInfeasible = int.MaxValue;
             int stalled = 0;
             bool flipAll = true;
@@ -765,6 +776,12 @@ namespace Unity.Physics
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
+                    // A row whose bounds meet has one possible impulse, and it was tight from the start.
+                    if (problem.Lower[row] == problem.Upper[row])
+                    {
+                        continue;
+                    }
+
                     byte current = state[row];
                     byte next = current;
                     if (current == Free)
