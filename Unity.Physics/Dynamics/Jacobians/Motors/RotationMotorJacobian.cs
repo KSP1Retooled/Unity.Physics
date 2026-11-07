@@ -11,6 +11,9 @@ namespace Unity.Physics
     {
         const float SmallestSinHalfAngle = 1e-6f;
 
+        // The cosine of half of 270 degrees.
+        const float NegatedBelow = -0.70710678f;
+
         // Limited axis in motion A space
         public float3 AxisInMotionA;
         public float Target;
@@ -123,9 +126,10 @@ namespace Unity.Physics
             quaternion jointBFromA = math.mul(math.mul(math.inverse(MotionBFromJoint), motionBFromA), MotionAFromJoint);
 
             // Quaternion.ToAngleAxis returns zero below about 0.6 mrad, where stiff joints rest, and nearly a full turn when the
-            // relative rotation comes out negated. Nothing keeps it positive: its sign is a product of the bodies' rotations
-            // and of conversions from the joint frames' matrices.
-            float4 rotation = jointBFromA.value.w < 0.0f ? -jointBFromA.value : jointBFromA.value;
+            // relative rotation comes out negated. Nothing keeps it positive: its sign is a product of the bodies' rotations and
+            // of conversions from the joint frames' matrices. Flipping only the far end of the range leaves the angle continuous
+            // through a half turn, which a rotation off this axis would otherwise stick at.
+            float4 rotation = jointBFromA.value.w < NegatedBelow ? -jointBFromA.value : jointBFromA.value;
 
             // The share of the rotation about this axis, with the angle over sin(angle / 2) tending to 2 as the angle vanishes.
             float sinHalfAngle = math.length(rotation.xyz);
