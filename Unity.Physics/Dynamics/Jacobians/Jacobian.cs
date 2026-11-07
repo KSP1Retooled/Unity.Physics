@@ -712,19 +712,51 @@ namespace Unity.Physics
             }
             else
             {
-                var cappedStiffnessCoefficient = math.min(stiffnessCoefficient, directSolverSettings.MaximumJointStiffness);
-                var cappedDampingCoefficient = math.min(dampingCoefficient, directSolverSettings.MaximumJointDamping);
+                float maximumStiffness = MaximumDirectStiffness(header, velocityA, velocityB, timeStep);
+                float dampingPerStiffness = directSolverSettings.MaximumJointDamping / directSolverSettings.MaximumJointStiffness;
+                var cappedStiffnessCoefficient = math.min(stiffnessCoefficient, maximumStiffness);
+                var cappedDampingCoefficient = math.min(dampingCoefficient, maximumStiffness * dampingPerStiffness);
 
                 // position constraint: use visco-elastic constitutive model (spring/damper)
                 ComputeDirectSolverViscoelasticRegularizationTerms(out epsilon, out gamma, cappedStiffnessCoefficient, cappedDampingCoefficient, timeStep);
+                return new JacobianHeader.DirectSolverRegularizationData
+                {
+                    Epsilon = epsilon,
+                    Gamma = gamma,
+                    Hard = stiffnessCoefficient >= maximumStiffness,
+                };
             }
 
             return new JacobianHeader.DirectSolverRegularizationData
             {
                 Epsilon = epsilon,
                 Gamma = gamma,
-                Hard = stiffnessCoefficient >= directSolverSettings.MaximumJointStiffness,
             };
+        }
+
+        /// <summary>
+        /// The stiffest a joint can be: one that would swing the mass it moves through a whole period in a single substep. A
+        /// stiffer one adds nothing a substep can resolve, and one capped by a single number for every joint is too soft
+        /// between heavy parts and too stiff for light ones, which then take far more than their share of a load wherever
+        /// joints close a loop. The mass is the effective mass of the pair, so a light part on a heavy one sets it.
+        /// </summary>
+        static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB,
+            float timeStep)
+        {
+            float inverseMass;
+            if (header.IsAngular)
+            {
+                inverseMass = (velocityA.IsKinematic ? 0.0f : math.csum(velocityA.InverseInertia) / 3.0f)
+                    + (velocityB.IsKinematic ? 0.0f : math.csum(velocityB.InverseInertia) / 3.0f);
+            }
+            else
+            {
+                inverseMass = (velocityA.IsKinematic ? 0.0f : velocityA.InverseMass)
+                    + (velocityB.IsKinematic ? 0.0f : velocityB.InverseMass);
+            }
+
+            float angularFrequency = Math.Constants.Tau / timeStep;
+            return angularFrequency * angularFrequency / math.max(inverseMass, 1e-9f);
         }
 
         // Calculates the spring frequency from the spring constant and mass for a simple mass-spring system.
