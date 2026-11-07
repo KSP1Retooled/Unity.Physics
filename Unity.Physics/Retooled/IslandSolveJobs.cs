@@ -86,9 +86,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves and integrates one island of the direct solver through all of its substeps. The direct solver takes the joints.
-        /// Contacts are outside what it can solve, so the iterative solver takes everything before it, to find what the contacts
-        /// ask of the joints, and again after it, to reconcile the two.
+        /// Solves and integrates one island of the direct solver through all of its substeps. The direct solver takes the joints
+        /// and the contacts' normals together, so a heavy stack resting on a light part can't press it into the ground. Friction
+        /// is outside what it solves, so an iterative sweep after it adds friction, limited by the normal impulses it found.
         /// </summary>
         [BurstCompile]
         [NoAlias]
@@ -134,15 +134,8 @@ namespace Unity.Physics
                         }
                     }
 
-                    if (touchesSomething)
-                    {
-                        // One iteration short of last, as a contact counts its impulse towards events in the last one.
-                        StepInput beforeDirect = stepInput;
-                        beforeDirect.NumSolverIterations++;
-                        Sweep(island, numContacts, stepInput.NumSolverIterations, beforeDirect);
-                    }
-
-                    DirectSolver(DirectSolverSchedulerInfo, island, JacobiansReader, ref MotionVelocities, MotionDatas, stepInput);
+                    DirectSolver(DirectSolverSchedulerInfo, island, JacobiansReader, ref MotionVelocities, MotionDatas, stepInput,
+                        touchesSomething ? numContacts : 0);
 
                     if (touchesSomething)
                     {

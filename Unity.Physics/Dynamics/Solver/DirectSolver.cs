@@ -297,7 +297,7 @@ namespace Unity.Physics
             switch (header.Type)
             {
                 case JacobianType.Contact:
-                    if (!header.IsContactDynamic)
+                    if (!header.IsContactDynamic || !header.Enabled)
                     {
                         // Nothing to do for contacts that don't involve a dynamic body
                         return 0;
@@ -813,6 +813,58 @@ namespace Unity.Physics
             return -((inside ? 1.0f : regularization.Gamma) / timestep) * error;
         }
 
+        /// <summary>
+        /// The fraction of a contact's penetration that one substep removes. Removing all of it at once launches whatever
+        /// rests on the contact, and the bodies fall back deeper the next time.
+        /// </summary>
+        const float ContactRecovery = 0.2f;
+
+        /// <summary>
+        /// A contact's compliance against the inverse mass that its row moves. A stack resting on a light part presses that
+        /// part's contact with the weight of the stack, so this has to stay small next to the part's own inverse mass, but
+        /// some is needed to make the forces of several contacts on one face unique.
+        /// </summary>
+        const float ContactCompliance = 1e-3f;
+
+        /// <summary>
+        /// The right-hand side of a contact's normal row in the sparse solve, with its regularisation. A contact that is
+        /// still apart may close its gap in this substep and no more; one that is touching pushes out part of its depth.
+        /// </summary>
+        static float SparseContactRow(float distance, in NativeArray<MotionVelocity> motionVelocities, int bodyA, int bodyB,
+            bool bodyAIsFixed, bool bodyBIsFixed, float timestep, out float epsilon)
+        {
+            float inverseMass = (bodyAIsFixed ? 0.0f : motionVelocities[bodyA].InverseMass)
+                + (bodyBIsFixed ? 0.0f : motionVelocities[bodyB].InverseMass);
+            epsilon = ContactCompliance * inverseMass;
+            return distance > 0.0f ? -distance / timestep : -(ContactRecovery / timestep) * distance;
+        }
+
+        /// <summary>
+        /// Leaves each contact point holding the normal impulse the sparse solve gave it, for the iterative sweep that follows
+        /// to limit friction by. The sweep mustn't change the normals: the approach speed it would aim for is set once a frame,
+        /// so later in the frame it would take back impulse the solve needed and let the bodies sink.
+        /// </summary>
+        static unsafe void HandOverContactImpulses(ref JacobianHeader header, float* lambda, float collisionTolerance)
+        {
+            ref var contactJacobian = ref header.AccessBaseJacobian<ContactJacobian>();
+            float sum = 0.0f;
+            int normalRow = 0;
+            for (int i = 0; i < contactJacobian.BaseJacobian.NumContacts; ++i)
+            {
+                ref var point = ref header.AccessAngularJacobian(i);
+                point.ApplyImpulse = false;
+                if (point.ContactDistance <= collisionTolerance)
+                {
+                    // The point already holds its warm start, which the events count apart from this.
+                    float solved = lambda[normalRow++];
+                    point.Jac.Impulse = math.max(point.Jac.Impulse + solved, 0.0f);
+                    sum += solved;
+                }
+            }
+
+            contactJacobian.SumImpulsesOverSubsteps += sum;
+        }
+
         /// <summary> How fast a row's constraint function is changing at the bodies' current velocities. </summary>
         static unsafe float RowRate(in NativeList<Vector> JArray, int row, int bodyIndexA, int bodyIndexB,
             bool bodyAIsDynamic, bool bodyBIsDynamic, in NativeArray<MotionVelocity> motionVelocities,
@@ -1021,7 +1073,8 @@ namespace Unity.Physics
         static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in NativeList<Vector> JArray,
-            in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded)
+            in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
+            int contactPairs)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1029,7 +1082,7 @@ namespace Unity.Physics
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
             var compactBodies = new NativeHashMap<int, int>(16, Allocator.Temp);
 
-            var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+            var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
             int firstRow = 0;
             while (jacobianIterator.HasJacobiansLeft())
             {
@@ -1186,14 +1239,17 @@ namespace Unity.Physics
         /// </summary>
         static unsafe void DirectSolver(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, ref NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, in StepInput stepInput)
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int contactPairs = 0)
         {
+            // Contacts that follow the island's pairs are solved sparsely, with their normals and without friction.
+            bool sparseContacts = contactPairs > 0;
+
             // number of jacobian rows; counted on the fly while iterating over the joints
             int rows = 0;
             int maxRows = 0;
             int contactCount = 0;
             {
-                var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+                var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                 while (jacIterator.HasJacobiansLeft())
                 {
                     ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
@@ -1222,7 +1278,7 @@ namespace Unity.Physics
                 var JinvMArray = new NativeList<Vector>(rows, Allocator.Temp);
 
                 // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
-                bool solveSparsely = contactCount == 0;
+                bool solveSparsely = contactCount == 0 || sparseContacts;
 
                 // System matrix
                 var JinvMJt = solveSparsely ? default : heap.Matrix(rows, rows);
@@ -1284,7 +1340,7 @@ namespace Unity.Physics
                     // compute jacobian matrices for all valid jacobians
                     {
                         int startRow = 0;
-                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         while (jacIterator.HasJacobiansLeft())
                         {
                             ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
@@ -2154,6 +2210,13 @@ namespace Unity.Physics
 
                                         // Constraint error and gamma term
                                         var gamma_phi_0 = -(gamma / stepInput.Timestep) * phi_0;
+                                        if (sparseContacts)
+                                        {
+                                            gamma_phi_0 = SparseContactRow(phi_0, motionVelocities, ixBodyA, ixBodyB,
+                                                bodyAIsStatic || bodyAIsKinematic, bodyBIsStatic || bodyBIsKinematic,
+                                                stepInput.Timestep, out epsilon);
+                                            eps[normalRow] = epsilon;
+                                        }
 
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = v0 - \gamma * \phi(q_)/dt.
@@ -2163,6 +2226,13 @@ namespace Unity.Physics
                                         // Set lower impulse bound to zero (by default [l,u] = [-inf, inf]) to model
                                         // unilateral contact
                                         l[normalRow] = 0;
+
+                                        // A warm start has already pushed the bodies apart by the impulse the point holds, so the
+                                        // solve may take that much back: what the contact pushes in all is what can't go negative.
+                                        if (sparseContacts)
+                                        {
+                                            l[normalRow] = -contactAngularJac.Jac.Impulse;
+                                        }
 
                                         // Since by design (see skip if inactive contact) the contact is already penetrating,
                                         // as initial guess we assume the variable to be free.
@@ -2351,7 +2421,7 @@ namespace Unity.Physics
                         //  Multiply i'th body A-part with j'th body A or B part if the corresponding body indices match,
                         //  and analogously multiply i'th body B-part with j'th body A or B if the indices match.
                         //  Form the sum of both parts and set the result as the (row, column) entry (i, j) in the JinvMJ^t matrix.
-                        jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+                        jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         startRow = 0;
                         while (jacIterator.HasJacobiansLeft())
                         {
@@ -2550,7 +2620,7 @@ namespace Unity.Physics
                     if (solveSparsely)
                     {
                         SolveSparsely(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities, motionDatas,
-                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP);
+                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP, contactPairs);
                     }
                     else if (isLCP && !kForceLCPOff)
                     {
@@ -2659,7 +2729,7 @@ namespace Unity.Physics
 
                     // Stage 3: Apply constraint impulses to bodies, integrating body velocities based on solver results
                     {
-                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         int startRow = 0;
                         while (jacIterator.HasJacobiansLeft())
                         {
@@ -2717,7 +2787,11 @@ namespace Unity.Physics
                             }
 
                             // Collect collision or joint impulses for later event exports
-                            if (header.Type == JacobianType.Contact &&
+                            if (header.Type == JacobianType.Contact && sparseContacts)
+                            {
+                                HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
+                            }
+                            else if (header.Type == JacobianType.Contact &&
                                 (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
                             {
                                 ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
