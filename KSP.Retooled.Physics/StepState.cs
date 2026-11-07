@@ -15,11 +15,6 @@ namespace KSP.Retooled.Physics
     {
         private const int ParallelBatchSize = 64;
 
-        // Below this many dynamic bodies a stage's parallel jobs cost more to run than they save. Measured on two craft: a
-        // step of 73 bodies is 12% faster in one job per stage, and one of 713 is 51% slower, mostly in the narrow phase
-        // and Jacobians. The value is interpolated between those two.
-        private const int MinParallelBodies = 128;
-
         // The write-back gives these bodies a pose other than their solved motion.
         private const NativeStore.BodyFlags PosedByWriteBack = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.HasKinematicTarget;
 
@@ -33,8 +28,6 @@ namespace KSP.Retooled.Physics
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
         private NativeList<Joint> builtJoints;
-        private NativeList<bool> directBodies;
-        private NativeReference<bool> directBodyTouched;
         private DirectSolverCache directSolverCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -64,8 +57,6 @@ namespace KSP.Retooled.Physics
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
             builtJoints = new NativeList<Joint>(Allocator.Persistent);
-            directBodies = new NativeList<bool>(Allocator.Persistent);
-            directBodyTouched = new NativeReference<bool>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -96,8 +87,6 @@ namespace KSP.Retooled.Physics
             staticIndices.Dispose();
             builtIndices.Dispose();
             builtJoints.Dispose();
-            directBodies.Dispose();
-            directBodyTouched.Dispose();
             directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -120,10 +109,9 @@ namespace KSP.Retooled.Physics
             {
                 PhysicsStep settings = PhysicsStep.Default;
                 settings.Gravity = float3.zero;
-                settings.SubstepCount = WorldState.Substeps;
+                settings.DirectIslandSubsteps = WorldState.DirectIslandSubsteps;
                 settings.SolverIterationCount = WorldState.SolverIterations;
                 settings.SynchronizeCollisionWorld = 1;
-                settings.MultiThreaded = (byte)(dynamicIndices.Length >= MinParallelBodies ? 1 : 0);
                 return settings;
             }
         }
@@ -155,13 +143,7 @@ namespace KSP.Retooled.Physics
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
 
             JobHandle built = Build(deltaTime).Schedule(dependency);
-            bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;
-            built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, multiThreaded);
-
-            directBodies.ResizeUninitialized(dynamicIndices.Length);
-            new MarkDirectBodiesJob { Joints = builtJoints.AsArray(), Bodies = directBodies.AsArray() }.Run();
-            directBodyTouched.Value = false;
-            return built;
+            return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
         }
 
         /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
@@ -182,8 +164,6 @@ namespace KSP.Retooled.Physics
                 Records = manifolds,
                 Points = manifoldPoints,
                 LastImpulses = lastImpulses,
-                DirectBodies = directBodies.AsArray(),
-                DirectBodyTouched = directBodyTouched,
                 DeltaTime = deltaTime,
                 BounceThreshold = store->bounceThreshold,
             }.Schedule(singleton, ref world, dependency);
@@ -199,27 +179,18 @@ namespace KSP.Retooled.Physics
             return new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
         }
 
-        /// <summary>
-        /// Warm starts the Jacobians and finishes everything before the solve, whose jobs depend on what the contacts decided.
-        /// </summary>
-        internal void PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
+        /// <summary>Warm starts the Jacobians.</summary>
+        internal JobHandle PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            BackendMarkers.StepSchedule.Begin();
-            JobHandle built = new WarmStartJob
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+
+            input.DirectSolverCache = directSolverCache;
+            return new WarmStartJob
             {
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = dynamicIndices.Length,
             }.Schedule(singleton, ref world, dependency);
-            BackendMarkers.StepSchedule.End();
-
-            using (BackendMarkers.StepWaitForContacts.Auto())
-            {
-                built.Complete();
-            }
-
-            input.DirectSolverCache = directSolverCache;
-            input.SkipDirectCoupling = !directBodyTouched.Value;
         }
 
         /// <summary>The last stage of a step, which hands the solved world back to the store and to Unity.</summary>
@@ -297,8 +268,7 @@ namespace KSP.Retooled.Physics
             BodyEntities.PrepareForJobs(store);
             RefreshColliders();
             JobHandle built = Build(0.0f).Schedule();
-            bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;
-            world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, multiThreaded).Complete();
+            world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
             PublishQueryWorld();
         }
 

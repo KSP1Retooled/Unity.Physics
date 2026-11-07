@@ -45,12 +45,12 @@ namespace Unity.Physics
         public Solver.DirectSolverSettings DirectSolverSettings;
 
         /// <summary>
-        /// The caller's word that no solid contact touches a body the direct solver holds this step, which only the contacts
-        /// can show. Pairs are marked for coupling from the broad phase, so a trigger or a contact a job disabled would
-        /// otherwise put every direct joint through the iterative solver twice in each substep. With this set, those pairs
-        /// aren't solved at all and raise no events.
+        /// Above zero, sorts every constraint by the island it belongs to instead of by its own solver type, and solves each
+        /// island one way. An island that fits in <see cref="DispatchPairSequencer.NumIslandPhases"/> phases runs one substep
+        /// of <see cref="NumSolverIterations"/> iterations. Any other goes whole to the direct solver with this many substeps
+        /// of its own, so nothing is coupled between the solvers and the jobs of a step don't depend on what it contains.
         /// </summary>
-        public bool SkipDirectCoupling;
+        public int DirectIslandSubsteps;
 
         /// <summary>
         /// Lets the direct solver keep its work from one solve to the next. It belongs to the caller, and a default one means

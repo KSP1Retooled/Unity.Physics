@@ -200,10 +200,11 @@ namespace Unity.Physics
                 // else:
                 SafetyChecks.CheckAreEqualAndThrow(true, iterator.HasJacobiansLeft());
 
-                jacobianMappings[localPhasedDispatchPairIndex] = new DispatchPairSequencer.DispatchPairJacobianMapping
+                var mapping = new DispatchPairSequencer.DispatchPairJacobianMapping
                 {
                     ReaderState = iterator.ReaderState,
-                    WorkItemIndex = workItemIndex
+                    WorkItemIndex = workItemIndex,
+                    NumBlocks = 1
                 };
 
                 var jacobian = iterator.ReadJacobianHeader();
@@ -218,6 +219,22 @@ namespace Unity.Physics
                     jacobian = iterator.ReadJacobianHeader();
                     SafetyChecks.CheckAreEqualAndThrow(jacobian.ConstraintBlockInfo.Index, c);
                 }
+
+                // A pair of composite bodies writes a contact Jacobian for each manifold, which all belong to this pair.
+                while (pair.IsContact && iterator.HasJacobiansLeft())
+                {
+                    JacobianIterator next = iterator;
+                    ref JacobianHeader nextHeader = ref next.ReadJacobianHeader();
+                    if (nextHeader.BodyPair.BodyIndexA != pair.BodyIndexA || nextHeader.BodyPair.BodyIndexB != pair.BodyIndexB)
+                    {
+                        break;
+                    }
+
+                    iterator = next;
+                    mapping.NumBlocks++;
+                }
+
+                jacobianMappings[localPhasedDispatchPairIndex] = mapping;
             }
         }
 

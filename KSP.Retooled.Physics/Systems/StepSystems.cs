@@ -92,7 +92,7 @@ internal unsafe partial struct ReadContactsSystem : ISystem
     }
 }
 
-/// <summary>Warm starts the Jacobians, and gives the solve what only the contacts could decide.</summary>
+/// <summary>Warm starts the Jacobians.</summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsSolveAndIntegrateGroup), OrderFirst = true)]
 internal unsafe partial struct PrepareSolveSystem : ISystem
@@ -114,7 +114,7 @@ internal unsafe partial struct PrepareSolveSystem : ISystem
         ref StepInputSingleton input = ref inputs.GetSingletonRW<StepInputSingleton>().ValueRW;
         JobHandle dependency = state.Dependency;
         StepKernel.PrepareSolve(&singleton, (SimulationStepInput*)UnsafeUtility.AddressOf(ref input.StepInput), &dependency);
-        state.Dependency = default;
+        state.Dependency = dependency;
     }
 }
 

@@ -1039,13 +1039,13 @@ namespace Unity.Physics
 #endif
 
         public IslandJacobianIterator(in NativeStream.Reader jacobianStreamReader,
-            in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo, int islandIndex)
+            in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo, int islandIndex, int extraPairs = 0)
         {
             m_Reader = jacobianStreamReader.GetUnsafeReader();
             m_DirectSolverSchedulerInfo = directSolverSchedulerInfo;
             m_NextDispatchPairIslandInfoIndex = directSolverSchedulerInfo.FirstDispatchPairIslandInfoIndices[islandIndex];
             m_LastDispatchPairIslandInfoIndex = m_NextDispatchPairIslandInfoIndex
-                + directSolverSchedulerInfo.DispatchPairIslandInfoCounts[islandIndex] - 1;
+                + directSolverSchedulerInfo.DispatchPairIslandInfoCounts[islandIndex] + extraPairs - 1;
             m_NextDispatchPair = true;
 #if ENABLE_UNITY_COLLECTIONS_CHECKS || UNITY_DOTS_DEBUG
             m_CurrentConstraintBlockLength = -1;
@@ -1107,8 +1107,11 @@ namespace Unity.Physics
                 // Check if we reached the end of the constraint block. If yes, move the dispatch pair info pointer forward.
                 if (jacobian.ConstraintBlockInfo.Index == jacobian.ConstraintBlockInfo.Length - 1)
                 {
-                    m_JacobianMapping = MoveToNextValidDispatchPair();
-                    m_NextDispatchPair = true;
+                    if (--m_JacobianMapping.NumBlocks == 0)
+                    {
+                        m_JacobianMapping = MoveToNextValidDispatchPair();
+                        m_NextDispatchPair = true;
+                    }
                 }
 
 #if ENABLE_UNITY_COLLECTIONS_CHECKS || UNITY_DOTS_DEBUG

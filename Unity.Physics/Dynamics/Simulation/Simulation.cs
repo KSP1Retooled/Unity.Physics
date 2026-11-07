@@ -373,7 +373,6 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
-                SkipDirectCoupling = input.SkipDirectCoupling,
                 DirectSolverCache = input.DirectSolverCache,
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1
@@ -585,7 +584,8 @@ namespace Unity.Physics
 
             // Make sure we know the number of phased dispatch pairs so that we can efficiently schedule the solve jobs
             // in Solver.ScheduleSolveJacobiansJobs() below
-            if (multiThreaded)
+            bool solvesByIsland = input.DirectIslandSubsteps > 0;
+            if (multiThreaded && !solvesByIsland)
             {
                 StepContext.CreateDispatchPairsJobHandle.Complete();
             }
@@ -619,13 +619,26 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
-                SkipDirectCoupling = input.SkipDirectCoupling,
                 DirectSolverCache = input.DirectSolverCache,
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1
             };
 
-            for (var i = 0; i < input.NumSubsteps; i++)
+            if (solvesByIsland)
+            {
+                stepInput.CurrentSubstep = 0;
+                m_StepHandles = Solver.ScheduleIslandSolveJobs(input.World, stepInput, input.DirectIslandSubsteps,
+                    StepContext.Jacobians, SimulationContext.CollisionEventDataStream,
+                    SimulationContext.TriggerEventDataStream, SimulationContext.ImpulseEventDataStream,
+                    StepContext.SolverSchedulerInfo, solverStabilizationData, jobHandle);
+
+                m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandle, m_StepHandles.FinalDisposeHandle);
+                jobHandle = JobHandle.CombineDependencies(executionHandle, m_StepHandles.FinalExecutionHandle);
+                m_StepHandles.FinalExecutionHandle = jobHandle;
+                JobHandle.ScheduleBatchedJobs();
+            }
+
+            for (var i = 0; !solvesByIsland && i < input.NumSubsteps; i++)
             {
                 stepInput.CurrentSubstep = i;
 

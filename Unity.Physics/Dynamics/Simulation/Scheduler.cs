@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -22,6 +23,15 @@ namespace Unity.Physics
     struct DispatchPairSequencer
     {
         internal const int kMaxNumPhases = 64;
+
+        /// <summary>
+        /// How many phases an island may need and stay with the iterative solver. A step schedules this many jobs for each
+        /// iteration whatever it contains, so this is what keeps their number fixed and small.
+        /// </summary>
+        internal const int NumIslandPhases = 4;
+
+        /// <summary> One bucket of pairs for each phase, then one for the direct solver. </summary>
+        const int NumIslandBuckets = NumIslandPhases + 1;
 
         /// <summary>
         /// A pair of interacting bodies (either potentially colliding, or constrained together using a
@@ -311,6 +321,9 @@ namespace Unity.Physics
             /// <summary> Work item index (buffer) where this dispatch pair's Jacobian data is located in the Jacobian stream </summary>
             public int WorkItemIndex;
 
+            /// <summary> How many constraint blocks follow in a row: a contact pair has one for each manifold. </summary>
+            public int NumBlocks;
+
             /// <summary> Indicates whether this mapping is valid </summary>
             public bool IsValid => WorkItemIndex >= 0;
 
@@ -364,6 +377,28 @@ namespace Unity.Physics
             [NoAlias]
             public NativeList<int> DispatchPairIslandInfoCounts;
 
+            /// <summary>
+            /// The dynamic bodies of the islands, grouped by island, with the first of each in
+            /// <see cref="FirstIslandBodyIndices"/>. An island that integrates its own substeps integrates these.
+            /// </summary>
+            [NoAlias]
+            public NativeList<int> IslandBodies;
+
+            /// <summary> Indices into <see cref="IslandBodies"/>, indicating the first entry of each island. </summary>
+            [NoAlias]
+            public NativeList<int> FirstIslandBodyIndices;
+
+            /// <summary> For each dynamic body, whether it is in an island. Empty if there are no islands. </summary>
+            [NoAlias]
+            public NativeList<bool> BodiesInIslands;
+
+            /// <summary>
+            /// How many contacts each island has, in <see cref="DispatchPairIslandInfos"/> straight after the joints that
+            /// <see cref="DispatchPairIslandInfoCounts"/> counts, where the direct solver doesn't see them.
+            /// </summary>
+            [NoAlias]
+            public NativeList<int> IslandContactCounts;
+
             /// <summary> Number of islands to be solved with the direct solver. </summary>
             public int NumIslands => DispatchPairIslandInfoCounts.Length;
 
@@ -383,6 +418,10 @@ namespace Unity.Physics
                     DispatchPairIslandInfos = new NativeList<DispatchPairIslandInfo>(allocator),
                     FirstDispatchPairIslandInfoIndices = new NativeList<int>(128, allocator),
                     DispatchPairIslandInfoCounts = new NativeList<int>(128, allocator),
+                    IslandBodies = new NativeList<int>(allocator),
+                    FirstIslandBodyIndices = new NativeList<int>(128, allocator),
+                    BodiesInIslands = new NativeList<bool>(allocator),
+                    IslandContactCounts = new NativeList<int>(128, allocator),
                     FirstDispatchPairIndex = new NativeReference<int>(0, allocator)
                 };
             }
@@ -403,13 +442,21 @@ namespace Unity.Physics
                 DispatchPairIslandInfos.Dispose();
                 FirstDispatchPairIslandInfoIndices.Dispose();
                 DispatchPairIslandInfoCounts.Dispose();
+                IslandBodies.Dispose();
+                FirstIslandBodyIndices.Dispose();
+                BodiesInIslands.Dispose();
+                IslandContactCounts.Dispose();
                 FirstDispatchPairIndex.Dispose();
             }
 
             public JobHandle ScheduleDisposeJob(JobHandle inputDeps)
             {
+                JobHandle islandBodies = JobHandle.CombineDependencies(IslandBodies.Dispose(inputDeps),
+                    JobHandle.CombineDependencies(FirstIslandBodyIndices.Dispose(inputDeps), IslandContactCounts.Dispose(inputDeps)),
+                    BodiesInIslands.Dispose(inputDeps));
+
                 return JobHandle.CombineDependencies(UnphasedToPhasedDispatchPairMap.Dispose(inputDeps), PhasedDispatchPairJacobianMappings.Dispose(inputDeps),
-                    JobHandle.CombineDependencies(DispatchPairIslandInfos.Dispose(inputDeps),
+                    JobHandle.CombineDependencies(DispatchPairIslandInfos.Dispose(inputDeps), islandBodies,
                         JobHandle.CombineDependencies(FirstDispatchPairIslandInfoIndices.Dispose(inputDeps),
                             DispatchPairIslandInfoCounts.Dispose(inputDeps), FirstDispatchPairIndex.Dispose(inputDeps))));
             }
@@ -1147,7 +1194,7 @@ namespace Unity.Physics
                 // Make sure that the direct solver used flag is set in order to enable subsequent direct solver related phases
                 directSolverUsed.Value = 1;
             }
-            else
+            else if (stepInput.DirectIslandSubsteps == 0)
             {
                 // In parallel, and if required, set direct solver body flags for later coupling detection.
                 // Note: we only enable this phase if the direct solver is not forced on for everything. In this case,
@@ -1215,8 +1262,8 @@ namespace Unity.Physics
                 NumWorkers = numWorkers
             }.Schedule(dispatchPairsHandle);
 
-            // Perform coupling detection (unless direct solver is forced on for everything)
-            if (!stepInput.DirectSolverSettings.ForceDirectSolver)
+            // Perform coupling detection (unless direct solver is forced on for everything or islands decide)
+            if (!stepInput.DirectSolverSettings.ForceDirectSolver && stepInput.DirectIslandSubsteps == 0)
             {
                 couplingDetectionHandle = new DetectCouplingConstraintsJob
                 {
@@ -1248,6 +1295,20 @@ namespace Unity.Physics
                 DispatchPairs = sortedPairs.AsDeferredJobArray(),
                 NumWorkers = numWorkers
             }.Schedule(numWorkers, 1, sortHandle);
+
+            if (stepInput.DirectIslandSubsteps > 0)
+            {
+                dispatchPairs = unsortedPairs;
+                solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
+                JobHandle islandsHandle = ScheduleSortPairsByIsland(stepInput, sortedPairs, dispatchPairs, solverSchedulerInfo, sortHandle);
+
+                returnHandles.FinalExecutionHandle = islandsHandle;
+                disposeHandles.Add(numWorkersForPairGrouping.Dispose(islandsHandle));
+                disposeHandles.Add(directSolverUsed.Dispose(islandsHandle));
+                disposeHandles.Add(sortedPairs.Dispose(islandsHandle));
+                returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandles.AsArray());
+                return returnHandles;
+            }
 
             // Create phases for multi-threading in iterative solvers and islands for the direct solver.
             // 2 cases:
@@ -1416,6 +1477,58 @@ namespace Unity.Physics
         }
 
         #region Helpers
+
+        /// <summary>
+        /// Finds the islands one job at a time, then has each island sort itself into the buckets at once. The phased pairs hold
+        /// <see cref="NumIslandBuckets"/> buckets of the same size, each big enough for every pair, so that no bucket has to
+        /// know how much the others got and nothing has to be copied together afterwards.
+        /// </summary>
+        static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
+            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps)
+        {
+            int numDynamicBodies = stepInput.World.NumDynamicBodies;
+            var islands = new NativeList<SolverIsland>(Allocator.TempJob);
+            var islandPairs = new NativeList<DispatchPair>(Allocator.TempJob);
+            var islandBodies = new NativeList<int>(Allocator.TempJob);
+            var phasesUsed = new NativeList<byte>(Allocator.TempJob);
+            var bucketCounts = new NativeArray<int>(NumIslandBuckets, Allocator.TempJob);
+
+            JobHandle handle = new FindSolverIslandsJob
+            {
+                DispatchPairs = sortedPairs.AsDeferredJobArray(),
+                Joints = stepInput.World.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
+                NumDynamicBodies = numDynamicBodies,
+                Islands = islands,
+                IslandPairs = islandPairs,
+                IslandBodies = islandBodies,
+                PhasedDispatchPairs = phasedPairs,
+                PhasesUsed = phasesUsed
+            }.Schedule(inputDeps);
+
+            handle = new SortIslandIntoBucketsJob
+            {
+                IslandPairs = islandPairs.AsDeferredJobArray(),
+                Islands = islands.AsDeferredJobArray(),
+                PhasesUsed = phasesUsed.AsDeferredJobArray(),
+                PhasedDispatchPairs = phasedPairs.AsDeferredJobArray(),
+                BucketCounts = bucketCounts,
+                NumDynamicBodies = numDynamicBodies
+            }.Schedule(islands, 1, handle);
+
+            handle = new PublishIslandBucketsJob
+            {
+                Islands = islands.AsDeferredJobArray(),
+                IslandBodies = islandBodies.AsDeferredJobArray(),
+                BucketCounts = bucketCounts,
+                SolverSchedulerInfo = solverSchedulerInfo,
+                PhasedDispatchPairs = phasedPairs.AsDeferredJobArray(),
+                NumDynamicBodies = numDynamicBodies
+            }.Schedule(handle);
+
+            return JobHandle.CombineDependencies(
+                JobHandle.CombineDependencies(islands.Dispose(handle), islandPairs.Dispose(handle), islandBodies.Dispose(handle)),
+                phasesUsed.Dispose(handle), bucketCounts.Dispose(handle));
+        }
 
         /// <summary>
         /// Helper function to schedule jobs to sort an array of dispatch pairs. The first single
@@ -2585,6 +2698,407 @@ namespace Unity.Physics
                         inOutArray[startIndex] = temp;
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// One connected group of bodies, as a range of <see cref="FindSolverIslandsJob.IslandPairs"/> and of
+        /// <see cref="FindSolverIslandsJob.IslandBodies"/>.
+        /// </summary>
+        struct SolverIsland
+        {
+            public int FirstPair;
+            public int PairCount;
+            public int FirstBody;
+            public int BodyCount;
+
+            /// <summary> Where its pairs are in the direct bucket, or -1 if they fit in phases. </summary>
+            public int FirstDirectPair;
+
+            /// <summary> How many of those are joints, which come before the contacts. </summary>
+            public int NumDirectJoints;
+        }
+
+        /// <summary>
+        /// Groups the pairs by island. Islands connect through joints and contacts alike, and through dynamic bodies only: a
+        /// static body is never written to, so what happens on either side of one is independent.
+        /// </summary>
+        [BurstCompile]
+        struct FindSolverIslandsJob : IJob
+        {
+            [ReadOnly]
+            public NativeArray<DispatchPair> DispatchPairs;
+
+            [ReadOnly]
+            public NativeArray<Joint> Joints;
+
+            public int NumDynamicBodies;
+
+            public NativeList<SolverIsland> Islands;
+
+            /// <summary> The pairs to solve, grouped by island and in their sorted order within one. </summary>
+            public NativeList<DispatchPair> IslandPairs;
+
+            public NativeList<int> IslandBodies;
+
+            /// <summary> Sized here for the buckets, once it is known how many pairs each must be able to hold. </summary>
+            public NativeList<DispatchPair> PhasedDispatchPairs;
+
+            /// <summary> The phases each dynamic body is in so far. </summary>
+            public NativeList<byte> PhasesUsed;
+
+            static int FindRoot(NativeArray<int> parents, int body)
+            {
+                while (parents[body] != body)
+                {
+                    parents[body] = parents[parents[body]];
+                    body = parents[body];
+                }
+
+                return body;
+            }
+
+            // A joint with no constraints has had its say on whether its bodies collide, and writes no Jacobians to solve.
+            bool IsSolved(DispatchPair pair)
+            {
+                return pair.IsValid && (pair.IsJoint ? Joints[pair.JointIndex].Constraints.Length != 0 : pair.IsCollisionEnabled);
+            }
+
+            public void Execute()
+            {
+                var parents = new NativeArray<int>(NumDynamicBodies, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < parents.Length; i++)
+                {
+                    parents[i] = i;
+                }
+
+                int numPairs = 0;
+                for (int i = 0; i < DispatchPairs.Length; i++)
+                {
+                    DispatchPair pair = DispatchPairs[i];
+                    if (IsSolved(pair))
+                    {
+                        numPairs++;
+                        if (pair.BodyIndexB < NumDynamicBodies)
+                        {
+                            parents[FindRoot(parents, pair.BodyIndexA)] = FindRoot(parents, pair.BodyIndexB);
+                        }
+                    }
+                }
+
+                // Roots with pairs become islands, numbered in body order so that the numbers don't depend on the pairs' order.
+                var islandOfRoot = new NativeArray<int>(NumDynamicBodies, Allocator.Temp);
+                for (int i = 0; i < DispatchPairs.Length; i++)
+                {
+                    DispatchPair pair = DispatchPairs[i];
+                    if (IsSolved(pair))
+                    {
+                        islandOfRoot[FindRoot(parents, pair.BodyIndexA)]++;
+                    }
+                }
+
+                Islands.Clear();
+                int firstPair = 0;
+                for (int root = 0; root < NumDynamicBodies; root++)
+                {
+                    int pairCount = islandOfRoot[root];
+                    if (pairCount == 0)
+                    {
+                        islandOfRoot[root] = -1;
+                        continue;
+                    }
+
+                    islandOfRoot[root] = Islands.Length;
+                    Islands.Add(new SolverIsland { FirstPair = firstPair, PairCount = pairCount, FirstDirectPair = -1 });
+                    firstPair += pairCount;
+                }
+
+                for (int body = 0; body < NumDynamicBodies; body++)
+                {
+                    int island = islandOfRoot[FindRoot(parents, body)];
+                    if (island >= 0)
+                    {
+                        Islands.ElementAt(island).BodyCount++;
+                    }
+                }
+
+                int firstBody = 0;
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    ref SolverIsland island = ref Islands.ElementAt(i);
+                    island.FirstBody = firstBody;
+                    firstBody += island.BodyCount;
+                }
+
+                IslandPairs.ResizeUninitialized(numPairs);
+                IslandBodies.ResizeUninitialized(firstBody);
+                var nextPair = new NativeArray<int>(Islands.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var nextBody = new NativeArray<int>(Islands.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    nextPair[i] = Islands[i].FirstPair;
+                    nextBody[i] = Islands[i].FirstBody;
+                }
+
+                for (int i = 0; i < DispatchPairs.Length; i++)
+                {
+                    DispatchPair pair = DispatchPairs[i];
+                    if (IsSolved(pair))
+                    {
+                        int island = islandOfRoot[FindRoot(parents, pair.BodyIndexA)];
+                        IslandPairs[nextPair[island]++] = pair;
+                    }
+                }
+
+                for (int body = 0; body < NumDynamicBodies; body++)
+                {
+                    int island = islandOfRoot[FindRoot(parents, body)];
+                    if (island >= 0)
+                    {
+                        IslandBodies[nextBody[island]++] = body;
+                    }
+                }
+
+                PhasedDispatchPairs.ResizeUninitialized(numPairs * NumIslandBuckets);
+                PhasesUsed.Resize(NumDynamicBodies, NativeArrayOptions.ClearMemory);
+            }
+        }
+
+        /// <summary>
+        /// Colours one island, and sorts its pairs into the bucket of each phase if it fits in <see cref="NumIslandPhases"/> of
+        /// them, or all into the direct bucket if not, so that no body is left between the two solvers. Islands share no
+        /// dynamic body, which lets them share <see cref="PhasesUsed"/>, and a thread takes room in a bucket atomically. The
+        /// order of islands in a bucket therefore varies from run to run, and the order of pairs within an island doesn't.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct SortIslandIntoBucketsJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public NativeArray<DispatchPair> IslandPairs;
+
+            [NativeDisableParallelForRestriction]
+            public NativeArray<SolverIsland> Islands;
+
+            [NativeDisableParallelForRestriction]
+            public NativeArray<byte> PhasesUsed;
+
+            [NativeDisableParallelForRestriction]
+            public NativeArray<DispatchPair> PhasedDispatchPairs;
+
+            /// <summary> How many pairs each bucket holds so far. </summary>
+            [NativeDisableParallelForRestriction]
+            public NativeArray<int> BucketCounts;
+
+            public int NumDynamicBodies;
+
+            public void Execute(int islandIndex)
+            {
+                SolverIsland island = Islands[islandIndex];
+                NativeArray<DispatchPair> pairs = IslandPairs.GetSubArray(island.FirstPair, island.PairCount);
+                var phases = new NativeArray<byte>(pairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                int* pairsInPhase = stackalloc int[NumIslandPhases];
+                UnsafeUtility.MemClear(pairsInPhase, NumIslandPhases * sizeof(int));
+
+                // A pair with a static body comes after the others on its body, as it does in the other layouts.
+                bool fits = true;
+                for (int pass = 0; pass < 2 && fits; pass++)
+                {
+                    for (int i = 0; i < pairs.Length && fits; i++)
+                    {
+                        if (pairs[i].BodyIndexB >= NumDynamicBodies == (pass == 1))
+                        {
+                            int phase = ClaimPhase(pairs[i]);
+                            fits = phase >= 0;
+                            if (fits)
+                            {
+                                phases[i] = (byte)phase;
+                                pairsInPhase[phase]++;
+                            }
+                        }
+                    }
+                }
+
+                int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
+                if (!fits)
+                {
+                    // Only joints get the direct solver's Jacobians: its coupled solve doesn't cope with contacts on them, so
+                    // DirectIslandJob gives those to the iterative solver around it.
+                    island.FirstDirectPair = Reserve(NumIslandPhases, pairs.Length);
+                    int nextPair = NumIslandPhases * bucketSize + island.FirstDirectPair;
+                    for (int pass = 0; pass < 2; pass++)
+                    {
+                        for (int i = 0; i < pairs.Length; i++)
+                        {
+                            DispatchPair pair = pairs[i];
+                            if (pair.IsJoint == (pass == 0))
+                            {
+                                pair.SolverType = pair.IsJoint ? SolverType.Direct : SolverType.Iterative;
+                                PhasedDispatchPairs[nextPair++] = pair;
+                                island.NumDirectJoints += pass == 0 ? 1 : 0;
+                            }
+                        }
+                    }
+
+                    Islands[islandIndex] = island;
+                    return;
+                }
+
+                int* nextPairInPhase = stackalloc int[NumIslandPhases];
+                for (int phase = 0; phase < NumIslandPhases; phase++)
+                {
+                    nextPairInPhase[phase] = phase * bucketSize + Reserve(phase, pairsInPhase[phase]);
+                }
+
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    for (int i = 0; i < pairs.Length; i++)
+                    {
+                        if (pairs[i].BodyIndexB >= NumDynamicBodies == (pass == 1))
+                        {
+                            PhasedDispatchPairs[nextPairInPhase[phases[i]]++] = pairs[i];
+                        }
+                    }
+                }
+            }
+
+            /// <summary> Takes room in a bucket, and returns where the room starts. </summary>
+            int Reserve(int bucket, int count)
+            {
+                ref int bucketCount = ref UnsafeUtility.ArrayElementAsRef<int>(BucketCounts.GetUnsafePtr(), bucket);
+                return Interlocked.Add(ref bucketCount, count) - count;
+            }
+
+            /// <summary>
+            /// Gives a pair a phase free on the dynamic bodies it touches, or returns -1 if there is none. A static body doesn't
+            /// count: nothing writes to one, so any number of pairs can share it in a phase. A pair with a static body takes the
+            /// last phase it can, which leaves the last word on a body to what holds it against the world.
+            /// </summary>
+            int ClaimPhase(DispatchPair pair)
+            {
+                const int allPhases = (1 << NumIslandPhases) - 1;
+                bool isBodyBStatic = pair.BodyIndexB >= NumDynamicBodies;
+                int used = PhasesUsed[pair.BodyIndexA] | (isBodyBStatic ? 0 : PhasesUsed[pair.BodyIndexB]);
+                int free = ~used & allPhases;
+                if (free == 0)
+                {
+                    return -1;
+                }
+
+                int phase = isBodyBStatic ? 31 - math.lzcnt(free) : math.tzcnt(free);
+                PhasesUsed[pair.BodyIndexA] = (byte)(PhasesUsed[pair.BodyIndexA] | (1 << phase));
+                if (!isBodyBStatic)
+                {
+                    PhasesUsed[pair.BodyIndexB] = (byte)(PhasesUsed[pair.BodyIndexB] | (1 << phase));
+                }
+
+                return phase;
+            }
+        }
+
+        /// <summary>
+        /// Tells the solver what ended up in the buckets. A phase's pairs are all alone on their bodies, so work items can split
+        /// them anywhere, and a bucket can be empty: <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/> copes, as the
+        /// next phase has the same offset.
+        /// </summary>
+        [BurstCompile]
+        struct PublishIslandBucketsJob : IJob
+        {
+            [ReadOnly]
+            public NativeArray<SolverIsland> Islands;
+
+            [ReadOnly]
+            public NativeArray<int> IslandBodies;
+
+            [ReadOnly]
+            public NativeArray<int> BucketCounts;
+
+            [NativeDisableContainerSafetyRestriction]
+            public SolverSchedulerInfo SolverSchedulerInfo;
+
+            [ReadOnly]
+            public NativeArray<DispatchPair> PhasedDispatchPairs;
+
+            public int NumDynamicBodies;
+
+            static IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem)
+            {
+                int batchSize = math.min(CreateDispatchPairPhasesJob.kMaxBatchSize, numPairs);
+                return new IterativeSolverSchedulerInfo.SolvePhaseInfo
+                {
+                    DispatchPairCount = numPairs,
+                    BatchSize = batchSize,
+                    NumWorkItems = batchSize == 0 ? 0 : (numPairs + batchSize - 1) / batchSize,
+                    FirstDispatchPairOffset = firstPair,
+                    FirstWorkItemIndexOffset = firstWorkItem,
+                };
+            }
+
+            public void Execute()
+            {
+                int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
+
+                IterativeSolverSchedulerInfo iterative = SolverSchedulerInfo.IterativePairsIterativeScheduling;
+                int numIterativePairs = 0;
+                int numIterativeWorkItems = 0;
+                for (int phase = 0; phase < NumIslandPhases; phase++)
+                {
+                    iterative.PhaseInfo[phase] = Phase(BucketCounts[phase], phase * bucketSize, numIterativeWorkItems);
+                    numIterativePairs += BucketCounts[phase];
+                    numIterativeWorkItems += iterative.PhaseInfo[phase].NumWorkItems;
+                }
+
+                iterative.NumActivePhases[0] = NumIslandPhases;
+                iterative.NumWorkItems[0] = numIterativeWorkItems;
+                iterative.NumDispatchPairs.Value = numIterativePairs;
+
+                int numDirectPairs = BucketCounts[NumIslandPhases];
+                IterativeSolverSchedulerInfo direct = SolverSchedulerInfo.DirectPairsIterativeScheduling;
+                direct.PhaseInfo[0] = Phase(numDirectPairs, 0, 0);
+                direct.NumActivePhases[0] = 1;
+                direct.NumWorkItems[0] = direct.PhaseInfo[0].NumWorkItems;
+                direct.FirstDispatchPairIndex.Value = NumIslandPhases * bucketSize;
+                direct.NumDispatchPairs.Value = numDirectPairs;
+
+                DirectSolverSchedulerInfo islands = SolverSchedulerInfo.DirectPairsDirectScheduling;
+                islands.FirstDispatchPairIndex.Value = direct.FirstDispatchPairIndex.Value;
+                islands.ResizeMaps(numDirectPairs);
+                islands.BodiesInIslands.Resize(numDirectPairs > 0 ? NumDynamicBodies : 0, NativeArrayOptions.ClearMemory);
+                for (int i = 0; i < numDirectPairs; i++)
+                {
+                    islands.UnphasedToPhasedDispatchPairMap[i] = i;
+                }
+
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    SolverIsland island = Islands[i];
+                    if (island.FirstDirectPair < 0)
+                    {
+                        continue;
+                    }
+
+                    int directIsland = islands.DispatchPairIslandInfoCounts.Length;
+                    islands.DispatchPairIslandInfoCounts.Add(island.NumDirectJoints);
+                    islands.IslandContactCounts.Add(island.PairCount - island.NumDirectJoints);
+                    islands.FirstDispatchPairIslandInfoIndices.Add(islands.DispatchPairIslandInfos.Length);
+                    for (int pair = 0; pair < island.PairCount; pair++)
+                    {
+                        islands.DispatchPairIslandInfos.Add(new DispatchPairIslandInfo
+                        {
+                            UnphasedDispatchPairIndex = island.FirstDirectPair + pair,
+                            IslandIndex = directIsland
+                        });
+                    }
+
+                    islands.FirstIslandBodyIndices.Add(islands.IslandBodies.Length);
+                    for (int body = 0; body < island.BodyCount; body++)
+                    {
+                        int bodyIndex = IslandBodies[island.FirstBody + body];
+                        islands.IslandBodies.Add(bodyIndex);
+                        islands.BodiesInIslands[bodyIndex] = true;
+                    }
+                }
+
+                SolverSchedulerInfo.FinalizeIterativeWorkItemInfo();
             }
         }
 

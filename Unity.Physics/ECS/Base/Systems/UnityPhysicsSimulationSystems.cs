@@ -199,6 +199,7 @@ namespace Unity.Physics.Systems
                 EnableGyroscopicTorque = stepComponent.EnableGyroscopicTorque,
                 SynchronizeCollisionWorld = stepComponent.SynchronizeCollisionWorld > 0,
                 NumSubsteps = stepComponent.SubstepCount,
+                DirectIslandSubsteps = stepComponent.DirectIslandSubsteps,
                 NumSolverIterations = stepComponent.SolverIterationCount,
                 DirectSolverSettings = stepComponent.DirectSolverSettings,
                 MaxDynamicDepenetrationVelocity = stepComponent.MaxDynamicDepenetrationVelocity,

@@ -10,39 +10,6 @@ using PhysicsJoint = Unity.Physics.Joint;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>Finds the bodies direct joints hold, which is what decides whether a contact needs coupling to them.</summary>
-    [BurstCompile]
-    internal unsafe struct MarkDirectBodiesJob : IJob
-    {
-        [ReadOnly]
-        public NativeArray<PhysicsJoint> Joints;
-
-        /// <summary>One entry for each dynamic body, which come first in the built world.</summary>
-        public NativeArray<bool> Bodies;
-
-        public void Execute()
-        {
-            UnsafeUtility.MemClear(Bodies.GetUnsafePtr(), Bodies.Length);
-            for (int i = 0; i < Joints.Length; i++)
-            {
-                PhysicsJoint joint = Joints[i];
-                if (joint.SolverType == SolverType.Direct)
-                {
-                    Mark(joint.BodyPair.BodyIndexA);
-                    Mark(joint.BodyPair.BodyIndexB);
-                }
-            }
-        }
-
-        private void Mark(int index)
-        {
-            if (index < Bodies.Length)
-            {
-                Bodies[index] = true;
-            }
-        }
-    }
-
     /// <summary>
     /// A sleeping body counts as immovable in the step, so one joined to an awake body wakes with it, as a PhysX island does.
     /// A pass wakes one joint's distance, so it repeats until a chain of bodies has settled.
@@ -127,7 +94,6 @@ namespace KSP.Retooled.Physics
         private PhysicsJoint pending;
         private int pendingCount;
         private bool emitted;
-        private bool direct;
 
         public void Execute()
         {
@@ -162,7 +128,14 @@ namespace KSP.Retooled.Physics
             };
             pendingCount = 0;
             emitted = false;
-            direct = !HeldInPlace(joint->body0) || !HeldInPlace(joint->body1);
+
+            // Nothing on either side can move, and an island's solver may be the direct one, which refuses such a joint.
+            if (HeldInPlace(joint->body0) && HeldInPlace(joint->body1))
+            {
+                pending.Constraints.Length = 0;
+                Output.Add(pending);
+                return;
+            }
 
             switch (joint->type)
             {
@@ -197,7 +170,6 @@ namespace KSP.Retooled.Physics
             Flush();
         }
 
-        /// <summary>The direct solver refuses a joint with no constraints, or with nothing on either side that can move.</summary>
         private static bool HeldInPlace(NativeStore.Body* body)
         {
             const NativeStore.BodyFlags held = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
@@ -224,7 +196,6 @@ namespace KSP.Retooled.Physics
             if (pendingCount > 0)
             {
                 pending.Constraints.Length = (byte)pendingCount;
-                pending.SolverType = direct ? SolverType.Direct : SolverType.Iterative;
                 Output.Add(pending);
                 pendingCount = 0;
                 emitted = true;
@@ -266,7 +237,6 @@ namespace KSP.Retooled.Physics
         {
             NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
             Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
-            direct = false;
             Add(Constraint.LimitedDistance(new FloatRange(axis->min, axis->max), ReportEveryImpulse, frequency, damping));
         }
 
@@ -300,10 +270,6 @@ namespace KSP.Retooled.Physics
 
             if (math.any(limited))
             {
-                // The direct solver only engages a linear limit once it is passed, then pushes back with a velocity nothing takes
-                // out again, so a body arriving fast rebounds. The iterative solver stops it dead, as PhysX does.
-                direct = false;
-
                 // Unity's linear limit is one distance over the limited axes together, which is what these constraints measure.
                 NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
                 Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
@@ -492,10 +458,10 @@ namespace KSP.Retooled.Physics
             return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : MaxImpulse(drive->driveMaxForce);
         }
 
-        /// <summary>The direct solver limits a motor's impulse in each substep on its own, and the iterative one over the whole step.</summary>
+        /// <summary>The limit for the whole step, which the simulation divides among the substeps of a direct island.</summary>
         private float MaxImpulse(float force)
         {
-            return force * DeltaTime / (direct ? WorldState.Substeps : 1);
+            return force * DeltaTime;
         }
 
         /// <summary>

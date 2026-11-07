@@ -44,7 +44,7 @@ namespace KSP.Retooled.Physics
         [BurstCompile]
         internal static void PrepareSolve(SimulationSingleton* singleton, SimulationStepInput* input, JobHandle* dependency)
         {
-            Current->PrepareSolve(*singleton, ref *input, *dependency);
+            *dependency = Current->PrepareSolve(*singleton, ref *input, *dependency);
         }
 
         [BurstCompile]
