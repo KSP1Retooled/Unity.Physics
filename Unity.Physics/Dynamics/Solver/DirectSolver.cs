@@ -25,6 +25,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
+using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
 
@@ -926,6 +927,8 @@ namespace Unity.Physics
             motionVelocities[bodyIndex] = vel;
         }
 
+        static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "DirectSolver.SolveSparsely");
+
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
         /// used. Leaves the impulses in RHS, where the dense path leaves them too.
@@ -935,6 +938,8 @@ namespace Unity.Physics
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in NativeList<Vector> JArray,
             in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded)
         {
+            using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
+
             var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
             var compactBodies = new NativeHashMap<int, int>(16, Allocator.Temp);

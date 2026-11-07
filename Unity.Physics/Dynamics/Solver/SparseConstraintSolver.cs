@@ -2,6 +2,7 @@ using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Profiling;
 
 namespace Unity.Physics
 {
@@ -85,6 +86,12 @@ namespace Unity.Physics
             public long FactorScalars;
             public int PivotingIterations;
         }
+
+        static readonly ProfilerMarker AnalyzeMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Analyze");
+        static readonly ProfilerMarker AssembleMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Assemble");
+        static readonly ProfilerMarker FactorizeMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Factorize");
+        static readonly ProfilerMarker SubstituteMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Substitute");
+        static readonly ProfilerMarker PivotMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Pivot");
 
         const byte Free = 0;
         const byte LowerTight = 1;
@@ -214,6 +221,8 @@ namespace Unity.Physics
 
         void Analyze(in Problem problem)
         {
+            using ProfilerMarker.AutoScope span = AnalyzeMarker.Auto();
+
             nodes.Clear();
             for (int body = 0; body < problem.BodyCount; body++)
             {
@@ -442,6 +451,8 @@ namespace Unity.Physics
         /// </summary>
         void Assemble(in Problem problem)
         {
+            using ProfilerMarker.AutoScope span = AssembleMarker.Auto();
+
             double* values = factor.GetUnsafePtr();
             double* right = solution.GetUnsafePtr();
             UnsafeUtility.MemClear(values, factor.Length * sizeof(double));
@@ -537,6 +548,8 @@ namespace Unity.Physics
         /// </summary>
         void Factorize()
         {
+            using ProfilerMarker.AutoScope span = FactorizeMarker.Auto();
+
             double* values = factor.GetUnsafePtr();
             Neighbour* allNeighbours = neighbours.GetUnsafePtr();
             for (int position = 0; position < order.Length; position++)
@@ -642,6 +655,8 @@ namespace Unity.Physics
         /// <summary>Solves in place: forward through L, across S, and back through L^t.</summary>
         void Substitute()
         {
+            using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
+
             double* values = factor.GetUnsafePtr();
             double* x = solution.GetUnsafePtr();
             Neighbour* allNeighbours = neighbours.GetUnsafePtr();
@@ -740,6 +755,8 @@ namespace Unity.Physics
         /// </summary>
         int Pivot(in Problem problem, float* impulses, bool flipAll)
         {
+            using ProfilerMarker.AutoScope span = PivotMarker.Auto();
+
             int infeasible = 0;
             int last = -1;
             byte lastState = Free;
