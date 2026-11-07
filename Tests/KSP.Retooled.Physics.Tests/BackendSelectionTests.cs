@@ -1,11 +1,8 @@
-using System;
-using KSP.Retooled.Systems;
 using NUnit.Framework;
-using Unity.Entities;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>The backend the run selected, and the part of Unity Physics the game must not run.</summary>
+    /// <summary>The backend the run selected.</summary>
     public class BackendSelectionTests
     {
         [Test]
@@ -16,15 +13,5 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(BackendInfo.IsRetooled, Is.EqualTo(name == "RetooledPhysics"), name);
         }
 
-        [Test]
-        public void TheDefaultWorldHasNoUnityPhysicsSystems()
-        {
-            foreach (Type system in GameWorldBootstrap.GameSystems())
-            {
-                Assert.That(system.Assembly.GetName().Name, Does.Not.StartWith("Unity.Physics"), system.FullName);
-            }
-
-            Assert.That(GameWorldBootstrap.GameSystems(), Does.Contain(typeof(SimulationSystemGroup)));
-        }
     }
 }

@@ -1,12 +1,13 @@
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Physics.Systems;
 
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Everything managed keeps for one native world: a Unity Physics world built on demand from the store, and the
-    /// simulation that steps it. None of it survives a detach, and the next step or query rebuilds it.
+    /// Everything managed keeps for one native world: a Unity Physics world built on demand from the store, and what a step
+    /// carries over. None of it survives a detach, and the next step or query rebuilds it.
     /// </summary>
     internal sealed unsafe class WorldState : IDisposable
     {
@@ -30,9 +31,19 @@ namespace KSP.Retooled.Physics
             UnsafeUtility.FreeTracked(query, Allocator.Persistent);
         }
 
-        internal void Step(float deltaTime)
+        /// <summary>
+        /// Runs the physics system group on this world. Before Entities starts there is no group, and nothing steps: the
+        /// first frame's simulation comes after it.
+        /// </summary>
+        internal void Step(PhysicsSystemGroup group, float deltaTime)
         {
-            StepKernel.Step(state, deltaTime);
+            if (group == null || deltaTime <= 0.0f)
+            {
+                return;
+            }
+
+            StepKernel.Current = state;
+            group.Step(deltaTime);
         }
 
         /// <summary>

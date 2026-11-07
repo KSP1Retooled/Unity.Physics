@@ -157,16 +157,15 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
-        public void AStepWorksWithNoWorld()
+        public void TheWorldsOwnUpdateDoesNotStepBodies()
         {
             float3 position = new float3(750.0f, 0.0f, 0.0f);
             Rigidbody body = WeightlessBox(position);
             body.linearVelocity = Vector3.up;
-            BodyEntities.Unbind();
 
-            Simulate();
+            BodyEntityWorld.World.GetExistingSystemManaged<Unity.Physics.Systems.PhysicsSystemGroup>().Update();
 
-            Assert.That(body.position.y, Is.EqualTo(Step).Within(1e-3f));
+            Assert.That(body.position.y, Is.Zero);
         }
 
         [Test]
@@ -207,6 +206,22 @@ namespace KSP.Retooled.Physics.Tests
             float3 held = Manager.GetComponentData<PhysicsVelocity>(entity).Angular;
             float3 expected = math.rotate(math.inverse((quaternion)rotation), new float3(1.0f, 0.0f, 0.0f));
             Assert.That(math.distance(held, expected), Is.LessThan(1e-5f));
+        }
+
+        [Test]
+        public void AWorldThatIsGoneStillLetsItsBodiesGo()
+        {
+            float3 position = new float3(900.0f, 0.0f, 0.0f);
+            Rigidbody body = WeightlessBox(position, 5.0f);
+            BodyEntities.Unbind();
+            World gone = new World("Gone");
+            BodyEntities.Bind(gone.EntityManager);
+            gone.Dispose();
+
+            Assert.That(() => BodyEntities.Unbind(), Throws.Exception);
+
+            Assert.That(BodyEntities.Bound, Is.False);
+            Assert.That(body.mass, Is.EqualTo(5.0f));
         }
 
         [Test]

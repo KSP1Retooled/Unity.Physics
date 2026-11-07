@@ -4,6 +4,7 @@ using System.Threading;
 using AOT;
 using Unity.Burst;
 using Unity.Entities;
+using Unity.Physics.Systems;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -348,7 +349,7 @@ namespace KSP.Retooled.Physics
             try
             {
                 NoteStep();
-                StateOf(world).Step(deltaTime);
+                StateOf(world).Step(entityWorld?.GetExistingSystemManaged<PhysicsSystemGroup>(), deltaTime);
             }
             catch (Exception e)
             {

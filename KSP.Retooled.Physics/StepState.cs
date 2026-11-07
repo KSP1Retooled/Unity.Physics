@@ -28,7 +28,6 @@ namespace KSP.Retooled.Physics
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
-        private Simulation simulation;
         private NativeReference<int> staticsChanged;
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
@@ -60,7 +59,6 @@ namespace KSP.Retooled.Physics
             this.globals = globals;
             this.query = query;
             world = new PhysicsWorld(0, 0, 0);
-            simulation = Simulation.Create();
             staticsChanged = new NativeReference<int>(1, Allocator.Persistent);
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
@@ -92,7 +90,6 @@ namespace KSP.Retooled.Physics
             }
 
             store->queryDirty = 1;
-            simulation.Dispose();
             world.Dispose();
             staticsChanged.Dispose();
             dynamicIndices.Dispose();
@@ -111,14 +108,29 @@ namespace KSP.Retooled.Physics
             warmStarts.Dispose();
         }
 
-        /// <summary>One simulation step: integrate forces, build, solve, write back.</summary>
-        internal void Step(float deltaTime)
-        {
-            if (deltaTime <= 0.0f)
-            {
-                return;
-            }
+        /// <summary>The built world, which the simulation's systems step.</summary>
+        internal readonly PhysicsWorld World => world;
 
+        internal readonly int StaticsChanged => staticsChanged.Value;
+
+        /// <summary>The settings the simulation's systems build their step input from.</summary>
+        internal readonly PhysicsStep Settings
+        {
+            get
+            {
+                PhysicsStep settings = PhysicsStep.Default;
+                settings.Gravity = float3.zero;
+                settings.SubstepCount = WorldState.Substeps;
+                settings.SolverIterationCount = WorldState.SolverIterations;
+                settings.SynchronizeCollisionWorld = 1;
+                settings.MultiThreaded = (byte)(dynamicIndices.Length >= MinParallelBodies ? 1 : 0);
+                return settings;
+            }
+        }
+
+        /// <summary>The first stage of a step, which integrates forces into the store's velocities.</summary>
+        internal void ApplyForces(float deltaTime)
+        {
             store->queryWorld = null;
             store->queryDirty = 1;
             BodyEntities.PrepareForJobs(store);
@@ -135,45 +147,34 @@ namespace KSP.Retooled.Physics
                     DeltaTime = deltaTime,
                 }.Schedule((int)store->bodyCount, ParallelBatchSize).Complete();
             }
+        }
 
-            BackendMarkers.StepSchedule.Begin();
-            float3 gravity = float3.zero;
-            JobHandle built = Build(deltaTime).Schedule();
+        /// <summary>Builds the bodies, joints and broadphase that the simulation's systems go on to step.</summary>
+        internal JobHandle BuildWorld(float deltaTime, JobHandle dependency)
+        {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+
+            JobHandle built = Build(deltaTime).Schedule(dependency);
             bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;
-            built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, gravity, staticsChanged.AsReadOnly(), built, multiThreaded);
+            built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, multiThreaded);
 
             directBodies.ResizeUninitialized(dynamicIndices.Length);
             new MarkDirectBodiesJob { Joints = builtJoints.AsArray(), Bodies = directBodies.AsArray() }.Run();
             directBodyTouched.Value = false;
+            return built;
+        }
 
-            SimulationStepInput input = new SimulationStepInput
-            {
-                World = world,
-                TimeStep = deltaTime,
-                Gravity = gravity,
-                NumSubsteps = WorldState.Substeps,
-                NumSolverIterations = WorldState.SolverIterations,
-                DirectSolverSettings = Solver.DirectSolverSettings.Default,
-                DirectSolverCache = directSolverCache,
-                SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
-                MaxDynamicDepenetrationVelocity = SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
-                MaxStaticDepenetrationVelocity = SimulationStepInput.DefaultMaxStaticDepenetrationVelocity,
-                HaveStaticBodiesChanged = staticsChanged.AsReadOnly(),
-                SynchronizeCollisionWorld = true,
-            };
-
-            // These are ScheduleStepJobs' stages, with a gap after the narrow phase for what the contacts decide.
-            built = simulation.ScheduleBroadphaseJobs(input, built, multiThreaded).FinalExecutionHandle;
-            built = simulation.ScheduleNarrowphaseJobs(input, built, multiThreaded).FinalExecutionHandle;
+        /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
+        internal JobHandle ReadContacts(SimulationSingleton singleton, float deltaTime, JobHandle dependency)
+        {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
 
             // Jobs wait in a batch until something flushes it, so without this the workers sit idle through the scheduling below.
             JobHandle.ScheduleBatchedJobs();
 
-            SimulationSingleton singleton = default;
-            singleton.InitializeFromSimulation(ref simulation);
             manifolds.Clear();
             manifoldPoints.Clear();
-            built = new ReadContactsJob
+            JobHandle built = new ReadContactsJob
             {
                 Store = store->bodies,
                 Globals = globals,
@@ -185,7 +186,7 @@ namespace KSP.Retooled.Physics
                 DirectBodyTouched = directBodyTouched,
                 DeltaTime = deltaTime,
                 BounceThreshold = store->bounceThreshold,
-            }.Schedule(singleton, ref world, built);
+            }.Schedule(singleton, ref world, dependency);
 
             built = new WakeTouchedBodiesJob
             {
@@ -195,14 +196,21 @@ namespace KSP.Retooled.Physics
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
             }.Schedule(built);
 
-            built = new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
-            built = simulation.ScheduleCreateJacobiansJobs(input, built, multiThreaded).FinalExecutionHandle;
-            built = new WarmStartJob
+            return new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
+        }
+
+        /// <summary>
+        /// Warm starts the Jacobians and finishes everything before the solve, whose jobs depend on what the contacts decided.
+        /// </summary>
+        internal void PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
+        {
+            BackendMarkers.StepSchedule.Begin();
+            JobHandle built = new WarmStartJob
             {
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = dynamicIndices.Length,
-            }.Schedule(singleton, ref world, built);
+            }.Schedule(singleton, ref world, dependency);
             BackendMarkers.StepSchedule.End();
 
             using (BackendMarkers.StepWaitForContacts.Auto())
@@ -210,12 +218,13 @@ namespace KSP.Retooled.Physics
                 built.Complete();
             }
 
-            using (BackendMarkers.StepScheduleSolve.Auto())
-            {
-                input.SkipDirectCoupling = !directBodyTouched.Value;
-                simulation.ScheduleSolveAndIntegrateJobs(input, built, multiThreaded);
-            }
+            input.DirectSolverCache = directSolverCache;
+            input.SkipDirectCoupling = !directBodyTouched.Value;
+        }
 
+        /// <summary>The last stage of a step, which hands the solved world back to the store and to Unity.</summary>
+        internal void FinishStep(Simulation simulation, float deltaTime)
+        {
             using (BackendMarkers.StepWaitForSolve.Auto())
             {
                 simulation.FinalJobHandle.Complete();
