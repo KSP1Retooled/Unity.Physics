@@ -69,6 +69,32 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
     }
 }
 
+/// <summary>Sorts the broadphase's pairs into islands, once it has dropped those that won't be solved.</summary>
+[BurstCompile]
+[UpdateInGroup(typeof(PhysicsCreateBodyPairsGroup), OrderLast = true)]
+internal unsafe partial struct SortIslandsSystem : ISystem
+{
+    private EntityQuery simulations;
+    private EntityQuery inputs;
+
+    public void OnCreate(ref SystemState state)
+    {
+        state.GetEntityQuery(ComponentType.ReadWrite<PhysicsCollider>());
+        simulations = state.GetEntityQuery(ComponentType.ReadWrite<SimulationSingleton>());
+        inputs = new EntityQueryBuilder(Allocator.Temp).WithAllRW<StepInputSingleton>().WithOptions(EntityQueryOptions.IncludeSystems).Build(ref state);
+    }
+
+    [BurstCompile]
+    public void OnUpdate(ref SystemState state)
+    {
+        SimulationSingleton singleton = simulations.GetSingleton<SimulationSingleton>();
+        ref StepInputSingleton input = ref inputs.GetSingletonRW<StepInputSingleton>().ValueRW;
+        JobHandle dependency = state.Dependency;
+        StepKernel.SortIslands(&singleton, (SimulationStepInput*)UnsafeUtility.AddressOf(ref input.StepInput), &dependency);
+        state.Dependency = dependency;
+    }
+}
+
 /// <summary>Reads the contacts between the narrow phase and the Jacobians built from them.</summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsCreateJacobiansGroup), OrderFirst = true)]

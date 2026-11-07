@@ -153,10 +153,70 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Runs between the narrow phase and the solver over every point of every manifold. Physics.IgnoreCollision acts here,
-    /// because a manifold names the leaves that touched, so the pairs of a compound can be told apart, which a filter on body
-    /// pairs can't do. So do friction and restitution, which need both shapes' materials and the points that touched. The
-    /// manifolds it keeps are what the step's events and sleeping work from.
+    /// Takes out the overlaps whose every collider pair is under Physics.IgnoreCollision, which is what the parts of one craft
+    /// are. There are many times more of those than of joints, and left in they would make a craft one crowded island and
+    /// send them all through the narrow phase for nothing. Body pairs with some colliders still in contact stay, and
+    /// <see cref="ReadContactsJob"/> tells those colliders apart.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
+    {
+        [NativeDisableParallelForRestriction]
+        public NativeArray<DispatchPairSequencer.DispatchPair> Pairs;
+
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.BodyData* Store;
+
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.StoreGlobals* Globals;
+
+        [NativeDisableUnsafePtrRestriction]
+        public RigidBody* Bodies;
+
+        public void Execute(int index)
+        {
+            DispatchPairSequencer.DispatchPair pair = Pairs[index];
+            if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && IsIgnored(RowOf(pair.BodyIndexA), RowOf(pair.BodyIndexB)))
+            {
+                pair.DisableCollision();
+                Pairs[index] = pair;
+            }
+        }
+
+        private NativeStore.BodyData* RowOf(int body)
+        {
+            return Store + Bodies[body].Entity.Index;
+        }
+
+        private bool IsIgnored(NativeStore.BodyData* rowA, NativeStore.BodyData* rowB)
+        {
+            for (int a = 0; a < rowA->shapeCount; a++)
+            {
+                NativeStore.ShapeData* shapeA = rowA->shapes[a];
+                if (!ColliderBuilder.IsSupported(shapeA))
+                {
+                    continue;
+                }
+
+                for (int b = 0; b < rowB->shapeCount; b++)
+                {
+                    NativeStore.ShapeData* shapeB = rowB->shapes[b];
+                    if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Runs between the narrow phase and the solver over every point of every manifold. Physics.IgnoreCollision acts here for
+    /// the body pairs <see cref="DropIgnoredPairsJob"/> left in, because a manifold names the leaves that touched, so the pairs
+    /// of a compound can be told apart. So do friction and restitution, which need both shapes' materials and the points that
+    /// touched. The manifolds it keeps are what the step's events and sleeping work from.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadContactsJob : IContactsJob

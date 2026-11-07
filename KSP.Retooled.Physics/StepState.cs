@@ -146,6 +146,29 @@ namespace KSP.Retooled.Physics
             return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
         }
 
+        /// <summary>Drops the overlaps nothing will solve, then sorts what's left into islands.</summary>
+        internal JobHandle SortIslands(SimulationSingleton singleton, in SimulationStepInput input, JobHandle dependency)
+        {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+
+            Simulation* simulation = singleton.AsSimulationPtr();
+            if (input.World.NumDynamicBodies == 0)
+            {
+                return dependency;
+            }
+
+            NativeList<DispatchPairSequencer.DispatchPair> pairs = simulation->StepContext.PairsToSortByIsland;
+            JobHandle filtered = new DropIgnoredPairsJob
+            {
+                Pairs = pairs.AsDeferredJobArray(),
+                Store = store->bodies,
+                Globals = globals,
+                Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
+            }.Schedule(pairs, ParallelBatchSize, dependency);
+
+            return simulation->ScheduleIslandJobs(input, filtered);
+        }
+
         /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
         internal JobHandle ReadContacts(SimulationSingleton singleton, float deltaTime, JobHandle dependency)
         {

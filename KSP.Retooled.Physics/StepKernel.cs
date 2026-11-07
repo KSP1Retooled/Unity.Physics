@@ -36,6 +36,12 @@ namespace KSP.Retooled.Physics
         }
 
         [BurstCompile]
+        internal static void SortIslands(SimulationSingleton* singleton, SimulationStepInput* input, JobHandle* dependency)
+        {
+            *dependency = Current->SortIslands(*singleton, *input, *dependency);
+        }
+
+        [BurstCompile]
         internal static void ReadContacts(SimulationSingleton* singleton, float deltaTime, JobHandle* dependency)
         {
             *dependency = Current->ReadContacts(*singleton, deltaTime, *dependency);
