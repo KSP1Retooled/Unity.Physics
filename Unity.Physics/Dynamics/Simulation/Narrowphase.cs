@@ -144,7 +144,7 @@ namespace Unity.Physics
             public void Execute(int workItemIndexOffset)
             {
                 var firstDispatchPairIndex = IterativeSolverSchedulerInfo.FirstDispatchPairIndex.Value
-                    + IterativeSolverSchedulerInfo.GetWorkItemReadOffset(workItemIndexOffset, out int numPairsToRead);
+                    + IterativeSolverSchedulerInfo.GetWorkItemReadOffset(workItemIndexOffset, DispatchPairs, out int numPairsToRead);
                 var workItemIndex = IterativeSolverSchedulerInfo.FirstWorkItemIndex.Value + workItemIndexOffset;
 
                 ExecuteImpl(ref World, InputVelocities, TimeStep, DispatchPairs, firstDispatchPairIndex, numPairsToRead,

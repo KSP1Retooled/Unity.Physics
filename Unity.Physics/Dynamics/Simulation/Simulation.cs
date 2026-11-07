@@ -197,6 +197,9 @@ namespace Unity.Physics
         // ProcessBodyPairsJob, which outputs contact and joint Jacobians.
         public NativeList<DispatchPairSequencer.DispatchPair> PhasedDispatchPairs;
 
+        // The sorted pairs, between the broadphase and Simulation.ScheduleIslandJobs.
+        public NativeList<DispatchPairSequencer.DispatchPair> PairsToSortByIsland;
+
         // Job handle for the scheduler's job that creates the phased dispatch pairs.
         // Results will appear in the SolverSchedulerInfo property upon job completion.
         public JobHandle CreateDispatchPairsJobHandle;
@@ -464,7 +467,8 @@ namespace Unity.Physics
             // Sort all overlapping and jointed body pairs into phases
             handles = DispatchPairSequencer.ScheduleCreatePhasedDispatchPairsJob(input,
                 ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, handle,
-                ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, multiThreaded);
+                ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, out StepContext.PairsToSortByIsland,
+                multiThreaded);
 
             StepContext.CreateDispatchPairsJobHandle = handles.FinalExecutionHandle;
 
@@ -473,6 +477,28 @@ namespace Unity.Physics
                 JobHandle.CombineDependencies(handles.FinalExecutionHandle, postOverlapsHandle) : handles.FinalExecutionHandle;
 
             return m_StepHandles;
+        }
+
+        /// <summary>
+        /// Sorts the pairs into islands, with <see cref="SimulationStepInput.DirectIslandSubsteps"/> set. This comes apart from
+        /// the broadphase so that a caller can take pairs out of <see cref="StepContext.PairsToSortByIsland"/> first: a pair
+        /// that won't be solved must not tie two bodies into one island or take up a phase.
+        /// </summary>
+        internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps)
+        {
+            if (input.World.NumDynamicBodies == 0)
+            {
+                return inputDeps;
+            }
+
+            JobHandle handle = DispatchPairSequencer.ScheduleSortPairsByIsland(input, StepContext.PairsToSortByIsland,
+                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps);
+
+            StepContext.CreateDispatchPairsJobHandle = handle;
+            m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(m_StepHandles.FinalDisposeHandle,
+                StepContext.PairsToSortByIsland.Dispose(handle));
+            m_StepHandles.FinalExecutionHandle = handle;
+            return handle;
         }
 
         /// <summary>   Schedule narrowphase jobs. </summary>
@@ -725,6 +751,11 @@ namespace Unity.Physics
         public unsafe SimulationJobHandles ScheduleStepJobs(SimulationStepInput input, JobHandle inputDeps, bool multiThreaded = true)
         {
             ScheduleBroadphaseJobs(input, inputDeps, multiThreaded);
+            if (input.DirectIslandSubsteps > 0)
+            {
+                ScheduleIslandJobs(input, m_StepHandles.FinalExecutionHandle);
+            }
+
             ScheduleNarrowphaseJobs(input, m_StepHandles.FinalExecutionHandle, multiThreaded);
             ScheduleCreateJacobiansJobs(input, m_StepHandles.FinalExecutionHandle, multiThreaded);
             ScheduleSolveAndIntegrateJobs(input, m_StepHandles.FinalExecutionHandle, multiThreaded);

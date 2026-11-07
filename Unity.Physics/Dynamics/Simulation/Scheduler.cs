@@ -162,6 +162,14 @@ namespace Unity.Physics
             /// </summary>
             internal ulong BodyIndexASubArraySortKey => (ulong)m_BodyIndexB << 32 | m_Data;
 
+            /// <summary>
+            /// Whether two pairs conflict on nothing but each other, so can run one after another on a thread in place of taking
+            /// a phase each: they are on the same two bodies, or the same dynamic body and any static one, since nothing writes
+            /// to a static body. The sorted order puts such pairs next to each other.
+            /// </summary>
+            internal bool IsSameLink(DispatchPair other, int numDynamicBodies) => BodyIndexA == other.BodyIndexA
+                && (BodyIndexB == other.BodyIndexB || (BodyIndexB >= numDynamicBodies && other.BodyIndexB >= numDynamicBodies));
+
             /// <summary>   Creates collision pair from a broad phase overlap result. </summary>
             ///
             /// <param name="overlapResult"> The overlap result. </param>
@@ -483,6 +491,7 @@ namespace Unity.Physics
                                                         // Index for this pair in the global dispatch pair array is
                                                         // IterativeSolverSchedulerInfo.FirstDispatchPairIndex + SolvePhaseInfo.FirstDispatchPairOffset.
                 internal bool ContainsDuplicateIndices; // Indicates that there are duplicate body indices across batches within this phase.
+                internal int LinkedNumDynamicBodies;    // Above zero if a link's pairs must stay in one work item: see DispatchPair.IsSameLink.
             }
 
             [NoAlias]
@@ -542,6 +551,45 @@ namespace Unity.Physics
                 pairReadCount = numItemsToRead;
 
                 return readStartOffset;
+            }
+
+            /// <summary>
+            /// As <see cref="GetWorkItemReadOffset(int, out int)"/>, for jobs that read the pairs. In a phase of links, a link
+            /// belongs to the work item it starts in, however far it reaches: two work items of a phase run at once. A work item
+            /// that lies wholly inside a link is left with nothing.
+            /// </summary>
+            internal int GetWorkItemReadOffset(int workItemIndexOffset, NativeArray<DispatchPair> dispatchPairs, out int pairReadCount)
+            {
+                int start = GetWorkItemReadOffset(workItemIndexOffset, out pairReadCount);
+                SolvePhaseInfo phaseInfo = PhaseInfo[FindPhaseId(workItemIndexOffset)];
+                int numDynamicBodies = phaseInfo.LinkedNumDynamicBodies;
+                if (numDynamicBodies == 0)
+                {
+                    return start;
+                }
+
+                int firstPair = FirstDispatchPairIndex.Value;
+                int phaseStart = phaseInfo.FirstDispatchPairOffset;
+                int phaseEnd = phaseStart + phaseInfo.DispatchPairCount;
+                int end = start + pairReadCount;
+                while (start < end && start > phaseStart && dispatchPairs[firstPair + start].IsSameLink(dispatchPairs[firstPair + start - 1], numDynamicBodies))
+                {
+                    start++;
+                }
+
+                if (start == end)
+                {
+                    pairReadCount = 0;
+                    return start;
+                }
+
+                while (end < phaseEnd && dispatchPairs[firstPair + end].IsSameLink(dispatchPairs[firstPair + end - 1], numDynamicBodies))
+                {
+                    end++;
+                }
+
+                pairReadCount = end - start;
+                return start;
             }
 
             public IterativeSolverSchedulerInfo(int numPhases, Allocator allocator = Allocator.TempJob)
@@ -996,9 +1044,10 @@ namespace Unity.Physics
         internal static SimulationJobHandles ScheduleCreatePhasedDispatchPairsJob(in SimulationStepInput stepInput,
             ref NativeStream dynamicVsDynamicBroadphasePairsStream, ref NativeStream staticVsDynamicBroadphasePairsStream,
             JobHandle inputDeps, ref NativeList<DispatchPair> dispatchPairs, out SolverSchedulerInfo solverSchedulerInfo,
-            bool multiThreaded = true)
+            out NativeList<DispatchPair> pairsToSortByIsland, bool multiThreaded = true)
         {
             SimulationJobHandles returnHandles = default;
+            pairsToSortByIsland = default;
 
             if (!multiThreaded)
             {
@@ -1300,12 +1349,11 @@ namespace Unity.Physics
             {
                 dispatchPairs = unsortedPairs;
                 solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
-                JobHandle islandsHandle = ScheduleSortPairsByIsland(stepInput, sortedPairs, dispatchPairs, solverSchedulerInfo, sortHandle);
+                pairsToSortByIsland = sortedPairs;
 
-                returnHandles.FinalExecutionHandle = islandsHandle;
-                disposeHandles.Add(numWorkersForPairGrouping.Dispose(islandsHandle));
-                disposeHandles.Add(directSolverUsed.Dispose(islandsHandle));
-                disposeHandles.Add(sortedPairs.Dispose(islandsHandle));
+                returnHandles.FinalExecutionHandle = sortHandle;
+                disposeHandles.Add(numWorkersForPairGrouping.Dispose(sortHandle));
+                disposeHandles.Add(directSolverUsed.Dispose(sortHandle));
                 returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandles.AsArray());
                 return returnHandles;
             }
@@ -1483,7 +1531,7 @@ namespace Unity.Physics
         /// <see cref="NumIslandBuckets"/> buckets of the same size, each big enough for every pair, so that no bucket has to
         /// know how much the others got and nothing has to be copied together afterwards.
         /// </summary>
-        static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
+        internal static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
             NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps)
         {
             int numDynamicBodies = stepInput.World.NumDynamicBodies;
@@ -1491,6 +1539,7 @@ namespace Unity.Physics
             var islandPairs = new NativeList<DispatchPair>(Allocator.TempJob);
             var islandBodies = new NativeList<int>(Allocator.TempJob);
             var phasesUsed = new NativeList<byte>(Allocator.TempJob);
+            var linksInPhases = new NativeList<int>(Allocator.TempJob);
             var bucketCounts = new NativeArray<int>(NumIslandBuckets, Allocator.TempJob);
 
             JobHandle handle = new FindSolverIslandsJob
@@ -1502,7 +1551,8 @@ namespace Unity.Physics
                 IslandPairs = islandPairs,
                 IslandBodies = islandBodies,
                 PhasedDispatchPairs = phasedPairs,
-                PhasesUsed = phasesUsed
+                PhasesUsed = phasesUsed,
+                LinksInPhases = linksInPhases
             }.Schedule(inputDeps);
 
             handle = new SortIslandIntoBucketsJob
@@ -1510,6 +1560,7 @@ namespace Unity.Physics
                 IslandPairs = islandPairs.AsDeferredJobArray(),
                 Islands = islands.AsDeferredJobArray(),
                 PhasesUsed = phasesUsed.AsDeferredJobArray(),
+                LinksInPhases = linksInPhases.AsDeferredJobArray(),
                 PhasedDispatchPairs = phasedPairs.AsDeferredJobArray(),
                 BucketCounts = bucketCounts,
                 NumDynamicBodies = numDynamicBodies
@@ -1527,7 +1578,8 @@ namespace Unity.Physics
 
             return JobHandle.CombineDependencies(
                 JobHandle.CombineDependencies(islands.Dispose(handle), islandPairs.Dispose(handle), islandBodies.Dispose(handle)),
-                phasesUsed.Dispose(handle), bucketCounts.Dispose(handle));
+                JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle)),
+                bucketCounts.Dispose(handle));
         }
 
         /// <summary>
@@ -2747,6 +2799,9 @@ namespace Unity.Physics
             /// <summary> The phases each dynamic body is in so far. </summary>
             public NativeList<byte> PhasesUsed;
 
+            /// <summary> Only sized here: an island fills in its bodies' rows if it has to recolour. </summary>
+            public NativeList<int> LinksInPhases;
+
             static int FindRoot(NativeArray<int> parents, int body)
             {
                 while (parents[body] != body)
@@ -2861,18 +2916,27 @@ namespace Unity.Physics
 
                 PhasedDispatchPairs.ResizeUninitialized(numPairs * NumIslandBuckets);
                 PhasesUsed.Resize(NumDynamicBodies, NativeArrayOptions.ClearMemory);
+                LinksInPhases.ResizeUninitialized(NumDynamicBodies * NumIslandPhases);
             }
         }
 
         /// <summary>
-        /// Colours one island, and sorts its pairs into the bucket of each phase if it fits in <see cref="NumIslandPhases"/> of
-        /// them, or all into the direct bucket if not, so that no body is left between the two solvers. Islands share no
-        /// dynamic body, which lets them share <see cref="PhasesUsed"/>, and a thread takes room in a bucket atomically. The
-        /// order of islands in a bucket therefore varies from run to run, and the order of pairs within an island doesn't.
+        /// Colours one island, and sorts its pairs into the bucket of each phase if it has no joints and fits in
+        /// <see cref="NumIslandPhases"/> of them, or all into the direct bucket if not, so that no body is left between the two
+        /// solvers. What gets a colour is a
+        /// link (see <see cref="DispatchPair.IsSameLink"/>): its pairs run one after another on one thread, so they conflict
+        /// with nothing among themselves. Islands share no dynamic body, which lets them share <see cref="PhasesUsed"/> and
+        /// <see cref="LinksInPhases"/>, and a thread takes room in a bucket atomically. The order of islands in a bucket
+        /// therefore varies from run to run, and the order of pairs within an island doesn't.
         /// </summary>
         [BurstCompile]
         unsafe struct SortIslandIntoBucketsJob : IJobParallelForDefer
         {
+            const int AllPhases = (1 << NumIslandPhases) - 1;
+
+            /// <summary> Plenty for the rare stuck link in a craft, and it bounds the worst case of a very large island. </summary>
+            const int MaxChainStepsPerLink = 8;
+
             [ReadOnly]
             public NativeArray<DispatchPair> IslandPairs;
 
@@ -2881,6 +2945,10 @@ namespace Unity.Physics
 
             [NativeDisableParallelForRestriction]
             public NativeArray<byte> PhasesUsed;
+
+            /// <summary> For each dynamic body and phase, the link there, or -1. Valid only once an island has got stuck. </summary>
+            [NativeDisableParallelForRestriction]
+            public NativeArray<int> LinksInPhases;
 
             [NativeDisableParallelForRestriction]
             public NativeArray<DispatchPair> PhasedDispatchPairs;
@@ -2895,28 +2963,27 @@ namespace Unity.Physics
             {
                 SolverIsland island = Islands[islandIndex];
                 NativeArray<DispatchPair> pairs = IslandPairs.GetSubArray(island.FirstPair, island.PairCount);
-                var phases = new NativeArray<byte>(pairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                int* pairsInPhase = stackalloc int[NumIslandPhases];
-                UnsafeUtility.MemClear(pairsInPhase, NumIslandPhases * sizeof(int));
 
-                // A pair with a static body comes after the others on its body, as it does in the other layouts.
-                bool fits = true;
-                for (int pass = 0; pass < 2 && fits; pass++)
+                // The pairs are sorted by body, so a link's pairs are next to each other, and they stay so in a bucket.
+                var firstPairs = new NativeArray<int>(pairs.Length + 1, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                int numLinks = 0;
+                bool hasJoint = false;
+                for (int i = 0; i < pairs.Length; i++)
                 {
-                    for (int i = 0; i < pairs.Length && fits; i++)
+                    hasJoint |= pairs[i].IsJoint;
+                    if (i == 0 || !pairs[i].IsSameLink(pairs[i - 1], NumDynamicBodies))
                     {
-                        if (pairs[i].BodyIndexB >= NumDynamicBodies == (pass == 1))
-                        {
-                            int phase = ClaimPhase(pairs[i]);
-                            fits = phase >= 0;
-                            if (fits)
-                            {
-                                phases[i] = (byte)phase;
-                                pairsInPhase[phase]++;
-                            }
-                        }
+                        firstPairs[numLinks++] = i;
                     }
                 }
+
+                firstPairs[numLinks] = pairs.Length;
+
+                // A joint goes direct however few colours its island needs: sweeps alone leave a stiff joint soft, and a craft
+                // shouldn't behave differently for being small.
+                var phases = new NativeArray<byte>(numLinks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                bool fits = !hasJoint && CountCrowdedBodies(pairs, firstPairs, numLinks) == 0
+                    && ColourLinks(pairs, firstPairs, numLinks, phases);
 
                 int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
                 if (!fits)
@@ -2943,22 +3010,280 @@ namespace Unity.Physics
                     return;
                 }
 
+                int* pairsInPhase = stackalloc int[NumIslandPhases];
+                UnsafeUtility.MemClear(pairsInPhase, NumIslandPhases * sizeof(int));
+                for (int link = 0; link < numLinks; link++)
+                {
+                    pairsInPhase[phases[link]] += firstPairs[link + 1] - firstPairs[link];
+                }
+
                 int* nextPairInPhase = stackalloc int[NumIslandPhases];
                 for (int phase = 0; phase < NumIslandPhases; phase++)
                 {
                     nextPairInPhase[phase] = phase * bucketSize + Reserve(phase, pairsInPhase[phase]);
                 }
 
+                // A pair with a static body comes after the others on its body, as it does in the other layouts.
                 for (int pass = 0; pass < 2; pass++)
                 {
-                    for (int i = 0; i < pairs.Length; i++)
+                    for (int link = 0; link < numLinks; link++)
                     {
-                        if (pairs[i].BodyIndexB >= NumDynamicBodies == (pass == 1))
+                        if (pairs[firstPairs[link]].BodyIndexB >= NumDynamicBodies == (pass == 1))
                         {
-                            PhasedDispatchPairs[nextPairInPhase[phases[i]]++] = pairs[i];
+                            for (int i = firstPairs[link]; i < firstPairs[link + 1]; i++)
+                            {
+                                PhasedDispatchPairs[nextPairInPhase[phases[link]]++] = pairs[i];
+                            }
                         }
                     }
                 }
+            }
+
+            /// <summary>
+            /// Counts the bodies on more links than there are phases. Links sharing a body can't share a phase, so one such body
+            /// settles where the island goes before any colouring is tried. Leaves <see cref="PhasesUsed"/> clear.
+            /// </summary>
+            int CountCrowdedBodies(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks)
+            {
+                int crowdedBodies = 0;
+                for (int link = 0; link < numLinks; link++)
+                {
+                    DispatchPair pair = pairs[firstPairs[link]];
+                    crowdedBodies += CountLink(pair.BodyIndexA);
+                    if (pair.BodyIndexB < NumDynamicBodies)
+                    {
+                        crowdedBodies += CountLink(pair.BodyIndexB);
+                    }
+                }
+
+                for (int link = 0; link < numLinks; link++)
+                {
+                    DispatchPair pair = pairs[firstPairs[link]];
+                    PhasesUsed[pair.BodyIndexA] = 0;
+                    if (pair.BodyIndexB < NumDynamicBodies)
+                    {
+                        PhasesUsed[pair.BodyIndexB] = 0;
+                    }
+                }
+
+                return crowdedBodies;
+            }
+
+            /// <summary> Returns 1 the moment a body goes past the number of phases. </summary>
+            int CountLink(int body)
+            {
+                int links = PhasesUsed[body];
+                if (links > NumIslandPhases)
+                {
+                    return 0;
+                }
+
+                PhasesUsed[body] = (byte)(links + 1);
+                return links == NumIslandPhases ? 1 : 0;
+            }
+
+            /// <summary>
+            /// Gives every link a phase, or returns false. First fit does nearly all of it in one pass over the links. Only when
+            /// it sticks does the island pay for <see cref="LinksInPhases"/> and swap colours along chains, on a budget that
+            /// keeps the whole thing linear in the links: an island that uses it up has odd cycles and goes direct.
+            /// </summary>
+            bool ColourLinks(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks, NativeArray<byte> phases)
+            {
+                int stepsLeft = numLinks * MaxChainStepsPerLink;
+                bool hasTable = false;
+                var chain = default(NativeArray<int>);
+
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    for (int link = 0; link < numLinks; link++)
+                    {
+                        DispatchPair pair = pairs[firstPairs[link]];
+                        bool isBodyBStatic = pair.BodyIndexB >= NumDynamicBodies;
+                        if (isBodyBStatic != (pass == 1))
+                        {
+                            continue;
+                        }
+
+                        int phase = FirstFreePhase(pair);
+                        if (phase < 0)
+                        {
+                            if (!hasTable)
+                            {
+                                hasTable = true;
+                                chain = new NativeArray<int>(numLinks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                                FillLinksInPhases(pairs, firstPairs, phases, link, pass);
+                            }
+
+                            phase = FreePhaseWithChain(pair, pairs, firstPairs, phases, chain, ref stepsLeft);
+                            if (phase < 0)
+                            {
+                                return false;
+                            }
+                        }
+
+                        phases[link] = (byte)phase;
+                        SetPhase(pair, phase, link, hasTable);
+                    }
+                }
+
+                return true;
+            }
+
+            /// <summary>
+            /// Finds a phase free on the dynamic bodies a link touches, or returns -1 if there is none. A static body doesn't
+            /// count: nothing writes to one, so any number of links can share it in a phase. A link with a static body takes the
+            /// last phase it can, which leaves the last word on a body to what holds it against the world.
+            /// </summary>
+            int FirstFreePhase(DispatchPair pair)
+            {
+                bool isBodyBStatic = pair.BodyIndexB >= NumDynamicBodies;
+                int used = PhasesUsed[pair.BodyIndexA] | (isBodyBStatic ? 0 : PhasesUsed[pair.BodyIndexB]);
+                int free = ~used & AllPhases;
+                if (free == 0)
+                {
+                    return -1;
+                }
+
+                return isBodyBStatic ? 31 - math.lzcnt(free) : math.tzcnt(free);
+            }
+
+            void SetPhase(DispatchPair pair, int phase, int link, bool hasTable)
+            {
+                PhasesUsed[pair.BodyIndexA] = (byte)(PhasesUsed[pair.BodyIndexA] | (1 << phase));
+                if (hasTable)
+                {
+                    LinksInPhases[pair.BodyIndexA * NumIslandPhases + phase] = link;
+                }
+
+                if (pair.BodyIndexB < NumDynamicBodies)
+                {
+                    PhasesUsed[pair.BodyIndexB] = (byte)(PhasesUsed[pair.BodyIndexB] | (1 << phase));
+                    if (hasTable)
+                    {
+                        LinksInPhases[pair.BodyIndexB * NumIslandPhases + phase] = link;
+                    }
+                }
+            }
+
+            void ClearPhase(DispatchPair pair, int phase)
+            {
+                PhasesUsed[pair.BodyIndexA] = (byte)(PhasesUsed[pair.BodyIndexA] & ~(1 << phase));
+                LinksInPhases[pair.BodyIndexA * NumIslandPhases + phase] = -1;
+                if (pair.BodyIndexB < NumDynamicBodies)
+                {
+                    PhasesUsed[pair.BodyIndexB] = (byte)(PhasesUsed[pair.BodyIndexB] & ~(1 << phase));
+                    LinksInPhases[pair.BodyIndexB * NumIslandPhases + phase] = -1;
+                }
+            }
+
+            /// <summary> Records the links coloured so far: those of earlier passes, and of this pass up to the stuck one. </summary>
+            void FillLinksInPhases(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, NativeArray<byte> phases, int stuckLink, int stuckPass)
+            {
+                int numLinks = phases.Length;
+                for (int link = 0; link < numLinks; link++)
+                {
+                    DispatchPair pair = pairs[firstPairs[link]];
+                    for (int phase = 0; phase < NumIslandPhases; phase++)
+                    {
+                        LinksInPhases[pair.BodyIndexA * NumIslandPhases + phase] = -1;
+                        if (pair.BodyIndexB < NumDynamicBodies)
+                        {
+                            LinksInPhases[pair.BodyIndexB * NumIslandPhases + phase] = -1;
+                        }
+                    }
+                }
+
+                for (int link = 0; link < numLinks; link++)
+                {
+                    DispatchPair pair = pairs[firstPairs[link]];
+                    int pass = pair.BodyIndexB >= NumDynamicBodies ? 1 : 0;
+                    if (pass < stuckPass || (pass == stuckPass && link < stuckLink))
+                    {
+                        SetPhase(pair, phases[link], link, true);
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Frees a phase on both ends of a stuck link. Each end has a phase the other uses; the links alternating between those
+            /// two phases from one end form a path, and swapping the two along it frees one on that end unless the path comes
+            /// back to the other end, which takes an odd cycle. So this can't fail on a tree, but can on a craft closed by struts
+            /// or contacts. Returns -1 if every choice of the two phases fails or the steps run out.
+            /// </summary>
+            int FreePhaseWithChain(DispatchPair stuck, NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs,
+                NativeArray<byte> phases, NativeArray<int> chain, ref int stepsLeft)
+            {
+                int bodyA = stuck.BodyIndexA;
+                int bodyB = stuck.BodyIndexB;
+                int freeOnA = ~PhasesUsed[bodyA] & AllPhases;
+                int freeOnB = ~PhasesUsed[bodyB] & AllPhases;
+
+                for (int phaseA = 0; phaseA < NumIslandPhases; phaseA++)
+                {
+                    if ((freeOnA & (1 << phaseA)) == 0)
+                    {
+                        continue;
+                    }
+
+                    for (int phaseB = 0; phaseB < NumIslandPhases; phaseB++)
+                    {
+                        if ((freeOnB & (1 << phaseB)) == 0)
+                        {
+                            continue;
+                        }
+
+                        int length = 0;
+                        int body = bodyB;
+                        int wanted = phaseA;
+                        bool reachedA = false;
+                        while (true)
+                        {
+                            if (--stepsLeft < 0)
+                            {
+                                return -1;
+                            }
+
+                            int next = LinksInPhases[body * NumIslandPhases + wanted];
+                            if (next < 0)
+                            {
+                                break;
+                            }
+
+                            chain[length++] = next;
+                            DispatchPair pair = pairs[firstPairs[next]];
+                            body = pair.BodyIndexA == body ? pair.BodyIndexB : pair.BodyIndexA;
+                            reachedA = body == bodyA;
+                            if (reachedA || body >= NumDynamicBodies)
+                            {
+                                break;
+                            }
+
+                            wanted = wanted == phaseA ? phaseB : phaseA;
+                        }
+
+                        if (reachedA)
+                        {
+                            continue;
+                        }
+
+                        // Everything comes off before anything goes on: neighbours on the path trade the same two slots.
+                        for (int i = 0; i < length; i++)
+                        {
+                            ClearPhase(pairs[firstPairs[chain[i]]], phases[chain[i]]);
+                        }
+
+                        for (int i = 0; i < length; i++)
+                        {
+                            int swapped = phases[chain[i]] == phaseA ? phaseB : phaseA;
+                            phases[chain[i]] = (byte)swapped;
+                            SetPhase(pairs[firstPairs[chain[i]]], swapped, chain[i], true);
+                        }
+
+                        return phaseA;
+                    }
+                }
+
+                return -1;
             }
 
             /// <summary> Takes room in a bucket, and returns where the room starts. </summary>
@@ -2968,37 +3293,11 @@ namespace Unity.Physics
                 return Interlocked.Add(ref bucketCount, count) - count;
             }
 
-            /// <summary>
-            /// Gives a pair a phase free on the dynamic bodies it touches, or returns -1 if there is none. A static body doesn't
-            /// count: nothing writes to one, so any number of pairs can share it in a phase. A pair with a static body takes the
-            /// last phase it can, which leaves the last word on a body to what holds it against the world.
-            /// </summary>
-            int ClaimPhase(DispatchPair pair)
-            {
-                const int allPhases = (1 << NumIslandPhases) - 1;
-                bool isBodyBStatic = pair.BodyIndexB >= NumDynamicBodies;
-                int used = PhasesUsed[pair.BodyIndexA] | (isBodyBStatic ? 0 : PhasesUsed[pair.BodyIndexB]);
-                int free = ~used & allPhases;
-                if (free == 0)
-                {
-                    return -1;
-                }
-
-                int phase = isBodyBStatic ? 31 - math.lzcnt(free) : math.tzcnt(free);
-                PhasesUsed[pair.BodyIndexA] = (byte)(PhasesUsed[pair.BodyIndexA] | (1 << phase));
-                if (!isBodyBStatic)
-                {
-                    PhasesUsed[pair.BodyIndexB] = (byte)(PhasesUsed[pair.BodyIndexB] | (1 << phase));
-                }
-
-                return phase;
-            }
         }
 
         /// <summary>
-        /// Tells the solver what ended up in the buckets. A phase's pairs are all alone on their bodies, so work items can split
-        /// them anywhere, and a bucket can be empty: <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/> copes, as the
-        /// next phase has the same offset.
+        /// Tells the solver what ended up in the buckets. A bucket can be empty: <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/>
+        /// copes, as the next phase has the same offset.
         /// </summary>
         [BurstCompile]
         struct PublishIslandBucketsJob : IJob
@@ -3020,7 +3319,7 @@ namespace Unity.Physics
 
             public int NumDynamicBodies;
 
-            static IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem)
+            static IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem, int linkedNumDynamicBodies)
             {
                 int batchSize = math.min(CreateDispatchPairPhasesJob.kMaxBatchSize, numPairs);
                 return new IterativeSolverSchedulerInfo.SolvePhaseInfo
@@ -3030,6 +3329,7 @@ namespace Unity.Physics
                     NumWorkItems = batchSize == 0 ? 0 : (numPairs + batchSize - 1) / batchSize,
                     FirstDispatchPairOffset = firstPair,
                     FirstWorkItemIndexOffset = firstWorkItem,
+                    LinkedNumDynamicBodies = linkedNumDynamicBodies,
                 };
             }
 
@@ -3042,7 +3342,7 @@ namespace Unity.Physics
                 int numIterativeWorkItems = 0;
                 for (int phase = 0; phase < NumIslandPhases; phase++)
                 {
-                    iterative.PhaseInfo[phase] = Phase(BucketCounts[phase], phase * bucketSize, numIterativeWorkItems);
+                    iterative.PhaseInfo[phase] = Phase(BucketCounts[phase], phase * bucketSize, numIterativeWorkItems, NumDynamicBodies);
                     numIterativePairs += BucketCounts[phase];
                     numIterativeWorkItems += iterative.PhaseInfo[phase].NumWorkItems;
                 }
@@ -3053,7 +3353,7 @@ namespace Unity.Physics
 
                 int numDirectPairs = BucketCounts[NumIslandPhases];
                 IterativeSolverSchedulerInfo direct = SolverSchedulerInfo.DirectPairsIterativeScheduling;
-                direct.PhaseInfo[0] = Phase(numDirectPairs, 0, 0);
+                direct.PhaseInfo[0] = Phase(numDirectPairs, 0, 0, 0);
                 direct.NumActivePhases[0] = 1;
                 direct.NumWorkItems[0] = direct.PhaseInfo[0].NumWorkItems;
                 direct.FirstDispatchPairIndex.Value = NumIslandPhases * bucketSize;
@@ -3586,6 +3886,7 @@ namespace Unity.Physics
                     info.BatchSize = math.min(kMaxBatchSize, info.DispatchPairCount);
                     info.NumWorkItems = (info.DispatchPairCount + info.BatchSize - 1) / info.BatchSize;
                     info.ContainsDuplicateIndices = i == lastPhaseIndex && info.NumWorkItems > 1;
+                    info.LinkedNumDynamicBodies = 0;
                     info.FirstWorkItemIndexOffset = firstWorkItemIndex;
                     info.FirstDispatchPairOffset = numPairs;
 
@@ -3766,6 +4067,7 @@ namespace Unity.Physics
                     info.BatchSize = math.min(kMaxBatchSize, info.DispatchPairCount);
                     info.NumWorkItems = (info.DispatchPairCount + info.BatchSize - 1) / info.BatchSize;
                     info.ContainsDuplicateIndices = i == lastPhaseIndex && info.NumWorkItems > 1;
+                    info.LinkedNumDynamicBodies = 0;
                     info.FirstWorkItemIndexOffset = firstWorkItemIndex;
                     info.FirstDispatchPairOffset = numPairs;
 

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("Assembly-CSharp")]
 [assembly: InternalsVisibleTo("Unity.Physics.Editor")]
 [assembly: InternalsVisibleTo("Unity.Physics.Hybrid")]
 [assembly: InternalsVisibleTo("Unity.Physics.Runtime.Tests")]
