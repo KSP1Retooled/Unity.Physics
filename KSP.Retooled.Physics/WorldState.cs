@@ -96,15 +96,19 @@ namespace KSP.Retooled.PhysicsBackend
             store->queryDirty = 1;
             RefreshColliders();
 
-            new WakeJointedBodiesJob { World = store }.Run();
-
-            new ApplyForcesJob
+            using (BackendMarkers.StepApplyForces.Auto())
             {
-                Bodies = store->bodies,
-                Gravity = store->gravity,
-                DeltaTime = deltaTime,
-            }.Schedule((int)store->bodyCount, ParallelBatchSize).Complete();
+                new WakeJointedBodiesJob { World = store }.Run();
 
+                new ApplyForcesJob
+                {
+                    Bodies = store->bodies,
+                    Gravity = store->gravity,
+                    DeltaTime = deltaTime,
+                }.Schedule((int)store->bodyCount, ParallelBatchSize).Complete();
+            }
+
+            BackendMarkers.StepSchedule.Begin();
             float3 gravity = float3.zero;
             JobHandle built = Build(deltaTime).Schedule();
             built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, gravity, staticsChanged.AsReadOnly(), built);
@@ -160,50 +164,81 @@ namespace KSP.Retooled.PhysicsBackend
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = dynamicIndices.Length,
             }.Schedule(singleton, ref world, built);
+            BackendMarkers.StepSchedule.End();
 
-            simulation.ScheduleSolveAndIntegrateJobs(input, built);
-            simulation.FinalJobHandle.Complete();
-
-            new WriteBackJob
+            using (BackendMarkers.StepWaitForContacts.Auto())
             {
-                Store = store->bodies,
-                DynamicIndices = dynamicIndices.AsArray(),
-                MotionDatas = world.MotionDatas,
-                MotionVelocities = world.MotionVelocities,
-            }.Schedule(dynamicIndices.Length, ParallelBatchSize).Complete();
-
-            new ReadJointForcesJob
-            {
-                World = store,
-                Globals = NativeStore.RetooledPhysics_Globals(),
-                Events = simulation.ImpulseEvents,
-                DeltaTime = deltaTime,
-                EngineObjectIdOffset = NativeStore.RetooledPhysics_Globals()->engineObjectIdOffset,
-            }.Run();
-
-            if (world.NumDynamicBodies != 0)
-            {
-                new ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
+                built.Complete();
             }
 
-            new RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
-
-            new PublishContactsJob
+            using (BackendMarkers.StepScheduleSolve.Auto())
             {
-                World = store,
-                Globals = NativeStore.RetooledPhysics_Globals(),
-                Records = manifolds,
-                Points = manifoldPoints,
-                Touching = touching,
-                Step = ++stepCount,
-            }.Run();
+                simulation.ScheduleSolveAndIntegrateJobs(input, built);
+            }
 
-            new SleepJob { World = store, Records = manifolds, DeltaTime = deltaTime }.Run();
+            using (BackendMarkers.StepWaitForSolve.Auto())
+            {
+                simulation.FinalJobHandle.Complete();
+            }
+
+            using (BackendMarkers.StepWriteBack.Auto())
+            {
+                new WriteBackJob
+                {
+                    Store = store->bodies,
+                    DynamicIndices = dynamicIndices.AsArray(),
+                    MotionDatas = world.MotionDatas,
+                    MotionVelocities = world.MotionVelocities,
+                }.Schedule(dynamicIndices.Length, ParallelBatchSize).Complete();
+            }
+
+            using (BackendMarkers.StepReadJointForces.Auto())
+            {
+                new ReadJointForcesJob
+                {
+                    World = store,
+                    Globals = NativeStore.RetooledPhysics_Globals(),
+                    Events = simulation.ImpulseEvents,
+                    DeltaTime = deltaTime,
+                    EngineObjectIdOffset = NativeStore.RetooledPhysics_Globals()->engineObjectIdOffset,
+                }.Run();
+            }
+
+            using (BackendMarkers.StepReadImpulses.Auto())
+            {
+                if (world.NumDynamicBodies != 0)
+                {
+                    new ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
+                }
+
+                new RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
+            }
+
+            using (BackendMarkers.StepPublishContacts.Auto())
+            {
+                new PublishContactsJob
+                {
+                    World = store,
+                    Globals = NativeStore.RetooledPhysics_Globals(),
+                    Records = manifolds,
+                    Points = manifoldPoints,
+                    Touching = touching,
+                    Step = ++stepCount,
+                }.Run();
+            }
+
+            using (BackendMarkers.StepSleep.Auto())
+            {
+                new SleepJob { World = store, Records = manifolds, DeltaTime = deltaTime }.Run();
+            }
 
             // The step synchronized the built world to the motions it wrote back, which spares the queries after it a
             // rebuild. The store can't change during a step, so these bodies are the only way it can differ.
-            store->queryDirty = motionsMatchStore ? 0u : 1u;
-            PublishQueryWorld();
+            using (BackendMarkers.StepPublishQueryWorld.Auto())
+            {
+                store->queryDirty = motionsMatchStore ? 0u : 1u;
+                PublishQueryWorld();
+            }
         }
 
         /// <summary>
