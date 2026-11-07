@@ -17,13 +17,24 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// The body's hot row, with its component pointers current. It stays valid until a body in the same world is created
-        /// or destroyed, and its pointers until the next structural change in the bound Entities world.
+        /// or destroyed, and its pointers until the next structural change in the bound Entities world. Main thread only:
+        /// making the pointers current looks the entity up through the EntityManager, which a worker must never do.
         /// </summary>
         internal static NativeStore.BodyData* Hot(NativeStore.Body* body)
         {
             NativeStore.BodyData* hot = body->world->bodies + body->index;
             BodyEntities.Refresh(hot);
             return hot;
+        }
+
+        /// <summary>
+        /// The body's hot row for the fields the row holds itself, which never move: its flags, shapes and owner. Unity sends
+        /// some commands from job workers, and this is all they may read, because the component pointers may be stale and
+        /// only the main thread can renew them.
+        /// </summary>
+        internal static NativeStore.BodyData* Row(NativeStore.Body* body)
+        {
+            return body->world->bodies + body->index;
         }
 
         /// <summary>Points a row at the components its body holds itself, which never move.</summary>

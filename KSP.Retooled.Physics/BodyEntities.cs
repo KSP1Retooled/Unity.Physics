@@ -13,9 +13,14 @@ namespace KSP.Retooled.Physics
     /// <see cref="NativeStore.BodyHome"/>. Nothing else cares which it is: a row's pointers lead to the components either way.
     /// </summary>
     /// <remarks>
-    /// Rows go through the entity's chunk directly, and only look the entity up again when a structural change may have
-    /// moved it, because a craft sends tens of thousands of commands a frame. Those writes don't bump a chunk's change
+    /// Rows go through the entity's chunk directly, because a craft sends tens of thousands of commands a frame, and only
+    /// look the entity up again when something outside this file restructured body entities. The structural changes made
+    /// here leave every row current themselves: a created entity moves nothing, and a destroyed one is replaced in its
+    /// chunk by the chunk's last entity, whose row takes over the pointers. Those writes don't bump a chunk's change
     /// version. A job that writes these components has to finish before its system's update ends.
+    ///
+    /// Unity sends some commands from job workers, and only the main thread may use the EntityManager, so a worker that
+    /// finds a row stale reads it as it is. That can only happen between a foreign restructure and the next step.
     /// </remarks>
     internal static unsafe class BodyEntities
     {
@@ -56,9 +61,11 @@ namespace KSP.Retooled.Physics
                 NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
                 for (uint i = 0; i < world->bodyCount; i++)
                 {
-                    Adopt(world->bodies + i);
+                    Place(world->bodies + i);
                 }
             }
+
+            StampAll();
         }
 
         /// <summary>
@@ -97,29 +104,22 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Points a row home without its entity's state, for a world that can't give it back.</summary>
-        private static void Abandon(NativeStore.BodyData* hot)
-        {
-            if (hot->entity == Entity.Null)
-            {
-                return;
-            }
-
-            hot->entity = Entity.Null;
-            StoreOps.PointAtHome(hot, hot->owner);
-        }
-
         /// <summary>Puts a body on an entity if a world is bound.</summary>
         internal static void Adopt(NativeStore.BodyData* hot)
         {
-            ref Binding binding = ref Current.Data;
-            if (!binding.Bound)
+            if (!Current.Data.Bound)
             {
                 return;
             }
 
+            Place(hot);
+            StampAll();
+        }
+
+        private static void Place(NativeStore.BodyData* hot)
+        {
             NativeStore.BodyHome* home = &hot->owner->home;
-            hot->entity = binding.Manager.CreateEntity(binding.Archetype);
+            hot->entity = Current.Data.Manager.CreateEntity(Current.Data.Archetype);
             Resolve(hot);
             *hot->pose = home->pose;
             *hot->velocity = home->velocity;
@@ -154,18 +154,113 @@ namespace KSP.Retooled.Physics
             home->target = *hot->target;
             home->collider = *hot->collider;
 
-            Current.Data.Manager.DestroyEntity(hot->entity);
+            ref EntityManager manager = ref Current.Data.Manager;
+            EntityStorageInfo slot = manager.GetStorageInfo(hot->entity);
+            bool refilled = slot.IndexInChunk != slot.Chunk.Count - 1;
+            NativeStore.BodyData vacated = *hot;
+            manager.DestroyEntity(hot->entity);
+            hot->entity = Entity.Null;
+            StoreOps.PointAtHome(hot, hot->owner);
+            if (refilled)
+            {
+                HandOver(slot, &vacated);
+            }
+
+            StampAll();
+        }
+
+        /// <summary>Points a row home without its entity's state, for a world that can't give it back.</summary>
+        private static void Abandon(NativeStore.BodyData* hot)
+        {
+            if (hot->entity == Entity.Null)
+            {
+                return;
+            }
+
             hot->entity = Entity.Null;
             StoreOps.PointAtHome(hot, hot->owner);
         }
 
-        /// <summary>Makes a row's pointers current, if its body has an entity.</summary>
+        /// <summary>
+        /// Gives the pointers of a destroyed entity's slot to the row of the entity Entities moved into it, which is the one
+        /// that was last in the chunk.
+        /// </summary>
+        private static void HandOver(EntityStorageInfo slot, NativeStore.BodyData* vacated)
+        {
+            ref EntityManager manager = ref Current.Data.Manager;
+            int worlds = NativeStore.RetooledPhysics_WorldCount();
+            for (int w = 0; w < worlds; w++)
+            {
+                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                for (uint i = 0; i < world->bodyCount; i++)
+                {
+                    NativeStore.BodyData* hot = world->bodies + i;
+                    if (hot->entity == Entity.Null)
+                    {
+                        continue;
+                    }
+
+                    EntityStorageInfo moved = manager.GetStorageInfo(hot->entity);
+                    if (moved.Chunk == slot.Chunk && moved.IndexInChunk == slot.IndexInChunk)
+                    {
+                        hot->pose = vacated->pose;
+                        hot->velocity = vacated->velocity;
+                        hot->mass = vacated->mass;
+                        hot->bodyMass = vacated->bodyMass;
+                        hot->damping = vacated->damping;
+                        hot->limits = vacated->limits;
+                        hot->sleep = vacated->sleep;
+                        hot->forces = vacated->forces;
+                        hot->target = vacated->target;
+                        hot->collider = vacated->collider;
+                        return;
+                    }
+                }
+            }
+        }
+
+        /// <summary>Marks every row current, after a structural change here that left none of them behind.</summary>
+        private static void StampAll()
+        {
+            int version = Version();
+            int worlds = NativeStore.RetooledPhysics_WorldCount();
+            for (int w = 0; w < worlds; w++)
+            {
+                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                for (uint i = 0; i < world->bodyCount; i++)
+                {
+                    NativeStore.BodyData* hot = world->bodies + i;
+                    if (hot->entity != Entity.Null)
+                    {
+                        hot->orderVersion = version;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// The order version of the body archetype: it moves when body entities are created, destroyed or given other
+        /// components, and other archetypes don't move it.
+        /// </summary>
+        private static int Version()
+        {
+            return Current.Data.Manager.GetComponentOrderVersion<BodyTarget>();
+        }
+
+        /// <summary>Makes a row's pointers current, if its body has an entity. Only the main thread can, as the remarks say.</summary>
         internal static void Refresh(NativeStore.BodyData* hot)
         {
-            if (hot->entity != Entity.Null && hot->orderVersion != Current.Data.Manager.EntityOrderVersion)
+            if (hot->entity == Entity.Null || hot->orderVersion == Version())
             {
-                Resolve(hot);
+                return;
             }
+
+            if (NativeStore.RetooledPhysics_OnMainThread() == 0)
+            {
+                return;
+            }
+
+            Resolve(hot);
         }
 
         /// <summary>
@@ -210,8 +305,8 @@ namespace KSP.Retooled.Physics
             hot->target = Pointer(manager.GetComponentDataRW<BodyTarget>(entity));
             hot->collider = Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity));
 
-            // Last, so that a query on a worker never sees a current version with old pointers.
-            hot->orderVersion = manager.EntityOrderVersion;
+            // Last, so that a worker never sees a current version with old pointers.
+            hot->orderVersion = Version();
         }
 
         private static T* Pointer<T>(RefRW<T> component)

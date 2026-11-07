@@ -287,6 +287,13 @@ namespace Retooled
         return static_cast<int32_t>(g_Worlds.size());
     }
 
+    // Whether the caller is the thread that attached. Unity sends some commands from job workers, and a Burst kernel has
+    // no other way to tell which thread it is on.
+    extern "C" UNITY_INTERFACE_EXPORT int32_t UNITY_INTERFACE_API RetooledPhysics_OnMainThread()
+    {
+        return std::this_thread::get_id() == g_MainThread ? 1 : 0;
+    }
+
     extern "C" UNITY_INTERFACE_EXPORT WorldData* UNITY_INTERFACE_API RetooledPhysics_GetWorld(int32_t index)
     {
         return &g_Worlds[index]->data;

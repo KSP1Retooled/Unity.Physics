@@ -50,8 +50,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Everything a shape command does. Shape commands arrive on the main thread outside a step. As with the query functions,
-    /// the plugin holds a Burst function pointer, and until the async compile delivers it is a stub running the same code in Mono.
+    /// Everything a shape command does. Shape commands arrive outside a step, mostly on the main thread: Unity asks for actor
+    /// descriptors and sets poses from job workers too, which read rows as <see cref="BodyEntities"/> left them. As with
+    /// the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a stub
+    /// running the same code in Mono.
     /// </summary>
     [BurstCompile]
     internal static unsafe class ShapeKernel
@@ -101,11 +103,12 @@ namespace KSP.Retooled.Physics
                     Destroy(shape, globals);
                     break;
                 case ShapeCommand.GetActorDescriptor:
+                    // Unity asks this from job workers while it fills in query hits.
                     a->pointer = shape->body;
                     if (shape->body != null)
                     {
                         a->pointer2 = shape->body->userData;
-                        a->mode = (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0 ? ActorStatic : ActorDynamic;
+                        a->mode = (StoreOps.Row(shape->body)->flags & NativeStore.BodyFlags.Static) != 0 ? ActorStatic : ActorDynamic;
                     }
 
                     break;

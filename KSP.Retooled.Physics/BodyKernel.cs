@@ -72,7 +72,8 @@ namespace KSP.Retooled.Physics
     /// </summary>
     /// <remarks>
     /// As with the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a
-    /// stub running the same code in Mono. Body commands arrive on the main thread outside a step.
+    /// stub running the same code in Mono. Body commands arrive outside a step, mostly on the main thread: Unity reads poses
+    /// from job workers too, which read rows as <see cref="BodyEntities"/> left them.
     /// </remarks>
     [BurstCompile]
     internal static unsafe class BodyKernel

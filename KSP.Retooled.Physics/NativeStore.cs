@@ -657,6 +657,10 @@ namespace KSP.Retooled.Physics
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
+        /// <summary>Non-zero on the thread that attached, which is the main thread.</summary>
+        [DllImport(Library)]
+        internal static extern int RetooledPhysics_OnMainThread();
+
         /// <summary>
         /// What stops this domain attaching, or null when nothing does: the first struct or command enum whose size differs
         /// from the plugin's, or a joint layout other than the one the store's records were written with.
