@@ -16,6 +16,11 @@ namespace KSP.Retooled.Physics
         private const int SolverIterations = 8;
         internal const int Substeps = 4;
 
+        // Below this many dynamic bodies a stage's parallel jobs cost more to run than they save. Measured on two craft: a
+        // step of 73 bodies is 12% faster in one job per stage, and one of 713 is 51% slower, mostly in the narrow phase
+        // and Jacobians. The value is interpolated between those two.
+        private const int MinParallelBodies = 128;
+
         private const int ParallelBatchSize = 64;
 
         // The write-back gives these bodies a pose other than their solved motion.
@@ -117,7 +122,8 @@ namespace KSP.Retooled.Physics
             BackendMarkers.StepSchedule.Begin();
             float3 gravity = float3.zero;
             JobHandle built = Build(deltaTime).Schedule();
-            built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, gravity, staticsChanged.AsReadOnly(), built);
+            bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;
+            built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, gravity, staticsChanged.AsReadOnly(), built, multiThreaded);
 
             directBodies.ResizeUninitialized(dynamicIndices.Length);
             new MarkDirectBodiesJob { Joints = builtJoints.AsArray(), Bodies = directBodies.AsArray() }.Run();
@@ -140,8 +146,8 @@ namespace KSP.Retooled.Physics
             };
 
             // These are ScheduleStepJobs' stages, with a gap after the narrow phase for what the contacts decide.
-            built = simulation.ScheduleBroadphaseJobs(input, built).FinalExecutionHandle;
-            built = simulation.ScheduleNarrowphaseJobs(input, built).FinalExecutionHandle;
+            built = simulation.ScheduleBroadphaseJobs(input, built, multiThreaded).FinalExecutionHandle;
+            built = simulation.ScheduleNarrowphaseJobs(input, built, multiThreaded).FinalExecutionHandle;
 
             // Jobs wait in a batch until something flushes it, so without this the workers sit idle through the scheduling below.
             JobHandle.ScheduleBatchedJobs();
@@ -173,7 +179,7 @@ namespace KSP.Retooled.Physics
             }.Schedule(built);
 
             built = new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
-            built = simulation.ScheduleCreateJacobiansJobs(input, built).FinalExecutionHandle;
+            built = simulation.ScheduleCreateJacobiansJobs(input, built, multiThreaded).FinalExecutionHandle;
             built = new WarmStartJob
             {
                 WarmStarts = warmStarts,
@@ -190,7 +196,7 @@ namespace KSP.Retooled.Physics
             using (BackendMarkers.StepScheduleSolve.Auto())
             {
                 input.SkipDirectCoupling = !directBodyTouched.Value;
-                simulation.ScheduleSolveAndIntegrateJobs(input, built);
+                simulation.ScheduleSolveAndIntegrateJobs(input, built, multiThreaded);
             }
 
             using (BackendMarkers.StepWaitForSolve.Auto())
@@ -271,7 +277,8 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             RefreshColliders();
             JobHandle built = Build(0.0f).Schedule();
-            world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built).Complete();
+            bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;
+            world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, multiThreaded).Complete();
             PublishQueryWorld();
             return NativeStore.QueryWorldBuilt;
         }
