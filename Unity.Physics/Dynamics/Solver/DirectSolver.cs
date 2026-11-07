@@ -1004,6 +1004,7 @@ namespace Unity.Physics
             var solver = new SparseConstraintSolver(Allocator.Temp);
             solver.Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
             solver.Dispose();
+            SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
 
             for (int row = 0; row < rows; row++)
             {

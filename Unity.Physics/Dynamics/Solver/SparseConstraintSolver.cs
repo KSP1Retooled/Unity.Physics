@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Profiling;
+using Unity.Profiling.LowLevel.Unsafe;
 
 namespace Unity.Physics
 {
@@ -78,13 +79,22 @@ namespace Unity.Physics
             public byte* InitialStates;
         }
 
-        /// <summary>The size of a solve, which unlike its time doesn't depend on the machine.</summary>
+        /// <summary>
+        /// The size of a solve, which doesn't depend on the machine, and its time by stage. Times are in the units of
+        /// <see cref="ProfilerUnsafeUtility.Timestamp"/>.
+        /// </summary>
         public struct Statistics
         {
             public int Nodes;
             public int FactorBlocks;
             public long FactorScalars;
             public int PivotingIterations;
+
+            public long AnalyzeTime;
+            public long AssembleTime;
+            public long FactorizeTime;
+            public long SubstituteTime;
+            public long PivotTime;
         }
 
         static readonly ProfilerMarker AnalyzeMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Analyze");
@@ -166,7 +176,10 @@ namespace Unity.Physics
         /// </summary>
         public bool Solve(in Problem problem, float* impulses, bool bounded)
         {
+            long started = ProfilerUnsafeUtility.Timestamp;
             Analyze(problem);
+            statistics.AnalyzeTime = Lap(ref started);
+
             state.Clear();
             state.Resize(problem.RowCount, NativeArrayOptions.ClearMemory);
             if (bounded && problem.InitialStates != null)
@@ -191,16 +204,21 @@ namespace Unity.Physics
             for (int iteration = 1; iteration <= MaxPivotingIterations; iteration++)
             {
                 statistics.PivotingIterations = iteration;
+                started = ProfilerUnsafeUtility.Timestamp;
                 Assemble(problem);
+                statistics.AssembleTime += Lap(ref started);
                 Factorize();
+                statistics.FactorizeTime += Lap(ref started);
                 Substitute();
                 ReadImpulses(problem, impulses);
+                statistics.SubstituteTime += Lap(ref started);
                 if (!bounded)
                 {
                     return true;
                 }
 
                 int infeasible = Pivot(problem, impulses, flipAll);
+                statistics.PivotTime += Lap(ref started);
                 if (infeasible == 0)
                 {
                     return true;
@@ -226,6 +244,14 @@ namespace Unity.Physics
             }
 
             return false;
+        }
+
+        static long Lap(ref long started)
+        {
+            long now = ProfilerUnsafeUtility.Timestamp;
+            long elapsed = now - started;
+            started = now;
+            return elapsed;
         }
 
         // Structure
