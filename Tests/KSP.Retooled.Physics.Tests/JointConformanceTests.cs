@@ -207,6 +207,26 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void ADriveWithNoForceDoesNothing()
+        {
+            Rigidbody body = Weightless(Vector3.zero);
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+            joint.xMotion = ConfigurableJointMotion.Free;
+            joint.angularXMotion = ConfigurableJointMotion.Free;
+            JointDrive drive = new JointDrive { positionSpring = 1e6f, positionDamper = 1e3f, maximumForce = 0.0f };
+            joint.xDrive = drive;
+            joint.angularXDrive = drive;
+            joint.rotationDriveMode = RotationDriveMode.XYAndZ;
+            body.linearVelocity = new Vector3(2.0f, 0.0f, 0.0f);
+            body.angularVelocity = new Vector3(3.0f, 0.0f, 0.0f);
+
+            Simulate(25);
+
+            Assert.That(body.linearVelocity.x, Is.EqualTo(2.0f).Within(0.01f));
+            Assert.That(body.angularVelocity.x, Is.EqualTo(3.0f).Within(0.01f));
+        }
+
+        [Test]
         public void AngularDriveSettlesAtItsTargetRotation()
         {
             foreach (RotationDriveMode mode in new[] { RotationDriveMode.XYAndZ, RotationDriveMode.Slerp })

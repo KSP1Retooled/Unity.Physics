@@ -364,7 +364,7 @@ namespace KSP.Retooled.PhysicsBackend
             for (int i = 0; i < 3; i++)
             {
                 NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i);
-                if (axis->dofLock == NativeStore.DofLocked || HeldByDrive(joint, i) || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
+                if (axis->dofLock == NativeStore.DofLocked || HeldByDrive(joint, i) || axis->driveMaxForce <= 0.0f || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
                 {
                     continue;
                 }
@@ -420,7 +420,7 @@ namespace KSP.Retooled.PhysicsBackend
 
         private void AddAxisDrive(NativeStore.JointData* joint, int index, NativeStore.JointAxis* drive)
         {
-            if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + index)->dofLock == NativeStore.DofLocked)
+            if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + index)->dofLock == NativeStore.DofLocked || drive->driveMaxForce <= 0.0f)
             {
                 return;
             }
