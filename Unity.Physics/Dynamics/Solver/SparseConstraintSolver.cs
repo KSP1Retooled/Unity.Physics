@@ -34,6 +34,11 @@ namespace Unity.Physics
         const int MaxPivotingIterations = 200;
         const int MaxBlockIterationsWithoutProgress = 3;
         const double SmallestPivot = 1e-30;
+        const int InitialCapacity = 16;
+
+        /// <summary>How close a refined answer has to come, in m/s or rad/s at any body or row.</summary>
+        const double RefinementTolerance = 1e-5;
+        const int MaxRefinements = 3;
 
         /// <summary>A body's mass matrix, with its inertia in the same frame as the Jacobian's angular columns.</summary>
         public struct Body
@@ -89,6 +94,11 @@ namespace Unity.Physics
             public int FactorBlocks;
             public long FactorScalars;
             public int PivotingIterations;
+            public int Factorizations;
+            public int Refinements;
+
+            /// <summary>What a reused factorization's answer finally missed by, in m/s or rad/s.</summary>
+            public double Residual;
 
             public long AnalyzeTime;
             public long AssembleTime;
@@ -135,26 +145,43 @@ namespace Unity.Physics
             public int Offset;
         }
 
-        NativeList<Node> nodes;
-        NativeList<int> order;
-        NativeList<Neighbour> neighbours;
-        NativeList<int> rowNode;
-        NativeList<int> rowInNode;
-        NativeList<double> factor;
-        NativeList<double> solution;
-        NativeList<byte> state;
+        UnsafeList<Node> nodes;
+        UnsafeList<int> order;
+        UnsafeList<Neighbour> neighbours;
+        UnsafeList<int> rowNode;
+        UnsafeList<int> rowInNode;
+        UnsafeList<double> factor;
+        UnsafeList<double> right;
+        UnsafeList<double> solution;
+        UnsafeList<double> correction;
+        UnsafeList<byte> state;
+
+        // The shape of the problem the structure above belongs to.
+        UnsafeList<ConstraintBlock> analyzedBlocks;
+        int analyzedBodies;
+        bool analyzedBounded;
+
+        // Whether factor holds a factorization of a recent problem of this shape, for the current state.
+        bool factored;
+
         Statistics statistics;
 
         public SparseConstraintSolver(Allocator allocator)
         {
-            nodes = new NativeList<Node>(allocator);
-            order = new NativeList<int>(allocator);
-            neighbours = new NativeList<Neighbour>(allocator);
-            rowNode = new NativeList<int>(allocator);
-            rowInNode = new NativeList<int>(allocator);
-            factor = new NativeList<double>(allocator);
-            solution = new NativeList<double>(allocator);
-            state = new NativeList<byte>(allocator);
+            nodes = new UnsafeList<Node>(InitialCapacity, allocator);
+            order = new UnsafeList<int>(InitialCapacity, allocator);
+            neighbours = new UnsafeList<Neighbour>(InitialCapacity, allocator);
+            rowNode = new UnsafeList<int>(InitialCapacity, allocator);
+            rowInNode = new UnsafeList<int>(InitialCapacity, allocator);
+            factor = new UnsafeList<double>(InitialCapacity, allocator);
+            right = new UnsafeList<double>(InitialCapacity, allocator);
+            solution = new UnsafeList<double>(InitialCapacity, allocator);
+            correction = new UnsafeList<double>(InitialCapacity, allocator);
+            state = new UnsafeList<byte>(InitialCapacity, allocator);
+            analyzedBlocks = new UnsafeList<ConstraintBlock>(InitialCapacity, allocator);
+            analyzedBodies = -1;
+            analyzedBounded = false;
+            factored = false;
             statistics = default;
         }
 
@@ -166,8 +193,11 @@ namespace Unity.Physics
             rowNode.Dispose();
             rowInNode.Dispose();
             factor.Dispose();
+            right.Dispose();
             solution.Dispose();
+            correction.Dispose();
             state.Dispose();
+            analyzedBlocks.Dispose();
         }
 
         public Statistics Stats => statistics;
@@ -175,29 +205,33 @@ namespace Unity.Physics
         /// <summary>
         /// Writes each row's impulse to <paramref name="impulses"/>. With <paramref name="bounded"/> false the bounds are
         /// ignored. Returns false if pivoting ran out of iterations, leaving the last impulses clamped to their bounds.
+        ///
+        /// A solver kept between calls reuses its work. Bodies barely move from one solve to the next, so the last factorization
+        /// is nearly right for the next problem of the same shape, and iterative refinement closes the gap for a fraction of the
+        /// cost of a new one. The answer is checked against the problem it is for, so a factorization too old to help costs a
+        /// little time and never accuracy.
         /// </summary>
         public bool Solve(in Problem problem, float* impulses, bool bounded)
         {
-            long started = ProfilerUnsafeUtility.Timestamp;
-            Analyze(problem, bounded);
-            statistics.AnalyzeTime = Lap(ref started);
-
-            state.Clear();
-            state.Resize(problem.RowCount, NativeArrayOptions.ClearMemory);
-            if (bounded && problem.InitialStates != null)
+            statistics = new Statistics
             {
-                UnsafeUtility.MemCpy(state.GetUnsafePtr(), problem.InitialStates, problem.RowCount);
+                Nodes = statistics.Nodes,
+                FactorBlocks = statistics.FactorBlocks,
+                FactorScalars = statistics.FactorScalars,
+            };
+
+            long started = ProfilerUnsafeUtility.Timestamp;
+            if (!HasAnalyzedShape(problem, bounded))
+            {
+                Analyze(problem, bounded);
+                factored = false;
             }
 
-            if (bounded)
+            statistics.AnalyzeTime = Lap(ref started);
+
+            if (!factored)
             {
-                for (int row = 0; row < problem.RowCount; row++)
-                {
-                    if (problem.Lower[row] == problem.Upper[row])
-                    {
-                        state[row] = LowerTight;
-                    }
-                }
+                SetInitialState(problem, bounded);
             }
 
             int leastInfeasible = int.MaxValue;
@@ -207,11 +241,23 @@ namespace Unity.Physics
             {
                 statistics.PivotingIterations = iteration;
                 started = ProfilerUnsafeUtility.Timestamp;
-                Assemble(problem);
+                AssembleRightHandSide(problem);
                 statistics.AssembleTime += Lap(ref started);
-                Factorize();
-                statistics.FactorizeTime += Lap(ref started);
-                Substitute();
+
+                bool solved = factored && SolveWithOldFactor(problem);
+                statistics.SubstituteTime += Lap(ref started);
+                if (!solved)
+                {
+                    AssembleMatrix(problem);
+                    statistics.AssembleTime += Lap(ref started);
+                    Factorize();
+                    factored = true;
+                    statistics.Factorizations++;
+                    statistics.FactorizeTime += Lap(ref started);
+                    UnsafeUtility.MemCpy(solution.Ptr, right.Ptr, solution.Length * sizeof(double));
+                    Substitute(solution.Ptr);
+                }
+
                 ReadImpulses(problem, impulses);
                 statistics.SubstituteTime += Lap(ref started);
                 if (!bounded)
@@ -225,6 +271,9 @@ namespace Unity.Physics
                 {
                     return true;
                 }
+
+                // A row that changed sides changed the matrix.
+                factored = false;
 
                 // Flipping every infeasible row usually lands in a few steps but can cycle. A run that stops improving falls
                 // back to Murty's rule, which flips only the last of them and is guaranteed to finish.
@@ -256,7 +305,58 @@ namespace Unity.Physics
             return elapsed;
         }
 
+        void SetInitialState(in Problem problem, bool bounded)
+        {
+            state.Clear();
+            state.Resize(problem.RowCount, NativeArrayOptions.ClearMemory);
+            if (!bounded)
+            {
+                return;
+            }
+
+            if (problem.InitialStates != null)
+            {
+                UnsafeUtility.MemCpy(state.Ptr, problem.InitialStates, problem.RowCount);
+            }
+
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (problem.Lower[row] == problem.Upper[row])
+                {
+                    state[row] = LowerTight;
+                }
+            }
+        }
+
         // Structure
+
+        /// <summary>Whether the nodes and their order from the last analysis fit this problem.</summary>
+        bool HasAnalyzedShape(in Problem problem, bool bounded)
+        {
+            if (problem.BodyCount != analyzedBodies || bounded != analyzedBounded || problem.RowCount != rowNode.Length
+                || problem.BlockCount != analyzedBlocks.Length)
+            {
+                return false;
+            }
+
+            if (UnsafeUtility.MemCmp(problem.Blocks, analyzedBlocks.Ptr, problem.BlockCount * sizeof(ConstraintBlock)) != 0)
+            {
+                return false;
+            }
+
+            if (bounded)
+            {
+                for (int row = 0; row < problem.RowCount; row++)
+                {
+                    if ((problem.Lower[row] == problem.Upper[row]) != (rowNode[row] == NoNode))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
 
         void Analyze(in Problem problem, bool bounded)
         {
@@ -272,6 +372,11 @@ namespace Unity.Physics
             Order();
             LayOut();
 
+            analyzedBodies = problem.BodyCount;
+            analyzedBounded = bounded;
+            analyzedBlocks.Resize(problem.BlockCount);
+            UnsafeUtility.MemCpy(analyzedBlocks.Ptr, problem.Blocks, problem.BlockCount * sizeof(ConstraintBlock));
+
             statistics.Nodes = nodes.Length;
             statistics.FactorBlocks = neighbours.Length;
             statistics.FactorScalars = factor.Length;
@@ -284,8 +389,8 @@ namespace Unity.Physics
         /// </summary>
         void MergeBlocksByBodyPair(in Problem problem, bool bounded)
         {
-            rowNode.ResizeUninitialized(problem.RowCount);
-            rowInNode.ResizeUninitialized(problem.RowCount);
+            rowNode.Resize(problem.RowCount);
+            rowInNode.Resize(problem.RowCount);
 
             var pairs = new NativeHashMap<long, int>(problem.BlockCount, Allocator.Temp);
             for (int b = 0; b < problem.BlockCount; b++)
@@ -438,7 +543,7 @@ namespace Unity.Physics
                 node.Diagonal = offset;
                 offset += node.Size * node.Size;
 
-                Neighbour* column = neighbours.GetUnsafePtr() + node.FirstNeighbour;
+                Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
                 for (int i = 1; i < node.NeighbourCount; i++)
                 {
                     Neighbour moving = column[i];
@@ -460,8 +565,10 @@ namespace Unity.Physics
                 }
             }
 
-            factor.ResizeUninitialized(offset);
-            solution.ResizeUninitialized(start);
+            factor.Resize(offset);
+            right.Resize(start);
+            solution.Resize(start);
+            correction.Resize(start);
         }
 
         /// <summary>Where the block between two nodes is, which only the earlier of them holds.</summary>
@@ -469,7 +576,7 @@ namespace Unity.Physics
         {
             Node column = nodes[earlier];
             int laterPosition = nodes[later].Position;
-            Neighbour* list = neighbours.GetUnsafePtr() + column.FirstNeighbour;
+            Neighbour* list = neighbours.Ptr + column.FirstNeighbour;
             int low = 0;
             int high = column.NeighbourCount - 1;
             while (low < high)
@@ -485,23 +592,21 @@ namespace Unity.Physics
                 }
             }
 
-            return factor.GetUnsafePtr() + list[low].Offset;
+            return factor.Ptr + list[low].Offset;
         }
 
         // Values
 
         /// <summary>
-        /// Fills in the matrix and right-hand side for the current bounds. A row at a bound becomes -z = bound, cut off from
-        /// the bodies, whose side of the system takes its fixed impulse instead.
+        /// Fills in the matrix for the current bounds. A row at a bound becomes -z = bound, cut off from the bodies, whose side
+        /// of the system takes its fixed impulse instead.
         /// </summary>
-        void Assemble(in Problem problem)
+        void AssembleMatrix(in Problem problem)
         {
             using ProfilerMarker.AutoScope span = AssembleMarker.Auto();
 
-            double* values = factor.GetUnsafePtr();
-            double* right = solution.GetUnsafePtr();
+            double* values = factor.Ptr;
             UnsafeUtility.MemClear(values, factor.Length * sizeof(double));
-            UnsafeUtility.MemClear(right, solution.Length * sizeof(double));
 
             for (int body = 0; body < problem.BodyCount; body++)
             {
@@ -524,35 +629,147 @@ namespace Unity.Physics
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
                     int constraint = rowNode[row];
-                    float* jacobian = problem.Jacobian + row * ColumnsPerRow;
-                    byte rowState = state[row];
                     if (constraint == NoNode)
                     {
-                        double known = problem.Lower[row];
-                        AddToBody(block.BodyA, jacobian, known);
-                        AddToBody(block.BodyB, jacobian + SideColumns, known);
                         continue;
                     }
 
                     int index = rowInNode[row];
                     Node node = nodes[constraint];
-                    if (rowState == Free)
+                    float* jacobian = problem.Jacobian + row * ColumnsPerRow;
+                    if (state[row] == Free)
                     {
                         values[node.Diagonal + index * node.Size + index] = -problem.Epsilon[row];
-                        right[node.Start + index] = problem.RightHandSide[row];
                         WriteJacobian(constraint, index, block.BodyA, jacobian);
                         WriteJacobian(constraint, index, block.BodyB, jacobian + SideColumns);
                     }
                     else
                     {
-                        double bound = rowState == LowerTight ? problem.Lower[row] : problem.Upper[row];
                         values[node.Diagonal + index * node.Size + index] = -1.0;
-                        right[node.Start + index] = bound;
-                        AddToBody(block.BodyA, jacobian, bound);
-                        AddToBody(block.BodyB, jacobian + SideColumns, bound);
                     }
                 }
             }
+        }
+
+        void AssembleRightHandSide(in Problem problem)
+        {
+            double* target = right.Ptr;
+            UnsafeUtility.MemClear(target, right.Length * sizeof(double));
+
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                ConstraintBlock block = problem.Blocks[b];
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    int constraint = rowNode[row];
+                    byte rowState = state[row];
+                    if (constraint != NoNode && rowState == Free)
+                    {
+                        target[nodes[constraint].Start + rowInNode[row]] = problem.RightHandSide[row];
+                        continue;
+                    }
+
+                    double bound = rowState == UpperTight ? problem.Upper[row] : problem.Lower[row];
+                    float* jacobian = problem.Jacobian + row * ColumnsPerRow;
+                    AddToBody(block.BodyA, jacobian, bound, target);
+                    AddToBody(block.BodyB, jacobian + SideColumns, bound, target);
+                    if (constraint != NoNode)
+                    {
+                        target[nodes[constraint].Start + rowInNode[row]] = bound;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Solves the assembled right-hand side with the factorization of an earlier problem, refining until the answer holds
+        /// for this one. Returns false if it won't, and the factorization has grown too old.
+        /// </summary>
+        bool SolveWithOldFactor(in Problem problem)
+        {
+            double* x = solution.Ptr;
+            double* step = correction.Ptr;
+            UnsafeUtility.MemCpy(x, right.Ptr, solution.Length * sizeof(double));
+            Substitute(x);
+
+            for (int refinement = 0; ; refinement++)
+            {
+                statistics.Residual = ComputeResidual(problem);
+                if (statistics.Residual < RefinementTolerance)
+                {
+                    return true;
+                }
+
+                if (refinement == MaxRefinements)
+                {
+                    return false;
+                }
+
+                statistics.Refinements++;
+                Substitute(step);
+                for (int i = 0; i < solution.Length; i++)
+                {
+                    x[i] += step[i];
+                }
+            }
+        }
+
+        /// <summary>
+        /// Leaves in <see cref="correction"/> what the current solution misses of the current problem, and returns the largest
+        /// miss as a speed: a body's miss is an impulse, which its mass turns into one, and a constraint's already is.
+        /// </summary>
+        double ComputeResidual(in Problem problem)
+        {
+            double* x = solution.Ptr;
+            double* residual = correction.Ptr;
+            UnsafeUtility.MemCpy(residual, right.Ptr, correction.Length * sizeof(double));
+
+            double worst = 0.0;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                ConstraintBlock block = problem.Blocks[b];
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    int constraint = rowNode[row];
+                    if (constraint == NoNode)
+                    {
+                        continue;
+                    }
+
+                    int own = nodes[constraint].Start + rowInNode[row];
+                    if (state[row] != Free)
+                    {
+                        residual[own] += x[own];
+                        continue;
+                    }
+
+                    float* jacobian = problem.Jacobian + row * ColumnsPerRow;
+                    residual[own] += problem.Epsilon[row] * x[own]
+                        - BodySpeed(block.BodyA, jacobian) - BodySpeed(block.BodyB, jacobian + SideColumns);
+                    worst = math.max(worst, math.abs(residual[own]));
+                    AddToBody(block.BodyA, jacobian, -x[own], residual);
+                    AddToBody(block.BodyB, jacobian + SideColumns, -x[own], residual);
+                }
+            }
+
+            for (int body = 0; body < problem.BodyCount; body++)
+            {
+                int start = nodes[body].Start;
+                double* speed = x + start;
+                double* miss = residual + start;
+                Body source = problem.Bodies[body];
+                double3 momentum = math.mul(source.Inertia, new double3(speed[3], speed[4], speed[5]));
+                double smallestInertia = math.min(source.Inertia.c0.x, math.min(source.Inertia.c1.y, source.Inertia.c2.z));
+                for (int i = 0; i < 3; i++)
+                {
+                    miss[i] -= source.Mass * speed[i];
+                    miss[i + 3] -= momentum[i];
+                    worst = math.max(worst, math.abs(miss[i]) / source.Mass);
+                    worst = math.max(worst, math.abs(miss[i + 3]) / smallestInertia);
+                }
+            }
+
+            return worst;
         }
 
         void WriteJacobian(int constraint, int index, int body, float* columns)
@@ -581,17 +798,17 @@ namespace Unity.Physics
             }
         }
 
-        void AddToBody(int body, float* columns, double bound)
+        void AddToBody(int body, float* columns, double impulse, double* target)
         {
             if (body < 0)
             {
                 return;
             }
 
-            double* right = solution.GetUnsafePtr() + nodes[body].Start;
+            double* own = target + nodes[body].Start;
             for (int column = 0; column < SideColumns; column++)
             {
-                right[column] += columns[column] * bound;
+                own[column] += columns[column] * impulse;
             }
         }
 
@@ -603,8 +820,8 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = FactorizeMarker.Auto();
 
-            double* values = factor.GetUnsafePtr();
-            Neighbour* allNeighbours = neighbours.GetUnsafePtr();
+            double* values = factor.Ptr;
+            Neighbour* allNeighbours = neighbours.Ptr;
             for (int position = 0; position < order.Length; position++)
             {
                 Node node = nodes[order[position]];
@@ -706,13 +923,12 @@ namespace Unity.Physics
         }
 
         /// <summary>Solves in place: forward through L, across S, and back through L^t.</summary>
-        void Substitute()
+        void Substitute(double* x)
         {
             using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
 
-            double* values = factor.GetUnsafePtr();
-            double* x = solution.GetUnsafePtr();
-            Neighbour* allNeighbours = neighbours.GetUnsafePtr();
+            double* values = factor.Ptr;
+            Neighbour* allNeighbours = neighbours.Ptr;
 
             for (int position = 0; position < order.Length; position++)
             {
@@ -792,7 +1008,7 @@ namespace Unity.Physics
 
         void ReadImpulses(in Problem problem, float* impulses)
         {
-            double* x = solution.GetUnsafePtr();
+            double* x = solution.Ptr;
             for (int row = 0; row < problem.RowCount; row++)
             {
                 byte rowState = state[row];
@@ -882,7 +1098,7 @@ namespace Unity.Physics
                 return 0.0;
             }
 
-            double* du = solution.GetUnsafePtr() + nodes[body].Start;
+            double* du = solution.Ptr + nodes[body].Start;
             double sum = 0.0;
             for (int column = 0; column < SideColumns; column++)
             {

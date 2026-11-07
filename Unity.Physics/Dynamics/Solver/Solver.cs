@@ -194,6 +194,8 @@ namespace Unity.Physics
             public DirectSolverSettings DirectSolverSettings;
             /// <summary> See <see cref="SimulationStepInput.SkipDirectCoupling"/>. </summary>
             public bool SkipDirectCoupling;
+            /// <summary> See <see cref="SimulationStepInput.DirectSolverCache"/>. </summary>
+            public DirectSolverCache DirectSolverCache;
             /// <summary> The current substep. Is -1 when uninitialized. </summary>
             public int CurrentSubstep;
             /// <summary> The current solver iteration. Is -1 when uninitialized. </summary>

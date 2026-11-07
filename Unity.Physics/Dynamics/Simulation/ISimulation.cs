@@ -52,6 +52,12 @@ namespace Unity.Physics
         /// </summary>
         public bool SkipDirectCoupling;
 
+        /// <summary>
+        /// Lets the direct solver keep its work from one solve to the next. It belongs to the caller, and a default one means
+        /// nothing is kept.
+        /// </summary>
+        public DirectSolverCache DirectSolverCache;
+
         /// <summary>   Maximum relative velocity that can be produced when separating intersecting dynamic rigid bodies. </summary>
         public float MaxDynamicDepenetrationVelocity;
 

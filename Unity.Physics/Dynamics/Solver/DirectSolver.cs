@@ -1001,9 +1001,18 @@ namespace Unity.Physics
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
             };
 
-            var solver = new SparseConstraintSolver(Allocator.Temp);
-            solver.Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
-            solver.Dispose();
+            SparseConstraintSolver* kept = stepInput.DirectSolverCache.Solver(islandIndex);
+            if (kept != null)
+            {
+                kept->Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+            }
+            else
+            {
+                var solver = new SparseConstraintSolver(Allocator.Temp);
+                solver.Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+                solver.Dispose();
+            }
+
             SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
 
             for (int row = 0; row < rows; row++)
