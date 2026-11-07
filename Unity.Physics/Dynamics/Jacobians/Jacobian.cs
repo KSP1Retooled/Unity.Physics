@@ -175,6 +175,9 @@ namespace Unity.Physics
         {
             public float Epsilon;
             public float Gamma;
+
+            /// <summary> The constraint is as stiff as the direct solver lets one be, rather than a spring. </summary>
+            public bool Hard;
         }
 
         // Update the MotionData of the Jacobians when substepping. This is used when there are more than one substeps,
@@ -720,6 +723,7 @@ namespace Unity.Physics
             {
                 Epsilon = epsilon,
                 Gamma = gamma,
+                Hard = stiffnessCoefficient >= directSolverSettings.MaximumJointStiffness,
             };
         }
 

@@ -767,6 +767,74 @@ namespace Unity.Physics
             eps[startRow] = jointRegularizationData.Epsilon;
         }
 
+        /// <summary> Arming a row this far inside a limit stops a body resting on it from switching the row on and off. </summary>
+        const float LimitArmingMargin = 0.001f;
+
+        /// <summary>
+        /// Picks the bound a linear limit's row acts on this substep and returns its \gamma * \phi(q_)/dt term for the right
+        /// hand side. A hard limit is armed when the substep would reach it, with its gap as the target, so that a body stops
+        /// on the limit. A row armed only past the limit takes all the speed off and then pushes back at its correction
+        /// velocity, which nothing takes off again once the body is inside, so the body leaves the limit. A soft limit is a
+        /// spring, which has nothing to do until the limit is passed.
+        /// </summary>
+        static float SetLinearLimitRow(float distance, float minimum, float maximum, float rate,
+            in JacobianHeader.DirectSolverRegularizationData regularization, float timestep, int row,
+            in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP)
+        {
+            float reach = regularization.Hard ? distance + rate * timestep : distance;
+            float margin = regularization.Hard ? LimitArmingMargin : 0.0f;
+
+            isLCP = true;
+            float error;
+            if (reach > maximum - margin)
+            {
+                error = distance - maximum;
+                u[row] = 0;
+            }
+            else if (reach < minimum + margin)
+            {
+                error = distance - minimum;
+                l[row] = 0;
+            }
+            else
+            {
+                // disable the row.
+                // @todo direct solver (DOTS-11060): completely discard row instead by reducing
+                // row count and using SubMatrix of system matrix for solve. This also doesn't
+                // force use of the LCP solver.
+                l[row] = 0;
+                u[row] = 0;
+                indexSetArray[row] = LCP.MLCPIndexFlag.LowerTight;
+                return 0.0f;
+            }
+
+            // A gap is closed whole: any less would brake the body on its way to the limit.
+            bool inside = distance >= minimum && distance <= maximum;
+            return -((inside ? 1.0f : regularization.Gamma) / timestep) * error;
+        }
+
+        /// <summary> How fast a row's constraint function is changing at the bodies' current velocities. </summary>
+        static unsafe float RowRate(in NativeList<Vector> JArray, int row, int bodyIndexA, int bodyIndexB,
+            bool bodyAIsDynamic, bool bodyBIsDynamic, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas)
+        {
+            const int startColumnA = 0;
+            const int startColumnB = 6;
+
+            float rate = 0.0f;
+            if (bodyAIsDynamic)
+            {
+                ComputeRHSGImpulse(JArray, motionVelocities[bodyIndexA], motionDatas[bodyIndexA], row, startColumnA, 1, &rate);
+            }
+
+            if (bodyBIsDynamic)
+            {
+                ComputeRHSGImpulse(JArray, motionVelocities[bodyIndexB], motionDatas[bodyIndexB], row, startColumnB, 1, &rate);
+            }
+
+            return rate;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void ComputeInertiaTensor(in MotionVelocity motionVelocity, in MotionData motionData, float timestep,
             bool enableGyroscopicTorque, out float3x3 I, out float3x3 invI)
@@ -1695,37 +1763,7 @@ namespace Unity.Physics
                                             n_B = direction;
                                         }
 
-                                        var phi_0 = 0f;
                                         var currentDistance = math.mul(d_AB, n_B);
-                                        if (math.abs(limitJacobian.MinDistance - limitJacobian.MaxDistance) < math.EPSILON)
-                                        {
-                                            phi_0 = currentDistance - limitJacobian.MaxDistance;
-                                        }
-                                        else if (currentDistance > limitJacobian.MaxDistance)
-                                        {
-                                            phi_0 = currentDistance - limitJacobian.MaxDistance;
-
-                                            u[startRow] = 0;
-                                            isLCP = true;
-                                        }
-                                        else if (currentDistance < limitJacobian.MinDistance)
-                                        {
-                                            phi_0 = currentDistance - limitJacobian.MinDistance;
-
-                                            l[startRow] = 0;
-                                            isLCP = true;
-                                        }
-                                        else
-                                        {
-                                            // disable the row.
-                                            // @todo direct solver (DOTS-11060): completely discard row instead by reducing
-                                            // row count and using SubMatrix of system matrix for solve. This also doesn't
-                                            // force use of the LCP solver.
-                                            l[startRow] = 0;
-                                            u[startRow] = 0;
-                                            indexSetArray[startRow] = LCP.MLCPIndexFlag.LowerTight;
-                                            isLCP = true;
-                                        }
 
                                         if (!bodyAIsStatic)
                                         {
@@ -1751,7 +1789,22 @@ namespace Unity.Physics
                                         // Assemble right hand side (rhs):
 
                                         // Constraint error and gamma term:
-                                        var gamma_phi_0 = -(jointRegularizationData.Gamma / stepInput.Timestep) * phi_0;
+                                        float gamma_phi_0;
+                                        if (math.abs(limitJacobian.MinDistance - limitJacobian.MaxDistance) < math.EPSILON)
+                                        {
+                                            gamma_phi_0 = -(jointRegularizationData.Gamma / stepInput.Timestep) *
+                                                (currentDistance - limitJacobian.MaxDistance);
+                                        }
+                                        else
+                                        {
+                                            float rate = RowRate(JArray, startRow, ixBodyA, ixBodyB,
+                                                !bodyAIsStatic && !bodyAIsKinematic, !bodyBIsStatic && !bodyBIsKinematic,
+                                                motionVelocities, motionDatas);
+
+                                            gamma_phi_0 = SetLinearLimitRow(currentDistance, limitJacobian.MinDistance,
+                                                limitJacobian.MaxDistance, rate, jointRegularizationData, stepInput.Timestep,
+                                                startRow, in l, in u, ref indexSetArray, ref isLCP);
+                                        }
 
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt.
