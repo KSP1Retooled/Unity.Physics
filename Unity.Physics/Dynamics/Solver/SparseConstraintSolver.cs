@@ -97,11 +97,11 @@ namespace Unity.Physics
             public long PivotTime;
         }
 
-        static readonly ProfilerMarker AnalyzeMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Analyze");
-        static readonly ProfilerMarker AssembleMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Assemble");
-        static readonly ProfilerMarker FactorizeMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Factorize");
-        static readonly ProfilerMarker SubstituteMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Substitute");
-        static readonly ProfilerMarker PivotMarker = new ProfilerMarker(ProfilerCategory.Physics, "SparseConstraintSolver.Pivot");
+        static readonly ProfilerMarker AnalyzeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Analyze");
+        static readonly ProfilerMarker AssembleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Assemble");
+        static readonly ProfilerMarker FactorizeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Factorize");
+        static readonly ProfilerMarker SubstituteMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Substitute");
+        static readonly ProfilerMarker PivotMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Pivot");
 
         const byte Free = 0;
         const byte LowerTight = 1;

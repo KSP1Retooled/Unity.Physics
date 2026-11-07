@@ -927,7 +927,7 @@ namespace Unity.Physics
             motionVelocities[bodyIndex] = vel;
         }
 
-        static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "DirectSolver.SolveSparsely");
+        static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Solve");
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
