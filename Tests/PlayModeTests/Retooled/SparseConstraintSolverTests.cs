@@ -1,0 +1,500 @@
+using System.Collections.Generic;
+using NUnit.Framework;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
+using Unity.Numerics.Linear;
+using Unity.Numerics.Linear.Dense.Primitives;
+using Unity.Numerics.Memory;
+using Unity.Physics;
+
+namespace KSP.Retooled.PhysicsBackend.Tests
+{
+    /// <summary>
+    /// The sparse solver against two things that don't share its code: the package's dense complementarity solver, and the
+    /// definition of a solution checked row by row on a matrix formed here. Sizes of the factor are exact counts.
+    /// </summary>
+    public unsafe class SparseConstraintSolverTests
+    {
+        private const int Columns = SparseConstraintSolver.ColumnsPerRow;
+
+        /// <summary>A problem in managed lists, with a dense copy of what it means.</summary>
+        private sealed class Scenario
+        {
+            public readonly List<SparseConstraintSolver.Body> Bodies = new List<SparseConstraintSolver.Body>();
+            public readonly List<double> InverseMasses = new List<double>();
+            public readonly List<double3x3> InverseInertias = new List<double3x3>();
+            public readonly List<SparseConstraintSolver.ConstraintBlock> Blocks = new List<SparseConstraintSolver.ConstraintBlock>();
+            public readonly List<float> Jacobian = new List<float>();
+            public readonly List<float> Epsilon = new List<float>();
+            public readonly List<float> RightHandSide = new List<float>();
+            public readonly List<float> Lower = new List<float>();
+            public readonly List<float> Upper = new List<float>();
+
+            private Random random;
+
+            public Scenario(uint seed)
+            {
+                random = new Random(seed);
+            }
+
+            public int Rows => Epsilon.Count;
+
+            public int AddBody()
+            {
+                // A wide spread, because craft put tonnes of tank on grams of strut.
+                double mass = math.pow(10.0, random.NextDouble(-1.0, 2.0));
+                double3 principal = new double3(
+                    math.pow(10.0, random.NextDouble(-1.0, 2.0)),
+                    math.pow(10.0, random.NextDouble(-1.0, 2.0)),
+                    math.pow(10.0, random.NextDouble(-1.0, 2.0)));
+                double3x3 turn = new double3x3(new float3x3(random.NextQuaternionRotation()));
+                double3x3 inertia = math.mul(math.mul(turn, Diagonal(principal)), math.transpose(turn));
+                double3x3 inverse = math.mul(math.mul(turn, Diagonal(1.0 / principal)), math.transpose(turn));
+
+                Bodies.Add(new SparseConstraintSolver.Body { Mass = mass, Inertia = inertia });
+                InverseMasses.Add(1.0 / mass);
+                InverseInertias.Add(inverse);
+                return Bodies.Count - 1;
+            }
+
+            public void AddBlock(int bodyA, int bodyB, int rows, float bound = float.MaxValue)
+            {
+                Blocks.Add(new SparseConstraintSolver.ConstraintBlock { BodyA = bodyA, BodyB = bodyB, FirstRow = Rows, RowCount = rows });
+                for (int row = 0; row < rows; row++)
+                {
+                    for (int column = 0; column < Columns; column++)
+                    {
+                        bool inUse = column < Columns / 2 ? bodyA >= 0 : bodyB >= 0;
+                        Jacobian.Add(inUse ? random.NextFloat(-1.0f, 1.0f) : 0.0f);
+                    }
+
+                    Epsilon.Add(math.pow(10.0f, random.NextFloat(-3.0f, -1.0f)));
+                    RightHandSide.Add(random.NextFloat(-5.0f, 5.0f));
+                    Lower.Add(bound == float.MaxValue ? float.MinValue : -bound);
+                    Upper.Add(bound);
+                }
+            }
+
+            /// <summary>J M^-1 J^t + E, formed the long way.</summary>
+            public double[,] Matrix()
+            {
+                double[][] jInverseMass = new double[Rows][];
+                int[] sideBody = new int[Rows * 2];
+                foreach (SparseConstraintSolver.ConstraintBlock block in Blocks)
+                {
+                    for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                    {
+                        sideBody[row * 2] = block.BodyA;
+                        sideBody[row * 2 + 1] = block.BodyB;
+                        jInverseMass[row] = new double[Columns];
+                        WriteJInverseMass(row, 0, block.BodyA, jInverseMass[row]);
+                        WriteJInverseMass(row, 6, block.BodyB, jInverseMass[row]);
+                    }
+                }
+
+                double[,] a = new double[Rows, Rows];
+                for (int i = 0; i < Rows; i++)
+                {
+                    for (int j = 0; j < Rows; j++)
+                    {
+                        double sum = i == j ? Epsilon[i] : 0.0;
+                        for (int side = 0; side < 2; side++)
+                        {
+                            int body = sideBody[i * 2 + side];
+                            for (int otherSide = 0; otherSide < 2; otherSide++)
+                            {
+                                if (body >= 0 && body == sideBody[j * 2 + otherSide])
+                                {
+                                    for (int column = 0; column < 6; column++)
+                                    {
+                                        sum += jInverseMass[i][side * 6 + column] * Jacobian[j * Columns + otherSide * 6 + column];
+                                    }
+                                }
+                            }
+                        }
+
+                        a[i, j] = sum;
+                    }
+                }
+
+                return a;
+            }
+
+            private static double3x3 Diagonal(double3 values)
+            {
+                return new double3x3(values.x, 0.0, 0.0, 0.0, values.y, 0.0, 0.0, 0.0, values.z);
+            }
+
+            private void WriteJInverseMass(int row, int start, int body, double[] target)
+            {
+                if (body < 0)
+                {
+                    return;
+                }
+
+                double3 linear = new double3(Jacobian[row * Columns + start], Jacobian[row * Columns + start + 1], Jacobian[row * Columns + start + 2]);
+                double3 angular = new double3(Jacobian[row * Columns + start + 3], Jacobian[row * Columns + start + 4], Jacobian[row * Columns + start + 5]);
+                double3 scaled = linear * InverseMasses[body];
+                double3 turned = math.mul(InverseInertias[body], angular);
+                target[start] = scaled.x;
+                target[start + 1] = scaled.y;
+                target[start + 2] = scaled.z;
+                target[start + 3] = turned.x;
+                target[start + 4] = turned.y;
+                target[start + 5] = turned.z;
+            }
+        }
+
+        private static float[] Solve(Scenario scenario, bool bounded, out SparseConstraintSolver.Statistics statistics, out bool converged, byte[] guess = null)
+        {
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            converged = Solve(ref solver, scenario, bounded, impulses, guess);
+            statistics = solver.Stats;
+            solver.Dispose();
+            return impulses;
+        }
+
+        private static bool Solve(ref SparseConstraintSolver solver, Scenario scenario, bool bounded, float[] impulses, byte[] guess = null)
+        {
+            SparseConstraintSolver.Body[] bodies = scenario.Bodies.ToArray();
+            SparseConstraintSolver.ConstraintBlock[] blocks = scenario.Blocks.ToArray();
+            float[] jacobian = scenario.Jacobian.ToArray();
+            float[] epsilon = scenario.Epsilon.ToArray();
+            float[] rightHandSide = scenario.RightHandSide.ToArray();
+            float[] lower = scenario.Lower.ToArray();
+            float[] upper = scenario.Upper.ToArray();
+
+            fixed (SparseConstraintSolver.Body* bodiesPointer = bodies)
+            fixed (SparseConstraintSolver.ConstraintBlock* blocksPointer = blocks)
+            fixed (float* jacobianPointer = jacobian, epsilonPointer = epsilon, rightPointer = rightHandSide)
+            fixed (float* lowerPointer = lower, upperPointer = upper, output = impulses)
+            fixed (byte* guessPointer = guess)
+            {
+                var problem = new SparseConstraintSolver.Problem
+                {
+                    BodyCount = bodies.Length,
+                    Bodies = bodiesPointer,
+                    BlockCount = blocks.Length,
+                    Blocks = blocksPointer,
+                    RowCount = epsilon.Length,
+                    Jacobian = jacobianPointer,
+                    Epsilon = epsilonPointer,
+                    RightHandSide = rightPointer,
+                    Lower = lowerPointer,
+                    Upper = upperPointer,
+                    InitialStates = guessPointer,
+                };
+
+                return solver.Solve(problem, output, bounded);
+            }
+        }
+
+        /// <summary>What the package's dense path answers for the same numbers.</summary>
+        private static float[] SolveDensely(Scenario scenario)
+        {
+            int rows = scenario.Rows;
+            double[,] a = scenario.Matrix();
+            float[] answer = new float[rows];
+
+            var heap = new MemoryManager(Allocator.Temp);
+            var matrix = heap.Matrix(rows, rows);
+            var q = heap.Vector(rows);
+            var lower = heap.Vector(rows);
+            var upper = heap.Vector(rows);
+            var w = heap.Vector(rows);
+            var z = heap.Vector(rows);
+            var flags = new NativeArray<LCP.MLCPIndexFlag>(rows, Allocator.Temp);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < rows; j++)
+                {
+                    matrix.Cols[j][i] = (float)a[i, j];
+                }
+
+                q[i] = -scenario.RightHandSide[i];
+                lower[i] = scenario.Lower[i];
+                upper[i] = scenario.Upper[i];
+            }
+
+            Assume.That(LCP.SolveMLCP(matrix, q, lower, upper, ref flags, ref w, ref z), Is.True, "the dense solver gave up on this one");
+            for (int i = 0; i < rows; i++)
+            {
+                answer[i] = z[i];
+            }
+
+            flags.Dispose();
+            z.Dispose();
+            w.Dispose();
+            upper.Dispose();
+            lower.Dispose();
+            q.Dispose();
+            matrix.Dispose();
+            heap.Dispose();
+            return answer;
+        }
+
+        /// <summary>
+        /// The definition of a solution: w = A z - b is zero on a row strictly inside its bounds, and on a row at a bound it
+        /// may only push against that bound.
+        /// </summary>
+        private static void AssertSolves(Scenario scenario, float[] z, double tolerance)
+        {
+            double[,] a = scenario.Matrix();
+            for (int i = 0; i < scenario.Rows; i++)
+            {
+                double w = -scenario.RightHandSide[i];
+                for (int j = 0; j < scenario.Rows; j++)
+                {
+                    w += a[i, j] * z[j];
+                }
+
+                float lower = scenario.Lower[i];
+                float upper = scenario.Upper[i];
+                Assert.That(z[i], Is.InRange(lower - tolerance, upper + tolerance), $"row {i} is outside its bounds");
+                if (z[i] > lower + tolerance && z[i] < upper - tolerance)
+                {
+                    Assert.That(w, Is.EqualTo(0.0).Within(tolerance), $"free row {i} isn't satisfied");
+                }
+                else if (z[i] <= lower + tolerance)
+                {
+                    Assert.That(w, Is.GreaterThan(-tolerance), $"row {i} is held at its lower bound for no reason");
+                }
+                else
+                {
+                    Assert.That(w, Is.LessThan(tolerance), $"row {i} is held at its upper bound for no reason");
+                }
+            }
+        }
+
+        /// <summary>A random tree of joints, and some struts across it, sometimes from a body to the world.</summary>
+        private static Scenario Craft(uint seed, int bodies, int struts, float bound = float.MaxValue)
+        {
+            Scenario scenario = new Scenario(seed);
+            Random shape = new Random(seed * 31 + 7);
+            for (int i = 0; i < bodies; i++)
+            {
+                scenario.AddBody();
+                if (i > 0)
+                {
+                    scenario.AddBlock(shape.NextInt(i), i, shape.NextInt(1, 7), bound);
+                }
+            }
+
+            for (int i = 0; i < struts; i++)
+            {
+                int first = shape.NextInt(bodies);
+                int second = shape.NextBool() ? (first + 1 + shape.NextInt(bodies - 1)) % bodies : -1;
+                scenario.AddBlock(second, first, shape.NextInt(1, 4), bound);
+            }
+
+            return scenario;
+        }
+
+        [Test]
+        public void ItSolvesTheDenseSystem([Range(1u, 12u)] uint seed)
+        {
+            Scenario scenario = Craft(seed, 12, 5);
+
+            float[] impulses = Solve(scenario, false, out _, out bool converged);
+
+            Assert.That(converged, Is.True);
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void ItMatchesTheDenseSolverOnEveryRow([Range(1u, 12u)] uint seed)
+        {
+            Scenario scenario = Craft(seed, 10, 4);
+
+            float[] sparse = Solve(scenario, false, out _, out _);
+            float[] dense = SolveDensely(scenario);
+
+            Assert.That(sparse, Is.EqualTo(dense).Within(0.02f));
+        }
+
+        [Test]
+        public void ItSolvesTheBoundedProblem([Range(1u, 12u)] uint seed, [Values(0.05f, 0.5f, 3.0f)] float bound)
+        {
+            Scenario scenario = Craft(seed, 12, 5, bound);
+
+            float[] impulses = Solve(scenario, true, out SparseConstraintSolver.Statistics statistics, out bool converged);
+
+            UnityEngine.Debug.Log($"[Pivoting] seed {seed} bound {bound}: {statistics.PivotingIterations} iterations over {scenario.Rows} rows, converged {converged}");
+            AssertSolves(scenario, impulses, 5e-3);
+            Assert.That(converged, Is.True);
+        }
+
+        [Test]
+        public void ItMatchesTheDenseSolverWithBounds([Range(1u, 12u)] uint seed, [Values(0.05f, 0.5f, 3.0f)] float bound)
+        {
+            Scenario scenario = Craft(seed, 10, 4, bound);
+
+            float[] sparse = Solve(scenario, true, out _, out _);
+            float[] dense = SolveDensely(scenario);
+
+            Assert.That(sparse, Is.EqualTo(dense).Within(0.02f));
+        }
+
+        [Test]
+        public void BoundsThatCannotBindTakeOneFactorization()
+        {
+            Scenario scenario = Craft(3, 40, 10, 1e12f);
+
+            Solve(scenario, true, out SparseConstraintSolver.Statistics statistics, out bool converged);
+
+            Assert.That(converged, Is.True);
+            Assert.That(statistics.PivotingIterations, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void AFirstGuessDoesNotChangeTheAnswer([Range(1u, 6u)] uint seed)
+        {
+            Scenario scenario = Craft(seed, 12, 5, 0.5f);
+            Random random = new Random(seed + 100);
+            byte[] guess = new byte[scenario.Rows];
+            for (int i = 0; i < guess.Length; i++)
+            {
+                guess[i] = (byte)random.NextInt(3);
+            }
+
+            float[] unguided = Solve(scenario, true, out _, out _);
+            float[] guided = Solve(scenario, true, out _, out bool converged, guess);
+
+            Assert.That(converged, Is.True);
+            Assert.That(guided, Is.EqualTo(unguided).Within(1e-3f));
+        }
+
+        [Test]
+        public void ASolverCarriesNothingBetweenSolves()
+        {
+            Scenario bounded = Craft(5, 12, 5, 0.05f);
+            Scenario free = Craft(6, 12, 5);
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] first = new float[bounded.Rows];
+            float[] second = new float[free.Rows];
+
+            Solve(ref solver, bounded, true, first);
+            Solve(ref solver, free, false, second);
+            solver.Dispose();
+
+            AssertSolves(free, second, 2e-3);
+        }
+
+        [Test]
+        public void RowsCanComeFromEitherBodyFirst()
+        {
+            Scenario scenario = new Scenario(9);
+            int a = scenario.AddBody();
+            int b = scenario.AddBody();
+            scenario.AddBlock(a, b, 3);
+            scenario.AddBlock(b, a, 2);
+            scenario.AddBlock(a, b, 1);
+
+            float[] impulses = Solve(scenario, false, out SparseConstraintSolver.Statistics statistics, out _);
+
+            Assert.That(statistics.Nodes, Is.EqualTo(3), "two bodies and one pair");
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void ARowAgainstTheWorldMovesOnlyItsBody()
+        {
+            Scenario scenario = new Scenario(10);
+            int body = scenario.AddBody();
+            scenario.AddBlock(-1, body, 3);
+            scenario.AddBlock(body, -1, 2);
+
+            AssertSolves(scenario, Solve(scenario, false, out _, out _), 2e-3);
+        }
+
+        [Test]
+        public void ALongChainHoldsAtAHugeMassRatio()
+        {
+            Scenario scenario = new Scenario(11);
+            int previous = -1;
+            for (int i = 0; i < 40; i++)
+            {
+                int body = scenario.AddBody();
+                SparseConstraintSolver.Body heavy = scenario.Bodies[body];
+                double scale = i % 2 == 0 ? 1e4 : 1e-2;
+                heavy.Mass *= scale;
+                heavy.Inertia *= scale;
+                scenario.Bodies[body] = heavy;
+                scenario.InverseMasses[body] /= scale;
+                scenario.InverseInertias[body] /= scale;
+                if (i > 0)
+                {
+                    scenario.AddBlock(previous, body, 3);
+                }
+
+                previous = body;
+            }
+
+            AssertSolves(scenario, Solve(scenario, false, out _, out _), 1e-2);
+        }
+
+        [Test]
+        public void ATreeFactorsWithoutFill([Values(10, 100, 1000)] int bodies)
+        {
+            Scenario scenario = Craft(1, bodies, 0);
+
+            Solve(scenario, false, out SparseConstraintSolver.Statistics statistics, out _);
+
+            int joints = bodies - 1;
+            Assert.That(statistics.Nodes, Is.EqualTo(bodies + joints));
+            Assert.That(statistics.FactorBlocks, Is.EqualTo(joints * 2), "each joint touches two bodies and nothing else");
+        }
+
+        [Test]
+        public void ManyPartsOnOneTankAddNoFill()
+        {
+            Scenario scenario = new Scenario(2);
+            int tank = scenario.AddBody();
+            const int attached = 60;
+            for (int i = 0; i < attached; i++)
+            {
+                scenario.AddBlock(tank, scenario.AddBody(), 6);
+            }
+
+            Solve(scenario, false, out SparseConstraintSolver.Statistics statistics, out _);
+
+            Assert.That(statistics.FactorBlocks, Is.EqualTo(attached * 2));
+        }
+
+        [Test]
+        public void StrutsKeepTheFactorProportionalToTheCraft()
+        {
+            long small = Ladder(200);
+            long large = Ladder(800);
+
+            Assert.That(large, Is.LessThan(small * 5), "four times the craft");
+        }
+
+        /// <summary>A stack with a radial on every level and a strut between neighbours, as a braced booster has.</summary>
+        private static long Ladder(int levels)
+        {
+            Scenario scenario = new Scenario(4);
+            int previousStack = -1;
+            int previousRadial = -1;
+            for (int level = 0; level < levels; level++)
+            {
+                int stack = scenario.AddBody();
+                int radial = scenario.AddBody();
+                scenario.AddBlock(stack, radial, 6);
+                if (level > 0)
+                {
+                    scenario.AddBlock(previousStack, stack, 6);
+                    scenario.AddBlock(previousRadial, radial, 3);
+                }
+
+                previousStack = stack;
+                previousRadial = radial;
+            }
+
+            Solve(scenario, false, out SparseConstraintSolver.Statistics statistics, out _);
+            return statistics.FactorScalars;
+        }
+    }
+}

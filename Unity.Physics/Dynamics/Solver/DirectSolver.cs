@@ -927,6 +927,129 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
+        /// used. Leaves the impulses in RHS, where the dense path leaves them too.
+        /// </summary>
+        static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+            int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in NativeList<Vector> JArray,
+            in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded)
+        {
+            var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
+            var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
+            var compactBodies = new NativeHashMap<int, int>(16, Allocator.Temp);
+
+            var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex);
+            int firstRow = 0;
+            while (jacobianIterator.HasJacobiansLeft())
+            {
+                ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
+                int jacobianRows = GetConstraintRows(ref header);
+                if (jacobianRows == 0)
+                {
+                    continue;
+                }
+
+                blocks.Add(new SparseConstraintSolver.ConstraintBlock
+                {
+                    BodyA = CompactBody(header.BodyPair.BodyIndexA, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
+                    BodyB = CompactBody(header.BodyPair.BodyIndexB, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
+                    FirstRow = firstRow,
+                    RowCount = jacobianRows,
+                });
+
+                firstRow += jacobianRows;
+            }
+
+            var jacobian = new NativeArray<float>(rows * SparseConstraintSolver.ColumnsPerRow, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var epsilon = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var rightHandSide = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var lower = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var upper = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int row = 0; row < rows; row++)
+            {
+                var J = JArray[row];
+                for (int column = 0; column < SparseConstraintSolver.ColumnsPerRow; column++)
+                {
+                    jacobian[row * SparseConstraintSolver.ColumnsPerRow + column] = J[column];
+                }
+
+                epsilon[row] = eps[row];
+                rightHandSide[row] = RHS.Cols[0][row];
+                lower[row] = l[row];
+                upper[row] = u[row];
+            }
+
+            var problem = new SparseConstraintSolver.Problem
+            {
+                BodyCount = bodies.Length,
+                Bodies = bodies.GetUnsafePtr(),
+                BlockCount = blocks.Length,
+                Blocks = blocks.GetUnsafePtr(),
+                RowCount = rows,
+                Jacobian = (float*)jacobian.GetUnsafeReadOnlyPtr(),
+                Epsilon = (float*)epsilon.GetUnsafeReadOnlyPtr(),
+                RightHandSide = (float*)rightHandSide.GetUnsafeReadOnlyPtr(),
+                Lower = (float*)lower.GetUnsafeReadOnlyPtr(),
+                Upper = (float*)upper.GetUnsafeReadOnlyPtr(),
+                InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
+            };
+
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            solver.Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+            solver.Dispose();
+
+            for (int row = 0; row < rows; row++)
+            {
+                RHS.Cols[0][row] = impulses[row];
+            }
+
+            bodies.Dispose();
+            blocks.Dispose();
+            compactBodies.Dispose();
+            jacobian.Dispose();
+            epsilon.Dispose();
+            rightHandSide.Dispose();
+            lower.Dispose();
+            upper.Dispose();
+            impulses.Dispose();
+        }
+
+        /// <summary>
+        /// Where a body sits among the moving bodies of the island, or -1 if it doesn't move. The solver divides by neither
+        /// mass nor inertia, so an axis with none needs a value that stands for infinite, and this one is far past any body.
+        /// </summary>
+        static int CompactBody(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
+            in StepInput stepInput, ref NativeList<SparseConstraintSolver.Body> bodies, ref NativeHashMap<int, int> compactBodies)
+        {
+            if (bodyIndex >= motionVelocities.Length || motionVelocities[bodyIndex].IsKinematic)
+            {
+                return -1;
+            }
+
+            if (compactBodies.TryGetValue(bodyIndex, out int compact))
+            {
+                return compact;
+            }
+
+            const float smallestInverse = 1e-12f;
+            MotionVelocity motion = motionVelocities[bodyIndex];
+            motion.InverseInertia = math.max(motion.InverseInertia, smallestInverse);
+            ComputeInertiaTensor(motion, motionDatas[bodyIndex], stepInput.Timestep, stepInput.EnableGyroscopicTorque, out float3x3 inertia, out _);
+
+            compact = bodies.Length;
+            compactBodies.Add(bodyIndex, compact);
+            bodies.Add(new SparseConstraintSolver.Body
+            {
+                Mass = 1.0 / math.max(motion.InverseMass, smallestInverse),
+                Inertia = new double3x3(inertia),
+            });
+
+            return compact;
+        }
+
+        /// <summary>
         /// Direct Solver for rigid body dynamics, using a regularized, nonsmooth multibody dynamics formulation which
         /// combines the Newton-Euler equations of motion with constraints for modeling joints and contacts.
         /// Constraint forces are computed using Lagrange multipliers. For formulation details see Section 5.2
@@ -998,9 +1121,15 @@ namespace Unity.Physics
                 // Array of JinvM blocks: 12-component vectors, containing the two non-zero 6-component vectors in each JinvM row
                 var JinvMArray = new NativeList<Vector>(rows, Allocator.Temp);
 
+                // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
+                bool solveSparsely = contactCount == 0;
+
                 // System matrix
-                var JinvMJt = heap.Matrix(rows, rows);
-                JinvMJt.Clear(); // Note: must clear since we compute it sparsely.
+                var JinvMJt = solveSparsely ? default : heap.Matrix(rows, rows);
+                if (!solveSparsely)
+                {
+                    JinvMJt.Clear(); // Note: must clear since we compute it sparsely.
+                }
 
                 // Array of Jacobian blocks: 12-component vector, containing the two non-zero 6-component vectors in each J row
                 var JArray = new NativeList<Vector>(rows, Allocator.Temp);
@@ -2087,6 +2216,12 @@ namespace Unity.Physics
                                 }
                             }
 
+                            if (solveSparsely)
+                            {
+                                startRow += jacRows;
+                                continue;
+                            }
+
                             // compute JInvM blocks
                             for (int i = 0; i < jacRows; ++i)
                             {
@@ -2197,6 +2332,12 @@ namespace Unity.Physics
                                 // Note: rhs is at this point set to v0 -\phi_0/dt. So we need to subtract
                                 // rhsBodyVelocity = JinvM * (dtg + Mu_).
                                 RHS.Cols[0][rowIndex] -= rhsBodyVelocity[i];
+                            }
+
+                            if (solveSparsely)
+                            {
+                                startRow += jacRows;
+                                continue;
                             }
 
                             // Compute JinvMJ^t (+ epsilon) matrix:
@@ -2321,7 +2462,12 @@ namespace Unity.Physics
                     //Debug.Log($"Cholesky: {useCholeskyFactorization}");
 
                     // Stage 2: Solve system
-                    if (isLCP && !kForceLCPOff)
+                    if (solveSparsely)
+                    {
+                        SolveSparsely(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities, motionDatas,
+                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP);
+                    }
+                    else if (isLCP && !kForceLCPOff)
                     {
                         // need LCP solver
                         var w = Vector.Create(heap, rows);
@@ -2548,7 +2694,11 @@ namespace Unity.Physics
                 }
                 finally
                 {
-                    JinvMJt.Dispose();
+                    if (!solveSparsely)
+                    {
+                        JinvMJt.Dispose();
+                    }
+
                     eps.Dispose();
                     indexSetArray.Dispose();
                     l.Dispose();
