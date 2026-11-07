@@ -10,8 +10,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 {
     /// <summary>
     /// Saves real direct solver problems to Library/SolverCapture/(name) for <see cref="SolverCaptureBench"/>. Set
-    /// RETOOLED_SOLVER_CAPTURE to a name before starting the editor and fly something: it keeps every SolveInterval-th joint
-    /// problem of any size that matters, so one flight leaves samples from the pad to the end of the run.
+    /// RETOOLED_SOLVER_CAPTURE to a name before starting the editor and fly something: every SolveInterval joint problems of
+    /// any size that matters it keeps RunLength in a row, so one flight leaves samples from the pad to the end of the run, and
+    /// each sample shows how a problem changes from one solve to the next.
     /// </summary>
     [InitializeOnLoad]
     public static unsafe class SolverCapture
@@ -19,14 +20,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public const string CaptureRoot = "Library/SolverCapture";
 
         private const string NameVariable = "RETOOLED_SOLVER_CAPTURE";
-        private const int SolveInterval = 500;
-        private const int MaxFiles = 32;
+        private const int SolveInterval = 1000;
+        private const int RunLength = 12;
+        private const int MaxRuns = 8;
         private const int SmallestRows = 64;
         private const int Magic = 0x31505352;
 
         private static string folder;
         private static int solves;
-        private static int saved;
 
         static SolverCapture()
         {
@@ -101,15 +102,17 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             // An exception must not reach the Burst frame below this one.
             try
             {
-                if (problem->RowCount < SmallestRows || Interlocked.Increment(ref solves) % SolveInterval != 0)
+                if (problem->RowCount < SmallestRows)
                 {
                     return;
                 }
 
-                int file = Interlocked.Increment(ref saved);
-                if (file <= MaxFiles)
+                int solve = Interlocked.Increment(ref solves);
+                int run = solve / SolveInterval;
+                int inRun = solve % SolveInterval;
+                if (run >= 1 && run <= MaxRuns && inRun < RunLength)
                 {
-                    Write(Path.Combine(folder, $"{file:D3}.bin"), problem, impulses, bounded != 0);
+                    Write(Path.Combine(folder, $"{run:D3}-{inRun:D2}.bin"), problem, impulses, bounded != 0);
                 }
             }
             catch (Exception exception)
