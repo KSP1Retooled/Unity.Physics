@@ -299,7 +299,14 @@ namespace KSP.Retooled.PhysicsBackend
                 shape->data.localRotation = a->rotation;
             }
 
-            TouchBody(shape);
+            if (shape->body == null || ColliderBuilder.PosedShape(StoreOps.Hot(shape->body)) == null)
+            {
+                TouchBody(shape);
+            }
+            else
+            {
+                StoreOps.MarkPoseChanged(shape->body, StoreOps.Hot(shape->body)->flags);
+            }
         }
 
         private static void GetWorldBounds(NativeStore.Shape* shape, NativeStore.CommandArgs* a)

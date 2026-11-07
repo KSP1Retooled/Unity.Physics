@@ -102,6 +102,21 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         }
 
         [Test]
+        public void QueriesFindAStaticMeshWhereItWasMovedAndTurned([Values] bool convex)
+        {
+            MeshCollider collider = Collider(BoxMesh(Vector3.zero, new Vector3(6.0f, 1.0f, 1.0f)), convex);
+            Physics.SyncTransforms();
+            collider.transform.SetPositionAndRotation(new Vector3(10.0f, 0.0f, 0.0f), Quaternion.Euler(0.0f, 90.0f, 0.0f));
+
+            Vector3 alongItsLength = new Vector3(10.0f, 5.0f, 2.5f);
+            Assert.That(RayDistance(alongItsLength, Vector3.down), Is.EqualTo(4.5f).Within(1e-3f));
+            Assert.That(RayDistance(new Vector3(12.5f, 5.0f, 0.0f), Vector3.down), Is.EqualTo(-1.0f), "across its old length");
+
+            Assert.That(collider.Raycast(new Ray(alongItsLength, Vector3.down), out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(hit.distance, Is.EqualTo(4.5f).Within(1e-3f), "a query of the one collider");
+        }
+
+        [Test]
         public void ARayHitsATriangleMeshAtItsSurface()
         {
             MeshCollider collider = Collider(BoxMesh(Vector3.zero, Vector3.one * 2.0f), false);

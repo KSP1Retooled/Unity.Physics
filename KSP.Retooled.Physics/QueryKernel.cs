@@ -746,7 +746,8 @@ namespace KSP.Retooled.PhysicsBackend
         /// The collider a shape's geometry is, and the pose that puts it where <paramref name="worldFromShape"/> says the shape
         /// is. A primitive is built in <paramref name="primitive"/> with a filter that lets everything through. A mesh takes too
         /// long to build for one query, so it is the leaf of its body's collider, whose filter and pose are the shape's. A
-        /// compound's child carries the pose outside it, but a single shape's blob has it baked in. Null for a shape with no
+        /// compound's child carries the pose outside it, as a static body's only shape does, but any other single shape's blob
+        /// has it baked in. Null for a shape with no
         /// such collider, which is what a shape off its body looks like, and PhysX answers for those as if it wasn't there.
         /// </summary>
         private static Collider* ColliderOf(
@@ -771,8 +772,12 @@ namespace KSP.Retooled.PhysicsBackend
 
             if (root->Type != ColliderType.Compound)
             {
-                RigidTransform local = new RigidTransform(shape->data.localRotation, shape->data.localPosition);
-                worldFromCollider = math.mul(worldFromShape, math.inverse(local));
+                if (ColliderBuilder.PosedShape(body) == null)
+                {
+                    RigidTransform local = new RigidTransform(shape->data.localRotation, shape->data.localPosition);
+                    worldFromCollider = math.mul(worldFromShape, math.inverse(local));
+                }
+
                 return root;
             }
 

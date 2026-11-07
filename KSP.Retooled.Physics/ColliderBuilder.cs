@@ -75,7 +75,9 @@ namespace KSP.Retooled.PhysicsBackend
             if (usable == 1 && body->shapes[lastUsable]->geometryType != NativeStore.GeometryHeightField)
             {
                 NativeStore.ShapeData* shape = body->shapes[lastUsable];
-                return Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
+                return PosedShape(body) != null
+                    ? Create(shape, float3.zero, quaternion.identity).GetUnsafePtr()
+                    : Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
             }
 
             var children = new NativeArray<CompoundCollider.ColliderBlobInstance>(usable, Allocator.Temp);
@@ -129,6 +131,37 @@ namespace KSP.Retooled.PhysicsBackend
 
             collider.Value.GetChild(ref key, out ChildCollider child);
             return child.Entity.Index;
+        }
+
+        /// <summary>
+        /// The shape whose pose the built body carries instead of its collider, or null. Unity moves a static collider by
+        /// posing its shape, every frame for an animated one, and a pose baked into a mesh would mean rebuilding the mesh each
+        /// time. Unity joints can't reach a static body, so nothing else depends on where its built transform sits.
+        /// </summary>
+        internal static NativeStore.ShapeData* PosedShape(NativeStore.BodyData* body)
+        {
+            if ((body->flags & NativeStore.BodyFlags.Static) == 0)
+            {
+                return null;
+            }
+
+            NativeStore.ShapeData* posed = null;
+            for (int i = 0; i < body->shapeCount; i++)
+            {
+                if (!IsSupported(body->shapes[i]))
+                {
+                    continue;
+                }
+
+                if (posed != null)
+                {
+                    return null;
+                }
+
+                posed = body->shapes[i];
+            }
+
+            return posed != null && posed->geometryType != NativeStore.GeometryHeightField ? posed : null;
         }
 
         /// <summary>The index of the shape a body's collider stands for when it isn't a compound.</summary>

@@ -131,10 +131,17 @@ namespace KSP.Retooled.PhysicsBackend
 
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
+            RigidTransform worldFromBody = new RigidTransform(body.rotation, body.position);
+            NativeStore.ShapeData* posed = ColliderBuilder.PosedShape((NativeStore.BodyData*)UnsafeUtility.AddressOf(ref body));
+            if (posed != null)
+            {
+                worldFromBody = math.mul(worldFromBody, new RigidTransform(posed->localRotation, posed->localPosition));
+            }
+
             return new RigidBody
             {
                 Collider = ColliderBuilder.FromPointer(body.collider),
-                WorldFromBody = new RigidTransform(body.rotation, body.position),
+                WorldFromBody = worldFromBody,
                 Entity = new Entity { Index = index, Version = 1 },
                 Scale = 1.0f,
             };
