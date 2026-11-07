@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Mathematics;
-using UnityEngine;
 using static Unity.Physics.Math;
 
 namespace Unity.Physics
@@ -10,6 +9,8 @@ namespace Unity.Physics
     [NoAlias]
     struct RotationMotorJacobian
     {
+        const float SmallestSinHalfAngle = 1e-6f;
+
         // Limited axis in motion A space
         public float3 AxisInMotionA;
         public float Target;
@@ -121,14 +122,22 @@ namespace Unity.Physics
             // Calculate the relative joint frame rotation
             quaternion jointBFromA = math.mul(math.mul(math.inverse(MotionBFromJoint), motionBFromA), MotionAFromJoint);
 
-            // extract current axis and angle between the two joint frames
-            ((Quaternion)jointBFromA).ToAngleAxis(out var angleDeg, out var axis);
-            // filter out any "out of rotation axis" components between the joint frames and make sure we are accounting
-            // for a potential axis flip in the to-angle-axis calculation.
-            angleDeg *= axis[AxisIndex];
+            // Quaternion.ToAngleAxis returns zero below about 0.6 mrad, where stiff joints rest, and nearly a full turn when the
+            // relative rotation comes out negated. Nothing keeps it positive: its sign is a product of the bodies' rotations
+            // and of conversions from the joint frames' matrices.
+            float4 rotation = jointBFromA.value.w < 0.0f ? -jointBFromA.value : jointBFromA.value;
 
-            currentAngle = math.radians(angleDeg);
-            return currentAngle - Target;
+            // The share of the rotation about this axis, with the angle over sin(angle / 2) tending to 2 as the angle vanishes.
+            float sinHalfAngle = math.length(rotation.xyz);
+            float anglePerSin = sinHalfAngle > SmallestSinHalfAngle ? 2.0f * math.atan2(sinHalfAngle, rotation.w) / sinHalfAngle : 2.0f;
+            float angle = anglePerSin * rotation[AxisIndex];
+
+            // A rotation only knows its angle to a full turn, and a motor takes the way round nearest its target.
+            float error = angle - Target;
+            error -= 2.0f * math.PI * math.round(error / (2.0f * math.PI));
+
+            currentAngle = Target + error;
+            return error;
         }
     }
 }
