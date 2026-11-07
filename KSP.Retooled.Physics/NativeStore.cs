@@ -341,6 +341,10 @@ namespace KSP.Retooled.Physics
             public float hingeMotorTargetVelocity;
             public uint index; // In the world's list.
 
+            // The force and torque magnitudes that breaking compares with, low-passed over a few steps.
+            public float breakingForce;
+            public float breakingTorque;
+
             public Body* body0;
             public Body* body1;
             public void* userData;

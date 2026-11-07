@@ -537,17 +537,31 @@ namespace KSP.Retooled.Physics
             }
 
             World->jointBreakCount = 0;
+            float follow = DeltaTime / (BreakingTimeConstant + DeltaTime);
             for (uint i = 0; i < World->jointCount; i++)
             {
                 NativeStore.JointData* joint = World->joints[i];
-                float force = math.length(joint->force);
-                float torque = math.length(joint->torque);
-                if ((joint->state & JointConstraints.Inactive) == 0 && (force > joint->breakForce || torque > joint->breakTorque))
+                if (IsAsleep(joint->body0) && IsAsleep(joint->body1))
                 {
-                    Break(joint, force, torque);
+                    continue;
+                }
+
+                joint->breakingForce += (math.length(joint->force) - joint->breakingForce) * follow;
+                joint->breakingTorque += (math.length(joint->torque) - joint->breakingTorque) * follow;
+                bool overloaded = joint->breakingForce > joint->breakForce || joint->breakingTorque > joint->breakTorque;
+                if ((joint->state & JointConstraints.Inactive) == 0 && overloaded)
+                {
+                    Break(joint, joint->breakingForce, joint->breakingTorque);
                 }
             }
         }
+
+        /// <summary>
+        /// How long, in seconds, a load must last before it counts in full against a joint's break force. The direct solve
+        /// holds a craft rigidly, so a part landing on the ground stops everything above it within one step, and the
+        /// joints carry that whole stop at once. PhysX spreads the same stop over several steps, so it never breaks them.
+        /// </summary>
+        private const float BreakingTimeConstant = 0.1f;
 
         private static bool IsAsleep(NativeStore.Body* body)
         {
