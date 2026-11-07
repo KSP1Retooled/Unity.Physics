@@ -1,3 +1,4 @@
+using KSP.Retooled.Components.Physics;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
@@ -129,7 +130,7 @@ namespace KSP.Retooled.Physics.Tests
             NativeStore.CommandArgs args = default;
             BodyKernel.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
 
-            float3 inertia = StoreOps.Hot(body)->inertia;
+            float3 inertia = StoreOps.Hot(body)->mass->Inertia;
             Assert.That(math.all(math.isfinite(inertia)), Is.True, $"inertia {inertia}");
             Assert.That(inertia.x, Is.EqualTo(1.0f / 6.0f).Within(1e-5f), "the box alone");
 
@@ -374,13 +375,23 @@ namespace KSP.Retooled.Physics.Tests
             quaternion targetRotation = quaternion.RotateY(0.5f);
             float3 targetPosition = new float3(0.0f, 2.0f, 0.0f);
 
+            BodyPose pose = new BodyPose { Rotation = quaternion.identity };
+            BodyVelocity bodyVelocity = default;
+            BodyMass mass = new BodyMass { InertiaRotation = quaternion.identity, LocalCenterOfMass = centerOfMass };
+            BodyLimits limits = default;
+            BodySleep sleep = default;
+            BodyForces forces = default;
+            BodyTarget target = new BodyTarget { Position = targetPosition, Rotation = targetRotation };
+
             NativeStore.BodyData body = default;
-            body.rotation = quaternion.identity;
-            body.inertiaRotation = quaternion.identity;
-            body.localCenterOfMass = centerOfMass;
+            body.pose = &pose;
+            body.velocity = &bodyVelocity;
+            body.mass = &mass;
+            body.limits = &limits;
+            body.sleep = &sleep;
+            body.forces = &forces;
+            body.target = &target;
             body.flags = Kinematic | NativeStore.BodyFlags.HasKinematicTarget;
-            body.targetPosition = targetPosition;
-            body.targetRotation = targetRotation;
 
             using NativeArray<int> dynamicIndices = new NativeArray<int>(new[] { 0 }, Allocator.TempJob);
             using NativeArray<int> staticIndices = new NativeArray<int>(0, Allocator.TempJob);

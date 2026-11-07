@@ -40,24 +40,24 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            float3 linear = body.linearVelocity;
-            linear += (body.force * body.inverseMass + body.acceleration) * DeltaTime;
-            linear += body.impulse * body.inverseMass + body.velocityChange;
+            float3 linear = body.velocity->Linear;
+            linear += (body.forces->Force * body.mass->InverseMass + body.forces->Acceleration) * DeltaTime;
+            linear += body.forces->Impulse * body.mass->InverseMass + body.forces->VelocityChange;
             if ((body.flags & NativeStore.BodyFlags.Gravity) != 0)
             {
                 linear += Gravity * DeltaTime;
             }
 
-            quaternion worldFromInertia = math.mul(body.rotation, body.inertiaRotation);
-            float3 torqueImpulse = body.torque * DeltaTime + body.angularImpulse;
-            float3 angular = body.angularVelocity + body.angularAcceleration * DeltaTime + body.angularVelocityChange;
-            angular += math.rotate(worldFromInertia, math.rotate(math.conjugate(worldFromInertia), torqueImpulse) * body.inverseInertia);
+            quaternion worldFromInertia = math.mul(body.pose->Rotation, body.mass->InertiaRotation);
+            float3 torqueImpulse = body.forces->Torque * DeltaTime + body.forces->AngularImpulse;
+            float3 angular = body.velocity->Angular + body.forces->AngularAcceleration * DeltaTime + body.forces->AngularVelocityChange;
+            angular += math.rotate(worldFromInertia, math.rotate(math.conjugate(worldFromInertia), torqueImpulse) * body.mass->InverseInertia);
 
-            linear *= math.max(1.0f - body.linearDamping * DeltaTime, 0.0f);
-            angular *= math.max(1.0f - body.angularDamping * DeltaTime, 0.0f);
+            linear *= math.max(1.0f - body.limits->LinearDamping * DeltaTime, 0.0f);
+            angular *= math.max(1.0f - body.limits->AngularDamping * DeltaTime, 0.0f);
 
-            body.linearVelocity = ClampLength(linear, body.maxLinearVelocity);
-            body.angularVelocity = ClampLength(angular, body.maxAngularVelocity);
+            body.velocity->Linear = ClampLength(linear, body.limits->MaxLinearVelocity);
+            body.velocity->Angular = ClampLength(angular, body.limits->MaxAngularVelocity);
             ClearAccumulators(ref body);
         }
 
@@ -76,14 +76,14 @@ namespace KSP.Retooled.Physics
 
         private static void ClearAccumulators(ref NativeStore.BodyData body)
         {
-            body.force = float3.zero;
-            body.torque = float3.zero;
-            body.acceleration = float3.zero;
-            body.angularAcceleration = float3.zero;
-            body.impulse = float3.zero;
-            body.angularImpulse = float3.zero;
-            body.velocityChange = float3.zero;
-            body.angularVelocityChange = float3.zero;
+            body.forces->Force = float3.zero;
+            body.forces->Torque = float3.zero;
+            body.forces->Acceleration = float3.zero;
+            body.forces->AngularAcceleration = float3.zero;
+            body.forces->Impulse = float3.zero;
+            body.forces->AngularImpulse = float3.zero;
+            body.forces->VelocityChange = float3.zero;
+            body.forces->AngularVelocityChange = float3.zero;
         }
     }
 
@@ -131,7 +131,7 @@ namespace KSP.Retooled.Physics
 
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
-            RigidTransform worldFromBody = new RigidTransform(body.rotation, body.position);
+            RigidTransform worldFromBody = new RigidTransform(body.pose->Rotation, body.pose->Position);
             NativeStore.ShapeData* posed = ColliderBuilder.PosedShape((NativeStore.BodyData*)UnsafeUtility.AddressOf(ref body));
             if (posed != null)
             {
@@ -149,15 +149,15 @@ namespace KSP.Retooled.Physics
 
         private void WriteMotion(int motionIndex, ref NativeStore.BodyData body)
         {
-            RigidTransform bodyFromMotion = new RigidTransform(body.inertiaRotation, body.localCenterOfMass);
-            RigidTransform worldFromMotion = math.mul(new RigidTransform(body.rotation, body.position), bodyFromMotion);
+            RigidTransform bodyFromMotion = new RigidTransform(body.mass->InertiaRotation, body.mass->LocalCenterOfMass);
+            RigidTransform worldFromMotion = math.mul(new RigidTransform(body.pose->Rotation, body.pose->Position), bodyFromMotion);
 
             bool kinematic = (body.flags & NativeStore.BodyFlags.Kinematic) != 0;
             bool sleeping = (body.flags & NativeStore.BodyFlags.Sleeping) != 0;
             bool heldInPlace = kinematic || sleeping;
 
-            float3 linear = body.linearVelocity;
-            float3 angular = math.rotate(math.conjugate(worldFromMotion.rot), body.angularVelocity);
+            float3 linear = body.velocity->Linear;
+            float3 angular = math.rotate(math.conjugate(worldFromMotion.rot), body.velocity->Angular);
             if (kinematic)
             {
                 linear = float3.zero;
@@ -165,14 +165,14 @@ namespace KSP.Retooled.Physics
                 if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0 && DeltaTime > 0.0f)
                 {
                     // Motion velocities are those of the centre of mass, and a rotation about the body origin moves it.
-                    float3 targetCenter = body.targetPosition + math.rotate(body.targetRotation, body.localCenterOfMass);
+                    float3 targetCenter = body.target->Position + math.rotate(body.target->Rotation, body.mass->LocalCenterOfMass);
                     linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
-                    quaternion turn = math.normalize(math.mul(body.targetRotation, math.conjugate(body.rotation)));
+                    quaternion turn = math.normalize(math.mul(body.target->Rotation, math.conjugate(body.pose->Rotation)));
                     angular = math.rotate(math.conjugate(worldFromMotion.rot), JointConstraints.AngleAxis(turn) / DeltaTime);
                 }
             }
 
-            float expansion = math.length(body.localCenterOfMass);
+            float expansion = math.length(body.mass->LocalCenterOfMass);
             if (body.collider != null)
             {
                 expansion += ColliderBuilder.FromPointer(body.collider).Value.MassProperties.AngularExpansionFactor;
@@ -190,8 +190,8 @@ namespace KSP.Retooled.Physics
             {
                 LinearVelocity = linear,
                 AngularVelocity = angular,
-                InverseInertia = heldInPlace ? float3.zero : body.inverseInertia,
-                InverseMass = heldInPlace ? 0.0f : body.inverseMass,
+                InverseInertia = heldInPlace ? float3.zero : body.mass->InverseInertia,
+                InverseMass = heldInPlace ? 0.0f : body.mass->InverseMass,
                 AngularExpansionFactor = expansion,
                 GravityFactor = 0.0f,
             };
@@ -278,8 +278,8 @@ namespace KSP.Retooled.Physics
             {
                 if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0)
                 {
-                    body.position = body.targetPosition;
-                    body.rotation = body.targetRotation;
+                    body.pose->Position = body.target->Position;
+                    body.pose->Rotation = body.target->Rotation;
                     body.flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
                 }
 
@@ -290,10 +290,10 @@ namespace KSP.Retooled.Physics
             MotionVelocity velocity = MotionVelocities[index];
             RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
 
-            body.position = worldFromBody.pos;
-            body.rotation = math.normalize(worldFromBody.rot);
-            body.linearVelocity = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.maxLinearVelocity);
-            body.angularVelocity = ApplyForcesJob.ClampLength(math.rotate(motion.WorldFromMotion.rot, velocity.AngularVelocity), body.maxAngularVelocity);
+            body.pose->Position = worldFromBody.pos;
+            body.pose->Rotation = math.normalize(worldFromBody.rot);
+            body.velocity->Linear = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.limits->MaxLinearVelocity);
+            body.velocity->Angular = ApplyForcesJob.ClampLength(math.rotate(motion.WorldFromMotion.rot, velocity.AngularVelocity), body.limits->MaxAngularVelocity);
         }
     }
 }

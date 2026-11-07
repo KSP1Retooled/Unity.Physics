@@ -7,9 +7,9 @@
 // Commands reach the store through the Burst kernels in BodyKernel.cs, ShapeKernel.cs and WorldKernel.cs. Native code keeps
 // only what comes before managed code exists: worlds, their settings and materials.
 //
-// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, HeightField*, World*). Hot body
-// state lives in a dense swap-remove BodyData array per world, so jobs walk it linearly. A BodyData moves when another body
-// is destroyed; a Body never does.
+// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, HeightField*, World*). Each
+// world keeps a dense swap-remove BodyData array, so jobs walk its bodies linearly. A BodyData moves when another body is
+// destroyed; a Body never does. A body's physical state belongs to managed, which reaches it through BodyData's pointers.
 //
 // Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, and they
 // read only the query world, a snapshot managed builds on the main thread and holds nothing of the live store. Replacing
@@ -62,75 +62,22 @@ namespace Retooled
         kBodyColliderDirty = 1 << 11,
     };
 
-    // Mirrored. One rigid body, static or not. All vectors are world space unless named local. Velocities are those of
-    // the centre of mass, angular in radians per second. The accumulators hold what AddForce and AddTorque collected
-    // since the last step, sorted by ForceMode because each mode integrates differently, and they are zeroed by the
-    // step that consumes them.
+    // Mirrored. One rigid body, static or not. The components are managed's to read: they sit in BodyHome or in an
+    // entity's chunk, and the plugin must not keep these pointers or look through them.
     struct BodyData
     {
-        Float4 rotation;
-        Float3 position;
-        uint32_t flags; // BodyStateFlags
-
-        Float3 linearVelocity;
-        float mass;
-
-        Float3 angularVelocity;
-        float inverseMass;
-
-        // Principal moments of inertia, in the frame given by localCenterOfMass and inertiaRotation.
-        Float3 inertia;
-        float linearDamping;
-
-        Float3 inverseInertia;
-        float angularDamping;
-
-        Float4 inertiaRotation;
-
-        Float3 localCenterOfMass;
-        float maxLinearVelocity;
-
-        float maxAngularVelocity;
-        float maxDepenetrationVelocity;
-        float wakeCounter;
-        float sleepThreshold;
-
-        Float3 force;                 // ForceMode.Force: N, scaled by dt / mass
-        uint32_t shapeCount;
-        Float3 torque;                // ForceMode.Force: N m, scaled by dt / inertia
-        uint32_t reserved0;
-        Float3 acceleration;          // ForceMode.Acceleration: m/s^2, scaled by dt
-        uint32_t reserved1;
-        Float3 angularAcceleration;   // ForceMode.Acceleration: rad/s^2, scaled by dt
-        uint32_t reserved2;
-        Float3 impulse;               // ForceMode.Impulse: N s, scaled by 1 / mass
-        uint32_t reserved3;
-        Float3 angularImpulse;        // ForceMode.Impulse: N m s, scaled by 1 / inertia
-        uint32_t reserved4;
-        Float3 velocityChange;        // ForceMode.VelocityChange: m/s
-        uint32_t reserved5;
-        Float3 angularVelocityChange; // ForceMode.VelocityChange: rad/s
-        uint32_t reserved6;
-
-        Float4 targetRotation;
-        Float3 targetPosition;
-        uint32_t reserved7;
-
-        // The velocities summed since the body last showed enough energy to stay awake, the angular one in the inertia frame.
-        Float3 sleepLinearSum;
-        uint32_t reserved8;
-        Float3 sleepAngularSum;
-        uint32_t reserved9;
-
         Body* owner;
         Shape* const* shapes;  // shapeCount entries, owned by the Body
         void* collider;        // Unity.Physics blob, owned by managed; null means no collider or a rebuild is due
+
+        void* components[7];
+
+        uint32_t flags; // BodyStateFlags
+        uint32_t shapeCount;
     };
 
-    static_assert(sizeof(BodyData) == 360, "NativeStore.BodyData mirrors this layout");
-    static_assert(offsetof(BodyData, force) == 144);
-    static_assert(offsetof(BodyData, targetRotation) == 272);
-    static_assert(offsetof(BodyData, owner) == 336);
+    static_assert(sizeof(BodyData) == 88, "NativeStore.BodyData mirrors this layout");
+    static_assert(offsetof(BodyData, flags) == 80);
 
     // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
     // one reference and each shape using the material another, because Unity releases a material while shapes still use it.
@@ -564,9 +511,10 @@ namespace Retooled
         int32_t collisionDetectionMode;
         uint32_t positionIterations;
         uint32_t velocityIterations;
+        std::byte home[288]; // NativeStore.BodyHome
     };
 
-    static_assert(sizeof(Body) == 48, "NativeStore.Body mirrors this layout");
+    static_assert(sizeof(Body) == 336, "NativeStore.Body mirrors this layout");
 
     // Mirrored. A shape, and the handle Unity holds. A shape can exist without a body, for use as query geometry.
     struct Shape

@@ -21,6 +21,19 @@ namespace KSP.Retooled.Physics
             return body->world->bodies + body->index;
         }
 
+        /// <summary>Points a row at the components its body holds itself, which never move.</summary>
+        internal static void PointAtHome(NativeStore.BodyData* hot, NativeStore.Body* body)
+        {
+            NativeStore.BodyHome* home = &body->home;
+            hot->pose = &home->pose;
+            hot->velocity = &home->velocity;
+            hot->mass = &home->mass;
+            hot->limits = &home->limits;
+            hot->sleep = &home->sleep;
+            hot->forces = &home->forces;
+            hot->target = &home->target;
+        }
+
         internal static void* Reallocate(NativeStore.StoreGlobals* globals, void* memory, ulong size)
         {
             return new FunctionPointer<NativeStore.ReallocateFunction>(globals->reallocate).Invoke(memory, size);

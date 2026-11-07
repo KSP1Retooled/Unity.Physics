@@ -92,8 +92,8 @@ namespace KSP.Retooled.Physics
                 const NativeStore.BodyFlags held = NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
                 if ((body->flags & held) == 0)
                 {
-                    Motions[i].InverseMass = body->inverseMass;
-                    Motions[i].InverseInertia = body->inverseInertia;
+                    Motions[i].InverseMass = body->mass->InverseMass;
+                    Motions[i].InverseInertia = body->mass->InverseInertia;
                 }
             }
         }
@@ -166,7 +166,7 @@ namespace KSP.Retooled.Physics
                 if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
                 {
                     UpdateWakeCounter(body, touchesStill[i] ? contacts[i] : 0);
-                    islandAwake[Find(parents, i)] |= body->wakeCounter > 0.0f;
+                    islandAwake[Find(parents, i)] |= body->sleep->WakeCounter > 0.0f;
                 }
             }
 
@@ -176,11 +176,11 @@ namespace KSP.Retooled.Physics
                 if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0 && !islandAwake[Find(parents, i)])
                 {
                     body->flags |= NativeStore.BodyFlags.Sleeping;
-                    body->wakeCounter = 0.0f;
-                    body->linearVelocity = float3.zero;
-                    body->angularVelocity = float3.zero;
-                    body->sleepLinearSum = float3.zero;
-                    body->sleepAngularSum = float3.zero;
+                    body->sleep->WakeCounter = 0.0f;
+                    body->velocity->Linear = float3.zero;
+                    body->velocity->Angular = float3.zero;
+                    body->sleep->LinearSum = float3.zero;
+                    body->sleep->AngularSum = float3.zero;
                 }
             }
         }
@@ -199,35 +199,35 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private void UpdateWakeCounter(NativeStore.BodyData* body, int contacts)
         {
-            float counter = body->wakeCounter;
+            float counter = body->sleep->WakeCounter;
             if (counter < StoreOps.WakeCounterReset * 0.5f || counter < DeltaTime)
             {
-                quaternion worldFromInertia = math.mul(body->rotation, body->inertiaRotation);
-                body->sleepLinearSum += body->linearVelocity;
-                body->sleepAngularSum += math.rotate(math.conjugate(worldFromInertia), body->angularVelocity);
+                quaternion worldFromInertia = math.mul(body->pose->Rotation, body->mass->InertiaRotation);
+                body->sleep->LinearSum += body->velocity->Linear;
+                body->sleep->AngularSum += math.rotate(math.conjugate(worldFromInertia), body->velocity->Angular);
 
                 float cluster = 1.0f + math.min(contacts, MaximumCountedContacts);
-                float threshold = cluster * body->sleepThreshold;
+                float threshold = cluster * body->sleep->Threshold;
                 float energy = NormalizedEnergy(body);
                 if (energy >= threshold)
                 {
                     float factor = threshold == 0.0f ? 2.0f : math.min(energy / threshold, 2.0f);
-                    body->wakeCounter = factor * 0.5f * StoreOps.WakeCounterReset + DeltaTime * (cluster - 1.0f);
-                    body->sleepLinearSum = float3.zero;
-                    body->sleepAngularSum = float3.zero;
+                    body->sleep->WakeCounter = factor * 0.5f * StoreOps.WakeCounterReset + DeltaTime * (cluster - 1.0f);
+                    body->sleep->LinearSum = float3.zero;
+                    body->sleep->AngularSum = float3.zero;
                     return;
                 }
             }
 
-            body->wakeCounter = math.max(counter - DeltaTime, 0.0f);
+            body->sleep->WakeCounter = math.max(counter - DeltaTime, 0.0f);
         }
 
         private static float NormalizedEnergy(NativeStore.BodyData* body)
         {
-            float3 angular = body->sleepAngularSum;
-            float inverseMass = body->inverseMass != 0.0f ? body->inverseMass : 1.0f;
-            float rotational = math.dot(angular * angular, body->inertia) * inverseMass;
-            return 0.5f * (rotational + math.lengthsq(body->sleepLinearSum));
+            float3 angular = body->sleep->AngularSum;
+            float inverseMass = body->mass->InverseMass != 0.0f ? body->mass->InverseMass : 1.0f;
+            float rotational = math.dot(angular * angular, body->mass->Inertia) * inverseMass;
+            return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
         }
 
         private static int Find(NativeArray<int> parents, int index)

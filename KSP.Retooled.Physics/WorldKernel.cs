@@ -166,29 +166,30 @@ namespace KSP.Retooled.Physics
 
             NativeStore.BodyData* hot = world->bodies + body->index;
             *hot = default;
-            hot->rotation = a->rotation;
-            hot->position = a->position;
+            hot->owner = body;
+            StoreOps.PointAtHome(hot, body);
+            hot->pose->Rotation = a->rotation;
+            hot->pose->Position = a->position;
             hot->flags = (NativeStore.BodyFlags)a->flags | NativeStore.BodyFlags.ColliderDirty;
             if (a->enabled != 0)
             {
                 hot->flags |= NativeStore.BodyFlags.Static;
             }
 
-            hot->mass = a->scalar;
-            hot->inverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
-            hot->inertia = new float3(1.0f);
-            hot->inverseInertia = new float3(1.0f);
-            hot->inertiaRotation = quaternion.identity;
-            hot->linearDamping = a->scalar2;
-            hot->angularDamping = a->scalar3;
-            hot->maxLinearVelocity = DefaultMaxLinearVelocity;
-            hot->maxAngularVelocity = DefaultMaxAngularVelocity;
-            hot->maxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
-            hot->wakeCounter = StoreOps.WakeCounterReset;
-            hot->sleepThreshold = DefaultSleepThreshold;
-            hot->targetRotation = hot->rotation;
-            hot->targetPosition = hot->position;
-            hot->owner = body;
+            hot->mass->Mass = a->scalar;
+            hot->mass->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
+            hot->mass->Inertia = new float3(1.0f);
+            hot->mass->InverseInertia = new float3(1.0f);
+            hot->mass->InertiaRotation = quaternion.identity;
+            hot->limits->LinearDamping = a->scalar2;
+            hot->limits->AngularDamping = a->scalar3;
+            hot->limits->MaxLinearVelocity = DefaultMaxLinearVelocity;
+            hot->limits->MaxAngularVelocity = DefaultMaxAngularVelocity;
+            hot->limits->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
+            hot->sleep->WakeCounter = StoreOps.WakeCounterReset;
+            hot->sleep->Threshold = DefaultSleepThreshold;
+            hot->target->Rotation = a->rotation;
+            hot->target->Position = a->position;
 
             world->staticsVersion++;
             StoreOps.MarkQueryDirty(world);

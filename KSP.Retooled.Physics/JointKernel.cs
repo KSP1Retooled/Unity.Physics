@@ -256,7 +256,7 @@ namespace KSP.Retooled.Physics
         internal static void WakeRow(NativeStore.BodyData* hot)
         {
             hot->flags &= ~NativeStore.BodyFlags.Sleeping;
-            hot->wakeCounter = math.max(hot->wakeCounter, StoreOps.WakeCounterReset);
+            hot->sleep->WakeCounter = math.max(hot->sleep->WakeCounter, StoreOps.WakeCounterReset);
         }
 
         internal static NativeStore.JointData* Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)

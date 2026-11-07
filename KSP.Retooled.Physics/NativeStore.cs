@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using KSP.Retooled.Components.Physics;
 using Unity.Mathematics;
 
 namespace KSP.Retooled.Physics
@@ -55,61 +56,33 @@ namespace KSP.Retooled.Physics
         [StructLayout(LayoutKind.Sequential)]
         internal struct BodyData
         {
-            public quaternion rotation;
-            public float3 position;
-            public BodyFlags flags;
-
-            public float3 linearVelocity;
-            public float mass;
-
-            public float3 angularVelocity;
-            public float inverseMass;
-
-            public float3 inertia;
-            public float linearDamping;
-
-            public float3 inverseInertia;
-            public float angularDamping;
-
-            public quaternion inertiaRotation;
-
-            public float3 localCenterOfMass;
-            public float maxLinearVelocity;
-
-            public float maxAngularVelocity;
-            public float maxDepenetrationVelocity;
-            public float wakeCounter;
-            public float sleepThreshold;
-
-            public float3 force;
-            public uint shapeCount;
-            public float3 torque;
-            private readonly uint reserved0;
-            public float3 acceleration;
-            private readonly uint reserved1;
-            public float3 angularAcceleration;
-            private readonly uint reserved2;
-            public float3 impulse;
-            private readonly uint reserved3;
-            public float3 angularImpulse;
-            private readonly uint reserved4;
-            public float3 velocityChange;
-            private readonly uint reserved5;
-            public float3 angularVelocityChange;
-            private readonly uint reserved6;
-
-            public quaternion targetRotation;
-            public float3 targetPosition;
-            private readonly uint reserved7;
-
-            public float3 sleepLinearSum;
-            private readonly uint reserved8;
-            public float3 sleepAngularSum;
-            private readonly uint reserved9;
-
             public Body* owner;
             public ShapeData** shapes;
             public void* collider;
+
+            public BodyPose* pose;
+            public BodyVelocity* velocity;
+            public BodyMass* mass;
+            public BodyLimits* limits;
+            public BodySleep* sleep;
+            public BodyForces* forces;
+            public BodyTarget* target;
+
+            public BodyFlags flags;
+            public uint shapeCount;
+        }
+
+        /// <summary>A body's components, for as long as they aren't on an entity.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct BodyHome
+        {
+            public BodyPose pose;
+            public BodyVelocity velocity;
+            public BodyMass mass;
+            public BodyLimits limits;
+            public BodySleep sleep;
+            public BodyForces forces;
+            public BodyTarget target;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -124,6 +97,7 @@ namespace KSP.Retooled.Physics
             public int collisionDetectionMode;
             public uint positionIterations;
             public uint velocityIterations;
+            public BodyHome home;
         }
 
         /// <summary>A shape's handle points at this, and its first field makes that a <see cref="ShapeData"/> as well.</summary>

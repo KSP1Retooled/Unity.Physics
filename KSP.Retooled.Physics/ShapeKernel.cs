@@ -285,8 +285,8 @@ namespace KSP.Retooled.Physics
             }
 
             NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
-            a->position = hot->position + math.rotate(hot->rotation, shape->data.localPosition);
-            a->rotation = math.mul(hot->rotation, shape->data.localRotation);
+            a->position = hot->pose->Position + math.rotate(hot->pose->Rotation, shape->data.localPosition);
+            a->rotation = math.mul(hot->pose->Rotation, shape->data.localRotation);
         }
 
         private static void SetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
@@ -318,8 +318,8 @@ namespace KSP.Retooled.Physics
             if (shape->body != null)
             {
                 NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
-                position = hot->position;
-                rotation = hot->rotation;
+                position = hot->pose->Position;
+                rotation = hot->pose->Rotation;
             }
 
             ShapeMath.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);

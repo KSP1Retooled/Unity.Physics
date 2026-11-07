@@ -268,10 +268,10 @@ namespace KSP.Retooled.Physics
                 FirstPoint = Points.Length,
                 Normal = normal,
                 BuiltNormal = header.Normal,
-                LinearVelocityA = first.linearVelocity,
-                AngularVelocityA = first.angularVelocity,
-                LinearVelocityB = second.linearVelocity,
-                AngularVelocityB = second.angularVelocity,
+                LinearVelocityA = first.velocity->Linear,
+                AngularVelocityA = first.velocity->Angular,
+                LinearVelocityB = second.velocity->Linear,
+                AngularVelocityB = second.velocity->Angular,
                 Trigger = trigger,
             });
 
@@ -412,7 +412,7 @@ namespace KSP.Retooled.Physics
 
         private static float3 PointVelocity(ref NativeStore.BodyData body, float3 linear, float3 angular, float3 position)
         {
-            float3 center = (float3)body.position + math.rotate(body.rotation, body.localCenterOfMass);
+            float3 center = (float3)body.pose->Position + math.rotate(body.pose->Rotation, body.mass->LocalCenterOfMass);
             return linear + math.cross(angular, position - center);
         }
 
@@ -443,7 +443,7 @@ namespace KSP.Retooled.Physics
             }
 
             ref NativeStore.BodyData row = ref Store[other.Entity.Index];
-            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.position, row.rotation, out float3 lower, out float3 upper);
+            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.pose->Position, row.pose->Rotation, out float3 lower, out float3 upper);
             float3 centre = math.transform(math.inverse(field.WorldFromBody), (lower + upper) * 0.5f);
             return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
         }
@@ -924,7 +924,7 @@ namespace KSP.Retooled.Physics
                 {
                     NativeStore.BodyData* a = World->bodies + rowFirst;
                     NativeStore.BodyData* b = World->bodies + rowSecond;
-                    NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->linearVelocity, a->angularVelocity, b->linearVelocity, b->angularVelocity);
+                    NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, a->velocity->Angular, b->velocity->Linear, b->velocity->Angular);
                     World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
                     {
                         thisCollider = EngineId(first->userData),

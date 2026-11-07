@@ -624,7 +624,7 @@ namespace KSP.Retooled.Physics
             }
 
             NativeStore.BodyData* hot = StoreOps.Hot(body);
-            return (hot->flags & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Static)) != 0 ? 0.0f : hot->inverseMass;
+            return (hot->flags & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Static)) != 0 ? 0.0f : hot->mass->InverseMass;
         }
 
         private static float InverseInertia(NativeStore.Body* body, float3 worldAxis)
@@ -640,8 +640,8 @@ namespace KSP.Retooled.Physics
                 return 0.0f;
             }
 
-            float3 axis = math.rotate(math.conjugate(math.mul(hot->rotation, hot->inertiaRotation)), worldAxis);
-            return math.csum(axis * axis * hot->inverseInertia);
+            float3 axis = math.rotate(math.conjugate(math.mul(hot->pose->Rotation, hot->mass->InertiaRotation)), worldAxis);
+            return math.csum(axis * axis * hot->mass->InverseInertia);
         }
 
         internal static float LinearMass(NativeStore.JointData* joint)
@@ -688,12 +688,12 @@ namespace KSP.Retooled.Physics
 
         internal static quaternion WorldRotation0(NativeStore.JointData* joint)
         {
-            return joint->body0 != null ? math.mul(StoreOps.Hot(joint->body0)->rotation, joint->rotation0) : joint->rotation0;
+            return joint->body0 != null ? math.mul(StoreOps.Hot(joint->body0)->pose->Rotation, joint->rotation0) : joint->rotation0;
         }
 
         internal static quaternion WorldRotation1(NativeStore.JointData* joint)
         {
-            return joint->body1 != null ? math.mul(StoreOps.Hot(joint->body1)->rotation, joint->rotation1) : joint->rotation1;
+            return joint->body1 != null ? math.mul(StoreOps.Hot(joint->body1)->pose->Rotation, joint->rotation1) : joint->rotation1;
         }
 
         private static float3 WorldAnchor(NativeStore.Body* body, float3 local)
@@ -704,7 +704,7 @@ namespace KSP.Retooled.Physics
             }
 
             NativeStore.BodyData* hot = StoreOps.Hot(body);
-            return hot->position + math.rotate(hot->rotation, local);
+            return hot->pose->Position + math.rotate(hot->pose->Rotation, local);
         }
 
         /// <summary>Frame 1's origin in frame 0's axes, the coordinate a linear drive and its limits measure.</summary>
@@ -717,8 +717,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Body 1's angular velocity relative to body 0, in world space.</summary>
         internal static float3 RelativeAngularVelocity(NativeStore.JointData* joint)
         {
-            float3 first = joint->body0 != null ? StoreOps.Hot(joint->body0)->angularVelocity : float3.zero;
-            float3 second = joint->body1 != null ? StoreOps.Hot(joint->body1)->angularVelocity : float3.zero;
+            float3 first = joint->body0 != null ? StoreOps.Hot(joint->body0)->velocity->Angular : float3.zero;
+            float3 second = joint->body1 != null ? StoreOps.Hot(joint->body1)->velocity->Angular : float3.zero;
             return second - first;
         }
 

@@ -741,7 +741,7 @@ namespace KSP.Retooled.Physics
         private static RigidTransform WorldPose(NativeStore.ShapeData* shape, NativeStore.Body* owner)
         {
             NativeStore.BodyData* body = StoreOps.Hot(owner);
-            return math.mul(new RigidTransform(body->rotation, body->position), new RigidTransform(shape->localRotation, shape->localPosition));
+            return math.mul(new RigidTransform(body->pose->Rotation, body->pose->Position), new RigidTransform(shape->localRotation, shape->localPosition));
         }
 
         /// <summary>
