@@ -44,6 +44,14 @@ namespace Unity.Physics
         /// <summary>   Settings for the direct solver. </summary>
         public Solver.DirectSolverSettings DirectSolverSettings;
 
+        /// <summary>
+        /// The caller's word that no solid contact touches a body the direct solver holds this step, which only the contacts
+        /// can show. Pairs are marked for coupling from the broad phase, so a trigger or a contact a job disabled would
+        /// otherwise put every direct joint through the iterative solver twice in each substep. With this set, those pairs
+        /// aren't solved at all and raise no events.
+        /// </summary>
+        public bool SkipDirectCoupling;
+
         /// <summary>   Maximum relative velocity that can be produced when separating intersecting dynamic rigid bodies. </summary>
         public float MaxDynamicDepenetrationVelocity;
 

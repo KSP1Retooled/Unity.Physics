@@ -192,6 +192,8 @@ namespace Unity.Physics
             public int NumSolverIterations;
             /// <summary> The direct solver settings. </summary>
             public DirectSolverSettings DirectSolverSettings;
+            /// <summary> See <see cref="SimulationStepInput.SkipDirectCoupling"/>. </summary>
+            public bool SkipDirectCoupling;
             /// <summary> The current substep. Is -1 when uninitialized. </summary>
             public int CurrentSubstep;
             /// <summary> The current solver iteration. Is -1 when uninitialized. </summary>
@@ -1042,7 +1044,7 @@ namespace Unity.Physics
 
                 if (needSolver)
                 {
-                    bool needCoupling = solverSchedulerInfo.CouplingPairsIterativeScheduling.NumWorkItems[0] > 0;
+                    bool needCoupling = !stepInput.SkipDirectCoupling && solverSchedulerInfo.CouplingPairsIterativeScheduling.NumWorkItems[0] > 0;
 
                     if (!needCoupling)
                     {
@@ -1247,7 +1249,7 @@ namespace Unity.Physics
             // Check if coupling between direct and iterative solver is needed.
             // If not, simply solve direct and iterative constraints separately, and only once.
             // Otherwise, use coupling approach.
-            if (solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value == 0)
+            if (stepInput.SkipDirectCoupling || solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value == 0)
             {
                 if (solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value > 0)
                 {

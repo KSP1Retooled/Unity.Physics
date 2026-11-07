@@ -373,6 +373,7 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
+                SkipDirectCoupling = input.SkipDirectCoupling,
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1
             };
@@ -617,6 +618,7 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
+                SkipDirectCoupling = input.SkipDirectCoupling,
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1
             };
