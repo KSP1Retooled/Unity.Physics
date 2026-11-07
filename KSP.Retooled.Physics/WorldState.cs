@@ -33,6 +33,7 @@ namespace KSP.Retooled.PhysicsBackend
         private NativeList<Joint> builtJoints = new NativeList<Joint>(Allocator.Persistent);
         private NativeList<bool> directBodies = new NativeList<bool>(Allocator.Persistent);
         private NativeReference<bool> directBodyTouched = new NativeReference<bool>(Allocator.Persistent);
+        private DirectSolverCache directSolverCache = DirectSolverCache.Create();
         private NativeList<QueryBody> queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
         private NativeList<QueryShape> queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
         private NativeList<ManifoldRecord> manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
@@ -79,6 +80,7 @@ namespace KSP.Retooled.PhysicsBackend
             builtJoints.Dispose();
             directBodies.Dispose();
             directBodyTouched.Dispose();
+            directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
             manifolds.Dispose();
@@ -129,6 +131,7 @@ namespace KSP.Retooled.PhysicsBackend
                 NumSubsteps = Substeps,
                 NumSolverIterations = SolverIterations,
                 DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                DirectSolverCache = directSolverCache,
                 SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                 MaxDynamicDepenetrationVelocity = SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
                 MaxStaticDepenetrationVelocity = SimulationStepInput.DefaultMaxStaticDepenetrationVelocity,

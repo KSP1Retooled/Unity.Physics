@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Unity.Burst;
 using Unity.Collections;
@@ -41,15 +42,16 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             [NativeDisableUnsafePtrRestriction]
             public bool* RanManaged;
 
+            [NativeDisableUnsafePtrRestriction]
+            public SparseConstraintSolver* Solver;
+
             public bool Bounded;
 
             public void Execute()
             {
                 MarkManaged();
-                var solver = new SparseConstraintSolver(Allocator.Temp);
-                solver.Solve(*Problem, Impulses, Bounded);
-                *Statistics = solver.Stats;
-                solver.Dispose();
+                Solver->Solve(*Problem, Impulses, Bounded);
+                *Statistics = Solver->Stats;
             }
 
             [BurstDiscard]
@@ -81,20 +83,30 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 throw new InvalidOperationException($"No captures under {root}");
             }
 
-            StringBuilder csv = new StringBuilder("capture,rows,bodies,blocks,nodes,factor_scalars,pivots,ms,analyze_ms,");
-            csv.AppendLine("assemble_ms,factorize_ms,substitute_ms,pivot_ms,impulse_error");
+            StringBuilder csv = new StringBuilder("capture,rows,bodies,blocks,nodes,factor_scalars,pivots,factorizations,");
+            csv.AppendLine("refinements,residual,ms,analyze_ms,assemble_ms,factorize_ms,substitute_ms,pivot_ms,impulse_error");
 
             WaitForBurst(SolverCapture.Read(files[0]));
-            foreach (string file in files)
+            foreach (IGrouping<string, string> run in files.GroupBy(RunOf))
             {
-                SolverCapture.Saved saved = SolverCapture.Read(file);
-                string name = Path.GetRelativePath(root, file).Replace('\\', '/');
-                string line = Measure(name, saved);
-                csv.AppendLine(line);
-                Debug.Log($"[SolverCaptureBench] {line}");
+                List<string> names = run.Select(file => Path.GetRelativePath(root, file).Replace('\\', '/')).ToList();
+                List<SolverCapture.Saved> problems = run.Select(SolverCapture.Read).ToList();
+                foreach (string line in Measure(names, problems))
+                {
+                    csv.AppendLine(line);
+                    Debug.Log($"[SolverCaptureBench] {line}");
+                }
             }
 
             File.WriteAllText(Path.Combine(root, "bench.csv"), csv.ToString());
+        }
+
+        /// <summary>Files named run-solve.bin are consecutive solves of one run.</summary>
+        private static string RunOf(string file)
+        {
+            string name = Path.GetFileNameWithoutExtension(file);
+            int dash = name.IndexOf('-');
+            return Path.Combine(Path.GetDirectoryName(file), dash < 0 ? name : name.Substring(0, dash));
         }
 
         /// <summary>Burst compiles in the background; a job that ran managed says so.</summary>
@@ -102,53 +114,69 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             float[] impulses = new float[saved.RowCount];
             Stopwatch wait = Stopwatch.StartNew();
-            while (Solve(saved, impulses, out _))
+            var solver = new SparseConstraintSolver(Allocator.Persistent);
+            while (Solve(ref solver, saved, impulses, out _))
             {
                 if (wait.Elapsed.TotalSeconds > BurstWaitSeconds)
                 {
+                    solver.Dispose();
                     throw new TimeoutException("Burst never compiled the solver");
                 }
 
                 System.Threading.Thread.Sleep(250);
             }
+
+            solver.Dispose();
         }
 
-        private static string Measure(string name, SolverCapture.Saved saved)
+        /// <summary>Solves a run in order with one solver, as a flight does, starting cold each time.</summary>
+        private static IEnumerable<string> Measure(List<string> names, List<SolverCapture.Saved> problems)
         {
-            float[] impulses = new float[saved.RowCount];
-            List<Sample> samples = new List<Sample>();
+            List<Sample>[] samples = names.Select(_ => new List<Sample>()).ToArray();
+            double[] errors = new double[names.Count];
             for (int repeat = 0; repeat < Repeats; repeat++)
             {
-                Stopwatch watch = Stopwatch.StartNew();
-                bool managed = Solve(saved, impulses, out SparseConstraintSolver.Statistics statistics);
-                watch.Stop();
-                if (managed)
+                var solver = new SparseConstraintSolver(Allocator.Persistent);
+                for (int i = 0; i < problems.Count; i++)
                 {
-                    throw new InvalidOperationException("The solve ran without Burst");
+                    SolverCapture.Saved saved = problems[i];
+                    float[] impulses = new float[saved.RowCount];
+                    Stopwatch watch = Stopwatch.StartNew();
+                    bool managed = Solve(ref solver, saved, impulses, out SparseConstraintSolver.Statistics statistics);
+                    watch.Stop();
+                    if (managed)
+                    {
+                        solver.Dispose();
+                        throw new InvalidOperationException("The solve ran without Burst");
+                    }
+
+                    samples[i].Add(new Sample(watch.Elapsed.TotalMilliseconds, statistics));
+                    for (int row = 0; row < saved.RowCount; row++)
+                    {
+                        errors[i] = math.max(errors[i], math.abs(impulses[row] - saved.Impulses[row]));
+                    }
                 }
 
-                samples.Add(new Sample(watch.Elapsed.TotalMilliseconds, statistics));
+                solver.Dispose();
             }
 
-            samples.Sort((a, b) => a.Total.CompareTo(b.Total));
-            Sample median = samples[samples.Count / 2];
-            SparseConstraintSolver.Statistics stats = median.Statistics;
-
-            double error = 0.0;
-            for (int row = 0; row < saved.RowCount; row++)
+            for (int i = 0; i < problems.Count; i++)
             {
-                error = math.max(error, math.abs(impulses[row] - saved.Impulses[row]));
+                SolverCapture.Saved saved = problems[i];
+                samples[i].Sort((a, b) => a.Total.CompareTo(b.Total));
+                Sample median = samples[i][samples[i].Count / 2];
+                SparseConstraintSolver.Statistics stats = median.Statistics;
+                yield return string.Join(",", names[i], Count(saved.RowCount), Count(saved.Bodies.Length),
+                    Count(saved.Blocks.Length), Count(stats.Nodes), Count(stats.FactorScalars), Count(stats.PivotingIterations),
+                    Count(stats.Factorizations), Count(stats.Refinements), Number(stats.Residual), Time(median.Total),
+                    Milliseconds(stats.AnalyzeTime), Milliseconds(stats.AssembleTime), Milliseconds(stats.FactorizeTime),
+                    Milliseconds(stats.SubstituteTime), Milliseconds(stats.PivotTime), Number(errors[i]));
             }
-
-            return string.Join(",", name, Count(saved.RowCount), Count(saved.Bodies.Length), Count(saved.Blocks.Length),
-                Count(stats.Nodes), Count(stats.FactorScalars), Count(stats.PivotingIterations), Time(median.Total),
-                Milliseconds(stats.AnalyzeTime), Milliseconds(stats.AssembleTime), Milliseconds(stats.FactorizeTime),
-                Milliseconds(stats.SubstituteTime), Milliseconds(stats.PivotTime),
-                error.ToString("G4", CultureInfo.InvariantCulture));
         }
 
         /// <summary>Solves on this thread and returns whether that ran managed.</summary>
-        private static bool Solve(SolverCapture.Saved saved, float[] impulses, out SparseConstraintSolver.Statistics statistics)
+        private static bool Solve(ref SparseConstraintSolver solver, SolverCapture.Saved saved, float[] impulses,
+            out SparseConstraintSolver.Statistics statistics)
         {
             SparseConstraintSolver.Statistics result = default;
             bool ranManaged = false;
@@ -161,6 +189,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             fixed (float* upper = saved.Upper)
             fixed (byte* initialStates = saved.InitialStates)
             fixed (float* output = impulses)
+            fixed (SparseConstraintSolver* solverPointer = &solver)
             {
                 var problem = new SparseConstraintSolver.Problem
                 {
@@ -183,6 +212,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                     Impulses = output,
                     Statistics = &result,
                     RanManaged = &ranManaged,
+                    Solver = solverPointer,
                     Bounded = saved.Bounded,
                 }.Run();
             }
@@ -194,6 +224,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         private static string Count(long value)
         {
             return value.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static string Number(double value)
+        {
+            return value.ToString("G4", CultureInfo.InvariantCulture);
         }
 
         private static string Time(double milliseconds)

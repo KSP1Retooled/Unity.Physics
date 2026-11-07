@@ -496,6 +496,88 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Assert.That(large, Is.LessThan(small * 5), "four times the craft");
         }
 
+        /// <summary>Moves every Jacobian entry by up to this fraction of itself, as a substep's motion would.</summary>
+        private static void Nudge(Scenario scenario, uint seed, float fraction)
+        {
+            Random random = new Random(seed);
+            for (int i = 0; i < scenario.Jacobian.Count; i++)
+            {
+                scenario.Jacobian[i] *= 1.0f + random.NextFloat(-fraction, fraction);
+            }
+
+            for (int i = 0; i < scenario.RightHandSide.Count; i++)
+            {
+                scenario.RightHandSide[i] += random.NextFloat(-1.0f, 1.0f);
+            }
+        }
+
+        [Test]
+        public void ANearbyProblemReusesTheFactorization([Range(1u, 6u)] uint seed)
+        {
+            Scenario scenario = Craft(seed, 12, 5);
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            Solve(ref solver, scenario, false, impulses);
+
+            Nudge(scenario, seed, 1e-4f);
+            Solve(ref solver, scenario, false, impulses);
+
+            SparseConstraintSolver.Statistics statistics = solver.Stats;
+            solver.Dispose();
+            Assert.That(statistics.Factorizations, Is.EqualTo(0));
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void AFarAwayProblemStillGetsTheRightAnswer([Range(1u, 6u)] uint seed)
+        {
+            Scenario scenario = Craft(seed, 12, 5);
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            Solve(ref solver, scenario, false, impulses);
+
+            Nudge(scenario, seed, 0.9f);
+            Solve(ref solver, scenario, false, impulses);
+
+            SparseConstraintSolver.Statistics statistics = solver.Stats;
+            solver.Dispose();
+            Assert.That(statistics.Factorizations, Is.EqualTo(1));
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void ADifferentCraftGetsItsOwnStructure()
+        {
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            Scenario first = Craft(1, 12, 5);
+            Scenario second = Craft(2, 20, 3);
+            Solve(ref solver, first, false, new float[first.Rows]);
+
+            float[] impulses = new float[second.Rows];
+            Solve(ref solver, second, false, impulses);
+
+            solver.Dispose();
+            AssertSolves(second, impulses, 2e-3);
+        }
+
+        [Test]
+        public void ABoundThatStopsHoldingIsNoticedOnReuse()
+        {
+            Scenario scenario = Craft(3, 12, 5, 0.5f);
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            Assert.That(Solve(ref solver, scenario, true, impulses), Is.True);
+
+            for (int i = 0; i < scenario.RightHandSide.Count; i++)
+            {
+                scenario.RightHandSide[i] *= -1.0f;
+            }
+
+            Assert.That(Solve(ref solver, scenario, true, impulses), Is.True);
+            solver.Dispose();
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
         /// <summary>A stack with a radial on every level and a strut between neighbours, as a braced booster has.</summary>
         private static long Ladder(int levels)
         {
