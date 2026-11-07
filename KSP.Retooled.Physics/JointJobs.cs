@@ -10,6 +10,39 @@ using PhysicsJoint = Unity.Physics.Joint;
 
 namespace KSP.Retooled.PhysicsBackend
 {
+    /// <summary>Finds the bodies direct joints hold, which is what decides whether a contact needs coupling to them.</summary>
+    [BurstCompile]
+    internal unsafe struct MarkDirectBodiesJob : IJob
+    {
+        [ReadOnly]
+        public NativeArray<PhysicsJoint> Joints;
+
+        /// <summary>One entry for each dynamic body, which come first in the built world.</summary>
+        public NativeArray<bool> Bodies;
+
+        public void Execute()
+        {
+            UnsafeUtility.MemClear(Bodies.GetUnsafePtr(), Bodies.Length);
+            for (int i = 0; i < Joints.Length; i++)
+            {
+                PhysicsJoint joint = Joints[i];
+                if (joint.SolverType == SolverType.Direct)
+                {
+                    Mark(joint.BodyPair.BodyIndexA);
+                    Mark(joint.BodyPair.BodyIndexB);
+                }
+            }
+        }
+
+        private void Mark(int index)
+        {
+            if (index < Bodies.Length)
+            {
+                Bodies[index] = true;
+            }
+        }
+    }
+
     /// <summary>
     /// A sleeping body counts as immovable in the step, so one joined to an awake body wakes with it, as a PhysX island does.
     /// A pass wakes one joint's distance, so it repeats until a chain of bodies has settled.

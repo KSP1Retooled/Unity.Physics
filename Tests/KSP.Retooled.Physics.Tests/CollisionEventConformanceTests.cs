@@ -462,6 +462,42 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Assert.That(rootLog.Enters.Count, Is.EqualTo(1), "the body's object hears its child's trigger too");
         }
 
+        private Rigidbody[] JoinedPair(Vector3 position)
+        {
+            Rigidbody lower = DynamicBox(position);
+            Rigidbody upper = DynamicBox(position + Vector3.up);
+            upper.gameObject.AddComponent<FixedJoint>().connectedBody = lower;
+            return new[] { lower, upper };
+        }
+
+        [Test]
+        public void BodiesHeldByAJointHearATrigger()
+        {
+            TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f)).AddComponent<TriggerLog>();
+            Rigidbody[] pair = JoinedPair(new Vector3(0.0f, 3.0f, 0.0f));
+            TriggerLog visitor = pair[0].gameObject.AddComponent<TriggerLog>();
+
+            Simulate(100);
+
+            Assert.That(zone.Enters.Count, Is.EqualTo(2));
+            Assert.That(zone.Exits.Count, Is.EqualTo(2));
+            Assert.That(visitor.Enters.Count, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void BodiesHeldByAJointLandInsideATrigger()
+        {
+            Ground();
+            Trigger(new Vector3(0.0f, 2.0f, 0.0f), new Vector3(8.0f, 8.0f, 8.0f));
+            Rigidbody[] pair = JoinedPair(new Vector3(0.0f, 3.0f, 0.0f));
+
+            Simulate(150);
+
+            Assert.That(pair[0].position.y, Is.EqualTo(0.5f).Within(0.02f));
+            Assert.That(pair[1].position.y, Is.EqualTo(1.5f).Within(0.02f));
+            Assert.That(pair[0].linearVelocity.magnitude, Is.LessThan(0.05f));
+        }
+
         [Test]
         public void AnIgnoredPairDoesNotTrigger()
         {

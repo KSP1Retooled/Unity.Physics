@@ -31,6 +31,8 @@ namespace KSP.Retooled.PhysicsBackend
         private NativeList<int> staticIndices = new NativeList<int>(Allocator.Persistent);
         private NativeList<int> builtIndices = new NativeList<int>(Allocator.Persistent);
         private NativeList<Joint> builtJoints = new NativeList<Joint>(Allocator.Persistent);
+        private NativeList<bool> directBodies = new NativeList<bool>(Allocator.Persistent);
+        private NativeReference<bool> directBodyTouched = new NativeReference<bool>(Allocator.Persistent);
         private NativeList<QueryBody> queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
         private NativeList<QueryShape> queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
         private NativeList<ManifoldRecord> manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
@@ -75,6 +77,8 @@ namespace KSP.Retooled.PhysicsBackend
             staticIndices.Dispose();
             builtIndices.Dispose();
             builtJoints.Dispose();
+            directBodies.Dispose();
+            directBodyTouched.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
             manifolds.Dispose();
@@ -113,6 +117,10 @@ namespace KSP.Retooled.PhysicsBackend
             JobHandle built = Build(deltaTime).Schedule();
             built = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, gravity, staticsChanged.AsReadOnly(), built);
 
+            directBodies.ResizeUninitialized(dynamicIndices.Length);
+            new MarkDirectBodiesJob { Joints = builtJoints.AsArray(), Bodies = directBodies.AsArray() }.Run();
+            directBodyTouched.Value = false;
+
             SimulationStepInput input = new SimulationStepInput
             {
                 World = world,
@@ -144,6 +152,8 @@ namespace KSP.Retooled.PhysicsBackend
                 Records = manifolds,
                 Points = manifoldPoints,
                 LastImpulses = lastImpulses,
+                DirectBodies = directBodies.AsArray(),
+                DirectBodyTouched = directBodyTouched,
                 DeltaTime = deltaTime,
                 BounceThreshold = store->bounceThreshold,
             }.Schedule(singleton, ref world, built);
@@ -173,6 +183,7 @@ namespace KSP.Retooled.PhysicsBackend
 
             using (BackendMarkers.StepScheduleSolve.Auto())
             {
+                input.SkipDirectCoupling = !directBodyTouched.Value;
                 simulation.ScheduleSolveAndIntegrateJobs(input, built);
             }
 

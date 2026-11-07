@@ -183,6 +183,14 @@ namespace KSP.Retooled.PhysicsBackend
         [ReadOnly]
         public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
 
+        /// <summary>For each dynamic body, whether a direct joint holds it.</summary>
+        [ReadOnly]
+        public NativeArray<bool> DirectBodies;
+
+        /// <summary>Set if a contact that gets solved reaches a body in <see cref="DirectBodies"/>.</summary>
+        [NativeDisableContainerSafetyRestriction]
+        public NativeReference<bool> DirectBodyTouched;
+
         public float DeltaTime;
         public float BounceThreshold;
 
@@ -228,6 +236,11 @@ namespace KSP.Retooled.PhysicsBackend
             }
 
             bool trigger = (header.JacobianFlags & JacobianFlags.IsTrigger) != 0;
+            if (!trigger && (IsDirect(header.BodyIndexA) || IsDirect(header.BodyIndexB)))
+            {
+                DirectBodyTouched.Value = true;
+            }
+
             int rowA = bodyA.Entity.Index;
             int rowB = bodyB.Entity.Index;
             if (!CanReport(Store[rowA].flags, Store[rowB].flags, trigger))
@@ -263,6 +276,11 @@ namespace KSP.Retooled.PhysicsBackend
             });
 
             return true;
+        }
+
+        private readonly bool IsDirect(int builtIndex)
+        {
+            return builtIndex < DirectBodies.Length && DirectBodies[builtIndex];
         }
 
         private void Add(float3 position, float distance)
