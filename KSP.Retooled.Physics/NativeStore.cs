@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using KSP.Retooled.Components.Physics;
+using Unity.Entities;
 using Unity.Mathematics;
 
 namespace KSP.Retooled.Physics
@@ -70,6 +71,10 @@ namespace KSP.Retooled.Physics
 
             public BodyFlags flags;
             public uint shapeCount;
+
+            public Entity entity;
+            public int orderVersion;
+            private readonly uint reserved0;
         }
 
         /// <summary>A body's components, for as long as they aren't on an entity.</summary>

@@ -190,6 +190,7 @@ namespace KSP.Retooled.Physics
             hot->sleep->Threshold = DefaultSleepThreshold;
             hot->target->Rotation = a->rotation;
             hot->target->Position = a->position;
+            BodyEntities.Adopt(hot);
 
             world->staticsVersion++;
             StoreOps.MarkQueryDirty(world);
@@ -207,6 +208,7 @@ namespace KSP.Retooled.Physics
             JointKernel.ForgetBody(world, body);
 
             NativeStore.BodyData* hot = world->bodies + body->index;
+            BodyEntities.Release(hot);
             if (hot->collider != null)
             {
                 if (world->deadColliderCount == world->deadColliderCapacity)
@@ -236,6 +238,7 @@ namespace KSP.Retooled.Physics
             for (uint i = 0; i < world->bodyCount; i++)
             {
                 NativeStore.Body* body = world->bodies[i].owner;
+                BodyEntities.Release(world->bodies + i);
                 StoreOps.DetachAllShapes(body, globals);
                 StoreOps.Release(globals, body);
             }

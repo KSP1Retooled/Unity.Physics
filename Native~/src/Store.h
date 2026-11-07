@@ -74,9 +74,13 @@ namespace Retooled
 
         uint32_t flags; // BodyStateFlags
         uint32_t shapeCount;
+
+        uint64_t entity; // Unity.Entities.Entity, zero while the components are in the Body
+        int32_t orderVersion;
+        uint32_t reserved0;
     };
 
-    static_assert(sizeof(BodyData) == 88, "NativeStore.BodyData mirrors this layout");
+    static_assert(sizeof(BodyData) == 104, "NativeStore.BodyData mirrors this layout");
     static_assert(offsetof(BodyData, flags) == 80);
 
     // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using AOT;
 using Unity.Burst;
+using Unity.Entities;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -13,7 +14,8 @@ namespace KSP.Retooled.Physics
     /// <summary>
     /// Connects the managed core to the plugin. The plugin's store outlives a domain reload and everything managed holds
     /// can be rebuilt from it, so a reload is a detach, which frees managed state, followed by an attach. Until then the
-    /// plugin answers with no simulation and no hits, and every command that needs the core is a no-op answering zero.
+    /// plugin answers with no simulation and no hits, and every command that needs the core is a no-op answering zero. A
+    /// detach also brings bodies back from their entities, because those don't outlive a domain.
     /// </summary>
     /// <remarks>
     /// The player runs on Mono, so the callbacks are delegates kept alive in statics and marked for reverse P/Invoke.
@@ -37,6 +39,7 @@ namespace KSP.Retooled.Physics
         private static IntPtr worldCommandFunction;
         private static IntPtr jointCommandFunction;
         private static bool attached;
+        private static World entityWorld;
         private static long managedJobRuns;
         private static long managedQueries;
         private static long managedCooks;
@@ -128,6 +131,11 @@ namespace KSP.Retooled.Physics
             NativeStore.RetooledPhysics_Attach(&callbacks);
             attached = true;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
+
+            if (entityWorld != null)
+            {
+                BodyEntities.Bind(entityWorld.EntityManager);
+            }
         }
 
         public static void Detach()
@@ -137,6 +145,11 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            if (BodyEntities.Bound)
+            {
+                BodyEntities.Unbind();
+            }
+
             NativeStore.RetooledPhysics_Detach();
             attached = false;
 
@@ -144,6 +157,36 @@ namespace KSP.Retooled.Physics
             for (int i = 0; i < worldCount; i++)
             {
                 ReleaseWorld(NativeStore.RetooledPhysics_GetWorld(i));
+            }
+        }
+
+        /// <summary>Puts bodies on entities in <paramref name="world"/>, unless they already have a world.</summary>
+        internal static void BindWorld(World world)
+        {
+            if (entityWorld != null || !BackendInfo.IsRetooled)
+            {
+                return;
+            }
+
+            entityWorld = world;
+            if (attached)
+            {
+                BodyEntities.Bind(world.EntityManager);
+            }
+        }
+
+        /// <summary>Takes bodies back from <paramref name="world"/>, which is going away, if they are on it.</summary>
+        internal static void UnbindWorld(World world)
+        {
+            if (entityWorld != world)
+            {
+                return;
+            }
+
+            entityWorld = null;
+            if (BodyEntities.Bound)
+            {
+                BodyEntities.Unbind();
             }
         }
 

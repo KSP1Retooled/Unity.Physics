@@ -11,11 +11,9 @@ namespace KSP.Retooled.Physics.Tests
     /// The step once Burst has it. A step that doesn't compile keeps working in Mono and only gets slower, so nothing else
     /// would notice it, and most fixtures finish before the compile does.
     /// </summary>
-    public class StepBurstTests
+    public class StepBurstTests : PhysicsScene
     {
         private const double CompileSeconds = 240.0;
-
-        private GameObject body;
 
         [SetUp]
         public void RequireTheBackend()
@@ -24,17 +22,11 @@ namespace KSP.Retooled.Physics.Tests
             Assume.That(BurstCompiler.IsEnabled, "this run has Burst off");
         }
 
-        [TearDown]
-        public void DestroyTheBody()
-        {
-            Object.DestroyImmediate(body);
-        }
-
         [UnityTest]
         public IEnumerator StepsAndQueryBuildsRunCompiled()
         {
-            body = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            body.AddComponent<Rigidbody>();
+            Rigidbody body = DynamicBox(Vector3.zero);
+            long stepsBefore = BackendHost.StepCount;
 
             Stopwatch wait = Stopwatch.StartNew();
             while (true)
@@ -55,6 +47,7 @@ namespace KSP.Retooled.Physics.Tests
             UnityEngine.Physics.SyncTransforms();
             UnityEngine.Physics.Raycast(Vector3.zero, Vector3.up, 2.0f);
             UnityEngine.Physics.Simulate(0.02f);
+            Assert.That(BackendHost.StepCount, Is.GreaterThan(stepsBefore), "nothing stepped");
             Assert.That(BackendHost.ManagedSteps, Is.EqualTo(ranInMono), "a step or query build went back to Mono");
         }
     }

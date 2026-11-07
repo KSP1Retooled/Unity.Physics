@@ -121,6 +121,7 @@ namespace KSP.Retooled.Physics
 
             store->queryWorld = null;
             store->queryDirty = 1;
+            BodyEntities.PrepareForJobs(store);
             RefreshColliders();
 
             using (BackendMarkers.StepApplyForces.Auto())
@@ -284,6 +285,7 @@ namespace KSP.Retooled.Physics
         internal void BuildForQueries()
         {
             store->queryWorld = null;
+            BodyEntities.PrepareForJobs(store);
             RefreshColliders();
             JobHandle built = Build(0.0f).Schedule();
             bool multiThreaded = dynamicIndices.Length >= MinParallelBodies;

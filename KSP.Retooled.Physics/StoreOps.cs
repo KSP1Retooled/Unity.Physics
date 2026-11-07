@@ -15,10 +15,15 @@ namespace KSP.Retooled.Physics
 
         private const uint MinimumCapacity = 32;
 
-        /// <summary>The body's hot row. It stays valid until a body in the same world is created or destroyed.</summary>
+        /// <summary>
+        /// The body's hot row, with its component pointers current. It stays valid until a body in the same world is created
+        /// or destroyed, and its pointers until the next structural change in the bound Entities world.
+        /// </summary>
         internal static NativeStore.BodyData* Hot(NativeStore.Body* body)
         {
-            return body->world->bodies + body->index;
+            NativeStore.BodyData* hot = body->world->bodies + body->index;
+            BodyEntities.Refresh(hot);
+            return hot;
         }
 
         /// <summary>Points a row at the components its body holds itself, which never move.</summary>
