@@ -370,6 +370,7 @@ namespace Unity.Physics
             var numSolverIterations = input.NumSolverIterations;
             var maxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity;
             var maxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity;
+            var directTimeStep = input.DirectIslandSubsteps > 0 ? input.TimeStep / input.DirectIslandSubsteps : timeStep;
 
             var workItemIndex = 0;
 
@@ -380,7 +381,8 @@ namespace Unity.Physics
                     maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
                     workItemIndex++, dispatchPairs,
                     solverSchedulerInfo.IterativePairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter);
+                    solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
+                    directTimestep: directTimeStep);
             }
 
             // iterative coupling pairs:
@@ -390,7 +392,8 @@ namespace Unity.Physics
                     maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
                     workItemIndex++, dispatchPairs,
                     solverSchedulerInfo.CouplingPairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter);
+                    solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
+                    directTimestep: directTimeStep);
             }
 
             // direct solver pairs:
@@ -400,7 +403,8 @@ namespace Unity.Physics
                     maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
                     workItemIndex, dispatchPairs,
                     solverSchedulerInfo.DirectPairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.DirectPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter);
+                    solverSchedulerInfo.DirectPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
+                    directTimestep: directTimeStep);
             }
         }
 
@@ -419,7 +423,8 @@ namespace Unity.Physics
             int dispatchPairCount,
             ref NativeStream.Reader contactReader,
             ref NativeStream.Writer jacobianWriter,
-            float motorImpulseScale = 1.0f)
+            float motorImpulseScale = 1.0f,
+            float directTimestep = 0.0f)
         {
             contactReader.BeginForEachIndex(workItemIndex);
             jacobianWriter.BeginForEachIndex(workItemIndex);
@@ -677,7 +682,7 @@ namespace Unity.Physics
                     GetMotion(world, bodyIndexB, out MotionVelocity velocityB, out MotionData motionB);
 
                     BuildJointJacobian(ref joint, pair.SolverType, velocityA, velocityB, motionA, motionB, timestep,
-                        numSolverIterations, directSolverSettings, ref jacobianWriter);
+                        numSolverIterations, directSolverSettings, ref jacobianWriter, directTimestep);
                 }
             }
 
@@ -758,7 +763,8 @@ namespace Unity.Physics
 
         internal static unsafe void BuildJointJacobian(ref Joint joint, SolverType solverTypeOverride,
             in MotionVelocity velocityA, in MotionVelocity velocityB, in MotionData motionA, in MotionData motionB,
-            float timestep, int numSolverIterations, in DirectSolverSettings directSolverSettings, [NoAlias] ref NativeStream.Writer jacobianWriter)
+            float timestep, int numSolverIterations, in DirectSolverSettings directSolverSettings, [NoAlias] ref NativeStream.Writer jacobianWriter,
+            float directTimestep = 0.0f)
         {
             var bodyAFromMotionA = new MTransform(motionA.BodyFromMotion);
             MTransform motionAFromJoint = Mul(Inverse(bodyAFromMotionA), joint.AFromJoint);
@@ -853,8 +859,9 @@ namespace Unity.Physics
 
                     if (solverTypeOverride == SolverType.Direct)
                     {
+                        // The direct solve may take smaller substeps than the iterative one, and its regularisation is per substep.
                         header.AccessDirectSolverRegularizationData() = JacobianUtilities.CalculateDirectSolverRegularizationData(
-                            header, constraint, velocityA, velocityB, directSolverSettings, timestep);
+                            header, constraint, velocityA, velocityB, directSolverSettings, directTimestep > 0.0f ? directTimestep : timestep);
                     }
 
                     // Build the Jacobian:
