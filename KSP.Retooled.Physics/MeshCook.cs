@@ -51,6 +51,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(CookFunction))]
         internal static void Cook(NativeStore.CookInput* input, NativeStore.CookOutput* output)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CookMesh.Auto();
+
             bool ranInMono = false;
             CookInMono(input, output, ref ranInMono);
             if (!ranInMono)
@@ -81,6 +83,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(ValidateFunction))]
         internal static int Validate(byte* stream, long size, int convex)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ValidateMesh.Auto();
+
             if (stream == null || size < sizeof(NativeStore.MeshData))
             {
                 return 0;

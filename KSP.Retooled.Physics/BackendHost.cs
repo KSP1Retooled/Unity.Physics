@@ -291,6 +291,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(NativeStore.SimulateCallback))]
         private static void OnSimulate(NativeStore.WorldData* world, float deltaTime)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Step.Auto();
+
             try
             {
                 NoteStep();
@@ -307,6 +309,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(NativeStore.BuildQueryWorldCallback))]
         private static int OnBuildQueryWorld(NativeStore.WorldData* world)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildQueryWorld.Auto();
+
             try
             {
                 return StateOf(world).BuildForQueries();
@@ -322,6 +326,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(NativeStore.DestroyWorldCallback))]
         private static void OnDestroyWorld(NativeStore.WorldData* world)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyWorld.Auto();
+
             try
             {
                 ReleaseWorld(world);

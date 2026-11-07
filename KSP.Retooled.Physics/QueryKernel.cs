@@ -117,6 +117,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(QueryFunction))]
         internal static int Run(uint kind, QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Query.Auto();
+
             int result = 0;
             bool ranInMono = false;
             RunInMono(kind, world, input, output, ref result, ref ranInMono);

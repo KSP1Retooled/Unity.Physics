@@ -53,6 +53,8 @@ namespace KSP.Retooled.PhysicsBackend
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.JointCommand.Auto();
+
             bool ranInMono = false;
             RunInMono(command, handle, args, ref ranInMono);
             if (!ranInMono)

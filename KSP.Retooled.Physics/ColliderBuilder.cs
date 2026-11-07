@@ -299,6 +299,8 @@ namespace KSP.Retooled.PhysicsBackend
             CollisionFilter filter,
             Material material)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildMeshCollider.Auto();
+
             void* collider = null;
             new MeshColliderJob
             {

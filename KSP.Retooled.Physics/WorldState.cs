@@ -287,6 +287,8 @@ namespace KSP.Retooled.PhysicsBackend
 
         private void RefreshColliders()
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RefreshColliders.Auto();
+
             ReleaseDeadColliders();
 
             uint materialVersion = NativeStore.RetooledPhysics_Globals()->materialVersion;
