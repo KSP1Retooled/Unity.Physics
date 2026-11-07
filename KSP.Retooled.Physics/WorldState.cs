@@ -143,6 +143,9 @@ namespace KSP.Retooled.PhysicsBackend
             built = simulation.ScheduleBroadphaseJobs(input, built).FinalExecutionHandle;
             built = simulation.ScheduleNarrowphaseJobs(input, built).FinalExecutionHandle;
 
+            // Jobs wait in a batch until something flushes it, so without this the workers sit idle through the scheduling below.
+            JobHandle.ScheduleBatchedJobs();
+
             SimulationSingleton singleton = default;
             singleton.InitializeFromSimulation(ref simulation);
             manifolds.Clear();
