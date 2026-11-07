@@ -1103,7 +1103,14 @@ namespace Unity.Physics
                         }
 
                         var iterativeHandle = handle;
-                        for (int iSolverIteration = 0; iSolverIteration < stepInput.NumSolverIterations; iSolverIteration++)
+                        bool iterateOnOneThread = SolvesIterativelyOnOneThread(solverSchedulerInfo, solverStabilizationData, true);
+                        if (iterateOnOneThread)
+                        {
+                            iterativeHandle = ScheduleSerialIterativeSolver(dynamicsWorld, solverSchedulerInfo, jacobians, stepInput,
+                                solverStabilizationData, collisionEvents, triggerEvents, impulseEvents, true, iterativeHandle);
+                        }
+
+                        for (int iSolverIteration = 0; !iterateOnOneThread && iSolverIteration < stepInput.NumSolverIterations; iSolverIteration++)
                         {
                             stepInput.CurrentSolverIteration = iSolverIteration;
 
@@ -1432,10 +1439,142 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Every iteration of the iterative solver on one thread, in the order the phased jobs would run them. Phases exist so
+        /// that one phase's work items can run at once, so running them in turn gives the same answer.
+        /// </summary>
+        [BurstCompile]
+        [NoAlias]
+        struct SerialIterativeSolverJob : IJob
+        {
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            public StabilizationData SolverStabilizationData;
+
+            [NoAlias]
+            public NativeStream.Reader JacobiansReader;
+
+            [NativeDisableContainerSafetyRestriction]
+            [NoAlias]
+            public NativeStream.Writer CollisionEventsWriter;
+
+            [NativeDisableContainerSafetyRestriction]
+            [NoAlias]
+            public NativeStream.Writer TriggerEventsWriter;
+
+            [NativeDisableContainerSafetyRestriction]
+            [NoAlias]
+            public NativeStream.Writer ImpulseEventsWriter;
+
+            [ReadOnly]
+            public DispatchPairSequencer.IterativeSolverSchedulerInfo IterativePairs;
+
+            [ReadOnly]
+            public DispatchPairSequencer.IterativeSolverSchedulerInfo CouplingPairs;
+
+            [ReadOnly]
+            public DispatchPairSequencer.IterativeSolverSchedulerInfo DirectPairs;
+
+            /// <summary>Leaves out the pairs that the direct solver also covers, when nothing needs them coupled.</summary>
+            public bool OnlyIterativePairs;
+
+            public StepInput StepInput;
+
+            public void Execute()
+            {
+                for (int iteration = 0; iteration < StepInput.NumSolverIterations; iteration++)
+                {
+                    StepInput.CurrentSolverIteration = iteration;
+                    Sweep(IterativePairs);
+                    if (!OnlyIterativePairs)
+                    {
+                        Sweep(CouplingPairs);
+                        Sweep(DirectPairs);
+                    }
+                }
+            }
+
+            void Sweep(in DispatchPairSequencer.IterativeSolverSchedulerInfo info)
+            {
+                for (int phase = 0; phase < info.NumActivePhases[0]; phase++)
+                {
+                    var phaseInfo = info.PhaseInfo[phase];
+                    int firstWorkItemIndex = info.FirstWorkItemIndex.Value + phaseInfo.FirstWorkItemIndexOffset;
+                    for (int offset = 0; offset < phaseInfo.NumWorkItems; offset++)
+                    {
+                        int workItemIndex = firstWorkItemIndex + offset;
+                        if (StepInput.ExportEventsInThisIteration)
+                        {
+                            CollisionEventsWriter.PatchMinMaxRange(workItemIndex);
+                            TriggerEventsWriter.PatchMinMaxRange(workItemIndex);
+                            ImpulseEventsWriter.PatchMinMaxRange(workItemIndex);
+                        }
+
+                        IterativeSolverIteration(ref MotionVelocities, JacobiansReader,
+                            ref CollisionEventsWriter, ref TriggerEventsWriter, ref ImpulseEventsWriter,
+                            workItemIndex, StepInput, SolverStabilizationData);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Below this many pairs the iterative solver costs less on one thread than the hundreds of jobs it takes to spread
+        /// eight iterations of every phase of every substep over the workers.
+        /// </summary>
+        const int MaxSerialIterativePairs = 512;
+
+        static bool SolvesIterativelyOnOneThread(in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo,
+            in StabilizationData solverStabilizationData, bool onlyIterativePairs)
+        {
+            int pairs = solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value;
+            if (!onlyIterativePairs)
+            {
+                pairs += solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value
+                    + solverSchedulerInfo.DirectPairsIterativeScheduling.NumDispatchPairs.Value;
+            }
+
+            return pairs <= MaxSerialIterativePairs && !solverStabilizationData.StabilizationHeuristicSettings.EnableSolverStabilization;
+        }
+
+        static JobHandle ScheduleSerialIterativeSolver(in DynamicsWorld dynamicsWorld, in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo,
+            in NativeStream jacobians, in StepInput stepInput, in StabilizationData solverStabilizationData, in NativeStream collisionEvents,
+            in NativeStream triggerEvents, in NativeStream impulseEvents, bool onlyIterativePairs, JobHandle inputDependencies)
+        {
+            var job = new SerialIterativeSolverJob
+            {
+                MotionVelocities = dynamicsWorld.MotionVelocities,
+                SolverStabilizationData = solverStabilizationData,
+                JacobiansReader = jacobians.AsReader(),
+                IterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling,
+                CouplingPairs = solverSchedulerInfo.CouplingPairsIterativeScheduling,
+                DirectPairs = solverSchedulerInfo.DirectPairsIterativeScheduling,
+                OnlyIterativePairs = onlyIterativePairs,
+                StepInput = stepInput,
+            };
+
+            // Only initialize event writers if required
+            if (stepInput.ExportEventsInThisSubstep)
+            {
+                job.CollisionEventsWriter = collisionEvents.AsWriter();
+                job.TriggerEventsWriter = triggerEvents.AsWriter();
+                job.ImpulseEventsWriter = impulseEvents.AsWriter();
+            }
+
+            return job.Schedule(inputDependencies);
+        }
+
         static JobHandle ScheduleIterativeSolver(in DynamicsWorld dynamicsWorld, in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo,
             in NativeStream jacobians, StepInput stepInput, in StabilizationData solverStabilizationData,
             in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents, JobHandle inputDependencies)
         {
+            if (SolvesIterativelyOnOneThread(solverSchedulerInfo, solverStabilizationData, false))
+            {
+                return ScheduleSerialIterativeSolver(dynamicsWorld, solverSchedulerInfo, jacobians, stepInput, solverStabilizationData,
+                    collisionEvents, triggerEvents, impulseEvents, false, inputDependencies);
+            }
+
             float3 gravityNormalized = float3.zero;
             if (solverStabilizationData.StabilizationHeuristicSettings.EnableSolverStabilization)
             {

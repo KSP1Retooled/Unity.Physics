@@ -657,6 +657,10 @@ namespace Unity.Physics
                 {
                     m_StepHandles.FinalExecutionHandle = jobHandle;
                 }
+
+                // Jobs wait in a batch until something flushes it, so without this the workers sit idle while the main thread
+                // schedules the rest of the substeps.
+                JobHandle.ScheduleBatchedJobs();
             }
 
             m_StepHandles.FinalExecutionHandle = JobHandle.CombineDependencies(m_StepHandles.FinalExecutionHandle, jobHandle);
