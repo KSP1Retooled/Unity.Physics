@@ -8,11 +8,61 @@ namespace Unity.Physics.Systems
     /// <summary>
     /// The physics system group. Covers all physics systems in the engine. Consists of <see cref="PhysicsInitializeGroup"/>
     /// , <see cref="PhysicsSimulationGroup"/>, and <see cref="ExportPhysicsWorld"/> which run in
-    /// that order.
+    /// that order. It only runs when <see cref="Step"/> asks it to: the fixed step leaves it alone, so that whoever owns the
+    /// simulation decides when a step happens.
     /// </summary>
     [UpdateInGroup(typeof(FixedStepSimulationSystemGroup))]
     public partial class PhysicsSystemGroup : ComponentSystemGroup
     {
+        sealed class OnDemandRateManager : IRateManager
+        {
+            bool m_Requested;
+            bool m_Running;
+
+            public float Timestep { get; set; }
+
+            public void Request(float timestep)
+            {
+                Timestep = timestep;
+                m_Requested = true;
+            }
+
+            public bool ShouldGroupUpdate(ComponentSystemGroup group)
+            {
+                if (m_Running)
+                {
+                    group.World.PopTime();
+                    m_Running = false;
+                    return false;
+                }
+
+                if (!m_Requested)
+                {
+                    return false;
+                }
+
+                m_Requested = false;
+                m_Running = true;
+                group.World.PushTime(new Unity.Core.TimeData(group.World.Time.ElapsedTime + Timestep, Timestep));
+                return true;
+            }
+        }
+
+        readonly OnDemandRateManager m_RateManager = new OnDemandRateManager();
+
+        /// <inheritdoc/>
+        protected override void OnCreate()
+        {
+            base.OnCreate();
+            RateManager = m_RateManager;
+        }
+
+        /// <summary>Runs the group once, with <paramref name="deltaTime"/> as the world's delta time.</summary>
+        public void Step(float deltaTime)
+        {
+            m_RateManager.Request(deltaTime);
+            Update();
+        }
     }
 
     /// <summary>

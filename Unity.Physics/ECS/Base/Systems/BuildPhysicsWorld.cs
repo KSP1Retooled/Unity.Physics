@@ -394,6 +394,12 @@ namespace Unity.Physics.Systems
         [BurstCompile]
         public void OnUpdate(ref SystemState state)
         {
+            // These checks work on what BuildPhysicsWorld built, and on its handles, which only it keeps up to date.
+            if (!state.WorldUnmanaged.ResolveSystemStateRef(m_BuildSystemHandle).Enabled)
+            {
+                return;
+            }
+
             var buildPhysicsData = state.EntityManager.GetComponentData<BuildPhysicsWorldData>(m_BuildSystemHandle);
             buildPhysicsData.IntegrityCheckMap.Clear();
 

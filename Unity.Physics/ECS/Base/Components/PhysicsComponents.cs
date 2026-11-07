@@ -1023,9 +1023,13 @@ namespace Unity.Physics
         #endregion
     }
 
-    internal struct StepInputSingleton : IComponentData
+    /// <summary>   The input of the step in progress, which systems between the simulation's stages can change. </summary>
+    public struct StepInputSingleton : IComponentData
     {
+        /// <summary>   The input. </summary>
         public SimulationStepInput StepInput;
+
+        /// <summary>   Whether the stages run multithreaded. </summary>
         public bool MultiThreaded;
     }
 
