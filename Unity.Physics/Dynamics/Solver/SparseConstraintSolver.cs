@@ -107,6 +107,8 @@ namespace Unity.Physics
         const byte LowerTight = 1;
         const byte UpperTight = 2;
 
+        const int NoNode = -1;
+
         /// <summary>A node of the graph: a body, or all the rows between one pair of bodies.</summary>
         struct Node
         {
@@ -177,7 +179,7 @@ namespace Unity.Physics
         public bool Solve(in Problem problem, float* impulses, bool bounded)
         {
             long started = ProfilerUnsafeUtility.Timestamp;
-            Analyze(problem);
+            Analyze(problem, bounded);
             statistics.AnalyzeTime = Lap(ref started);
 
             state.Clear();
@@ -256,7 +258,7 @@ namespace Unity.Physics
 
         // Structure
 
-        void Analyze(in Problem problem)
+        void Analyze(in Problem problem, bool bounded)
         {
             using ProfilerMarker.AutoScope span = AnalyzeMarker.Auto();
 
@@ -266,7 +268,7 @@ namespace Unity.Physics
                 nodes.Add(new Node { Size = BodySize, Sign = 1.0, BodyA = -1, BodyB = -1 });
             }
 
-            MergeBlocksByBodyPair(problem);
+            MergeBlocksByBodyPair(problem, bounded);
             Order();
             LayOut();
 
@@ -277,9 +279,10 @@ namespace Unity.Physics
 
         /// <summary>
         /// One joint emits several Jacobians between the same two bodies. As separate nodes they would all neighbour each other
-        /// anyway, so one node holding all their rows is smaller and loses no structure.
+        /// anyway, so one node holding all their rows is smaller and loses no structure. A row whose bounds meet joins no node:
+        /// it has one possible impulse, so it is a known force on its bodies and not an unknown.
         /// </summary>
-        void MergeBlocksByBodyPair(in Problem problem)
+        void MergeBlocksByBodyPair(in Problem problem, bool bounded)
         {
             rowNode.ResizeUninitialized(problem.RowCount);
             rowInNode.ResizeUninitialized(problem.RowCount);
@@ -291,21 +294,26 @@ namespace Unity.Physics
                 int lower = math.min(block.BodyA, block.BodyB);
                 int higher = math.max(block.BodyA, block.BodyB);
                 long key = ((long)lower << 32) | (uint)higher;
-                if (!pairs.TryGetValue(key, out int node))
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    node = nodes.Length;
-                    nodes.Add(new Node { Sign = -1.0, BodyA = lower, BodyB = higher });
-                    pairs.Add(key, node);
-                }
+                    if (bounded && problem.Lower[row] == problem.Upper[row])
+                    {
+                        rowNode[row] = NoNode;
+                        continue;
+                    }
 
-                ref Node target = ref nodes.ElementAt(node);
-                for (int row = 0; row < block.RowCount; row++)
-                {
-                    rowNode[block.FirstRow + row] = node;
-                    rowInNode[block.FirstRow + row] = target.Size + row;
-                }
+                    if (!pairs.TryGetValue(key, out int node))
+                    {
+                        node = nodes.Length;
+                        nodes.Add(new Node { Sign = -1.0, BodyA = lower, BodyB = higher });
+                        pairs.Add(key, node);
+                    }
 
-                target.Size += block.RowCount;
+                    ref Node target = ref nodes.ElementAt(node);
+                    rowNode[row] = node;
+                    rowInNode[row] = target.Size;
+                    target.Size++;
+                }
             }
 
             pairs.Dispose();
@@ -516,10 +524,18 @@ namespace Unity.Physics
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
                     int constraint = rowNode[row];
-                    int index = rowInNode[row];
-                    Node node = nodes[constraint];
                     float* jacobian = problem.Jacobian + row * ColumnsPerRow;
                     byte rowState = state[row];
+                    if (constraint == NoNode)
+                    {
+                        double known = problem.Lower[row];
+                        AddToBody(block.BodyA, jacobian, known);
+                        AddToBody(block.BodyB, jacobian + SideColumns, known);
+                        continue;
+                    }
+
+                    int index = rowInNode[row];
+                    Node node = nodes[constraint];
                     if (rowState == Free)
                     {
                         values[node.Diagonal + index * node.Size + index] = -problem.Epsilon[row];
