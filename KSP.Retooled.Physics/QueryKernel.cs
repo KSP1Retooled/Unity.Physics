@@ -8,7 +8,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// What a query function reads: a copy of the built collision world and a snapshot of the store's bodies and shapes. It

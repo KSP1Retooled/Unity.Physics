@@ -2,7 +2,7 @@ using System.Threading;
 using Unity.Burst;
 using Unity.Mathematics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// What the command kernels share: the store's memory, its dirty marks and the list of a body's shapes. A world's handle

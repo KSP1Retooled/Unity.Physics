@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Transforms and bodies reaching each other with autosync off, which is how Principia and KSPCF run.</summary>
     public class TransformSyncConformanceTests : PhysicsScene
@@ -9,19 +9,19 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [SetUp]
         public void TurnAutoSyncOff()
         {
-            Physics.autoSyncTransforms = false;
+            UnityEngine.Physics.autoSyncTransforms = false;
         }
 
         [Test]
         public void AMovedTransformReachesTheBodyOnSync()
         {
             Rigidbody body = WeightlessBox(Vector3.zero);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             body.transform.position = new Vector3(3.0f, 0.0f, 0.0f);
 
             Assert.That(body.position.x, Is.EqualTo(0.0f), "not before the sync");
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Assert.That(body.position.x, Is.EqualTo(3.0f));
         }
 
@@ -29,7 +29,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void TheStepPicksUpAMovedTransformWithoutASync()
         {
             Rigidbody body = WeightlessBox(Vector3.zero);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             body.transform.position = new Vector3(3.0f, 0.0f, 0.0f);
 
             Simulate(1);
@@ -52,14 +52,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void ARayMissesAMovedColliderUntilTheSync()
         {
             GameObject box = Box(Vector3.zero, Vector3.one);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             box.transform.position = new Vector3(10.0f, 0.0f, 0.0f);
             Vector3 origin = new Vector3(10.0f, 5.0f, 0.0f);
-            Assert.That(Physics.Raycast(origin, Vector3.down, 10.0f), Is.False, "the query sees the last synced pose");
+            Assert.That(UnityEngine.Physics.Raycast(origin, Vector3.down, 10.0f), Is.False, "the query sees the last synced pose");
 
-            Physics.SyncTransforms();
-            Assert.That(Physics.Raycast(origin, Vector3.down, 10.0f), Is.True);
+            UnityEngine.Physics.SyncTransforms();
+            Assert.That(UnityEngine.Physics.Raycast(origin, Vector3.down, 10.0f), Is.True);
         }
 
         [Test]
@@ -70,7 +70,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             body.transform.SetParent(parent.transform, true);
 
             parent.transform.position = new Vector3(0.0f, 4.0f, 0.0f);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(1.0f, 4.0f, 0.0f), body.position, 1e-4f);
         }

@@ -8,7 +8,7 @@ using UnityEngine;
 using UnityEditor;
 #endif
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Connects the managed core to the plugin. The plugin's store outlives a domain reload and everything managed holds

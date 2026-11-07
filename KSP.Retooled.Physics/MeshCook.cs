@@ -6,7 +6,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Mesh cooking: checks a source mesh and copies it into a cooked mesh, one relocatable block holding a

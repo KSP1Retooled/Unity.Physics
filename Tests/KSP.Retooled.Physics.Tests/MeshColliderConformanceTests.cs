@@ -6,7 +6,7 @@ using Unity.Jobs;
 using UnityEngine;
 using UnityEngine.TestTools;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>What a MeshCollider does once its mesh is cooked: rays, mass, bounds, contacts and mesh lifetime.</summary>
     public class MeshColliderConformanceTests : PhysicsScene
@@ -97,15 +97,15 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
         private static float RayDistance(Vector3 origin, Vector3 direction)
         {
-            Physics.SyncTransforms();
-            return Physics.Raycast(origin, direction, out RaycastHit hit, 100.0f) ? hit.distance : -1.0f;
+            UnityEngine.Physics.SyncTransforms();
+            return UnityEngine.Physics.Raycast(origin, direction, out RaycastHit hit, 100.0f) ? hit.distance : -1.0f;
         }
 
         [Test]
         public void QueriesFindAStaticMeshWhereItWasMovedAndTurned([Values] bool convex)
         {
             MeshCollider collider = Collider(BoxMesh(Vector3.zero, new Vector3(6.0f, 1.0f, 1.0f)), convex);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             collider.transform.SetPositionAndRotation(new Vector3(10.0f, 0.0f, 0.0f), Quaternion.Euler(0.0f, 90.0f, 0.0f));
 
             Vector3 alongItsLength = new Vector3(10.0f, 5.0f, 2.5f);
@@ -121,8 +121,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             MeshCollider collider = Collider(BoxMesh(Vector3.zero, Vector3.one * 2.0f), false);
 
-            Physics.SyncTransforms();
-            bool hit = Physics.Raycast(new Vector3(0.25f, 5.0f, 0.25f), Vector3.down, out RaycastHit result, 100.0f);
+            UnityEngine.Physics.SyncTransforms();
+            bool hit = UnityEngine.Physics.Raycast(new Vector3(0.25f, 5.0f, 0.25f), Vector3.down, out RaycastHit result, 100.0f);
 
             Assert.That(hit, Is.True);
             Assert.That(result.collider, Is.SameAs(collider));
@@ -136,9 +136,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             // A ray along the diagonal face of the tetrahedron, whose plane is x + y + z = 1.
             MeshCollider collider = Collider(RightTetrahedron(), true);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Vector3 towards = new Vector3(-1.0f, -1.0f, -1.0f).normalized;
-            bool hit = Physics.Raycast(Vector3.one, towards, out RaycastHit result, 100.0f);
+            bool hit = UnityEngine.Physics.Raycast(Vector3.one, towards, out RaycastHit result, 100.0f);
 
             Assert.That(hit, Is.True);
             Assert.That(result.collider, Is.SameAs(collider));
@@ -192,17 +192,17 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [Test]
         public void BackfacesCountWhenTheProjectAsksForThem()
         {
-            bool before = Physics.queriesHitBackfaces;
+            bool before = UnityEngine.Physics.queriesHitBackfaces;
             Collider(BoxMesh(Vector3.zero, Vector3.one * 2.0f), false);
             try
             {
-                Physics.queriesHitBackfaces = true;
+                UnityEngine.Physics.queriesHitBackfaces = true;
 
                 Assert.That(RayDistance(Vector3.zero, Vector3.up), Is.EqualTo(1.0f).Within(1e-3f));
             }
             finally
             {
-                Physics.queriesHitBackfaces = before;
+                UnityEngine.Physics.queriesHitBackfaces = before;
             }
         }
 
@@ -257,11 +257,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             mesh.convex = false;
             mesh.sharedMesh = BoxMesh(Vector3.zero, Vector3.one);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
-            Assert.That(Physics.Raycast(new Vector3(4.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit onMesh, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(4.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit onMesh, 100.0f), Is.True);
             Assert.That(onMesh.collider, Is.SameAs(mesh));
-            Assert.That(Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit onBox, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit onBox, 100.0f), Is.True);
             Assert.That(onBox.collider, Is.SameAs(box));
         }
 
@@ -299,8 +299,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             assets.Remove(mesh);
             Object.DestroyImmediate(mesh);
             Simulate(5);
-            Physics.SyncTransforms();
-            Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, 100.0f);
+            UnityEngine.Physics.SyncTransforms();
+            UnityEngine.Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, 100.0f);
 
             Assert.That(body.position.y, Is.LessThan(5.0f));
         }
@@ -415,7 +415,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Mesh mesh = MeshOf(box.vertices.Append(new Vector3(100.0f, 0.0f, 0.0f)).ToArray(), box.triangles);
             MeshCollider collider = Collider(mesh, false);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(Vector3.zero, collider.bounds.center, 1e-3f, "center");
             AssertVector(Vector3.one * 0.5f, collider.bounds.extents, 1e-3f, "extents");
@@ -429,7 +429,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Mesh mesh = MeshOf(box.vertices.Append(new Vector3(100.0f, 0.0f, 0.0f)).ToArray(), box.triangles);
             MeshCollider collider = Collider(mesh, true);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(49.75f, 0.0f, 0.0f), collider.bounds.center, 1e-2f, "center");
             AssertVector(new Vector3(50.25f, 0.5f, 0.5f), collider.bounds.extents, 1e-2f, "extents");
@@ -549,9 +549,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             MeshCollider collider = Collider(MeshOf(vertices, new[] { 0, 1, 2 }), true);
             collider.gameObject.AddComponent<Rigidbody>().isKinematic = true;
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
-            Assert.That(Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down, out RaycastHit hit, 100.0f), Is.True);
             Assert.That(hit.collider, Is.SameAs(collider));
         }
 
@@ -574,7 +574,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             collider.transform.position = new Vector3(0.0f, 5.0f, 0.0f);
             collider.transform.localScale = new Vector3(2.0f, 1.0f, 1.0f);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Bounds bounds = collider.bounds;
             AssertVector(new Vector3(2.0f, 5.0f, 0.0f), bounds.center, 0.05f, "center");
@@ -587,7 +587,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             MeshCollider collider = Collider(BoxMesh(Vector3.zero, Vector3.one), false);
             collider.transform.rotation = Quaternion.Euler(0.0f, 45.0f, 0.0f);
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(collider.bounds.extents.x, Is.EqualTo(Mathf.Sqrt(0.5f)).Within(0.05f));
             Assert.That(collider.bounds.extents.y, Is.EqualTo(0.5f).Within(0.05f));
@@ -657,8 +657,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Collider(Floor(4.0f), true);
 
-            Physics.SyncTransforms();
-            bool hit = Physics.Raycast(new Vector3(0.5f, 2.0f, 0.5f), Vector3.down, out RaycastHit result, 100.0f);
+            UnityEngine.Physics.SyncTransforms();
+            bool hit = UnityEngine.Physics.Raycast(new Vector3(0.5f, 2.0f, 0.5f), Vector3.down, out RaycastHit result, 100.0f);
 
             Assert.That(hit, Is.True);
             Assert.That(result.distance, Is.EqualTo(1.8f).Within(1e-2f));
@@ -670,7 +670,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Mesh mesh = BoxMesh(Vector3.zero, Vector3.one * 2.0f);
 
-            Physics.BakeMesh(mesh.GetEntityId(), convex);
+            UnityEngine.Physics.BakeMesh(mesh.GetEntityId(), convex);
             Collider(mesh, convex);
 
             Assert.That(RayDistance(new Vector3(0.1f, 5.0f, 0.1f), Vector3.down), Is.EqualTo(4.0f).Within(1e-3f));
@@ -685,7 +685,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             public void Execute(int index)
             {
-                Physics.BakeMesh(Meshes[index], Convex);
+                UnityEngine.Physics.BakeMesh(Meshes[index], Convex);
             }
         }
 

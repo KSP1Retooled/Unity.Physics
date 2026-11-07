@@ -15,7 +15,7 @@ using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// Replays everything <see cref="SolverCapture"/> saved through the solver, on one thread in Burst, and writes each

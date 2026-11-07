@@ -5,7 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// The plugin API's shape commands, by the id Shape.cpp passes. Attach checks the count against the plugin's. Only what

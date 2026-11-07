@@ -8,7 +8,7 @@ using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Memory;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// The sparse solver against two things that don't share its code: the package's dense complementarity solver, and the

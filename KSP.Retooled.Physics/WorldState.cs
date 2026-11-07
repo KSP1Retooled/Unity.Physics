@@ -5,7 +5,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Everything managed keeps for one native world: a Unity Physics world built on demand from the store, and the

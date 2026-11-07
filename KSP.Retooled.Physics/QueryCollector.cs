@@ -4,7 +4,7 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>Where a <see cref="QueryCollector{T,S}"/> sends the hits it passes.</summary>
     internal unsafe interface IQuerySink<T>

@@ -4,12 +4,12 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// The feel rigs of the joint plan, built from Rigidbody and ConfigurableJoint as stock parts are: stacks and a cantilever
     /// with real part masses and spacing, in tonnes, kilonewtons and metres. Run with
-    /// <c>RetooledCli unity exec --method KSP.Retooled.PhysicsBackend.JointFeelBench.Run</c> on either backend. Writes
+    /// <c>RetooledCli unity exec --method KSP.Retooled.Physics.JointFeelBench.Run</c> on either backend. Writes
     /// Library/RetooledPhysics/joint-feel-&lt;backend&gt;.csv.
     /// </summary>
     public static class JointFeelBench
@@ -69,12 +69,12 @@ namespace KSP.Retooled.PhysicsBackend
                 new Rig { Name = "stack12_soft", Parts = "TTTTTTTTTTTP", Acceleration = 15.0f, Soft = true },
             };
 
-            SimulationMode simulationMode = Physics.simulationMode;
-            Vector3 gravity = Physics.gravity;
-            Physics.simulationMode = SimulationMode.Script;
-            Physics.gravity = Vector3.zero;
-            Physics.defaultSolverIterations = 50;
-            Physics.defaultSolverVelocityIterations = 1;
+            SimulationMode simulationMode = UnityEngine.Physics.simulationMode;
+            Vector3 gravity = UnityEngine.Physics.gravity;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.gravity = Vector3.zero;
+            UnityEngine.Physics.defaultSolverIterations = 50;
+            UnityEngine.Physics.defaultSolverVelocityIterations = 1;
 
             string backend = BackendInfo.IsRetooled ? "retooled" : "physx";
             StringBuilder csv = new StringBuilder("rig,maxBendDeg,eqMeanDeg,lateAmpDeg,maxAnchorGap_m\n");
@@ -90,8 +90,8 @@ namespace KSP.Retooled.PhysicsBackend
             Directory.CreateDirectory(folder);
             File.WriteAllText(Path.Combine(folder, $"joint-feel-{backend}.csv"), csv.ToString());
 
-            Physics.simulationMode = simulationMode;
-            Physics.gravity = gravity;
+            UnityEngine.Physics.simulationMode = simulationMode;
+            UnityEngine.Physics.gravity = gravity;
         }
 
         private static PartSpec Part(char code)
@@ -157,7 +157,7 @@ namespace KSP.Retooled.PhysicsBackend
                 }
             }
 
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             List<float> times = new List<float>();
             List<float> bends = new List<float>();
@@ -181,7 +181,7 @@ namespace KSP.Retooled.PhysicsBackend
                     bodies[count - 1].AddForce(new Vector3(rig.TipForce, 0.0f, 0.0f));
                 }
 
-                Physics.Simulate(rig.StepTime);
+                UnityEngine.Physics.Simulate(rig.StepTime);
 
                 times.Add(time + rig.StepTime);
                 bends.Add(Bend(bodies[0].rotation, bodies[count - 1].rotation));

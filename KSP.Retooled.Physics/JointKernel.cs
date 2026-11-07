@@ -4,7 +4,7 @@ using Unity.Burst;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>The plugin API's joint commands, by the id Joint.cpp passes. Attach checks the count against the plugin's.</summary>
     internal enum JointCommand : uint

@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>The collision and trigger messages, as a script sees them.</summary>
     public class CollisionEventConformanceTests : PhysicsScene
@@ -85,14 +85,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [SetUp]
         public void KeepCollisions()
         {
-            reuseCallbacks = Physics.reuseCollisionCallbacks;
-            Physics.reuseCollisionCallbacks = false;
+            reuseCallbacks = UnityEngine.Physics.reuseCollisionCallbacks;
+            UnityEngine.Physics.reuseCollisionCallbacks = false;
         }
 
         [TearDown]
         public void RestoreReuse()
         {
-            Physics.reuseCollisionCallbacks = reuseCallbacks;
+            UnityEngine.Physics.reuseCollisionCallbacks = reuseCallbacks;
         }
 
         private CollisionLog FallingBox(Vector3 position, out Rigidbody body)
@@ -291,7 +291,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             CollisionLog log = FallingBox(new Vector3(0.0f, 0.6f, 0.0f), out Rigidbody body);
 
             Simulate(30);
-            Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
+            UnityEngine.Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
             Simulate(5);
 
             Assert.That(log.Count("Exit"), Is.EqualTo(1));
@@ -303,7 +303,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Collider ground = Ground().GetComponent<Collider>();
             CollisionLog log = FallingBox(new Vector3(0.0f, 1.0f, 0.0f), out Rigidbody body);
 
-            Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
+            UnityEngine.Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
             Simulate(60);
 
             Assert.That(log.Messages, Is.Empty);
@@ -505,7 +505,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TriggerLog zone = trigger.AddComponent<TriggerLog>();
             Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
 
-            Physics.IgnoreCollision(body.GetComponent<Collider>(), trigger.GetComponent<Collider>());
+            UnityEngine.Physics.IgnoreCollision(body.GetComponent<Collider>(), trigger.GetComponent<Collider>());
             Simulate(100);
 
             Assert.That(zone.Enters, Is.Empty);

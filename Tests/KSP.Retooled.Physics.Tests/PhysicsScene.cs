@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// Base of the conformance fixtures: a scene stepped by hand at a fixed rate under Earth-like gravity. The fixtures
@@ -21,13 +21,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [SetUp]
         public void SetUpScene()
         {
-            simulationMode = Physics.simulationMode;
-            gravity = Physics.gravity;
-            autoSyncTransforms = Physics.autoSyncTransforms;
+            simulationMode = UnityEngine.Physics.simulationMode;
+            gravity = UnityEngine.Physics.gravity;
+            autoSyncTransforms = UnityEngine.Physics.autoSyncTransforms;
 
-            Physics.simulationMode = SimulationMode.Script;
-            Physics.gravity = new Vector3(0.0f, Gravity, 0.0f);
-            Physics.autoSyncTransforms = true;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.gravity = new Vector3(0.0f, Gravity, 0.0f);
+            UnityEngine.Physics.autoSyncTransforms = true;
         }
 
         [TearDown]
@@ -39,9 +39,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             }
 
             created.Clear();
-            Physics.simulationMode = simulationMode;
-            Physics.gravity = gravity;
-            Physics.autoSyncTransforms = autoSyncTransforms;
+            UnityEngine.Physics.simulationMode = simulationMode;
+            UnityEngine.Physics.gravity = gravity;
+            UnityEngine.Physics.autoSyncTransforms = autoSyncTransforms;
         }
 
         protected GameObject Track(GameObject gameObject)
@@ -82,7 +82,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             for (int i = 0; i < steps; i++)
             {
-                Physics.Simulate(Step);
+                UnityEngine.Physics.Simulate(Step);
             }
         }
 

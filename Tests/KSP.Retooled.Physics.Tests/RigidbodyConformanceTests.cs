@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>How a Rigidbody moves when nothing touches it.</summary>
     public class RigidbodyConformanceTests : PhysicsScene

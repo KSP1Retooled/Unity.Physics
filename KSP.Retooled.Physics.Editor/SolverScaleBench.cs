@@ -6,7 +6,7 @@ using System.Text;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// What one physics step costs as a craft grows, in milliseconds. Each craft is a stack with radial pairs braced by struts,
@@ -31,8 +31,8 @@ namespace KSP.Retooled.PhysicsBackend.Editor
 
         public static void Run()
         {
-            SimulationMode simulationMode = Physics.simulationMode;
-            Physics.simulationMode = SimulationMode.Script;
+            SimulationMode simulationMode = UnityEngine.Physics.simulationMode;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
 
             string backend = BackendInfo.IsRetooled ? "retooled" : "physx";
             StringBuilder csv = new StringBuilder("parts,joints,ms_per_step,best_ms\n");
@@ -58,7 +58,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "RetooledPhysics"));
             Directory.CreateDirectory(folder);
             File.WriteAllText(Path.Combine(folder, $"solver-scale-{backend}.csv"), csv.ToString());
-            Physics.simulationMode = simulationMode;
+            UnityEngine.Physics.simulationMode = simulationMode;
         }
 
         /// <summary>Burst compiles in the background, so the small craft steps until its cost stops falling.</summary>
@@ -91,7 +91,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             {
                 craft.Parts[0].AddForce(Vector3.up * craft.Parts.Count * 15.0f);
                 Stopwatch watch = Stopwatch.StartNew();
-                Physics.Simulate(DeltaTime);
+                UnityEngine.Physics.Simulate(DeltaTime);
                 watch.Stop();
                 if (step >= SettleSteps)
                 {

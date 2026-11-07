@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Physics.OverlapSphere, OverlapBox, OverlapCapsule and the Check family.</summary>
     public class OverlapConformanceTests : QueryScene
@@ -12,7 +12,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject near = Box(new Vector3(0.0f, 0.0f, 1.0f), Vector3.one);
             Box(new Vector3(0.0f, 0.0f, 3.0f), Vector3.one);
 
-            Collider[] found = Physics.OverlapSphere(Vector3.zero, 1.0f);
+            Collider[] found = UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f);
 
             Assert.That(found, Is.EqualTo(new[] { near.GetComponent<Collider>() }));
         }
@@ -22,7 +22,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
 
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 4.0f), 0.5f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 4.0f), 0.5f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -30,8 +30,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one * 4.0f);
 
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 5.0f), 0.1f).Length, Is.EqualTo(1));
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 5.0f), 0.0f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 5.0f), 0.1f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 5.0f), 0.0f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -39,8 +39,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(Vector3.zero, Vector3.one);
 
-            Assert.That(Physics.OverlapSphere(new Vector3(1.0f, 1.0f, 1.0f), 0.8f).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapSphere(new Vector3(1.0f, 1.0f, 1.0f), 0.9f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(1.0f, 1.0f, 1.0f), 0.8f).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(1.0f, 1.0f, 1.0f), 0.9f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -53,8 +53,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             BoxCollider childCollider = child.AddComponent<BoxCollider>();
             root.AddComponent<Rigidbody>();
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 3.0f).Length, Is.EqualTo(2));
-            Assert.That(Physics.OverlapSphere(new Vector3(1.5f, 0.0f, 0.0f), 0.25f), Is.EqualTo(new Collider[] { childCollider }));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 3.0f).Length, Is.EqualTo(2));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(1.5f, 0.0f, 0.0f), 0.25f), Is.EqualTo(new Collider[] { childCollider }));
         }
 
         [Test]
@@ -62,10 +62,10 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TriangleMeshCube(Vector3.zero);
 
-            Assert.That(Physics.OverlapSphere(new Vector3(0.5f, 0.5f, 0.5f), 0.4f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.5f, 0.5f, 0.5f), 0.4f).Length, Is.EqualTo(1));
 
             Collider[] results = new Collider[4];
-            Assert.That(Physics.OverlapSphereNonAlloc(new Vector3(0.5f, 0.5f, 0.5f), 0.4f, results), Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphereNonAlloc(new Vector3(0.5f, 0.5f, 0.5f), 0.4f, results), Is.EqualTo(1));
         }
 
         [Test]
@@ -73,7 +73,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TriangleMeshCube(Vector3.zero);
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 0.1f).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 0.1f).Length, Is.EqualTo(0));
         }
 
         [Test]
@@ -81,7 +81,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             ConvexCube(Vector3.zero);
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 0.1f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 0.1f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -89,8 +89,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TriangleMeshQuad(Vector3.zero);
 
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 0.1f), 0.2f).Length, Is.EqualTo(1));
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, -0.1f), 0.2f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 0.1f), 0.2f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, -0.1f), 0.2f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -99,8 +99,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject box = Box(Vector3.zero, Vector3.one);
             box.layer = 28;
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 1.0f, 1 << 29).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 1.0f, 1 << 28).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f, 1 << 29).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f, 1 << 28).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -109,10 +109,10 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject box = Box(Vector3.zero, Vector3.one);
             box.GetComponent<BoxCollider>().isTrigger = true;
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Ignore).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Collide).Length, Is.EqualTo(1));
-            Assert.That(Physics.CheckSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Ignore), Is.False);
-            Assert.That(Physics.CheckSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Collide), Is.True);
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Ignore).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Collide).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.CheckSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Ignore), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(Vector3.zero, 1.0f, ~0, QueryTriggerInteraction.Collide), Is.True);
         }
 
         [Test]
@@ -122,7 +122,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 0.0f, -1.0f), Vector3.one);
             Collider[] results = new Collider[1];
 
-            Assert.That(Physics.OverlapSphereNonAlloc(Vector3.zero, 1.0f, results), Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphereNonAlloc(Vector3.zero, 1.0f, results), Is.EqualTo(1));
             Assert.That(results[0], Is.Not.Null);
         }
 
@@ -132,13 +132,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 0.0f, 1.3f), Vector3.one);
             Vector3 thin = new Vector3(1.0f, 0.1f, 0.1f);
 
-            Assert.That(Physics.OverlapBox(Vector3.zero, thin).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapBox(Vector3.zero, thin, Quaternion.Euler(0.0f, 90.0f, 0.0f)).Length, Is.EqualTo(1));
-            Assert.That(Physics.CheckBox(Vector3.zero, thin), Is.False);
-            Assert.That(Physics.CheckBox(Vector3.zero, thin, Quaternion.Euler(0.0f, 90.0f, 0.0f)), Is.True);
+            Assert.That(UnityEngine.Physics.OverlapBox(Vector3.zero, thin).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapBox(Vector3.zero, thin, Quaternion.Euler(0.0f, 90.0f, 0.0f)).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.CheckBox(Vector3.zero, thin), Is.False);
+            Assert.That(UnityEngine.Physics.CheckBox(Vector3.zero, thin, Quaternion.Euler(0.0f, 90.0f, 0.0f)), Is.True);
 
             Collider[] results = new Collider[2];
-            Assert.That(Physics.OverlapBoxNonAlloc(Vector3.zero, thin, results, Quaternion.Euler(0.0f, 90.0f, 0.0f)), Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapBoxNonAlloc(Vector3.zero, thin, results, Quaternion.Euler(0.0f, 90.0f, 0.0f)), Is.EqualTo(1));
         }
 
         [Test]
@@ -147,13 +147,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 3.0f, 0.0f), Vector3.one);
             Vector3 foot = Vector3.zero;
 
-            Assert.That(Physics.OverlapCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.25f).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f).Length, Is.EqualTo(1));
-            Assert.That(Physics.CheckCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.25f), Is.False);
-            Assert.That(Physics.CheckCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f), Is.True);
+            Assert.That(UnityEngine.Physics.OverlapCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.25f).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.CheckCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.25f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckCapsule(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f), Is.True);
 
             Collider[] results = new Collider[2];
-            Assert.That(Physics.OverlapCapsuleNonAlloc(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f, results), Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapCapsuleNonAlloc(foot, new Vector3(0.0f, 2.0f, 0.0f), 0.75f, results), Is.EqualTo(1));
         }
 
         [Test]
@@ -161,8 +161,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(Vector3.zero, Vector3.one);
 
-            Assert.That(Physics.CheckSphere(new Vector3(0.0f, 0.0f, 0.9f), 0.5f), Is.True);
-            Assert.That(Physics.CheckSphere(new Vector3(0.0f, 0.0f, 1.1f), 0.5f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(new Vector3(0.0f, 0.0f, 0.9f), 0.5f), Is.True);
+            Assert.That(UnityEngine.Physics.CheckSphere(new Vector3(0.0f, 0.0f, 1.1f), 0.5f), Is.False);
         }
 
         [Test]
@@ -172,8 +172,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             body.linearVelocity = new Vector3(0.0f, 0.0f, 10.0f);
             Simulate(50);
 
-            Assert.That(Physics.OverlapSphere(Vector3.zero, 1.0f).Length, Is.EqualTo(0));
-            Assert.That(Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 10.0f), 1.0f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(Vector3.zero, 1.0f).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(new Vector3(0.0f, 0.0f, 10.0f), 1.0f).Length, Is.EqualTo(1));
         }
 
         [Test]
@@ -182,15 +182,15 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Vector3 origin = new Vector3(100000.0f, -50000.0f, 75000.0f);
             Box(origin, Vector3.one);
 
-            Assert.That(Physics.OverlapSphere(origin + new Vector3(0.0f, 0.0f, 1.0f), 0.75f).Length, Is.EqualTo(1));
-            Assert.That(Physics.OverlapSphere(origin + new Vector3(0.0f, 0.0f, 1.0f), 0.25f).Length, Is.EqualTo(0));
+            Assert.That(UnityEngine.Physics.OverlapSphere(origin + new Vector3(0.0f, 0.0f, 1.0f), 0.75f).Length, Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.OverlapSphere(origin + new Vector3(0.0f, 0.0f, 1.0f), 0.25f).Length, Is.EqualTo(0));
         }
 
         [Test]
         public void TheDefaultSceneOverlapsLikePhysics()
         {
             Box(Vector3.zero, Vector3.one);
-            UnityEngine.PhysicsScene scene = Physics.defaultPhysicsScene;
+            UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
             Collider[] results = new Collider[2];
 
             Assert.That(scene.OverlapSphere(Vector3.zero, 1.0f, results, ~0, QueryTriggerInteraction.UseGlobal), Is.EqualTo(1));

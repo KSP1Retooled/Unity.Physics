@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using Unity.Mathematics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// The managed view of the plugin's store, field for field the "mirrored" structs of Native/RetooledPhysics/src/Store.h,

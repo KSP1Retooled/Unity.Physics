@@ -8,7 +8,7 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>The step runs jobs from inside the engine's Simulate call, whichever state Burst is in.</summary>
     public class StepThreadTests : PhysicsScene
@@ -97,7 +97,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                     while (watch.Elapsed.TotalSeconds < PhaseSeconds)
                     {
                         Stopwatch step = Stopwatch.StartNew();
-                        Physics.Simulate(Step);
+                        UnityEngine.Physics.Simulate(Step);
                         slowest = System.Math.Max(slowest, step.Elapsed.TotalMilliseconds);
                         steps++;
                         if (steps % 100 == 1)

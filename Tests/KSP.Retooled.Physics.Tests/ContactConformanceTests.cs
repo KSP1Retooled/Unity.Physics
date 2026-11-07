@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>How bodies meet each other and the ground, and how layers keep them apart.</summary>
     public class ContactConformanceTests : PhysicsScene
@@ -105,10 +105,10 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         /// </summary>
         private float PeakAfterDrop(float dropHeight, float bounceThreshold)
         {
-            float previous = Physics.bounceThreshold;
+            float previous = UnityEngine.Physics.bounceThreshold;
             try
             {
-                Physics.bounceThreshold = bounceThreshold;
+                UnityEngine.Physics.bounceThreshold = bounceThreshold;
                 PhysicsMaterial material = new PhysicsMaterial { bounciness = 1.0f, bounceCombine = PhysicsMaterialCombine.Maximum };
                 GameObject ground = Ground();
                 ground.GetComponent<Collider>().sharedMaterial = material;
@@ -128,7 +128,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             }
             finally
             {
-                Physics.bounceThreshold = previous;
+                UnityEngine.Physics.bounceThreshold = previous;
             }
         }
 
@@ -153,10 +153,10 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         [Test]
         public void IgnoredLayersDoNotCollide()
         {
-            bool previous = Physics.GetIgnoreLayerCollision(LayerA, LayerB);
+            bool previous = UnityEngine.Physics.GetIgnoreLayerCollision(LayerA, LayerB);
             try
             {
-                Physics.IgnoreLayerCollision(LayerA, LayerB, true);
+                UnityEngine.Physics.IgnoreLayerCollision(LayerA, LayerB, true);
                 GameObject ground = Ground();
                 ground.layer = LayerB;
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
@@ -168,17 +168,17 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             }
             finally
             {
-                Physics.IgnoreLayerCollision(LayerA, LayerB, previous);
+                UnityEngine.Physics.IgnoreLayerCollision(LayerA, LayerB, previous);
             }
         }
 
         [Test]
         public void IgnoringLayersAfterTheyMetLetsTheBodyFall()
         {
-            bool previous = Physics.GetIgnoreLayerCollision(LayerA, LayerB);
+            bool previous = UnityEngine.Physics.GetIgnoreLayerCollision(LayerA, LayerB);
             try
             {
-                Physics.IgnoreLayerCollision(LayerA, LayerB, false);
+                UnityEngine.Physics.IgnoreLayerCollision(LayerA, LayerB, false);
                 GameObject ground = Ground();
                 ground.layer = LayerB;
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 0.6f, 0.0f));
@@ -187,7 +187,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 Simulate(50);
                 Assert.That(body.position.y, Is.EqualTo(0.5f).Within(0.02f), "the layers collide at first");
 
-                Physics.IgnoreLayerCollision(LayerA, LayerB, true);
+                UnityEngine.Physics.IgnoreLayerCollision(LayerA, LayerB, true);
                 body.WakeUp();
                 Simulate(50);
 
@@ -195,7 +195,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             }
             finally
             {
-                Physics.IgnoreLayerCollision(LayerA, LayerB, previous);
+                UnityEngine.Physics.IgnoreLayerCollision(LayerA, LayerB, previous);
             }
         }
 

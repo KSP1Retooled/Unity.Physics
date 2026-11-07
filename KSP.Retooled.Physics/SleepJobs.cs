@@ -5,7 +5,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Wakes the sleeping bodies a step's contacts reach, before the solver sees them, so that a sleeping body is pushed by

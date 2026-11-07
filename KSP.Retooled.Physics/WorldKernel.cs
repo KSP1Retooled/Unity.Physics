@@ -5,7 +5,7 @@ using Unity.Burst;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// The plugin API's world commands, by the id World.cpp passes. Attach checks the count against the plugin's. Those a world

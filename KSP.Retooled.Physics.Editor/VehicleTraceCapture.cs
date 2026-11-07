@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// Takes one WheelCollider through its life on a build from `native build --vehicle-trace`, marking each phase in the
@@ -17,7 +17,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
         {
             for (int i = 0; i < count; i++)
             {
-                Physics.Simulate(0.02f);
+                UnityEngine.Physics.Simulate(0.02f);
             }
         }
 
@@ -39,8 +39,8 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                 return;
             }
 
-            Physics.simulationMode = SimulationMode.Script;
-            Physics.gravity = new Vector3(0.0f, -9.81f, 0.0f);
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.gravity = new Vector3(0.0f, -9.81f, 0.0f);
             Capture();
             Debug.Log("[RetooledPhysics] vehicle trace written");
         }
@@ -56,7 +56,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             Rigidbody body = chassis.AddComponent<Rigidbody>();
             body.mass = 100.0f;
             chassis.AddComponent<BoxCollider>();
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Steps(1);
 
             RetooledPhysics_TraceMark("add first WheelCollider");
@@ -110,7 +110,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             Steps(1);
 
             RetooledPhysics_TraceMark("IgnoreCollision of the wheel against the chassis collider");
-            Physics.IgnoreCollision(first, chassis.GetComponent<BoxCollider>());
+            UnityEngine.Physics.IgnoreCollision(first, chassis.GetComponent<BoxCollider>());
             Steps(1);
 
             RetooledPhysics_TraceMark("add second WheelCollider");

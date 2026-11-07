@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Automatic sleep: when bodies go to sleep, what wakes them, and what a sleeping body still does.</summary>
     public class SleepConformanceTests : PhysicsScene
@@ -238,7 +238,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Rigidbody sleeper = DynamicBox(new Vector3(0.0f, 0.5f, 0.0f));
             Assert.That(StepsUntilAsleep(sleeper, 150), Is.GreaterThan(0));
 
-            Assert.That(Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, out RaycastHit hit, 10.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, out RaycastHit hit, 10.0f), Is.True);
             Assert.That(hit.rigidbody, Is.EqualTo(sleeper));
             Assert.That(hit.point.y, Is.EqualTo(1.0f).Within(0.02f));
         }

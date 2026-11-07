@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// The command kernels against a world of their own, for cases the Unity API can't reach, or can't show the result of.

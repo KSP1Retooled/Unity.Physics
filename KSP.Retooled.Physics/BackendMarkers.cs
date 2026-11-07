@@ -1,6 +1,6 @@
 using Unity.Profiling;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// A span for each way into the backend, and for each stage of a step. Native callers leave no samples of their own, so

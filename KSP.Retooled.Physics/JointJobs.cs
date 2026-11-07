@@ -8,7 +8,7 @@ using Unity.Physics;
 using static Unity.Physics.Math;
 using PhysicsJoint = Unity.Physics.Joint;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>Finds the bodies direct joints hold, which is what decides whether a contact needs coupling to them.</summary>
     [BurstCompile]

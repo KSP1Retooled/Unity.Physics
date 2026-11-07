@@ -6,7 +6,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// What happens around a stepped scene when Unity reloads scripts or plays: these run the engine's own loop, which
@@ -63,7 +63,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             for (int i = 0; i < steps; i++)
             {
-                Physics.Simulate(0.02f);
+                UnityEngine.Physics.Simulate(0.02f);
             }
         }
 
@@ -79,11 +79,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             if (SessionState.GetInt(ModeKey, -1) == -1)
             {
-                SessionState.SetInt(ModeKey, (int)Physics.simulationMode);
-                SessionState.SetVector3(GravityKey, Physics.gravity);
+                SessionState.SetInt(ModeKey, (int)UnityEngine.Physics.simulationMode);
+                SessionState.SetVector3(GravityKey, UnityEngine.Physics.gravity);
             }
 
-            Physics.gravity = TestGravity;
+            UnityEngine.Physics.gravity = TestGravity;
         }
 
         /// <summary>Runs on a new fixture after a reload, so it works from the scene and SessionState alone.</summary>
@@ -91,17 +91,17 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void RestoreSettings()
         {
             DestroyScene();
-            Physics.simulationMode = (SimulationMode)SessionState.GetInt(ModeKey, (int)SimulationMode.FixedUpdate);
-            Physics.gravity = SessionState.GetVector3(GravityKey, Vector3.zero);
+            UnityEngine.Physics.simulationMode = (SimulationMode)SessionState.GetInt(ModeKey, (int)SimulationMode.FixedUpdate);
+            UnityEngine.Physics.gravity = SessionState.GetVector3(GravityKey, Vector3.zero);
             SessionState.EraseInt(ModeKey);
         }
 
         [UnityTest]
         public IEnumerator ABodyKeepsFallingAcrossAScriptReload()
         {
-            Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
             BuildScene();
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Step(10);
             SessionState.SetFloat(HeightKey, BodyInScene().position.y);
 
@@ -118,7 +118,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             Step(200);
             Assert.That(body.position.y, Is.EqualTo(0.5f).Within(0.03f), "colliders work again");
-            Assert.That(Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.True);
         }
 
         [UnityTest]
@@ -129,7 +129,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             yield return new EnterPlayMode();
 
             Assert.That(Application.isPlaying, Is.True);
-            Physics.gravity = TestGravity;
+            UnityEngine.Physics.gravity = TestGravity;
             Rigidbody body = BodyInScene();
             float start = body.position.y;
             float end = FixedTimeAfter(5);
@@ -146,15 +146,15 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             body = BodyInScene();
             Assert.That(body.position.y, Is.EqualTo(2.0f).Within(1e-4f), "edit mode has its own scene again");
 
-            Physics.gravity = TestGravity;
-            Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.gravity = TestGravity;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
             Step(10);
             Assert.That(body.position.y, Is.LessThan(2.0f), "edit mode still steps");
         }
 
         private static InterpolationSampler StartMotion(RigidbodyInterpolation mode)
         {
-            Physics.gravity = Vector3.zero;
+            UnityEngine.Physics.gravity = Vector3.zero;
             GameObject moving = new GameObject("moving");
             Rigidbody body = moving.AddComponent<Rigidbody>();
             body.useGravity = false;
@@ -210,7 +210,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             yield return new EnterPlayMode();
 
-            Physics.gravity = TestGravity;
+            UnityEngine.Physics.gravity = TestGravity;
             BuildScene();
             BodyInScene().gameObject.AddComponent<DestroyOnLanding>();
 
@@ -230,7 +230,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             yield return new EnterPlayMode();
 
-            Physics.gravity = TestGravity;
+            UnityEngine.Physics.gravity = TestGravity;
             BuildScene();
             GameObject body = BodyInScene().gameObject;
             body.AddComponent<DestroyJointOwnerOnBreak>();

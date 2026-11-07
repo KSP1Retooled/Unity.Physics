@@ -6,7 +6,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Turns a body's shapes into one Unity Physics collider: the shape alone when there is one, else a compound whose

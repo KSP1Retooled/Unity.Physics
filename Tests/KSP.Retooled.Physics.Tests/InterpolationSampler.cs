@@ -4,7 +4,7 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.LowLevel;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// Records, at the end of each frame, where a transform and its body are. It joins the player loop rather than being

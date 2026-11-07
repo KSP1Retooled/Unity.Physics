@@ -7,7 +7,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// One manifold of the narrow phase that survived filtering, ordered so that a pair reads the same however Unity Physics

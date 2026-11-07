@@ -5,7 +5,7 @@ using UnityEditor;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// What a MeshCollider costs on the selected backend: the cook, and the first use that builds its collider. Meshes are the
@@ -22,8 +22,8 @@ namespace KSP.Retooled.PhysicsBackend.Editor
 
         public static void Run()
         {
-            Physics.simulationMode = SimulationMode.Script;
-            Physics.autoSyncTransforms = false;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.autoSyncTransforms = false;
 
             List<Mesh> game = GameCollisionMeshes();
             Debug.Log($"[MeshBench] {game.Count} game meshes, median {Median(game.Select(m => (double)m.vertexCount)):F0} vertices, "
@@ -104,7 +104,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                 Stopwatch watch = Stopwatch.StartNew();
                 foreach (Mesh mesh in copies)
                 {
-                    Physics.BakeMesh(mesh.GetEntityId(), convex);
+                    UnityEngine.Physics.BakeMesh(mesh.GetEntityId(), convex);
                 }
 
                 samples.Add(watch.Elapsed.TotalMilliseconds * 1000.0 / meshes.Count);
@@ -146,10 +146,10 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             MeshCollider collider = gameObject.AddComponent<MeshCollider>();
             collider.convex = convex;
             collider.sharedMesh = mesh;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Stopwatch watch = Stopwatch.StartNew();
-            Physics.Raycast(new Vector3(0.0f, 100.0f, 0.0f), Vector3.down, 200.0f);
+            UnityEngine.Physics.Raycast(new Vector3(0.0f, 100.0f, 0.0f), Vector3.down, 200.0f);
             double elapsed = watch.Elapsed.TotalMilliseconds;
 
             Object.DestroyImmediate(gameObject);

@@ -4,7 +4,7 @@ using NUnit.Framework;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>What a TerrainCollider does: its surface, contacts, queries, edits and lifetime.</summary>
     public class TerrainConformanceTests : PhysicsScene
@@ -56,7 +56,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             gameObject.transform.position = position;
             TerrainCollider collider = gameObject.AddComponent<TerrainCollider>();
             collider.terrainData = data;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             return collider;
         }
 
@@ -70,8 +70,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
         private static float SurfaceY(Vector3 above)
         {
-            Physics.SyncTransforms();
-            return Physics.Raycast(above, Vector3.down, out RaycastHit hit, 1000.0f) ? hit.point.y : float.NaN;
+            UnityEngine.Physics.SyncTransforms();
+            return UnityEngine.Physics.Raycast(above, Vector3.down, out RaycastHit hit, 1000.0f) ? hit.point.y : float.NaN;
         }
 
         private Rigidbody Ball(Vector3 position, float radius)
@@ -111,7 +111,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TerrainCollider collider = Slope();
 
-            Assert.That(Physics.Raycast(new Vector3(53.0f, 100.0f, 25.0f), Vector3.down, out RaycastHit hit, 1000.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(53.0f, 100.0f, 25.0f), Vector3.down, out RaycastHit hit, 1000.0f), Is.True);
 
             Assert.That(hit.collider, Is.SameAs(collider));
             Assert.That(hit.distance, Is.EqualTo(91.0f).Within(1e-3f));
@@ -165,20 +165,20 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Slope();
             Vector3 below = new Vector3(53.0f, -100.0f, 25.0f);
 
-            Assert.That(Physics.Raycast(below, Vector3.up, 1000.0f), Is.False);
-            Assert.That(Physics.SphereCast(below, 1.0f, Vector3.up, out _, 1000.0f), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(below, Vector3.up, 1000.0f), Is.False);
+            Assert.That(UnityEngine.Physics.SphereCast(below, 1.0f, Vector3.up, out _, 1000.0f), Is.False);
 
-            bool hitBackfaces = Physics.queriesHitBackfaces;
-            Physics.queriesHitBackfaces = true;
+            bool hitBackfaces = UnityEngine.Physics.queriesHitBackfaces;
+            UnityEngine.Physics.queriesHitBackfaces = true;
             try
             {
-                Assert.That(Physics.Raycast(below, Vector3.up, out RaycastHit hit, 1000.0f), Is.True);
+                Assert.That(UnityEngine.Physics.Raycast(below, Vector3.up, out RaycastHit hit, 1000.0f), Is.True);
                 Assert.That(hit.distance, Is.EqualTo(109.0f).Within(1e-3f));
                 AssertVector(new Vector3(-0.0995f, 0.995f, 0.0f), hit.normal, 2e-3f, "normal");
             }
             finally
             {
-                Physics.queriesHitBackfaces = hitBackfaces;
+                UnityEngine.Physics.queriesHitBackfaces = hitBackfaces;
             }
         }
 
@@ -187,13 +187,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TerrainCollider collider = Slope();
             collider.gameObject.layer = 8;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Vector3 above = new Vector3(53.0f, 100.0f, 25.0f);
 
-            Assert.That(Physics.Raycast(above, Vector3.down, 1000.0f, 1 << 8), Is.True);
-            Assert.That(Physics.Raycast(above, Vector3.down, 1000.0f, ~(1 << 8)), Is.False);
-            Assert.That(Physics.CheckSphere(SlopeMiddle, 1.0f, 1 << 8), Is.True);
-            Assert.That(Physics.CheckSphere(SlopeMiddle, 1.0f, ~(1 << 8)), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(above, Vector3.down, 1000.0f, 1 << 8), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(above, Vector3.down, 1000.0f, ~(1 << 8)), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle, 1.0f, 1 << 8), Is.True);
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle, 1.0f, ~(1 << 8)), Is.False);
         }
 
         [Test]
@@ -213,15 +213,15 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             TerrainCollider collider = Slope();
 
-            Assert.That(Physics.OverlapSphere(SlopeMiddle, 1.0f), Is.EqualTo(new Collider[] { collider }));
-            Assert.That(Physics.CheckSphere(SlopeMiddle, 1.0f), Is.True);
-            Assert.That(Physics.CheckBox(SlopeMiddle, Vector3.one), Is.True);
-            Assert.That(Physics.CheckSphere(SlopeMiddle + Vector3.up * 1.1f, 1.0f), Is.False);
-            Assert.That(Physics.CheckSphere(SlopeMiddle + Vector3.down * 1.1f, 1.0f), Is.False);
-            Assert.That(Physics.CheckBox(SlopeMiddle + Vector3.down * 1.1f, Vector3.one * 0.5f), Is.False);
-            Assert.That(Physics.CheckSphere(SlopeMiddle + Vector3.down * 3.0f, 1.0f), Is.False);
+            Assert.That(UnityEngine.Physics.OverlapSphere(SlopeMiddle, 1.0f), Is.EqualTo(new Collider[] { collider }));
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle, 1.0f), Is.True);
+            Assert.That(UnityEngine.Physics.CheckBox(SlopeMiddle, Vector3.one), Is.True);
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle + Vector3.up * 1.1f, 1.0f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle + Vector3.down * 1.1f, 1.0f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckBox(SlopeMiddle + Vector3.down * 1.1f, Vector3.one * 0.5f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(SlopeMiddle + Vector3.down * 3.0f, 1.0f), Is.False);
             Vector3 deep = SlopeMiddle + Vector3.down * 3.0f;
-            Assert.That(Physics.CheckCapsule(deep, deep + Vector3.up * 0.5f, 0.5f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckCapsule(deep, deep + Vector3.up * 0.5f, 0.5f), Is.False);
         }
 
         [Test]
@@ -230,12 +230,12 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Slope();
             Vector3 above = new Vector3(53.0f, 100.0f, 25.0f);
 
-            Assert.That(Physics.SphereCast(above, 1.0f, Vector3.down, out RaycastHit sphere, 200.0f), Is.True);
+            Assert.That(UnityEngine.Physics.SphereCast(above, 1.0f, Vector3.down, out RaycastHit sphere, 200.0f), Is.True);
             Assert.That(sphere.distance, Is.EqualTo(89.995f).Within(2e-3f));
             AssertVector(new Vector3(53.0993f, 9.0102f, 25.0f), sphere.point, 2e-3f, "sphere point");
             AssertVector(new Vector3(-0.0993f, 0.9951f, 0.0f), sphere.normal, 2e-3f, "sphere normal");
 
-            Assert.That(Physics.BoxCast(above, Vector3.one, Vector3.down, out RaycastHit box, Quaternion.identity, 200.0f), Is.True);
+            Assert.That(UnityEngine.Physics.BoxCast(above, Vector3.one, Vector3.down, out RaycastHit box, Quaternion.identity, 200.0f), Is.True);
 
             // The corner reaches the surface at 89.9, and PhysX stops a box 5 mm past that.
             Assert.That(box.distance, Is.EqualTo(89.8975f).Within(3e-3f));
@@ -248,9 +248,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainCollider collider = Slope();
             Vector3 touching = SlopeMiddle + Vector3.up * 0.5f;
 
-            Assert.That(Physics.SphereCast(touching, 1.0f, Vector3.down, out _, 20.0f), Is.False);
+            Assert.That(UnityEngine.Physics.SphereCast(touching, 1.0f, Vector3.down, out _, 20.0f), Is.False);
 
-            RaycastHit[] hits = Physics.SphereCastAll(touching, 1.0f, Vector3.down, 20.0f);
+            RaycastHit[] hits = UnityEngine.Physics.SphereCastAll(touching, 1.0f, Vector3.down, 20.0f);
             Assert.That(hits.Length, Is.EqualTo(1));
             Assert.That(hits[0].collider, Is.SameAs(collider));
             Assert.That(hits[0].distance, Is.EqualTo(0.0f));
@@ -266,14 +266,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             sphere.gameObject.layer = 2;
             Vector3 position = collider.transform.position;
 
-            bool above = Physics.ComputePenetration(
+            bool above = UnityEngine.Physics.ComputePenetration(
                 sphere, SlopeMiddle + Vector3.up * 0.5f, Quaternion.identity, collider, position, Quaternion.identity, out Vector3 direction, out float distance);
 
             Assert.That(above, Is.True);
             AssertVector(new Vector3(-0.0995f, 0.995f, 0.0f), direction, 2e-3f, "direction");
             Assert.That(distance, Is.EqualTo(0.5025f).Within(1e-3f));
 
-            bool below = Physics.ComputePenetration(
+            bool below = UnityEngine.Physics.ComputePenetration(
                 sphere, SlopeMiddle + Vector3.down * 0.5f, Quaternion.identity, collider, position, Quaternion.identity, out _, out _);
 
             Assert.That(below, Is.False);
@@ -286,7 +286,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             collider.transform.rotation = Quaternion.Euler(0.0f, 45.0f, 0.0f);
             collider.transform.localScale = new Vector3(2.0f, 2.0f, 2.0f);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(53.0f, 9.0f, 25.0f), collider.bounds.center, 1e-3f, "bounds centre");
             AssertVector(new Vector3(50.0f, 5.0f, 20.0f), collider.bounds.extents, 1e-3f, "bounds extents");
@@ -313,7 +313,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             // An edit only ever widens them.
             collider.terrainData.SetHeights(0, 0, new float[Resolution, Resolution]);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(53.0f, 9.0f, 25.0f), collider.bounds.center, 1e-3f, "bounds centre after lowering");
             AssertVector(new Vector3(50.0f, 5.0f, 20.0f), collider.bounds.extents, 1e-3f, "bounds extents after lowering");
@@ -325,7 +325,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainCollider collider = Slope();
 
             collider.terrainData.size = new Vector3(50.0f, 20.0f, 40.0f);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(28.0f, 9.0f, 25.0f), collider.bounds.center, 1e-3f, "bounds centre");
             AssertVector(new Vector3(25.0f, 5.0f, 20.0f), collider.bounds.extents, 1e-3f, "bounds extents");
@@ -526,7 +526,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainCollider collider = Slope();
 
             collider.terrainData.heightmapResolution = 65;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(100.0f, 0.0f, 40.0f), collider.bounds.extents, 1e-3f, "bounds extents");
             Assert.That(SurfaceY(new Vector3(83.0f, 100.0f, 25.0f)), Is.EqualTo(4.0f).Within(1e-3f));
@@ -539,14 +539,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainData other = Data(new Vector3(10.0f, 10.0f, 10.0f), (x, z) => 0.5f);
 
             collider.terrainData = other;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             AssertVector(new Vector3(8.0f, 6.5f, 10.0f), collider.bounds.center, 1e-3f, "bounds centre");
             Assert.That(SurfaceY(new Vector3(8.0f, 100.0f, 10.0f)), Is.EqualTo(9.0f).Within(1e-3f));
             Assert.That(SurfaceY(new Vector3(83.0f, 100.0f, 25.0f)), Is.NaN);
 
             collider.terrainData = null;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(8.0f, 100.0f, 10.0f)), Is.NaN);
         }
@@ -559,7 +559,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             Object.DestroyImmediate(data);
             terrains.Remove(data);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(53.0f, 100.0f, 25.0f)), Is.EqualTo(9.0f).Within(1e-3f));
         }
@@ -571,7 +571,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainData data = collider.terrainData;
 
             Object.DestroyImmediate(collider.gameObject);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Assert.That(SurfaceY(new Vector3(53.0f, 100.0f, 25.0f)), Is.NaN);
 
             data.SetHeights(0, 0, new float[Resolution, Resolution]);
@@ -586,14 +586,14 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             TerrainData data = Data(new Vector3(32.0f, 1.0f, 32.0f), (x, z) => 0.5f);
             Terrain(data);
             data.SetHoles(3, 2, new[,] { { false } });
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(3.2f, 5.0f, 2.2f)), Is.NaN);
             Assert.That(SurfaceY(new Vector3(3.8f, 5.0f, 2.8f)), Is.NaN);
             Assert.That(SurfaceY(new Vector3(2.5f, 5.0f, 2.5f)), Is.EqualTo(0.5f).Within(1e-3f));
             Assert.That(SurfaceY(new Vector3(3.5f, 5.0f, 3.5f)), Is.EqualTo(0.5f).Within(1e-3f));
-            Assert.That(Physics.CheckSphere(new Vector3(3.5f, 0.5f, 2.5f), 0.1f), Is.False);
-            Assert.That(Physics.CheckSphere(new Vector3(5.5f, 0.5f, 5.5f), 0.1f), Is.True);
+            Assert.That(UnityEngine.Physics.CheckSphere(new Vector3(3.5f, 0.5f, 2.5f), 0.1f), Is.False);
+            Assert.That(UnityEngine.Physics.CheckSphere(new Vector3(5.5f, 0.5f, 5.5f), 0.1f), Is.True);
 
             Rigidbody falling = Ball(new Vector3(3.5f, 2.0f, 2.5f), 0.1f);
             Rigidbody resting = Ball(new Vector3(5.5f, 2.0f, 5.5f), 0.1f);
@@ -610,7 +610,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Terrain(data, new Vector3(3.0f, 4.0f, 5.0f));
 
             data.SetHoles(3, 2, new[,] { { false } });
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(53.0f, 100.0f, 7.0f)), Is.EqualTo(9.0f).Within(1e-3f));
 
@@ -631,11 +631,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Terrain(data);
 
             data.SetHoles(3, 2, new[,] { { false } });
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Assert.That(SurfaceY(new Vector3(3.5f, 5.0f, 2.5f)), Is.NaN);
 
             data.SetHoles(3, 2, new[,] { { true } });
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             Assert.That(SurfaceY(new Vector3(3.5f, 5.0f, 2.5f)), Is.EqualTo(0.5f).Within(1e-3f));
         }
 
@@ -646,7 +646,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Terrain(data);
 
             data.SetHoles(0, 0, new bool[32, 32]);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(3.5f, 5.0f, 2.5f)), Is.NaN);
         }
@@ -659,7 +659,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             data.SetHoles(3, 2, new[,] { { false } });
 
             data.SetHeights(0, 0, Heights((x, z) => 0.25f));
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(3.5f, 5.0f, 2.5f)), Is.NaN);
             Assert.That(SurfaceY(new Vector3(2.5f, 5.0f, 2.5f)), Is.EqualTo(0.25f).Within(1e-3f));
@@ -672,13 +672,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             BoxCollider box = terrain.gameObject.AddComponent<BoxCollider>();
             box.center = new Vector3(10.0f, 50.0f, 10.0f);
             box.size = Vector3.one * 2.0f;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
-            Assert.That(Physics.Raycast(new Vector3(13.0f, 100.0f, 15.0f), Vector3.down, out RaycastHit top, 1000.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(13.0f, 100.0f, 15.0f), Vector3.down, out RaycastHit top, 1000.0f), Is.True);
             Assert.That(top.collider, Is.SameAs(box));
             Assert.That(top.point.y, Is.EqualTo(55.0f).Within(1e-3f));
 
-            Assert.That(Physics.Raycast(new Vector3(53.0f, 100.0f, 25.0f), Vector3.down, out RaycastHit ground, 1000.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(53.0f, 100.0f, 25.0f), Vector3.down, out RaycastHit ground, 1000.0f), Is.True);
             Assert.That(ground.collider, Is.SameAs(terrain));
             Assert.That(ground.point.y, Is.EqualTo(9.0f).Within(1e-3f));
         }
@@ -691,7 +691,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             parent.transform.rotation = Quaternion.Euler(0.0f, 90.0f, 0.0f);
             TerrainCollider collider = Slope();
             collider.transform.SetParent(parent.transform, true);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(SurfaceY(new Vector3(53.0f, 100.0f, 25.0f)), Is.EqualTo(9.0f).Within(1e-3f));
             AssertVector(new Vector3(53.0f, 9.0f, 25.0f), collider.bounds.center, 1e-3f, "bounds centre");

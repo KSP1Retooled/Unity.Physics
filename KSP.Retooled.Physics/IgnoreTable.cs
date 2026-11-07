@@ -1,7 +1,7 @@
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Which collider pairs Physics.IgnoreCollision switched off, by the 16-bit ignore id each collider holds. Unity keeps the

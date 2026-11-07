@@ -7,7 +7,7 @@ using System.Text;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// What one command costs through the selected backend, in wall-clock nanoseconds per call. Run it on each backend with
@@ -49,9 +49,9 @@ namespace KSP.Retooled.PhysicsBackend.Editor
 
         public static void Run()
         {
-            Physics.simulationMode = SimulationMode.Script;
-            Physics.gravity = Vector3.zero;
-            Physics.autoSyncTransforms = false;
+            UnityEngine.Physics.simulationMode = SimulationMode.Script;
+            UnityEngine.Physics.gravity = Vector3.zero;
+            UnityEngine.Physics.autoSyncTransforms = false;
 
             Rigidbody[] bodies = new Rigidbody[Bodies];
             for (int i = 0; i < Bodies; i++)
@@ -63,8 +63,8 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                 bodies[i].useGravity = false;
             }
 
-            Physics.SyncTransforms();
-            Physics.Simulate(DeltaTime);
+            UnityEngine.Physics.SyncTransforms();
+            UnityEngine.Physics.Simulate(DeltaTime);
 
             Rigidbody body = bodies[0];
             Measure("baseline: empty loop", FastCalls, () =>
@@ -122,7 +122,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                     body.AddForce(force);
                 }
             });
-            Physics.Simulate(DeltaTime);
+            UnityEngine.Physics.Simulate(DeltaTime);
 
             Measure("rb.AddForceAtPosition", FastCalls, () =>
             {
@@ -132,7 +132,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                     body.AddForceAtPosition(force, Vector3.one);
                 }
             });
-            Physics.Simulate(DeltaTime);
+            UnityEngine.Physics.Simulate(DeltaTime);
 
             WaitForBurstQueries(body);
             Measure("Physics.Raycast hit", SlowCalls, () =>
@@ -140,7 +140,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                 Vector3 origin = body.position + new Vector3(0.0f, 0.0f, -5.0f);
                 for (int i = 0; i < SlowCalls; i++)
                 {
-                    Physics.Raycast(origin, Vector3.forward, 10.0f);
+                    UnityEngine.Physics.Raycast(origin, Vector3.forward, 10.0f);
                 }
             });
 
@@ -169,7 +169,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             while (watch.Elapsed.TotalSeconds < BurstWaitSeconds)
             {
                 long before = BackendHost.ManagedQueries;
-                Physics.Raycast(body.position + new Vector3(0.0f, 0.0f, -5.0f), Vector3.forward, 10.0f);
+                UnityEngine.Physics.Raycast(body.position + new Vector3(0.0f, 0.0f, -5.0f), Vector3.forward, 10.0f);
                 if (BackendHost.ManagedQueries == before)
                 {
                     Debug.Log($"[CostBench] queries run in Burst after {watch.Elapsed.TotalSeconds:F1} s");
@@ -204,14 +204,14 @@ namespace KSP.Retooled.PhysicsBackend.Editor
                         transforms[i].position += shift;
                     }
 
-                    Physics.SyncTransforms();
+                    UnityEngine.Physics.SyncTransforms();
                 }
             });
             Measure("SyncTransforms alone with nothing moved, per body", Passes * bodies.Length, () =>
             {
                 for (int pass = 0; pass < Passes; pass++)
                 {
-                    Physics.SyncTransforms();
+                    UnityEngine.Physics.SyncTransforms();
                 }
             });
             Measure("rb.position set, per body", Passes * bodies.Length, () =>
@@ -239,7 +239,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             {
                 for (int step = 0; step < Steps; step++)
                 {
-                    Physics.Simulate(DeltaTime);
+                    UnityEngine.Physics.Simulate(DeltaTime);
                 }
             });
 
@@ -252,7 +252,7 @@ namespace KSP.Retooled.PhysicsBackend.Editor
             {
                 for (int step = 0; step < Steps; step++)
                 {
-                    Physics.Simulate(DeltaTime);
+                    UnityEngine.Physics.Simulate(DeltaTime);
                 }
             });
         }

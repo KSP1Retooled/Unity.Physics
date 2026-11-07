@@ -5,7 +5,7 @@ using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// A player that selects the Unity Physics backend without its plugin would fall back without saying so: Unity picks

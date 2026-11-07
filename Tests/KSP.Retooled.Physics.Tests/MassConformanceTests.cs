@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>What mass, centre of mass and inertia read back as, set by hand and derived from colliders.</summary>
     public class MassConformanceTests : PhysicsScene

@@ -1,7 +1,7 @@
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// The height field commands: a copy of Unity's samples on the store's heap, where it survives a domain reload, and the

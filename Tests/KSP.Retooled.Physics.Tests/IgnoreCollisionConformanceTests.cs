@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Physics.IgnoreCollision, which works per collider and which KSP's CollisionManager leans on.</summary>
     public class IgnoreCollisionConformanceTests : PhysicsScene
@@ -14,7 +14,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Collider ground = Ground().GetComponent<Collider>();
             Rigidbody body = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
 
-            Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
+            UnityEngine.Physics.IgnoreCollision(body.GetComponent<Collider>(), ground);
             Simulate(60);
 
             Assert.That(body.position.y, Is.LessThan(-1.0f));
@@ -27,15 +27,15 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Collider second = DynamicBox(new Vector3(3.0f, 5.0f, 0.0f)).GetComponent<Collider>();
             Collider third = DynamicBox(new Vector3(6.0f, 5.0f, 0.0f)).GetComponent<Collider>();
 
-            Assert.That(Physics.GetIgnoreCollision(first, second), Is.False, "nothing ignored yet");
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(first, second), Is.False, "nothing ignored yet");
 
-            Physics.IgnoreCollision(first, second);
-            Assert.That(Physics.GetIgnoreCollision(first, second), Is.True);
-            Assert.That(Physics.GetIgnoreCollision(second, first), Is.True);
-            Assert.That(Physics.GetIgnoreCollision(first, third), Is.False, "another pair with one collider in common");
+            UnityEngine.Physics.IgnoreCollision(first, second);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(first, second), Is.True);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(second, first), Is.True);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(first, third), Is.False, "another pair with one collider in common");
 
-            Physics.IgnoreCollision(second, first, false);
-            Assert.That(Physics.GetIgnoreCollision(first, second), Is.False);
+            UnityEngine.Physics.IgnoreCollision(second, first, false);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(first, second), Is.False);
         }
 
         [Test]
@@ -45,9 +45,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Rigidbody body = DynamicBox(new Vector3(0.0f, 2.0f, 0.0f));
             Collider collider = body.GetComponent<Collider>();
 
-            Physics.IgnoreCollision(collider, ground);
+            UnityEngine.Physics.IgnoreCollision(collider, ground);
             Simulate(5);
-            Physics.IgnoreCollision(collider, ground, false);
+            UnityEngine.Physics.IgnoreCollision(collider, ground, false);
             Simulate(150);
 
             Assert.That(body.position.y, Is.EqualTo(RestingHeight).Within(0.02f));
@@ -65,7 +65,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Rigidbody body = root.AddComponent<Rigidbody>();
             body.constraints = RigidbodyConstraints.FreezeRotation;
 
-            Physics.IgnoreCollision(lowest, ground);
+            UnityEngine.Physics.IgnoreCollision(lowest, ground);
             Simulate(200);
 
             Assert.That(body.position.y, Is.EqualTo(RestingHeight).Within(0.02f), "the root collider lands, with the child sunk in");
@@ -78,7 +78,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Rigidbody second = WeightlessBox(new Vector3(3.0f, 0.0f, 0.0f));
             first.linearVelocity = new Vector3(5.0f, 0.0f, 0.0f);
 
-            Physics.IgnoreCollision(first.GetComponent<Collider>(), second.GetComponent<Collider>());
+            UnityEngine.Physics.IgnoreCollision(first.GetComponent<Collider>(), second.GetComponent<Collider>());
             Simulate(100);
 
             AssertVector(new Vector3(7.0f, 0.0f, 0.0f), first.position, 0.05f, "moved through");
@@ -92,13 +92,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Rigidbody body = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
             Collider collider = body.GetComponent<Collider>();
 
-            Physics.IgnoreCollision(collider, ground);
+            UnityEngine.Physics.IgnoreCollision(collider, ground);
             collider.enabled = false;
             Simulate(1);
             collider.enabled = true;
             Simulate(60);
 
-            Assert.That(Physics.GetIgnoreCollision(collider, ground), Is.True);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(collider, ground), Is.True);
             Assert.That(body.position.y, Is.LessThan(-1.0f));
         }
 
@@ -107,13 +107,13 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Collider ground = Ground().GetComponent<Collider>();
             Rigidbody first = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
-            Physics.IgnoreCollision(first.GetComponent<Collider>(), ground);
+            UnityEngine.Physics.IgnoreCollision(first.GetComponent<Collider>(), ground);
             Object.DestroyImmediate(first.gameObject);
 
             Rigidbody second = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
             Simulate(100);
 
-            Assert.That(Physics.GetIgnoreCollision(second.GetComponent<Collider>(), ground), Is.False);
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(second.GetComponent<Collider>(), ground), Is.False);
             Assert.That(second.position.y, Is.EqualTo(RestingHeight).Within(0.02f));
         }
     }

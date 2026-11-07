@@ -1,6 +1,6 @@
 using Unity.Mathematics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>The geometry of one shape: what the mass calculation needs of it, and its bounds.</summary>
     internal static unsafe class ShapeMath

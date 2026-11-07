@@ -3,7 +3,7 @@ using KSP.Retooled.Systems;
 using NUnit.Framework;
 using Unity.Entities;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>The backend the run selected, and the part of Unity Physics the game must not run.</summary>
     public class BackendSelectionTests

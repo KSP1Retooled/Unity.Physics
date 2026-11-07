@@ -1,7 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Editor
+namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
     /// The import settings of the RetooledPhysics plugin, which `RetooledCli native build` installs. It must be preloaded,

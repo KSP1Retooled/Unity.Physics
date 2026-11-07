@@ -6,7 +6,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 
-namespace KSP.Retooled.PhysicsBackend
+namespace KSP.Retooled.Physics
 {
     /// <summary>
     /// Integrates what PhysX integrates before its solver: collected forces, gravity, damping and the velocity limits.

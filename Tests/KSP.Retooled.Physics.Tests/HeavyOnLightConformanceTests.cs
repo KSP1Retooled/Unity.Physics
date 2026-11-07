@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// A heavy stack held up by very light bodies that are pinned to the world and rest on the ground, the way launch clamps
@@ -63,7 +63,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
                 toStack.breakForce = ClampBreakForce;
                 toStack.breakTorque = ClampBreakForce;
 
-                Physics.IgnoreCollision(foot.GetComponent<Collider>(), stack.GetComponent<Collider>());
+                UnityEngine.Physics.IgnoreCollision(foot.GetComponent<Collider>(), stack.GetComponent<Collider>());
             }
         }
 
@@ -139,7 +139,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             angular.maximumForce = maximumForce;
             joint.angularXDrive = joint.angularYZDrive = angular;
 
-            Physics.gravity = Vector3.zero;
+            UnityEngine.Physics.gravity = Vector3.zero;
             Simulate(5);
 
             Quaternion q = ofInertia ? arm.inertiaTensorRotation : arm.rotation;
@@ -168,7 +168,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             // The pad's up in KSP's world, where no axis points anywhere in particular.
             tilt = tilted ? Quaternion.FromToRotation(Vector3.up, new Vector3(-0.8231264f, -0.0016914f, 0.567856f)) : Quaternion.identity;
-            Physics.gravity = tilt * Physics.gravity;
+            UnityEngine.Physics.gravity = tilt * UnityEngine.Physics.gravity;
 
             GameObject pad = Ground();
             pad.name = "pad";

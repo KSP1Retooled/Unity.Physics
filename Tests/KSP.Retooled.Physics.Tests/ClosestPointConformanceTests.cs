@@ -2,7 +2,7 @@ using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Collider.ClosestPoint and Physics.ClosestPoint.</summary>
     public class ClosestPointConformanceTests : QueryScene
@@ -51,7 +51,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
             AssertVector(new Vector3(10.0f, 3.5f, 0.0f), box.ClosestPoint(new Vector3(10.0f, 10.0f, 0.0f)), Tolerance);
 
-            Vector3 rotated = Physics.ClosestPoint(Vector3.zero, box, new Vector3(10.0f, 0.0f, 0.0f), Quaternion.Euler(0.0f, 0.0f, 90.0f));
+            Vector3 rotated = UnityEngine.Physics.ClosestPoint(Vector3.zero, box, new Vector3(10.0f, 0.0f, 0.0f), Quaternion.Euler(0.0f, 0.0f, 90.0f));
             AssertVector(new Vector3(6.5f, 0.0f, 0.0f), rotated, Tolerance);
         }
 
@@ -60,7 +60,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Collider box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one).GetComponent<Collider>();
 
-            AssertVector(new Vector3(0.0f, 0.0f, 9.5f), Physics.ClosestPoint(Vector3.zero, box, new Vector3(0.0f, 0.0f, 10.0f), Quaternion.identity), Tolerance);
+            AssertVector(new Vector3(0.0f, 0.0f, 9.5f), UnityEngine.Physics.ClosestPoint(Vector3.zero, box, new Vector3(0.0f, 0.0f, 10.0f), Quaternion.identity), Tolerance);
         }
 
         [Test]
@@ -131,7 +131,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Vector3 point = new Vector3(0.0f, 0.0f, 3.0f);
 
             Assert.That(box.ClosestPoint(point), Is.EqualTo(point));
-            Assert.That(Physics.ClosestPoint(point, box, Vector3.zero, Quaternion.identity), Is.EqualTo(point));
+            Assert.That(UnityEngine.Physics.ClosestPoint(point, box, Vector3.zero, Quaternion.identity), Is.EqualTo(point));
         }
 
         [Test]

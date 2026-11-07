@@ -2,7 +2,7 @@ using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>What asks about one collider or one body: Physics.ComputePenetration, Collider.Raycast and Rigidbody.SweepTest.</summary>
     public class ShapeQueryConformanceTests : QueryScene
@@ -13,7 +13,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
 
         private static bool Penetration(Collider a, Vector3 positionA, Collider b, Vector3 positionB, out Vector3 direction, out float distance)
         {
-            return Physics.ComputePenetration(a, positionA, Upright, b, positionB, Upright, out direction, out distance);
+            return UnityEngine.Physics.ComputePenetration(a, positionA, Upright, b, positionB, Upright, out direction, out distance);
         }
 
         [Test]
@@ -102,19 +102,19 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Collider a = ConvexCube(Vector3.zero).GetComponent<Collider>();
             GameObject other = ConvexCube(new Vector3(0.0f, 0.0f, 5.0f));
-            bool ignored = Physics.GetIgnoreLayerCollision(28, 29);
-            Physics.IgnoreLayerCollision(28, 29, true);
+            bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(28, 29);
+            UnityEngine.Physics.IgnoreLayerCollision(28, 29, true);
             try
             {
                 a.gameObject.layer = 28;
                 other.layer = 29;
-                Physics.SyncTransforms();
+                UnityEngine.Physics.SyncTransforms();
 
                 Assert.That(Penetration(a, Vector3.zero, other.GetComponent<Collider>(), Vector3.right * 0.75f, out Vector3 _, out float _), Is.True);
             }
             finally
             {
-                Physics.IgnoreLayerCollision(28, 29, ignored);
+                UnityEngine.Physics.IgnoreLayerCollision(28, 29, ignored);
             }
         }
 
@@ -204,7 +204,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             child.transform.SetParent(root.transform, false);
             child.transform.localPosition = new Vector3(0.0f, 0.0f, 5.0f);
             root.AddComponent<Rigidbody>().useGravity = false;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
             Assert.That(child.GetComponent<Collider>().Raycast(new Ray(Vector3.zero, Vector3.forward), out RaycastHit hit, 100.0f), Is.True);
             Assert.That(hit.distance, Is.EqualTo(4.5f).Within(Tolerance));

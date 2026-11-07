@@ -2,7 +2,7 @@ using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>What the query fixtures build their scenes from, on top of <see cref="PhysicsScene"/>.</summary>
     public abstract class QueryScene : PhysicsScene
@@ -62,7 +62,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             collision.bounce = 0.0f;
             collision.dampen = 0.9f;
             collision.radiusScale = 0.01f;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             particles.Play();

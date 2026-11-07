@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using Unity.Mathematics;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>The bytes a content build stores for a pre-baked mesh, and the checks they pass at load.</summary>
     public unsafe class MeshBakeStreamTests

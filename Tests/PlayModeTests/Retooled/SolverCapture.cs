@@ -6,7 +6,7 @@ using Unity.Physics;
 using UnityEditor;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// Saves real direct solver problems to Library/SolverCapture/(name) for <see cref="SolverCaptureBench"/>. Set

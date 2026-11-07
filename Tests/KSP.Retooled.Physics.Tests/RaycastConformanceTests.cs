@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Physics.Raycast against the scene.</summary>
     public class RaycastConformanceTests : PhysicsScene
@@ -15,7 +15,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
 
             Assert.That(hit.collider, Is.SameAs(box.GetComponent<Collider>()));
             Assert.That(hit.distance, Is.EqualTo(4.5f).Within(Tolerance));
@@ -28,7 +28,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 4.0f), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 4.0f), Is.False);
         }
 
         [Test]
@@ -36,7 +36,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(new Vector3(0.0f, 0.0f, 5000.0f), Vector3.one);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward), Is.True);
         }
 
         [Test]
@@ -45,7 +45,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
             GameObject near = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
 
-            Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f);
+            UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f);
 
             Assert.That(hit.collider, Is.SameAs(near.GetComponent<Collider>()));
         }
@@ -56,8 +56,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             box.layer = 28;
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, 1 << 29), Is.False);
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, 1 << 28), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, 1 << 29), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, 1 << 28), Is.True);
         }
 
         [Test]
@@ -66,8 +66,8 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             box.GetComponent<BoxCollider>().isTrigger = true;
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, ~0, QueryTriggerInteraction.Ignore), Is.False);
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, ~0, QueryTriggerInteraction.Collide), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, ~0, QueryTriggerInteraction.Ignore), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f, ~0, QueryTriggerInteraction.Collide), Is.True);
         }
 
         [Test]
@@ -77,7 +77,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             body.linearVelocity = new Vector3(0.0f, 0.0f, 10.0f);
             Simulate(10);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
 
             Assert.That(hit.distance, Is.EqualTo(4.5f + 10.0f * Step * 10).Within(0.01f));
             Assert.That(hit.rigidbody, Is.SameAs(body));
@@ -89,7 +89,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             GameObject box = Box(Vector3.zero, Vector3.one);
             box.transform.position = new Vector3(0.0f, 0.0f, 7.0f);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, out RaycastHit hit, 100.0f), Is.True);
 
             Assert.That(hit.distance, Is.EqualTo(6.5f).Within(Tolerance));
         }
@@ -104,7 +104,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             BoxCollider childCollider = child.AddComponent<BoxCollider>();
             root.AddComponent<Rigidbody>();
 
-            Physics.Raycast(new Vector3(0.0f, 3.0f, 0.0f), Vector3.forward, out RaycastHit hit, 100.0f);
+            UnityEngine.Physics.Raycast(new Vector3(0.0f, 3.0f, 0.0f), Vector3.forward, out RaycastHit hit, 100.0f);
 
             Assert.That(hit.collider, Is.SameAs(childCollider));
         }
@@ -121,7 +121,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             capsule.height = 2.0f;
             capsule.direction = direction;
 
-            Physics.Raycast(Vector3.zero, Vector3.right, out RaycastHit hit, 100.0f);
+            UnityEngine.Physics.Raycast(Vector3.zero, Vector3.right, out RaycastHit hit, 100.0f);
 
             Assert.That(hit.distance, Is.EqualTo(5.0f - halfWidthAlongX).Within(Tolerance));
         }
@@ -131,7 +131,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             Box(Vector3.zero, Vector3.one * 4.0f);
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.False);
         }
 
         [Test]
@@ -152,7 +152,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject box = Box(Vector3.zero, Vector3.one);
             box.transform.position = new Vector3(0.0f, 0.0f, 7.0f);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
@@ -169,7 +169,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             child.transform.localPosition = new Vector3(0.0f, 3.0f, 0.0f);
             BoxCollider childCollider = child.AddComponent<BoxCollider>();
             root.AddComponent<Rigidbody>();
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             RaycastHit hit = RayFromAJob(new Vector3(0.0f, 3.0f, 0.0f), Vector3.forward, 100.0f);
@@ -182,7 +182,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject near = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             GameObject far = Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
 
             Object.DestroyImmediate(near);
             BackendHost.SyncQueryWorlds();
@@ -196,7 +196,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject near = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
 
             Object.DestroyImmediate(near);
             RaycastHit hit = RayFromAJob(Vector3.zero, Vector3.forward, 100.0f);
@@ -210,9 +210,9 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             box.GetComponent<BoxCollider>().excludeLayers = ~0;
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
         }
 
         [Test]
@@ -250,11 +250,11 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void AColliderRemovedFromTheSceneIsGone()
         {
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.True);
 
             Object.DestroyImmediate(box.GetComponent<BoxCollider>());
 
-            Assert.That(Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.False);
+            Assert.That(UnityEngine.Physics.Raycast(Vector3.zero, Vector3.forward, 100.0f), Is.False);
         }
     }
 }

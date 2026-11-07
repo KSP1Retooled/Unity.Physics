@@ -2,7 +2,7 @@ using NUnit.Framework;
 using Unity.Collections;
 using UnityEngine;
 
-namespace KSP.Retooled.PhysicsBackend.Tests
+namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>Physics.RaycastAll, what a query can ask of a mesh, and the batched commands, which run on job workers.</summary>
     public class QueryCommandConformanceTests : QueryScene
@@ -48,7 +48,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
 
-            RaycastHit[] hits = Physics.RaycastAll(Vector3.zero, Vector3.forward, 100.0f);
+            RaycastHit[] hits = UnityEngine.Physics.RaycastAll(Vector3.zero, Vector3.forward, 100.0f);
 
             Assert.That(Distances(hits), Is.EqualTo(new[] { 4.5f, 8.5f }).Within(Tolerance));
         }
@@ -59,7 +59,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(Vector3.zero, Vector3.one);
             GameObject next = Box(Vector3.forward, Vector3.one);
 
-            RaycastHit[] hits = Physics.RaycastAll(Vector3.zero, Vector3.forward, 100.0f);
+            RaycastHit[] hits = UnityEngine.Physics.RaycastAll(Vector3.zero, Vector3.forward, 100.0f);
 
             Assert.That(hits.Length, Is.EqualTo(1));
             Assert.That(hits[0].collider, Is.SameAs(next.GetComponent<Collider>()));
@@ -70,7 +70,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             MeshObject(TwoLayers(), Vector3.zero, false);
 
-            RaycastHit[] hits = Physics.RaycastAll(new Vector3(0.5f, 0.25f, -3.0f), Vector3.forward, 100.0f);
+            RaycastHit[] hits = UnityEngine.Physics.RaycastAll(new Vector3(0.5f, 0.25f, -3.0f), Vector3.forward, 100.0f);
 
             Assert.That(Distances(hits), Is.EqualTo(new[] { 3.0f }).Within(Tolerance));
         }
@@ -81,24 +81,24 @@ namespace KSP.Retooled.PhysicsBackend.Tests
             Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
             Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
 
-            Assert.That(Physics.RaycastNonAlloc(Vector3.zero, Vector3.forward, new RaycastHit[1], 100.0f), Is.EqualTo(1));
-            Assert.That(Physics.RaycastNonAlloc(Vector3.zero, Vector3.forward, new RaycastHit[4], 100.0f), Is.EqualTo(2));
+            Assert.That(UnityEngine.Physics.RaycastNonAlloc(Vector3.zero, Vector3.forward, new RaycastHit[1], 100.0f), Is.EqualTo(1));
+            Assert.That(UnityEngine.Physics.RaycastNonAlloc(Vector3.zero, Vector3.forward, new RaycastHit[4], 100.0f), Is.EqualTo(2));
         }
 
         [Test]
         public void ARayHittingABackfaceGetsTheTrianglesOwnNormal()
         {
             TriangleMeshQuad(Vector3.zero);
-            bool backfaces = Physics.queriesHitBackfaces;
-            Physics.queriesHitBackfaces = true;
+            bool backfaces = UnityEngine.Physics.queriesHitBackfaces;
+            UnityEngine.Physics.queriesHitBackfaces = true;
             try
             {
-                Assert.That(Physics.Raycast(new Vector3(0.0f, 0.0f, 3.0f), Vector3.back, out RaycastHit hit, 100.0f), Is.True);
+                Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.0f, 0.0f, 3.0f), Vector3.back, out RaycastHit hit, 100.0f), Is.True);
                 AssertVector(Vector3.back, hit.normal, Tolerance);
             }
             finally
             {
-                Physics.queriesHitBackfaces = backfaces;
+                UnityEngine.Physics.queriesHitBackfaces = backfaces;
             }
         }
 
@@ -106,7 +106,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void ARayCommandCanHitEveryFaceOfAMesh()
         {
             MeshObject(TwoLayers(), Vector3.zero, false);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             using NativeArray<RaycastCommand> commands = new NativeArray<RaycastCommand>(1, Allocator.TempJob);
@@ -127,7 +127,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void ARayCommandCanHitBackfaces()
         {
             TriangleMeshQuad(Vector3.zero);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             using NativeArray<RaycastCommand> commands = new NativeArray<RaycastCommand>(1, Allocator.TempJob);
@@ -145,7 +145,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void ACastCommandSweepsOnAWorker()
         {
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             using NativeArray<SpherecastCommand> spheres = new NativeArray<SpherecastCommand>(1, Allocator.TempJob);
@@ -175,7 +175,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject near = Box(Vector3.zero, Vector3.one);
             Box(new Vector3(0.0f, 0.0f, 9.0f), Vector3.one);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             using NativeArray<OverlapSphereCommand> spheres = new NativeArray<OverlapSphereCommand>(1, Allocator.TempJob);
@@ -204,7 +204,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         public void AClosestPointCommandAnswersOnAWorker()
         {
             GameObject box = Box(new Vector3(0.0f, 0.0f, 5.0f), Vector3.one);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             using NativeArray<ClosestPointCommand> commands = new NativeArray<ClosestPointCommand>(1, Allocator.TempJob);
@@ -240,7 +240,7 @@ namespace KSP.Retooled.PhysicsBackend.Tests
         {
             GameObject near = Box(Vector3.zero, Vector3.one);
             GameObject far = Box(new Vector3(0.0f, 0.0f, 1.0f), Vector3.one);
-            Physics.SyncTransforms();
+            UnityEngine.Physics.SyncTransforms();
             BackendHost.SyncQueryWorlds();
 
             Object.DestroyImmediate(near);
