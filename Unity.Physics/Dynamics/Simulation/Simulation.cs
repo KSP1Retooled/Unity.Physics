@@ -657,7 +657,7 @@ namespace Unity.Physics
                 m_StepHandles = Solver.ScheduleIslandSolveJobs(input.World, stepInput, input.DirectIslandSubsteps,
                     StepContext.Jacobians, SimulationContext.CollisionEventDataStream,
                     SimulationContext.TriggerEventDataStream, SimulationContext.ImpulseEventDataStream,
-                    StepContext.SolverSchedulerInfo, solverStabilizationData, jobHandle);
+                    StepContext.SolverSchedulerInfo, solverStabilizationData, executionHandle, jobHandle);
 
                 m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandle, m_StepHandles.FinalDisposeHandle);
                 jobHandle = JobHandle.CombineDependencies(executionHandle, m_StepHandles.FinalExecutionHandle);

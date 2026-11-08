@@ -17,10 +17,13 @@ namespace Unity.Physics
         /// nothing for the main thread to wait for. The islands that fit in phases run their iterations phase by phase, and the
         /// bodies they hold integrate after them. The direct islands run each substep as a chain of jobs, with the Jacobians
         /// updated and their rows built in parallel. An island's bodies are its own, so the two sides run side by side.
+        /// <paramref name="jacobiansBuilt"/> is the end of the Jacobian build alone, without the jobs that change the Jacobians'
+        /// impulses or the velocities before the solve, which is all that listing the direct islands' Jacobians waits for.
         /// </summary>
         internal static SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
-            in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData, JobHandle inputDeps)
+            in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData,
+            JobHandle jacobiansBuilt, JobHandle inputDeps)
         {
             const int workItemsPerBatch = 4;
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
@@ -57,7 +60,7 @@ namespace Unity.Physics
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
 
             JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
-                solverSchedulerInfo.DirectPairsDirectScheduling, inputDeps);
+                solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps);
 
             islandHandle = new ParallelExportEventsJob
             {
@@ -82,10 +85,11 @@ namespace Unity.Physics
         /// <summary>
         /// The substeps of every direct island. Each substep updates the Jacobians, counts their rows, builds the rows, solves
         /// each island and integrates its bodies. Only the counting runs alone. Small islands solve one per thread, and each big
-        /// one shares its solve among the lanes of a job of its own.
+        /// one shares its solve among the lanes of a job of its own. The first substep's rows depend only on what the Jacobian
+        /// build wrote, so they are counted while the islands are listed, beside the jobs that finish preparing the solve.
         /// </summary>
         static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
-            in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle inputDeps)
+            in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps)
         {
             const int headersPerBatch = 16;
             const int bodiesPerBatch = 32;
@@ -101,7 +105,9 @@ namespace Unity.Physics
                 Info = info,
                 JacobiansReader = jacobians.AsReader(),
                 Work = work,
-            }.Schedule(inputDeps);
+            }.Schedule(jacobiansBuilt);
+
+            handle = JobHandle.CombineDependencies(handle, inputDeps);
 
             StepInput substepInput = stepInput;
             substepInput.Timestep /= substeps;
@@ -121,9 +127,9 @@ namespace Unity.Physics
                         Bodies = world.Bodies,
                         StepInput = substepInput,
                     }.Schedule(work.Headers, headersPerBatch, handle);
-                }
 
-                handle = new CountIslandRowsJob { Work = work }.Schedule(handle);
+                    handle = new CountIslandRowsJob { Work = work }.Schedule(handle);
+                }
 
                 handle = new BuildIslandRowsJob
                 {
@@ -322,7 +328,7 @@ namespace Unity.Physics
 
         /// <summary>
         /// Lists every direct island's Jacobians, with the joints before the contacts, in the order the island's iterator reads
-        /// them, and decides once a step whether an island's contacts take part in its solve.
+        /// them, decides once a step whether an island's contacts take part in its solve, and counts the first substep's rows.
         /// </summary>
         [BurstCompile]
         unsafe struct IndexDirectIslandsJob : IJob
@@ -374,6 +380,7 @@ namespace Unity.Physics
                 }
 
                 Work.Buffers.HeaderRows->Resize(Work.Headers.Length);
+                CountIslandRowsJob.CountRows(Work);
             }
         }
 
@@ -412,16 +419,21 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
+                CountRows(Work);
+            }
+
+            internal static void CountRows(DirectIslandWork work)
+            {
+                UnsafeList<int>* headerRows = work.Buffers.HeaderRows;
                 int totalRows = 0;
-                for (int i = 0; i < Work.Islands.Length; i++)
+                for (int i = 0; i < work.Islands.Length; i++)
                 {
-                    ref DirectIsland island = ref Work.Islands.ElementAt(i);
+                    ref DirectIsland island = ref work.Islands.ElementAt(i);
                     int rows = 0;
                     int contactCount = 0;
                     for (int h = island.FirstHeader; h < island.SolveEnd; h++)
                     {
-                        ref JacobianHeader header = ref *Work.Headers[h].Header;
+                        ref JacobianHeader header = ref *work.Headers[h].Header;
                         (*headerRows)[h] = rows;
                         rows += GetConstraintRows(ref header);
                         contactCount += header.Type == JacobianType.Contact ? 1 : 0;
@@ -446,11 +458,11 @@ namespace Unity.Physics
 
                     island.FirstRow = totalRows;
                     island.Rows = rows;
-                    (*Work.Buffers.Bounded)[i] = 0;
+                    (*work.Buffers.Bounded)[i] = 0;
                     totalRows += rows;
                 }
 
-                Work.Buffers.Resize(totalRows);
+                work.Buffers.Resize(totalRows);
             }
         }
 
