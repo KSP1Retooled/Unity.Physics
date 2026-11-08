@@ -155,18 +155,21 @@ namespace KSP.Retooled.Physics
         /// <summary>Builds the bodies, joints and broadphase that the simulation's systems go on to step.</summary>
         internal JobHandle BuildWorld(float deltaTime, JobHandle dependency)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+            using var span = BackendMarkers.StepSchedule.Auto();
 
             JobHandle colliders = RefreshColliders(dependency);
-            BuildBodiesJob bodies = Build(deltaTime);
-            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, colliders);
-            return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
+            JobHandle built = Build(deltaTime, colliders);
+
+            using (BackendMarkers.BuildScheduleBroadphase.Auto())
+            {
+                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
+            }
         }
 
         /// <summary>Drops the overlaps nothing will solve, then sorts what's left into islands.</summary>
         internal JobHandle SortIslands(SimulationSingleton singleton, in SimulationStepInput input, JobHandle dependency)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+            using var span = BackendMarkers.StepSchedule.Auto();
 
             Simulation* simulation = singleton.AsSimulationPtr();
             if (input.World.NumDynamicBodies == 0)
@@ -189,7 +192,7 @@ namespace KSP.Retooled.Physics
         /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
         internal JobHandle ReadContacts(SimulationSingleton singleton, float deltaTime, JobHandle dependency)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+            using var span = BackendMarkers.StepSchedule.Auto();
 
             // Jobs wait in a batch until something flushes it, so without this the workers sit idle through the scheduling below.
             JobHandle.ScheduleBatchedJobs();
@@ -222,7 +225,7 @@ namespace KSP.Retooled.Physics
         /// <summary>Warm starts the Jacobians.</summary>
         internal JobHandle PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
+            using var span = BackendMarkers.StepSchedule.Auto();
 
             input.DirectSolverCache = directSolverCache;
             return new WarmStartJob
@@ -309,8 +312,7 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
             JobHandle colliders = RefreshColliders(default);
-            BuildBodiesJob bodies = Build(0.0f);
-            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, colliders);
+            JobHandle built = Build(0.0f, colliders);
             world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
             PublishQueryWorld();
         }
@@ -386,7 +388,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private JobHandle RefreshColliders(JobHandle dependency)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RefreshColliders.Auto();
+            using var span = BackendMarkers.RefreshColliders.Auto();
 
             // Every step and query build completes the one before it, so this is only ever a wait on a finished handle.
             collidersBuilt.Complete();
@@ -409,74 +411,85 @@ namespace KSP.Retooled.Physics
             store->deadColliderCount = 0;
         }
 
-        private BuildBodiesJob Build(float deltaTime)
+        private JobHandle Build(float deltaTime, JobHandle dependency)
         {
-            dynamicIndices.Clear();
-            staticIndices.Clear();
-            builtIndices.ResizeUninitialized((int)store->bodyCount);
-            motionsMatchStore = true;
-            for (int i = 0; i < store->bodyCount; i++)
+            using (BackendMarkers.BuildPartition.Auto())
             {
-                NativeStore.BodyFlags flags = store->bodies[i].flags;
-                builtIndices[i] = -1;
-                if ((flags & NativeStore.BodyFlags.Simulated) == 0)
+                dynamicIndices.Clear();
+                staticIndices.Clear();
+                builtIndices.ResizeUninitialized((int)store->bodyCount);
+                motionsMatchStore = true;
+                for (int i = 0; i < store->bodyCount; i++)
                 {
-                    continue;
+                    NativeStore.BodyFlags flags = store->bodies[i].flags;
+                    builtIndices[i] = -1;
+                    if ((flags & NativeStore.BodyFlags.Simulated) == 0)
+                    {
+                        continue;
+                    }
+
+                    if ((flags & NativeStore.BodyFlags.Static) != 0)
+                    {
+                        builtIndices[i] = staticIndices.Length;
+                        staticIndices.Add(i);
+                    }
+                    else
+                    {
+                        builtIndices[i] = dynamicIndices.Length;
+                        dynamicIndices.Add(i);
+                        if ((flags & PosedByWriteBack) != 0)
+                        {
+                            motionsMatchStore = false;
+                        }
+                    }
                 }
 
-                if ((flags & NativeStore.BodyFlags.Static) != 0)
+                // The static tree numbers the statics among themselves, and queries and pair finding add the dynamic count,
+                // so only the statics decide whether it is built again.
+                bool changed = !builtWhole || store->staticsVersion != builtStaticsVersion;
+                staticsChanged.Value = changed ? 1 : 0;
+                builtStaticsVersion = store->staticsVersion;
+                builtWhole = false;
+
+                for (int i = 0; i < builtIndices.Length; i++)
                 {
-                    builtIndices[i] = staticIndices.Length;
-                    staticIndices.Add(i);
-                }
-                else
-                {
-                    builtIndices[i] = dynamicIndices.Length;
-                    dynamicIndices.Add(i);
-                    if ((flags & PosedByWriteBack) != 0)
+                    if (builtIndices[i] >= 0 && (store->bodies[i].flags & NativeStore.BodyFlags.Static) != 0)
                     {
-                        motionsMatchStore = false;
+                        builtIndices[i] += dynamicIndices.Length;
                     }
                 }
             }
 
-            // The static tree numbers the statics among themselves, and queries and pair finding add the dynamic count, so
-            // only the statics decide whether it is built again.
-            bool changed = !builtWhole || store->staticsVersion != builtStaticsVersion;
-            staticsChanged.Value = changed ? 1 : 0;
-            builtStaticsVersion = store->staticsVersion;
-            builtWhole = false;
-
-            for (int i = 0; i < builtIndices.Length; i++)
+            // A query world never solves, so only a step needs the joints, and only a step has a time to give their motors.
+            using (BackendMarkers.BuildJoints.Auto())
             {
-                if (builtIndices[i] >= 0 && (store->bodies[i].flags & NativeStore.BodyFlags.Static) != 0)
+                builtJoints.Clear();
+                if (deltaTime > 0.0f)
                 {
-                    builtIndices[i] += dynamicIndices.Length;
+                    new BuildJointsJob
+                    {
+                        World = store,
+                        BuiltIndices = builtIndices.AsArray(),
+                        Output = builtJoints,
+                        Groups = jointGroups,
+                        Members = jointGroupMembers,
+                        DynamicCount = dynamicIndices.Length,
+                        AnchorIndex = dynamicIndices.Length + staticIndices.Length,
+                        DeltaTime = deltaTime,
+                    }.Run();
                 }
             }
 
-            // A query world never solves, so only a step needs the joints, and only a step has a time to give their motors.
-            builtJoints.Clear();
-            if (deltaTime > 0.0f)
+            using (BackendMarkers.BuildReset.Auto())
             {
-                new BuildJointsJob
-                {
-                    World = store,
-                    BuiltIndices = builtIndices.AsArray(),
-                    Output = builtJoints,
-                    Groups = jointGroups,
-                    Members = jointGroupMembers,
-                    DynamicCount = dynamicIndices.Length,
-                    AnchorIndex = dynamicIndices.Length + staticIndices.Length,
-                    DeltaTime = deltaTime,
-                }.Run();
+                world.Reset(staticIndices.Length + 1, dynamicIndices.Length, builtJoints.Length);
+                world.DynamicsWorld.Joints.CopyFrom(builtJoints.AsArray());
+                world.DynamicsWorld.EnableDirectSolver = true;
             }
 
-            world.Reset(staticIndices.Length + 1, dynamicIndices.Length, builtJoints.Length);
-            world.DynamicsWorld.Joints.CopyFrom(builtJoints.AsArray());
-            world.DynamicsWorld.EnableDirectSolver = true;
+            using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();
 
-            return new BuildBodiesJob
+            var bodiesJob = new BuildBodiesJob
             {
                 Store = store->bodies,
                 DynamicIndices = dynamicIndices.AsArray(),
@@ -486,6 +499,8 @@ namespace KSP.Retooled.Physics
                 MotionVelocities = world.MotionVelocities,
                 DeltaTime = deltaTime,
             };
+
+            return bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
         }
     }
 }

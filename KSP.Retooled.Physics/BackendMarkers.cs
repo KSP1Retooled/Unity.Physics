@@ -47,6 +47,11 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker HandOverRow = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.HandOver");
         internal static readonly ProfilerMarker StepApplyForces = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
         internal static readonly ProfilerMarker StepSchedule = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
+        internal static readonly ProfilerMarker BuildPartition = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Partition");
+        internal static readonly ProfilerMarker BuildJoints = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Joints");
+        internal static readonly ProfilerMarker BuildReset = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Reset");
+        internal static readonly ProfilerMarker BuildScheduleBodies = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
+        internal static readonly ProfilerMarker BuildScheduleBroadphase = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
         internal static readonly ProfilerMarker StepScheduleSolve = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ScheduleSolve");
         internal static readonly ProfilerMarker StepWaitForSolve = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
         internal static readonly ProfilerMarker StepWriteBack = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
