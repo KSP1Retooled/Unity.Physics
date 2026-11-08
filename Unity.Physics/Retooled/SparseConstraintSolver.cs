@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -157,24 +159,18 @@ namespace Unity.Physics
         const int FactorizeTask = 0;
         const int ForwardTask = 1;
         const int BackwardTask = 2;
-        const int BoundaryUpdateTask = 3;
-        const int TopUpdateTask = 4;
-        const int ClearTask = 5;
-        const int AssembleTask = 6;
-        const int RowResidualTask = 7;
-        const int BodyResidualTask = 8;
-        const int BoundaryPushTask = 9;
+        const int TopFactorTask = 3;
+        const int TopForwardTask = 4;
+        const int TopBackwardTask = 5;
+        const int ClearTask = 6;
+        const int AssembleTask = 7;
+        const int RowResidualTask = 8;
+        const int BodyResidualTask = 9;
 
         /// <summary>How much of the factor one task clears, and how many blocks or bodies one task assembles or checks.</summary>
         const int ScalarsPerClearTask = 16384;
         const int BlocksPerTask = 64;
         const int BodiesPerTask = 64;
-
-        /// <summary>
-        /// How many neighbours a top node needs before its updates are worth handing out one neighbour each. Fewer finish
-        /// before the lanes would notice them.
-        /// </summary>
-        const int SharedUpdateNeighbours = 6;
 
         /// <summary>A node of the graph: a body, or all the rows between one pair of bodies.</summary>
         struct Node
@@ -211,8 +207,8 @@ namespace Unity.Physics
         UnsafeList<Neighbour> neighbours;
 
         // The subtrees of the elimination tree that factor and substitute independently: each one's positions, in order, start
-        // at its entry in taskStarts. The top joins them and runs alone, and the boundary is every subtree node that has a
-        // neighbour in the top, whose updates of the top wait until the subtrees are done.
+        // at its entry in taskStarts. The top joins them and runs node by node, and the boundary is every subtree node that has
+        // a neighbour in the top, whose updates of the top wait until the subtrees are done.
         UnsafeList<int> taskStarts;
         UnsafeList<int> taskPositions;
         UnsafeList<int> topPositions;
@@ -223,12 +219,22 @@ namespace Unity.Physics
         UnsafeList<int> topUpdateStarts;
         UnsafeList<int2> topUpdates;
 
+        // The top's own blocks, by the top node whose rows they hold: the index of the node whose column holds each, and which
+        // of its neighbours that is. Each top node's list starts at its entry in topRowStarts and runs in elimination order,
+        // so a node that gathers its updates takes them in the order a serial pass would hand them out.
+        UnsafeList<int> topRowStarts;
+        UnsafeList<int2> topRows;
+
+        // The pass through the top in which each node was last finished, so that lanes taking the top's nodes in order can
+        // wait on exactly the ones they read. Each pass takes a new stamp, so none needs clearing.
+        UnsafeList<int> nodeReady;
+        int readyStamp;
+
         // Each body's rows, as row * 2 + 1 for side B, starting at its entry in bodyRowStarts.
         UnsafeList<int> bodyRowStarts;
         UnsafeList<int> bodyRows;
 
-        // The top node whose updates a stage splits by neighbour, the problem a stage reads, and each task's largest miss.
-        int stageNode;
+        // The problem a stage reads, and each task's largest miss.
         Problem stageProblem;
         UnsafeList<double> stageWorst;
 
@@ -274,10 +280,13 @@ namespace Unity.Physics
             boundaryPositions = new UnsafeList<int>(InitialCapacity, allocator);
             topUpdateStarts = new UnsafeList<int>(InitialCapacity, allocator);
             topUpdates = new UnsafeList<int2>(InitialCapacity, allocator);
+            topRowStarts = new UnsafeList<int>(InitialCapacity, allocator);
+            topRows = new UnsafeList<int2>(InitialCapacity, allocator);
+            nodeReady = new UnsafeList<int>(InitialCapacity, allocator);
+            readyStamp = 0;
             bodyRowStarts = new UnsafeList<int>(InitialCapacity, allocator);
             bodyRows = new UnsafeList<int>(InitialCapacity, allocator);
             stageWorst = new UnsafeList<double>(InitialCapacity, allocator);
-            stageNode = NoNode;
             Team = null;
             rowNode = new UnsafeList<int>(InitialCapacity, allocator);
             rowInNode = new UnsafeList<int>(InitialCapacity, allocator);
@@ -309,6 +318,9 @@ namespace Unity.Physics
             boundaryPositions.Dispose();
             topUpdateStarts.Dispose();
             topUpdates.Dispose();
+            topRowStarts.Dispose();
+            topRows.Dispose();
+            nodeReady.Dispose();
             bodyRowStarts.Dispose();
             bodyRows.Dispose();
             stageWorst.Dispose();
@@ -1068,6 +1080,42 @@ namespace Unity.Physics
                 }
             }
 
+            // A top node's neighbours come later in the elimination tree, so they are all in the top too.
+            topRowStarts.Clear();
+            topRowStarts.Resize(topPositions.Length + 1, NativeArrayOptions.ClearMemory);
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                Node node = nodes[order[topPositions[i]]];
+                for (int n = 0; n < node.NeighbourCount; n++)
+                {
+                    topRowStarts[topIndex[nodes[neighbours[node.FirstNeighbour + n].Node].Position] + 1]++;
+                }
+            }
+
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                topRowStarts[i + 1] += topRowStarts[i];
+                placed[i] = topRowStarts[i];
+            }
+
+            topRows.Resize(topRowStarts[topPositions.Length]);
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                Node node = nodes[order[topPositions[i]]];
+                for (int n = 0; n < node.NeighbourCount; n++)
+                {
+                    Neighbour neighbour = neighbours[node.FirstNeighbour + n];
+                    topRows[placed[topIndex[nodes[neighbour.Node].Position]]++] = new int2(order[topPositions[i]], n);
+                }
+            }
+
+            int oldNodes = nodeReady.Length;
+            nodeReady.Resize(nodes.Length);
+            for (int i = oldNodes; i < nodes.Length; i++)
+            {
+                nodeReady[i] = readyStamp;
+            }
+
             placed.Dispose();
             topIndex.Dispose();
 
@@ -1380,24 +1428,34 @@ namespace Unity.Physics
 
             RunTasks(FactorizeTask, taskStarts.Length - 1, null);
 
-            // The subtrees' updates of the top land in blocks the top holds, which two subtrees can share, so they go by the
-            // top node that holds them.
-            RunTasks(BoundaryUpdateTask, topPositions.Length, null);
+            // Each top node gathers its own column's updates, so no two lanes write one block, and waits only for the nodes
+            // it gathers from, so lanes work down the top together rather than in a stage per node.
+            readyStamp++;
+            RunTasks(TopFactorTask, topPositions.Length, null);
+        }
 
-            // The top nodes run in order, but each one's updates of its neighbours land in blocks each neighbour holds.
-            for (int i = 0; i < topPositions.Length; i++)
+        /// <summary>
+        /// Factors a top node's column, after taking the updates of the blocks it holds in the order a serial factorization
+        /// would make them: from the subtrees first, then from each earlier top node once that one is eliminated.
+        /// </summary>
+        void TopFactor(int top)
+        {
+            for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
             {
-                Node node = nodes[order[topPositions[i]]];
-                Eliminate(node);
-                if (node.NeighbourCount < SharedUpdateNeighbours)
-                {
-                    UpdateLaterNodes(node, 0, node.NeighbourCount);
-                    continue;
-                }
-
-                stageNode = order[topPositions[i]];
-                RunTasks(TopUpdateTask, node.NeighbourCount, null);
+                int2 update = topUpdates[i];
+                UpdateLaterNodes(nodes[order[update.x]], update.y, update.y + 1);
             }
+
+            for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
+            {
+                int2 row = topRows[i];
+                WaitUntilReady(row.x);
+                UpdateLaterNodes(nodes[row.x], row.y, row.y + 1);
+            }
+
+            int index = order[topPositions[top]];
+            Eliminate(nodes[index]);
+            Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
         }
 
         /// <summary>Runs a stage's tasks on the team if there is one.</summary>
@@ -1409,20 +1467,9 @@ namespace Unity.Physics
         /// <summary>One task of a stage, which touches nothing another task of it does.</summary>
         internal void RunTask(int kind, int task, double* x)
         {
-            if (kind == BoundaryUpdateTask)
+            if (kind == TopFactorTask)
             {
-                for (int i = topUpdateStarts[task]; i < topUpdateStarts[task + 1]; i++)
-                {
-                    int2 update = topUpdates[i];
-                    UpdateLaterNodes(nodes[order[update.x]], update.y, update.y + 1);
-                }
-
-                return;
-            }
-
-            if (kind == TopUpdateTask)
-            {
-                UpdateLaterNodes(nodes[stageNode], task, task + 1);
+                TopFactor(task);
                 return;
             }
 
@@ -1455,9 +1502,16 @@ namespace Unity.Physics
                 return;
             }
 
-            if (kind == BoundaryPushTask)
+            if (kind == TopForwardTask)
             {
-                PushToTop(task, x);
+                TopForward(task, x);
+                return;
+            }
+
+            // Later nodes first, so that the ones a node waits on are already taken.
+            if (kind == TopBackwardTask)
+            {
+                TopBackward(topPositions.Length - 1 - task, x);
                 return;
             }
 
@@ -1611,21 +1665,73 @@ namespace Unity.Physics
 
             RunTasks(ForwardTask, taskStarts.Length - 1, x);
 
-            // Two subtrees can owe the same top node, so what they owe goes by the node it is owed to.
-            RunTasks(BoundaryPushTask, topPositions.Length, x);
-
-            for (int i = 0; i < topPositions.Length; i++)
-            {
-                Node node = nodes[order[topPositions[i]]];
-                SubstituteForward(node, x, node.NeighbourCount);
-            }
-
-            for (int i = topPositions.Length - 1; i >= 0; i--)
-            {
-                SubstituteBackward(nodes[order[topPositions[i]]], x);
-            }
+            // The top's nodes go to the lanes in order, and each waits only for the nodes it reads, so lanes work down the
+            // top together rather than in a stage per node.
+            readyStamp++;
+            RunTasks(TopForwardTask, topPositions.Length, x);
+            readyStamp++;
+            RunTasks(TopBackwardTask, topPositions.Length, x);
 
             RunTasks(BackwardTask, taskStarts.Length - 1, x);
+        }
+
+        /// <summary>
+        /// Solves for a top node through L and S, from what the subtrees and the earlier top nodes owe it, in the order a
+        /// serial forward substitution would pass it.
+        /// </summary>
+        void TopForward(int top, double* x)
+        {
+            PushToTop(top, x);
+
+            int index = order[topPositions[top]];
+            Node node = nodes[index];
+            double* into = x + node.Start;
+            for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
+            {
+                int2 row = topRows[i];
+                WaitUntilReady(row.x);
+
+                // The source's answer already carries its sign, which the serial push would have applied to the sum.
+                Node source = nodes[row.x];
+                double* answer = x + source.Start;
+                double* block = factor.Ptr + neighbours[source.FirstNeighbour + row.y].Offset;
+                for (int r = 0; r < node.Size; r++)
+                {
+                    double sum = 0.0;
+                    for (int k = 0; k < source.Size; k++)
+                    {
+                        sum += block[r * source.Size + k] * answer[k];
+                    }
+
+                    into[r] -= sum;
+                }
+            }
+
+            SubstituteForward(node, x, 0);
+            Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
+        }
+
+        /// <summary>Solves for a top node through L^t, once its neighbours, which come later, have their answers.</summary>
+        void TopBackward(int top, double* x)
+        {
+            int index = order[topPositions[top]];
+            Node node = nodes[index];
+            for (int i = 0; i < node.NeighbourCount; i++)
+            {
+                WaitUntilReady(neighbours[node.FirstNeighbour + i].Node);
+            }
+
+            SubstituteBackward(node, x);
+            Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
+        }
+
+        /// <summary>Waits for another lane to finish a node in the current pass through the top.</summary>
+        void WaitUntilReady(int node)
+        {
+            while (Volatile.Read(ref nodeReady.Ptr[node]) != readyStamp)
+            {
+                Common.Pause();
+            }
         }
 
         /// <summary>
