@@ -2690,10 +2690,22 @@ namespace Unity.Physics
                             }
                             break;
                         case JacobianType.LinearLimit:
-                            for (int i = 0; i < jacRows; ++i)
+                            if (jacRows == 3)
                             {
-                                impulseEventData.AccumulatedImpulse[i] += lambda[i];
+                                // A ball and socket's rows run along the world axes, and an event reports the impulse in
+                                // constraint B's frame, as the iterative solver does.
+                                ref var linearLimit = ref header.AccessBaseJacobian<LinearLimitJacobian>();
+                                quaternion constraintBInWorld = math.mul(linearLimit.WorldFromB.rot, new quaternion(linearLimit.BodyFromConstraintB.Rotation));
+                                impulseEventData.AccumulatedImpulse += math.rotate(math.conjugate(constraintBInWorld), new float3(lambda[0], lambda[1], lambda[2]));
                             }
+                            else
+                            {
+                                for (int i = 0; i < jacRows; ++i)
+                                {
+                                    impulseEventData.AccumulatedImpulse[i] += lambda[i];
+                                }
+                            }
+
                             break;
                     }
                 }
