@@ -4,6 +4,7 @@ using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Numerics;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
 
@@ -1603,7 +1604,7 @@ namespace Unity.Physics
                     double sum = sign * a[row * size + column];
                     for (int k = 0; k < column; k++)
                     {
-                        sum -= a[row * size + k] * a[column * size + k];
+                        sum = MathUtil.Fma(-a[row * size + k], a[column * size + k], sum);
                     }
 
                     if (row == column)
@@ -1629,7 +1630,7 @@ namespace Unity.Physics
                     double sum = x[column];
                     for (int k = 0; k < column; k++)
                     {
-                        sum -= x[k] * c[column * size + k];
+                        sum = MathUtil.Fma(-x[k], c[column * size + k], sum);
                     }
 
                     x[column] = sum / c[column * size + column];
@@ -1637,24 +1638,73 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>target -= sign * left * right^t. The diagonal block's factorization only reads its lower half.</summary>
+        /// <summary>
+        /// target -= sign * left * right^t. The diagonal block's factorization only reads its lower half. Each sum is short,
+        /// so four of a row's entries are summed side by side, which keeps the vector lanes busy where one sum couldn't.
+        /// </summary>
         static void Update(double* target, int rows, int columns, double* left, double* right, int inner, double sign, bool lowerOnly)
         {
             for (int row = 0; row < rows; row++)
             {
                 double* l = left + row * inner;
+                double* into = target + row * columns;
                 int last = lowerOnly ? row + 1 : columns;
-                for (int column = 0; column < last; column++)
+                int column = 0;
+                for (; column + 4 <= last; column += 4)
+                {
+                    double* r = right + column * inner;
+                    double4 sum = 0.0;
+                    for (int k = 0; k < inner; k++)
+                    {
+                        sum = MathUtil.Fma(l[k], new double4(r[k], r[inner + k], r[2 * inner + k], r[3 * inner + k]), sum);
+                    }
+
+                    *(double4*)(into + column) -= sign * sum;
+                }
+
+                for (; column < last; column++)
                 {
                     double* r = right + column * inner;
                     double sum = 0.0;
                     for (int k = 0; k < inner; k++)
                     {
-                        sum += l[k] * r[k];
+                        sum = MathUtil.Fma(l[k], r[k], sum);
                     }
 
-                    target[row * columns + column] -= sign * sum;
+                    into[column] -= sign * sum;
                 }
+            }
+        }
+
+        /// <summary>
+        /// target -= sign * block * x, for a block of the given rows with <paramref name="inner"/> columns, four rows side by
+        /// side for the same reason as <see cref="Update"/>.
+        /// </summary>
+        static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
+        {
+            int row = 0;
+            for (; row + 4 <= rows; row += 4)
+            {
+                double* b = block + row * inner;
+                double4 sum = 0.0;
+                for (int k = 0; k < inner; k++)
+                {
+                    sum = MathUtil.Fma(new double4(b[k], b[inner + k], b[2 * inner + k], b[3 * inner + k]), x[k], sum);
+                }
+
+                *(double4*)(target + row) -= sign * sum;
+            }
+
+            for (; row < rows; row++)
+            {
+                double* b = block + row * inner;
+                double sum = 0.0;
+                for (int k = 0; k < inner; k++)
+                {
+                    sum = MathUtil.Fma(b[k], x[k], sum);
+                }
+
+                target[row] -= sign * sum;
             }
         }
 
@@ -1695,16 +1745,7 @@ namespace Unity.Physics
                 Node source = nodes[row.x];
                 double* answer = x + source.Start;
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + row.y].Offset;
-                for (int r = 0; r < node.Size; r++)
-                {
-                    double sum = 0.0;
-                    for (int k = 0; k < source.Size; k++)
-                    {
-                        sum += block[r * source.Size + k] * answer[k];
-                    }
-
-                    into[r] -= sum;
-                }
+                SubtractProduct(into, block, answer, node.Size, source.Size, 1.0);
             }
 
             SubstituteForward(node, x, 0);
@@ -1748,16 +1789,7 @@ namespace Unity.Physics
                 Node node = nodes[order[update.x]];
                 double* own = x + node.Start;
                 double* block = factor.Ptr + neighbours[node.FirstNeighbour + update.y].Offset;
-                for (int row = 0; row < target.Size; row++)
-                {
-                    double sum = 0.0;
-                    for (int k = 0; k < node.Size; k++)
-                    {
-                        sum += block[row * node.Size + k] * own[k];
-                    }
-
-                    into[row] -= sum;
-                }
+                SubtractProduct(into, block, own, target.Size, node.Size, 1.0);
             }
         }
 
@@ -1777,7 +1809,7 @@ namespace Unity.Physics
                 double sum = own[row];
                 for (int k = 0; k < row; k++)
                 {
-                    sum -= c[row * size + k] * own[k];
+                    sum = MathUtil.Fma(-c[row * size + k], own[k], sum);
                 }
 
                 own[row] = sum * inverse[row];
@@ -1787,18 +1819,7 @@ namespace Unity.Physics
             for (int i = 0; i < endNeighbour; i++)
             {
                 Node other = nodes[column[i].Node];
-                double* block = values + column[i].Offset;
-                double* target = x + other.Start;
-                for (int row = 0; row < other.Size; row++)
-                {
-                    double sum = 0.0;
-                    for (int k = 0; k < size; k++)
-                    {
-                        sum += block[row * size + k] * own[k];
-                    }
-
-                    target[row] -= node.Sign * sum;
-                }
+                SubtractProduct(x + other.Start, values + column[i].Offset, own, other.Size, size, node.Sign);
             }
 
             for (int row = 0; row < size; row++)
@@ -1823,9 +1844,17 @@ namespace Unity.Physics
                 double* source = x + other.Start;
                 for (int row = 0; row < other.Size; row++)
                 {
-                    for (int k = 0; k < size; k++)
+                    double scale = -node.Sign * source[row];
+                    double* b = block + row * size;
+                    int k = 0;
+                    for (; k + 4 <= size; k += 4)
                     {
-                        own[k] -= node.Sign * block[row * size + k] * source[row];
+                        *(double4*)(own + k) = MathUtil.Fma(scale, *(double4*)(b + k), *(double4*)(own + k));
+                    }
+
+                    for (; k < size; k++)
+                    {
+                        own[k] = MathUtil.Fma(scale, b[k], own[k]);
                     }
                 }
             }
@@ -1836,7 +1865,7 @@ namespace Unity.Physics
                 double sum = own[row];
                 for (int k = row + 1; k < size; k++)
                 {
-                    sum -= c[k * size + row] * own[k];
+                    sum = MathUtil.Fma(-c[k * size + row], own[k], sum);
                 }
 
                 own[row] = sum * inverse[row];
