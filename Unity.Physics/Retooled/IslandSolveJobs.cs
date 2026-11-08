@@ -1,4 +1,3 @@
-using System.Threading;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -487,9 +486,12 @@ namespace Unity.Physics
                 Vector* JBlocks = stackalloc Vector[jacRows];
                 BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
 
-                if (context.IsLCP)
+                // Builders only ever store 1, and the solve reads it after this job, so a plain store is enough. Checking
+                // first keeps the builders of one island from writing its line over and over.
+                int* bounded = Work.Bounded->Ptr + islandIndex;
+                if (context.IsLCP && *bounded == 0)
                 {
-                    Interlocked.Exchange(ref UnsafeUtility.AsRef<int>(Work.Bounded->Ptr + islandIndex), 1);
+                    *bounded = 1;
                 }
             }
         }
