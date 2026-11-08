@@ -33,6 +33,10 @@ namespace Unity.Physics
         const float Tolerance = 1e-4f;
         const int MaxPivotingIterations = 200;
         const int MaxBlockIterationsWithoutProgress = 3;
+        const int MaxCouplingIterations = 25;
+
+        /// <summary>How far a coupled bound may move, as a share of itself, before it asks for another answer.</summary>
+        const float CouplingTolerance = 1e-3f;
         const double SmallestPivot = 1e-30;
         const int InitialCapacity = 16;
 
@@ -82,6 +86,24 @@ namespace Unity.Physics
             /// A good guess saves pivoting steps and doesn't change the answer.
             /// </summary>
             public byte* InitialStates;
+
+            public int CouplingCount;
+
+            /// <summary>Rows whose bounds follow other rows' impulses, or null for none.</summary>
+            public Coupling* Couplings;
+        }
+
+        /// <summary>
+        /// Rows whose bounds are ±<see cref="Factor"/> times the sum of other rows' impulses: the friction of a contact, bounded
+        /// by its normal impulses. Their own bounds in the problem are ignored.
+        /// </summary>
+        public struct Coupling
+        {
+            public int FirstRow;
+            public int RowCount;
+            public int FirstSourceRow;
+            public int SourceRowCount;
+            public float Factor;
         }
 
         /// <summary>
@@ -96,6 +118,7 @@ namespace Unity.Physics
             public int PivotingIterations;
             public int Factorizations;
             public int Refinements;
+            public int CouplingIterations;
 
             /// <summary>What a reused factorization's answer finally missed by, in m/s or rad/s.</summary>
             public double Residual;
@@ -165,6 +188,12 @@ namespace Unity.Physics
 
         UnsafeList<byte> state;
 
+        // Each row's bounds: the problem's, or for a coupled row the last ones its coupling gave it. Coupled rows keep theirs
+        // between solves of one shape, as the best first guess at the next.
+        UnsafeList<float> lower;
+        UnsafeList<float> upper;
+        UnsafeList<bool> coupled;
+
         // The shape of the problem the structure above belongs to.
         UnsafeList<ConstraintBlock> analyzedBlocks;
         int analyzedBodies;
@@ -189,6 +218,9 @@ namespace Unity.Physics
             inverseDiagonal = new UnsafeList<double>(InitialCapacity, allocator);
             bodySpeedScale = new UnsafeList<double2>(InitialCapacity, allocator);
             state = new UnsafeList<byte>(InitialCapacity, allocator);
+            lower = new UnsafeList<float>(InitialCapacity, allocator);
+            upper = new UnsafeList<float>(InitialCapacity, allocator);
+            coupled = new UnsafeList<bool>(InitialCapacity, allocator);
             analyzedBlocks = new UnsafeList<ConstraintBlock>(InitialCapacity, allocator);
             analyzedBodies = -1;
             analyzedBounded = false;
@@ -210,10 +242,16 @@ namespace Unity.Physics
             inverseDiagonal.Dispose();
             bodySpeedScale.Dispose();
             state.Dispose();
+            lower.Dispose();
+            upper.Dispose();
+            coupled.Dispose();
             analyzedBlocks.Dispose();
         }
 
         public Statistics Stats => statistics;
+
+        /// <summary>The bounds the last solve held a row to, which for a coupled row are what its coupling settled on.</summary>
+        public float2 Bounds(int row) => new float2(lower[row], upper[row]);
 
         /// <summary>
         /// Writes each row's impulse to <paramref name="impulses"/>. With <paramref name="bounded"/> false the bounds are
@@ -234,12 +272,15 @@ namespace Unity.Physics
             };
 
             long started = ProfilerUnsafeUtility.Timestamp;
-            if (!HasAnalyzedShape(problem, bounded))
+            MarkCoupledRows(problem, bounded);
+            bool sameShape = HasAnalyzedShape(problem, bounded);
+            if (!sameShape)
             {
                 Analyze(problem, bounded);
                 factored = false;
             }
 
+            LoadBounds(problem, sameShape);
             statistics.AnalyzeTime = Lap(ref started);
 
             bodySpeedScale.Resize(problem.BodyCount);
@@ -258,6 +299,7 @@ namespace Unity.Physics
             int leastInfeasible = int.MaxValue;
             int stalled = 0;
             bool flipAll = true;
+            int couplings = 0;
             for (int iteration = 1; iteration <= MaxPivotingIterations; iteration++)
             {
                 statistics.PivotingIterations = iteration;
@@ -290,7 +332,20 @@ namespace Unity.Physics
                 statistics.PivotTime += Lap(ref started);
                 if (infeasible == 0)
                 {
-                    return true;
+                    // Each answer moves the normal impulses that bound the friction, and new bounds ask for a new answer.
+                    // Most rounds only move the bounds of tight rows, which reuses the factor. A capped run keeps its last
+                    // bounds, which the answer does respect.
+                    if (couplings == MaxCouplingIterations || !Couple(problem, impulses))
+                    {
+                        return true;
+                    }
+
+                    couplings++;
+                    statistics.CouplingIterations = couplings;
+                    leastInfeasible = int.MaxValue;
+                    stalled = 0;
+                    flipAll = true;
+                    continue;
                 }
 
                 // A row that changed sides changed the matrix.
@@ -312,7 +367,7 @@ namespace Unity.Physics
 
             for (int row = 0; row < problem.RowCount; row++)
             {
-                impulses[row] = math.clamp(impulses[row], problem.Lower[row], problem.Upper[row]);
+                impulses[row] = math.clamp(impulses[row], lower[row], upper[row]);
             }
 
             return false;
@@ -348,7 +403,7 @@ namespace Unity.Physics
                 if (state[row] == Free)
                 {
                     float impulse = impulses[row] - (float)step[nodes[rowNode[row]].Start + rowInNode[row]];
-                    impulses[row] = math.clamp(impulse, problem.Lower[row], problem.Upper[row]);
+                    impulses[row] = math.clamp(impulse, lower[row], upper[row]);
                 }
             }
 
@@ -380,11 +435,103 @@ namespace Unity.Physics
 
             for (int row = 0; row < problem.RowCount; row++)
             {
-                if (problem.Lower[row] == problem.Upper[row])
+                if (lower[row] == upper[row])
                 {
                     state[row] = LowerTight;
                 }
+                else if (coupled[row])
+                {
+                    // Kept bounds are a guess, and a row tight at one would start with a full friction impulse.
+                    state[row] = Free;
+                }
             }
+        }
+
+        void MarkCoupledRows(in Problem problem, bool bounded)
+        {
+            coupled.Clear();
+            coupled.Resize(problem.RowCount, NativeArrayOptions.ClearMemory);
+            for (int i = 0; bounded && i < problem.CouplingCount; i++)
+            {
+                Coupling coupling = problem.Couplings[i];
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    coupled[row] = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// A row whose bounds meet in the problem has one possible impulse, so it is a known force and not an unknown. A
+        /// coupled row's bounds can meet now and part later, so it is always an unknown.
+        /// </summary>
+        bool IsFixed(in Problem problem, int row)
+        {
+            return problem.Lower[row] == problem.Upper[row] && !coupled[row];
+        }
+
+        void LoadBounds(in Problem problem, bool keepCoupled)
+        {
+            bool kept = keepCoupled && lower.Length == problem.RowCount;
+            lower.Resize(problem.RowCount);
+            upper.Resize(problem.RowCount);
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (!coupled[row])
+                {
+                    lower[row] = problem.Lower[row];
+                    upper[row] = problem.Upper[row];
+                }
+                else if (!kept)
+                {
+                    lower[row] = 0.0f;
+                    upper[row] = 0.0f;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sets each coupled row's bounds from the impulses its sources have now, and returns whether any moved. A row
+        /// tight at a bound stays tight at where the bound moved to, and pivoting frees it if that is wrong.
+        /// </summary>
+        bool Couple(in Problem problem, float* impulses)
+        {
+            bool moved = false;
+            for (int i = 0; i < problem.CouplingCount; i++)
+            {
+                Coupling coupling = problem.Couplings[i];
+                float sum = 0.0f;
+                for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                {
+                    sum += impulses[row];
+                }
+
+                float bound = math.max(sum, 0.0f) * coupling.Factor;
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    if (math.abs(upper[row] - bound) <= math.max(Tolerance, CouplingTolerance * bound))
+                    {
+                        continue;
+                    }
+
+                    bool wasFixed = lower[row] == upper[row];
+                    lower[row] = -bound;
+                    upper[row] = bound;
+                    moved = true;
+                    if (bound == 0.0f && state[row] == Free)
+                    {
+                        state[row] = LowerTight;
+                        factored = false;
+                    }
+                    else if (wasFixed && bound > 0.0f)
+                    {
+                        state[row] = Free;
+                        factored = false;
+                    }
+                }
+            }
+
+            return moved;
         }
 
         // Structure
@@ -407,7 +554,7 @@ namespace Unity.Physics
             {
                 for (int row = 0; row < problem.RowCount; row++)
                 {
-                    if ((problem.Lower[row] == problem.Upper[row]) != (rowNode[row] == NoNode))
+                    if (IsFixed(problem, row) != (rowNode[row] == NoNode))
                     {
                         return false;
                     }
@@ -460,7 +607,7 @@ namespace Unity.Physics
                 long key = ((long)lower << 32) | (uint)higher;
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    if (bounded && problem.Lower[row] == problem.Upper[row])
+                    if (bounded && IsFixed(problem, row))
                     {
                         rowNode[row] = NoNode;
                         continue;
@@ -731,7 +878,7 @@ namespace Unity.Physics
                         continue;
                     }
 
-                    double bound = rowState == UpperTight ? problem.Upper[row] : problem.Lower[row];
+                    double bound = rowState == UpperTight ? upper[row] : lower[row];
                     float* jacobian = problem.Jacobian + row * ColumnsPerRow;
                     AddToBody(block.BodyA, jacobian, bound, target);
                     AddToBody(block.BodyB, jacobian + SideColumns, bound, target);
@@ -1090,7 +1237,7 @@ namespace Unity.Physics
                 byte rowState = state[row];
                 impulses[row] = rowState == Free
                     ? (float)-x[nodes[rowNode[row]].Start + rowInNode[row]]
-                    : rowState == LowerTight ? problem.Lower[row] : problem.Upper[row];
+                    : rowState == LowerTight ? lower[row] : upper[row];
             }
         }
 
@@ -1110,8 +1257,8 @@ namespace Unity.Physics
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    // A row whose bounds meet has one possible impulse, and it was tight from the start.
-                    if (problem.Lower[row] == problem.Upper[row])
+                    // A row whose bounds meet has one possible impulse, and it was put tight when they met.
+                    if (lower[row] == upper[row])
                     {
                         continue;
                     }
@@ -1121,11 +1268,11 @@ namespace Unity.Physics
                     if (current == Free)
                     {
                         float impulse = impulses[row];
-                        if (impulse < problem.Lower[row] - Tolerance)
+                        if (impulse < lower[row] - Tolerance)
                         {
                             next = LowerTight;
                         }
-                        else if (impulse > problem.Upper[row] + Tolerance)
+                        else if (impulse > upper[row] + Tolerance)
                         {
                             next = UpperTight;
                         }

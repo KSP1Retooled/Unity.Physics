@@ -996,9 +996,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Leaves each contact point holding the normal impulse the sparse solve gave it, for the iterative sweep that follows
-        /// to limit friction by. The sweep mustn't change the normals: the approach speed it would aim for is set once a frame,
-        /// so later in the frame it would take back impulse the solve needed and let the bodies sink.
+        /// Leaves each contact point holding the normal impulse it has pushed with so far this step, which bounds what a later
+        /// substep's solve may take back.
         /// </summary>
         static unsafe void HandOverContactImpulses(ref JacobianHeader header, float* lambda, float collisionTolerance)
         {
@@ -1008,7 +1007,6 @@ namespace Unity.Physics
             for (int i = 0; i < contactJacobian.BaseJacobian.NumContacts; ++i)
             {
                 ref var point = ref header.AccessAngularJacobian(i);
-                point.ApplyImpulse = false;
                 if (point.ContactDistance <= collisionTolerance)
                 {
                     // The point already holds its warm start, which the events count apart from this.
@@ -1240,6 +1238,7 @@ namespace Unity.Physics
             SparseSetupMarker.Begin();
             var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
+            var couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp);
             // Where each moving body sits among the island's, by its index in the world, which counts from zero.
             var compactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int i = 0; i < compactBodies.Length; i++)
@@ -1260,6 +1259,23 @@ namespace Unity.Physics
                 }
 
                 holdsPositions |= header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
+
+                // A contact's friction rows follow its normal rows, and only when it has friction.
+                float friction = header.Type == JacobianType.Contact
+                    ? header.AccessBaseJacobian<ContactJacobian>().CoefficientOfFriction
+                    : 0.0f;
+                if (friction > 0)
+                {
+                    int normals = blockRows - 3;
+                    couplings.Add(new SparseConstraintSolver.Coupling
+                    {
+                        FirstRow = firstRow + normals,
+                        RowCount = 3,
+                        FirstSourceRow = firstRow,
+                        SourceRowCount = normals,
+                        Factor = friction,
+                    });
+                }
 
                 blocks.Add(new SparseConstraintSolver.ConstraintBlock
                 {
@@ -1286,6 +1302,8 @@ namespace Unity.Physics
                 Lower = (float*)UnsafeUtility.AddressOf(ref l[0]),
                 Upper = (float*)UnsafeUtility.AddressOf(ref u[0]),
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
+                CouplingCount = couplings.Length,
+                Couplings = couplings.GetUnsafePtr(),
             };
             SparseSetupMarker.End();
 
@@ -1330,6 +1348,7 @@ namespace Unity.Physics
 
             bodies.Dispose();
             blocks.Dispose();
+            couplings.Dispose();
             compactBodies.Dispose();
             impulses.Dispose();
         }
@@ -2458,8 +2477,8 @@ namespace Unity.Physics
                                         u[frictionStartRow + 1] = 0;
                                         u[frictionStartRow + 2] = 0;
 
-                                        // Only the dense solve couples the bounds, and a sparse one builds its
-                                        // Jacobians on several threads at once.
+                                        // A sparse solve builds its Jacobians on several threads at once, so it
+                                        // reads the same coupling from the contact when it solves.
                                         if (!context.SolveSparsely)
                                         {
                                             couplingDataArray.Add(new LCP.CouplingData

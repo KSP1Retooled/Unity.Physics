@@ -164,8 +164,6 @@ namespace Unity.Physics
             /// <summary> The contacts the solve takes along with the joints, which it solves sparsely. </summary>
             public int ContactPairs;
 
-            public bool TouchesSomething;
-
             /// <summary> Whether the island's contacts need the dense solve, which builds its own rows. </summary>
             public bool Dense;
 
@@ -335,7 +333,6 @@ namespace Unity.Physics
                         SolveEnd = touchesSomething ? Work.Headers.Length : firstHeader + jointHeaders,
                         HeaderEnd = Work.Headers.Length,
                         ContactPairs = touchesSomething ? numContacts : 0,
-                        TouchesSomething = touchesSomething,
                     };
                 }
 
@@ -497,10 +494,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves one direct island from the rows built for it and applies the impulses, then sweeps its friction. A dense
-        /// island builds and solves its rows here. The direct solver takes the joints and the contacts' normals together, so a
-        /// heavy stack resting on a light part can't press it into the ground. Friction is outside what it solves, so an
-        /// iterative sweep after it adds friction, limited by the normal impulses it found.
+        /// Solves one direct island from the rows built for it and applies the impulses. A dense island builds and solves its
+        /// rows here. The direct solver takes the joints and the contacts, friction included, together: a heavy stack resting
+        /// on a light part can't press it into the ground, and the friction under a craft holds all of it through its joints
+        /// in one solve.
         /// </summary>
         [BurstCompile]
         [NoAlias]
@@ -525,7 +522,6 @@ namespace Unity.Physics
             public StepInput StepInput;
 
             static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
-            static readonly ProfilerMarker SweepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Sweep");
 
             public void Execute(int islandIndex)
             {
@@ -547,44 +543,6 @@ namespace Unity.Physics
 
                         ApplyImpulses(Info, islandIndex, JacobiansReader, ref MotionVelocities, MotionDatas, island.ContactPairs, rows,
                             Work.RightHandSide->Ptr + island.FirstRow);
-                    }
-                }
-
-                if (island.TouchesSomething)
-                {
-                    using ProfilerMarker.AutoScope span = SweepMarker.Auto();
-                    Sweep(islandIndex, island.ContactPairs, StepInput.NumSolverIterations, StepInput);
-                }
-            }
-
-            void Sweep(int island, int numContacts, int iterations, StepInput stepInput)
-            {
-                // Nothing is exported here, so the writers stay unused.
-                NativeStream.Writer noEvents = default;
-                for (int iteration = 0; iteration < iterations; iteration++)
-                {
-                    stepInput.CurrentSolverIteration = iteration;
-                    var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
-                    while (iterator.HasJacobiansLeft())
-                    {
-                        ref JacobianHeader header = ref iterator.ReadJacobianHeader();
-                        int bodyA = header.BodyPair.BodyIndexA;
-                        int bodyB = header.BodyPair.BodyIndexB;
-                        MotionVelocity velocityA = bodyA < MotionVelocities.Length ? MotionVelocities[bodyA] : MotionVelocity.Zero;
-                        MotionVelocity velocityB = bodyB < MotionVelocities.Length ? MotionVelocities[bodyB] : MotionVelocity.Zero;
-
-                        header.Solve(ref velocityA, ref velocityB, stepInput, ref noEvents, ref noEvents, ref noEvents, false,
-                            MotionStabilizationInput.Default, MotionStabilizationInput.Default);
-
-                        if (bodyA < MotionVelocities.Length)
-                        {
-                            MotionVelocities[bodyA] = velocityA;
-                        }
-
-                        if (bodyB < MotionVelocities.Length)
-                        {
-                            MotionVelocities[bodyB] = velocityB;
-                        }
                     }
                 }
             }
