@@ -20,6 +20,7 @@ namespace Unity.Physics
         /// <summary>Stages of the direct solver's own, around a sparse solver's.</summary>
         public const int PredictDriftKind = -1;
         public const int ApplyImpulsesKind = -2;
+        public const int SetupBodiesKind = -3;
 
         struct Stage
         {
@@ -56,7 +57,7 @@ namespace Unity.Physics
 
         /// <summary>
         /// Runs every task of a stage, on this lane and any helping, and returns once all are done. The context is the sparse
-        /// solver whose stage it is, or for <see cref="PredictDriftKind"/> what that stage reads and writes.
+        /// solver whose stage it is, or for the direct solver's own kinds what that stage reads and writes.
         /// </summary>
         public void Lead(void* context, int kind, int taskCount, double* vector)
         {
@@ -119,6 +120,10 @@ namespace Unity.Physics
             else if (stage.Kind == ApplyImpulsesKind)
             {
                 Solver.ApplyImpulsesTask(stage.Context, task);
+            }
+            else if (stage.Kind == SetupBodiesKind)
+            {
+                Solver.SetupBodiesTask(stage.Context, task);
             }
             else
             {

@@ -139,6 +139,7 @@ namespace Unity.Physics
                 {
                     Info = info,
                     JacobiansReader = jacobians.AsReader(),
+                    Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
                     MotionVelocities = world.MotionVelocities,
@@ -150,6 +151,7 @@ namespace Unity.Physics
                 {
                     Info = info,
                     JacobiansReader = jacobians.AsReader(),
+                    Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
                     MotionVelocities = world.MotionVelocities,
@@ -544,6 +546,9 @@ namespace Unity.Physics
             public NativeStream.Reader JacobiansReader;
 
             [ReadOnly]
+            public NativeArray<IslandHeader> Headers;
+
+            [ReadOnly]
             public NativeArray<DirectIsland> Islands;
 
             public DirectIslandBuffers Work;
@@ -560,7 +565,7 @@ namespace Unity.Physics
             {
                 if (!Islands[islandIndex].SolvesInTeam)
                 {
-                    SolveDirectIsland(Info, JacobiansReader, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
+                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
                 }
             }
         }
@@ -577,6 +582,9 @@ namespace Unity.Physics
             public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
 
             public NativeStream.Reader JacobiansReader;
+
+            [ReadOnly]
+            public NativeArray<IslandHeader> Headers;
 
             [ReadOnly]
             public NativeArray<DirectIsland> Islands;
@@ -612,7 +620,7 @@ namespace Unity.Physics
                 {
                     if (Islands[islandIndex].SolvesInTeam)
                     {
-                        SolveDirectIsland(Info, JacobiansReader, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
+                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
                     }
                 }
 
@@ -623,7 +631,8 @@ namespace Unity.Physics
         static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
 
         static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
-            in NativeArray<DirectIsland> islands, in DirectIslandBuffers work, ref NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
+            ref NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int islandIndex, SparseSolveTeam* team)
         {
             DirectIsland island = islands[islandIndex];
@@ -640,7 +649,9 @@ namespace Unity.Physics
                     SolveSparsely(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
                         DirectIslandBuffers.View(work.Epsilon, island), DirectIslandBuffers.View(work.Lower, island),
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
-                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true);
+                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,
+                        (IslandHeader*)headers.GetUnsafeReadOnlyPtr() + island.FirstHeader, work.HeaderRows->Ptr + island.FirstHeader,
+                        island.SolveEnd - island.FirstHeader);
                 }
             }
         }

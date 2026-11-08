@@ -1231,73 +1231,73 @@ namespace Unity.Physics
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false)
+            int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
+            int* headerRows = null, int headerCount = 0)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
             SparseSetupMarker.Begin();
-            var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
-            var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
-            var couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp);
-
-            // Each block's Jacobian, which stays where it is in the stream for the whole step.
-            var headers = new NativeList<IntPtr>(Allocator.Temp);
-
-            // Where each moving body sits among the island's, by its index in the world, which counts from zero.
-            var compactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            for (int i = 0; i < compactBodies.Length; i++)
+            var setup = new SparseSetup
             {
-                compactBodies[i] = -1;
+                Blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp),
+                Couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp),
+                Headers = new NativeList<IntPtr>(Allocator.Temp),
+                WorldBodies = new NativeList<int>(Allocator.Temp),
+                CompactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory),
+                MotionVelocities = motionVelocities,
+            };
+
+            // All ones is -1, for a body not in the island.
+            UnsafeUtility.MemSet(setup.CompactBodies.GetUnsafePtr(), 0xff, setup.CompactBodies.Length * (long)sizeof(int));
+
+            if (islandHeaders != null)
+            {
+                // The row builders laid out each Jacobian's rows already, and a Jacobian's rows end where the next one's start.
+                for (int h = 0; h < headerCount; h++)
+                {
+                    int end = h + 1 < headerCount ? headerRows[h + 1] : rows;
+                    setup.Add(ref *islandHeaders[h].Header, headerRows[h], end - headerRows[h]);
+                }
+            }
+            else
+            {
+                var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+                int firstRow = 0;
+                while (jacobianIterator.HasJacobiansLeft())
+                {
+                    ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
+                    int blockRows = GetConstraintRows(ref header);
+                    setup.Add(ref header, firstRow, blockRows);
+                    firstRow += blockRows;
+                }
             }
 
-            var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-            int firstRow = 0;
-            bool holdsPositions = false;
-            while (jacobianIterator.HasJacobiansLeft())
+            // Each body's mass matrix is its own, so the lanes split them.
+            var bodies = new NativeArray<SparseConstraintSolver.Body>(setup.WorldBodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bodySetup = new BodySetup
             {
-                ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
-                int blockRows = GetConstraintRows(ref header);
-                if (blockRows == 0)
-                {
-                    continue;
-                }
+                WorldBodies = setup.WorldBodies.GetUnsafeReadOnlyPtr(),
+                Count = bodies.Length,
+                MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                Timestep = stepInput.Timestep,
+                Gyroscopic = stepInput.EnableGyroscopicTorque,
+                Bodies = (SparseConstraintSolver.Body*)bodies.GetUnsafePtr(),
+            };
 
-                holdsPositions |= header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
+            SparseSolveTeam.RunAll(team, &bodySetup, SparseSolveTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
 
-                // A contact's friction rows follow its normal rows, and only when it has friction.
-                float friction = header.Type == JacobianType.Contact
-                    ? header.AccessBaseJacobian<ContactJacobian>().CoefficientOfFriction
-                    : 0.0f;
-                if (friction > 0)
-                {
-                    int normals = blockRows - 3;
-                    couplings.Add(new SparseConstraintSolver.Coupling
-                    {
-                        FirstRow = firstRow + normals,
-                        RowCount = 3,
-                        FirstSourceRow = firstRow,
-                        SourceRowCount = normals,
-                        Factor = friction,
-                    });
-                }
-
-                blocks.Add(new SparseConstraintSolver.ConstraintBlock
-                {
-                    BodyA = CompactBody(header.BodyPair.BodyIndexA, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
-                    BodyB = CompactBody(header.BodyPair.BodyIndexB, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
-                    FirstRow = firstRow,
-                    RowCount = blockRows,
-                });
-                headers.Add((IntPtr)UnsafeUtility.AddressOf(ref header));
-
-                firstRow += blockRows;
-            }
+            NativeList<SparseConstraintSolver.ConstraintBlock> blocks = setup.Blocks;
+            NativeList<SparseConstraintSolver.Coupling> couplings = setup.Couplings;
+            NativeList<IntPtr> headers = setup.Headers;
+            NativeArray<int> compactBodies = setup.CompactBodies;
+            bool holdsPositions = setup.HoldsPositions;
 
             var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var problem = new SparseConstraintSolver.Problem
             {
                 BodyCount = bodies.Length,
-                Bodies = bodies.GetUnsafePtr(),
+                Bodies = (SparseConstraintSolver.Body*)bodies.GetUnsafePtr(),
                 BlockCount = blocks.Length,
                 Blocks = blocks.GetUnsafePtr(),
                 RowCount = rows,
@@ -1365,7 +1365,119 @@ namespace Unity.Physics
             couplings.Dispose();
             headers.Dispose();
             compactBodies.Dispose();
+            setup.WorldBodies.Dispose();
             impulses.Dispose();
+        }
+
+        /// <summary>The blocks of a sparse solve, gathered from an island's Jacobians in their order.</summary>
+        unsafe struct SparseSetup
+        {
+            public NativeList<SparseConstraintSolver.ConstraintBlock> Blocks;
+            public NativeList<SparseConstraintSolver.Coupling> Couplings;
+
+            /// <summary>Each block's Jacobian, which stays where it is in the stream for the whole step.</summary>
+            public NativeList<IntPtr> Headers;
+
+            /// <summary>Each of the island's moving bodies by its index in the world, in the order the blocks reach them.</summary>
+            public NativeList<int> WorldBodies;
+
+            /// <summary>Where each moving body sits among the island's, by its index in the world, or -1.</summary>
+            public NativeArray<int> CompactBodies;
+
+            public NativeArray<MotionVelocity> MotionVelocities;
+            public bool HoldsPositions;
+
+            public void Add(ref JacobianHeader header, int firstRow, int blockRows)
+            {
+                if (blockRows == 0)
+                {
+                    return;
+                }
+
+                HoldsPositions |= header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
+
+                // A contact's friction rows follow its normal rows, and only when it has friction.
+                float friction = header.Type == JacobianType.Contact
+                    ? header.AccessBaseJacobian<ContactJacobian>().CoefficientOfFriction
+                    : 0.0f;
+                if (friction > 0)
+                {
+                    int normals = blockRows - 3;
+                    Couplings.Add(new SparseConstraintSolver.Coupling
+                    {
+                        FirstRow = firstRow + normals,
+                        RowCount = 3,
+                        FirstSourceRow = firstRow,
+                        SourceRowCount = normals,
+                        Factor = friction,
+                    });
+                }
+
+                Blocks.Add(new SparseConstraintSolver.ConstraintBlock
+                {
+                    BodyA = Compact(header.BodyPair.BodyIndexA),
+                    BodyB = Compact(header.BodyPair.BodyIndexB),
+                    FirstRow = firstRow,
+                    RowCount = blockRows,
+                });
+                Headers.Add((IntPtr)UnsafeUtility.AddressOf(ref header));
+            }
+
+            /// <summary>Where a body sits among the moving bodies of the island, or -1 if it doesn't move.</summary>
+            int Compact(int bodyIndex)
+            {
+                if (bodyIndex >= MotionVelocities.Length || MotionVelocities[bodyIndex].IsKinematic)
+                {
+                    return -1;
+                }
+
+                int compact = CompactBodies[bodyIndex];
+                if (compact < 0)
+                {
+                    compact = WorldBodies.Length;
+                    CompactBodies[bodyIndex] = compact;
+                    WorldBodies.Add(bodyIndex);
+                }
+
+                return compact;
+            }
+        }
+
+        const int BodiesPerSetupTask = 64;
+
+        /// <summary>What finding a sparse solve's mass matrices reads and writes, shared by the lanes that split them.</summary>
+        unsafe struct BodySetup
+        {
+            public int* WorldBodies;
+            public int Count;
+            public MotionVelocity* MotionVelocities;
+            public MotionData* MotionDatas;
+            public float Timestep;
+            public bool Gyroscopic;
+            public SparseConstraintSolver.Body* Bodies;
+        }
+
+        /// <summary>
+        /// One task of finding the mass matrices of a sparse solve's bodies. The solver divides by neither mass nor inertia, so
+        /// an axis with none needs a value that stands for infinite, and this one is far past any body.
+        /// </summary>
+        internal static unsafe void SetupBodiesTask(void* context, int task)
+        {
+            const float smallestInverse = 1e-12f;
+            var setup = (BodySetup*)context;
+            int end = math.min((task + 1) * BodiesPerSetupTask, setup->Count);
+            for (int compact = task * BodiesPerSetupTask; compact < end; compact++)
+            {
+                int body = setup->WorldBodies[compact];
+                MotionVelocity motion = setup->MotionVelocities[body];
+                motion.InverseInertia = math.max(motion.InverseInertia, smallestInverse);
+                ComputeInertiaTensor(motion, setup->MotionDatas[body], setup->Timestep, setup->Gyroscopic, out float3x3 inertia, out _);
+                setup->Bodies[compact] = new SparseConstraintSolver.Body
+                {
+                    Mass = 1.0 / math.max(motion.InverseMass, smallestInverse),
+                    Inertia = new double3x3(inertia),
+                };
+            }
         }
 
         /// <summary>
@@ -1578,40 +1690,6 @@ namespace Unity.Physics
             NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref array, AtomicSafetyHandle.GetTempMemoryHandle());
 #endif
             return array;
-        }
-
-        /// <summary>
-        /// Where a body sits among the moving bodies of the island, or -1 if it doesn't move. The solver divides by neither
-        /// mass nor inertia, so an axis with none needs a value that stands for infinite, and this one is far past any body.
-        /// </summary>
-        static int CompactBody(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
-            in StepInput stepInput, ref NativeList<SparseConstraintSolver.Body> bodies, ref NativeArray<int> compactBodies)
-        {
-            if (bodyIndex >= motionVelocities.Length || motionVelocities[bodyIndex].IsKinematic)
-            {
-                return -1;
-            }
-
-            int compact = compactBodies[bodyIndex];
-            if (compact >= 0)
-            {
-                return compact;
-            }
-
-            const float smallestInverse = 1e-12f;
-            MotionVelocity motion = motionVelocities[bodyIndex];
-            motion.InverseInertia = math.max(motion.InverseInertia, smallestInverse);
-            ComputeInertiaTensor(motion, motionDatas[bodyIndex], stepInput.Timestep, stepInput.EnableGyroscopicTorque, out float3x3 inertia, out _);
-
-            compact = bodies.Length;
-            compactBodies[bodyIndex] = compact;
-            bodies.Add(new SparseConstraintSolver.Body
-            {
-                Mass = 1.0 / math.max(motion.InverseMass, smallestInverse),
-                Inertia = new double3x3(inertia),
-            });
-
-            return compact;
         }
 
         /// <summary>
