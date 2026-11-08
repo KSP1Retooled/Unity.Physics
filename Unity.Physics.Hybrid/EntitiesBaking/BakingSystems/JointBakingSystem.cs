@@ -680,7 +680,7 @@ namespace Unity.Physics.Authoring
             // 1. The worst case for linear dofs is all three limited, and all three driven, this results in 1 + 3 constraints.
             // 2. The worst case for angular dofs is all three limited, and all three driven too. This results in 3 + 3 constraints.
             // 3. Thus, in total we can have up to 4 + 6 = 10 constraints.
-            // 4. sizeof(Constraint) is 44 bytes aligned as float, so a fixed size list can hold up to 11 constraints max.
+            // 4. sizeof(Constraint) is 48 bytes aligned as float, so a fixed size list can hold up to 10 constraints max.
             // 5. Conclude that one fixed list is enough for the worst case.
             var allConstraints = new FixedList512Bytes<Constraint>();
 

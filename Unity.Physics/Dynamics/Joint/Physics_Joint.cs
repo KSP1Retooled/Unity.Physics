@@ -84,6 +84,13 @@ namespace Unity.Physics
         [FieldOffset(32)]
         public float3 Target;
 
+        /// <summary>
+        /// How many times the direct solver's stiffness cap this constraint may reach, for one constraint that stands in
+        /// for several between the same bodies. Zero counts as one.
+        /// </summary>
+        [FieldOffset(44)]
+        public float DirectStiffnessScale;
+
         /// <summary>   Number of affected degrees of freedom.  1, 2, or 3. </summary>
         public int Dimension
         {
@@ -592,7 +599,8 @@ namespace Unity.Physics
                 && SpringFrequency.Equals(other.SpringFrequency)
                 && DampingRatio.Equals(other.DampingRatio)
                 && MaxImpulse.Equals(other.MaxImpulse)
-                && Target.Equals(other.Target);
+                && Target.Equals(other.Target)
+                && DirectStiffnessScale.Equals(other.DirectStiffnessScale);
         }
 
         /// <summary>   Tests if this object is considered equal to another. </summary>

@@ -712,7 +712,8 @@ namespace Unity.Physics
             }
             else
             {
-                float maximumStiffness = MaximumDirectStiffness(header, velocityA, velocityB);
+                float maximumStiffness = MaximumDirectStiffness(header, velocityA, velocityB)
+                    * (constraint.DirectStiffnessScale > 0.0f ? constraint.DirectStiffnessScale : 1.0f);
                 float dampingPerStiffness = directSolverSettings.MaximumJointDamping / directSolverSettings.MaximumJointStiffness;
                 var cappedStiffnessCoefficient = math.min(stiffnessCoefficient, maximumStiffness);
                 var cappedDampingCoefficient = math.min(dampingCoefficient, maximumStiffness * dampingPerStiffness);
@@ -735,17 +736,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The period, in seconds, of the stiffest joint a direct solve builds. It is fixed rather than the substep, because
-        /// a joint's static sag under a load is the load over its stiffness: a cap that followed the substep would make a
-        /// craft sag with the square of the substep and tie its stiffness to how many substeps run.
-        /// </summary>
-        const float DirectStiffnessPeriod = 0.005f;
-
-        /// <summary>
-        /// The stiffest a joint can be: one that would swing the mass it moves through <see cref="DirectStiffnessPeriod"/>.
-        /// One capped by a single number for every joint is too soft between heavy parts and too stiff for light ones, which
-        /// then take far more than their share of a load wherever joints close a loop. The mass is the effective mass of the
-        /// pair, so a light part on a heavy one sets it.
+        /// The stiffest a joint can be, see <see cref="DirectStiffness"/>. One capped by a single number for every joint is
+        /// too soft between heavy parts and too stiff for light ones, which then take far more than their share of a load
+        /// wherever joints close a loop. The mass is the effective mass of the pair, so a light part on a heavy one sets it.
         /// </summary>
         static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB)
         {
@@ -761,8 +754,7 @@ namespace Unity.Physics
                     + (velocityB.IsKinematic ? 0.0f : velocityB.InverseMass);
             }
 
-            float angularFrequency = Math.Constants.Tau / DirectStiffnessPeriod;
-            return angularFrequency * angularFrequency / math.max(inverseMass, 1e-9f);
+            return DirectStiffness.Maximum(inverseMass);
         }
 
         // Calculates the spring frequency from the spring constant and mass for a simple mass-spring system.
