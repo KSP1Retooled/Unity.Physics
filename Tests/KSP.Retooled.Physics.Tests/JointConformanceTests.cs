@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -145,6 +146,53 @@ namespace KSP.Retooled.Physics.Tests
                 float angle = Mathf.DeltaAngle(0.0f, body.rotation.eulerAngles.x);
                 float expected = direction > 0.0f ? 10.0f : -40.0f;
                 Assert.That(angle, Is.EqualTo(expected).Within(2.0f), $"turning {direction}");
+            }
+        }
+
+        [Test]
+        public void AngularLimitsStopABodyOnTheLimit()
+        {
+            // A limit that only acts once it is passed lets the body in a little and then pushes it back out, slowly enough
+            // that nothing stops it, so it ends short of the limit or still moving.
+            var limits = new Dictionary<string, float> { ["twist"] = 10.0f, ["cone"] = 20.0f, ["hinge"] = 40.0f };
+            foreach (string kind in limits.Keys)
+            {
+                Rigidbody body = Weightless(Vector3.zero);
+                if (kind == "hinge")
+                {
+                    HingeJoint hinge = body.gameObject.AddComponent<HingeJoint>();
+                    hinge.axis = Vector3.right;
+                    hinge.useLimits = true;
+                    hinge.limits = new JointLimits { min = -10.0f, max = 40.0f };
+                    body.angularVelocity = new Vector3(1.0f, 0.0f, 0.0f);
+                }
+                else
+                {
+                    ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+                    joint.axis = Vector3.right;
+                    joint.secondaryAxis = Vector3.up;
+                    if (kind == "twist")
+                    {
+                        joint.angularXMotion = ConfigurableJointMotion.Limited;
+                        joint.lowAngularXLimit = new SoftJointLimit { limit = -10.0f };
+                        joint.highAngularXLimit = new SoftJointLimit { limit = 40.0f };
+                        body.angularVelocity = new Vector3(1.0f, 0.0f, 0.0f);
+                    }
+                    else
+                    {
+                        joint.angularYMotion = ConfigurableJointMotion.Limited;
+                        joint.angularZMotion = ConfigurableJointMotion.Limited;
+                        joint.angularYLimit = new SoftJointLimit { limit = 20.0f };
+                        joint.angularZLimit = new SoftJointLimit { limit = 20.0f };
+                        body.angularVelocity = new Vector3(0.0f, 1.0f, 0.0f);
+                    }
+                }
+
+                Simulate(60);
+
+                Assert.That(Quaternion.Angle(Quaternion.identity, body.rotation), Is.EqualTo(limits[kind]).Within(0.02f), kind);
+                Assert.That(body.angularVelocity.magnitude, Is.LessThan(1e-3f), $"{kind} has stopped");
+                Object.DestroyImmediate(body.gameObject);
             }
         }
 
