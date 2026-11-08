@@ -449,10 +449,11 @@ namespace Unity.Physics
 
             StepContext = new StepContext();
 
+            JobHandle joints = input.World.DynamicsWorld.JointsBuilt;
             if (input.World.NumDynamicBodies == 0)
             {
                 // No need to do anything, since nothing can move
-                m_StepHandles = new SimulationJobHandles(handle);
+                m_StepHandles = new SimulationJobHandles(JobHandle.CombineDependencies(handle, joints));
                 return m_StepHandles;
             }
 
@@ -466,7 +467,7 @@ namespace Unity.Physics
 
             // Sort all overlapping and jointed body pairs into phases
             handles = DispatchPairSequencer.ScheduleCreatePhasedDispatchPairsJob(input,
-                ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, handle,
+                ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, JobHandle.CombineDependencies(handle, joints),
                 ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, out StepContext.PairsToSortByIsland,
                 multiThreaded);
 

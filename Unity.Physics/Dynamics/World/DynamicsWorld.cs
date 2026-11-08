@@ -2,6 +2,7 @@ using System;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 
 namespace Unity.Physics
 {
@@ -54,6 +55,12 @@ namespace Unity.Physics
         /// <value> The joints. </value>
         public NativeArray<Joint> Joints => m_Joints.AsArray();
         internal NativeList<Joint> InternalJointsList => m_Joints;
+
+        /// <summary>
+        /// The job that fills <see cref="InternalJointsList"/>, for a caller that builds the joints while the broadphase
+        /// runs. The broadphase's overlaps don't read the joints, so only the jobs after them that do wait for it.
+        /// </summary>
+        internal JobHandle JointsBuilt;
 
         /// <summary>   Gets the number of motions. </summary>
         ///
