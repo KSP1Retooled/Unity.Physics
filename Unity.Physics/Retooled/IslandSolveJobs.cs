@@ -1,7 +1,10 @@
+using System.Threading;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Numerics.Linear;
+using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Profiling;
 
 namespace Unity.Physics
@@ -11,8 +14,8 @@ namespace Unity.Physics
         /// <summary>
         /// One step of every island, in a fixed set of jobs that find out how much work they have when they start, which leaves
         /// nothing for the main thread to wait for. The islands that fit in phases run their iterations phase by phase, and the
-        /// bodies they hold integrate after them. A direct island does all of its substeps inside one work item of one job.
-        /// An island's bodies are its own, so the two sides run side by side.
+        /// bodies they hold integrate after them. The direct islands run each substep as a chain of jobs, with the Jacobians
+        /// updated and their rows built in parallel. An island's bodies are its own, so the two sides run side by side.
         /// </summary>
         internal static SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
@@ -52,19 +55,8 @@ namespace Unity.Physics
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
 
-            StepInput islandStepInput = stepInput;
-            islandStepInput.Timestep /= directIslandSubsteps;
-            islandStepInput.NumSubsteps = directIslandSubsteps;
-
-            JobHandle islandHandle = new DirectIslandJob
-            {
-                DirectSolverSchedulerInfo = solverSchedulerInfo.DirectPairsDirectScheduling,
-                JacobiansReader = jacobians.AsReader(),
-                MotionVelocities = motionVelocities,
-                MotionDatas = world.MotionDatas,
-                Bodies = world.Bodies,
-                StepInput = islandStepInput,
-            }.Schedule(solverSchedulerInfo.DirectPairsDirectScheduling.DispatchPairIslandInfoCounts, 1, inputDeps);
+            JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
+                solverSchedulerInfo.DirectPairsDirectScheduling, inputDeps);
 
             islandHandle = new ParallelExportEventsJob
             {
@@ -87,18 +79,277 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves and integrates one island of the direct solver through all of its substeps. The direct solver takes the joints
-        /// and the contacts' normals together, so a heavy stack resting on a light part can't press it into the ground. Friction
-        /// is outside what it solves, so an iterative sweep after it adds friction, limited by the normal impulses it found.
+        /// The substeps of every direct island. Each substep updates the Jacobians, counts their rows, builds the rows, solves
+        /// each island and integrates its bodies, and only the counting and the solves run one island at a time.
+        /// </summary>
+        static JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
+            in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle inputDeps)
+        {
+            const int headersPerBatch = 16;
+            const int bodiesPerBatch = 32;
+
+            var work = new DirectIslandWork(Allocator.TempJob);
+
+            JobHandle handle = new IndexDirectIslandsJob
+            {
+                Info = info,
+                JacobiansReader = jacobians.AsReader(),
+                Work = work,
+            }.Schedule(inputDeps);
+
+            StepInput substepInput = stepInput;
+            substepInput.Timestep /= substeps;
+            substepInput.NumSubsteps = substeps;
+            substepInput.DisableExportEvents = true;
+
+            for (int substep = 0; substep < substeps; substep++)
+            {
+                substepInput.CurrentSubstep = substep;
+                if (substep > 0)
+                {
+                    handle = new UpdateIslandJacobiansJob
+                    {
+                        Headers = work.Headers.AsDeferredJobArray(),
+                        MotionVelocities = world.MotionVelocities,
+                        MotionDatas = world.MotionDatas,
+                        Bodies = world.Bodies,
+                        StepInput = substepInput,
+                    }.Schedule(work.Headers, headersPerBatch, handle);
+                }
+
+                handle = new CountIslandRowsJob { Work = work }.Schedule(handle);
+
+                handle = new BuildIslandRowsJob
+                {
+                    Headers = work.Headers.AsDeferredJobArray(),
+                    Islands = work.Islands.AsDeferredJobArray(),
+                    Work = work.Buffers,
+                    MotionVelocities = world.MotionVelocities,
+                    MotionDatas = world.MotionDatas,
+                    StepInput = substepInput,
+                }.Schedule(work.Headers, headersPerBatch, handle);
+
+                handle = new SolveDirectIslandJob
+                {
+                    Info = info,
+                    JacobiansReader = jacobians.AsReader(),
+                    Islands = work.Islands.AsDeferredJobArray(),
+                    Work = work.Buffers,
+                    MotionVelocities = world.MotionVelocities,
+                    MotionDatas = world.MotionDatas,
+                    StepInput = substepInput,
+                }.Schedule(work.Islands, 1, handle);
+
+                handle = new IntegrateIslandBodiesJob
+                {
+                    IslandBodies = info.IslandBodies.AsDeferredJobArray(),
+                    MotionVelocities = world.MotionVelocities,
+                    MotionDatas = world.MotionDatas,
+                    Timestep = substepInput.Timestep,
+                }.Schedule(info.IslandBodies, bodiesPerBatch, handle);
+            }
+
+            return work.Dispose(handle);
+        }
+
+        /// <summary> A direct island's Jacobians among <see cref="DirectIslandWork.Headers"/>, and its rows this substep. </summary>
+        struct DirectIsland
+        {
+            public int FirstHeader;
+
+            /// <summary> The end of the Jacobians the solve takes. The contacts after it are only updated. </summary>
+            public int SolveEnd;
+
+            public int HeaderEnd;
+
+            /// <summary> The contacts the solve takes along with the joints, which it solves sparsely. </summary>
+            public int ContactPairs;
+
+            public bool TouchesSomething;
+
+            /// <summary> Whether the island's contacts need the dense solve, which builds its own rows. </summary>
+            public bool Dense;
+
+            public int FirstRow;
+            public int Rows;
+        }
+
+        unsafe struct IslandHeader
+        {
+            public JacobianHeader* Header;
+            public int Island;
+        }
+
+        /// <summary>
+        /// The rows of every direct island in a substep, one island after another. Each list is resized while the jobs run, so
+        /// the jobs hold the lists rather than their contents.
+        /// </summary>
+        unsafe struct DirectIslandBuffers
+        {
+            /// <summary> Where each Jacobian's rows start in its island, or -1 if this substep doesn't build them. </summary>
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* HeaderRows;
+
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Jacobian;
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Epsilon;
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Lower;
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Upper;
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* RightHandSide;
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<LCP.MLCPIndexFlag>* IndexFlags;
+
+            /// <summary> Per island, 1 once any of its rows has a bound, which makes its solve a bounded one. </summary>
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* Bounded;
+
+            public DirectIslandBuffers(Allocator allocator)
+            {
+                HeaderRows = UnsafeList<int>.Create(0, allocator);
+                Jacobian = UnsafeList<float>.Create(0, allocator);
+                Epsilon = UnsafeList<float>.Create(0, allocator);
+                Lower = UnsafeList<float>.Create(0, allocator);
+                Upper = UnsafeList<float>.Create(0, allocator);
+                RightHandSide = UnsafeList<float>.Create(0, allocator);
+                IndexFlags = UnsafeList<LCP.MLCPIndexFlag>.Create(0, allocator);
+                Bounded = UnsafeList<int>.Create(0, allocator);
+            }
+
+            public void Resize(int rows)
+            {
+                Jacobian->Resize(rows * SparseConstraintSolver.ColumnsPerRow);
+                Epsilon->Resize(rows);
+                Lower->Resize(rows);
+                Upper->Resize(rows);
+                RightHandSide->Resize(rows);
+                IndexFlags->Resize(rows);
+            }
+
+            public JacobianRows Rows(in DirectIsland island)
+            {
+                return new JacobianRows(Jacobian->Ptr + island.FirstRow * (long)SparseConstraintSolver.ColumnsPerRow, island.Rows);
+            }
+
+            public static Vector View(UnsafeList<float>* list, in DirectIsland island)
+            {
+                return Vector.Create(default, list->Ptr + island.FirstRow, 1, island.Rows);
+            }
+
+            /// <summary> The island's index flags, as the row builder and the solver take them. </summary>
+            public NativeArray<LCP.MLCPIndexFlag> Flags(in DirectIsland island)
+            {
+                var flags = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<LCP.MLCPIndexFlag>(
+                    IndexFlags->Ptr + island.FirstRow, island.Rows, Allocator.None);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref flags, AtomicSafetyHandle.GetTempMemoryHandle());
+#endif
+                return flags;
+            }
+
+            public void Destroy()
+            {
+                UnsafeList<int>.Destroy(HeaderRows);
+                UnsafeList<float>.Destroy(Jacobian);
+                UnsafeList<float>.Destroy(Epsilon);
+                UnsafeList<float>.Destroy(Lower);
+                UnsafeList<float>.Destroy(Upper);
+                UnsafeList<float>.Destroy(RightHandSide);
+                UnsafeList<LCP.MLCPIndexFlag>.Destroy(IndexFlags);
+                UnsafeList<int>.Destroy(Bounded);
+            }
+        }
+
+        struct DirectIslandWork
+        {
+            public NativeList<IslandHeader> Headers;
+            public NativeList<DirectIsland> Islands;
+            public DirectIslandBuffers Buffers;
+
+            public DirectIslandWork(Allocator allocator)
+            {
+                Headers = new NativeList<IslandHeader>(allocator);
+                Islands = new NativeList<DirectIsland>(allocator);
+                Buffers = new DirectIslandBuffers(allocator);
+            }
+
+            public JobHandle Dispose(JobHandle inputDeps)
+            {
+                JobHandle buffers = new DestroyDirectIslandBuffersJob { Buffers = Buffers }.Schedule(inputDeps);
+                return JobHandle.CombineDependencies(Headers.Dispose(inputDeps), Islands.Dispose(inputDeps), buffers);
+            }
+        }
+
+        [BurstCompile]
+        struct DestroyDirectIslandBuffersJob : IJob
+        {
+            public DirectIslandBuffers Buffers;
+
+            public void Execute()
+            {
+                Buffers.Destroy();
+            }
+        }
+
+        /// <summary>
+        /// Lists every direct island's Jacobians, with the joints before the contacts, in the order the island's iterator reads
+        /// them, and decides once a step whether an island's contacts take part in its solve.
         /// </summary>
         [BurstCompile]
-        [NoAlias]
-        struct DirectIslandJob : IJobParallelForDefer
+        unsafe struct IndexDirectIslandsJob : IJob
         {
             [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo DirectSolverSchedulerInfo;
+            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
 
             public NativeStream.Reader JacobiansReader;
+
+            public DirectIslandWork Work;
+
+            public void Execute()
+            {
+                int islandCount = Info.NumIslands;
+                Work.Islands.ResizeUninitialized(islandCount);
+                Work.Buffers.Bounded->Resize(islandCount);
+                for (int island = 0; island < islandCount; island++)
+                {
+                    int numContacts = Info.IslandContactCounts[island];
+                    int firstHeader = Work.Headers.Length;
+                    bool touchesSomething = false;
+                    var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
+                    while (iterator.HasJacobiansLeft())
+                    {
+                        ref JacobianHeader header = ref iterator.ReadJacobianHeader();
+                        touchesSomething |= header.Type == JacobianType.Contact && header.Enabled;
+                        Work.Headers.Add(new IslandHeader
+                        {
+                            Header = (JacobianHeader*)UnsafeUtility.AddressOf(ref header),
+                            Island = island,
+                        });
+                    }
+
+                    int jointHeaders = 0;
+                    var joints = new IslandJacobianIterator(JacobiansReader, Info, island);
+                    while (joints.HasJacobiansLeft())
+                    {
+                        joints.ReadJacobianHeader();
+                        jointHeaders++;
+                    }
+
+                    Work.Islands[island] = new DirectIsland
+                    {
+                        FirstHeader = firstHeader,
+                        SolveEnd = touchesSomething ? Work.Headers.Length : firstHeader + jointHeaders,
+                        HeaderEnd = Work.Headers.Length,
+                        ContactPairs = touchesSomething ? numContacts : 0,
+                        TouchesSomething = touchesSomething,
+                    };
+                }
+
+                Work.Buffers.HeaderRows->Resize(Work.Headers.Length);
+            }
+        }
+
+        [BurstCompile]
+        [NoAlias]
+        unsafe struct UpdateIslandJacobiansJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public NativeArray<IslandHeader> Headers;
 
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
@@ -111,75 +362,197 @@ namespace Unity.Physics
 
             public StepInput StepInput;
 
-            static readonly ProfilerMarker UpdateJacobiansMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.UpdateJacobians");
-            static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
-            static readonly ProfilerMarker SweepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Sweep");
-            static readonly ProfilerMarker IntegrateMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Integrate");
-
-            public void Execute(int island)
+            public void Execute(int index)
             {
-                // The job's own copy is shared with every thread running it.
-                StepInput stepInput = StepInput;
-                stepInput.DisableExportEvents = true;
-                int numContacts = DirectSolverSchedulerInfo.IslandContactCounts[island];
-                bool touchesSomething = HasSolidContact(island, numContacts);
-                int firstBody = DirectSolverSchedulerInfo.FirstIslandBodyIndices[island];
-                int bodyEnd = island + 1 < DirectSolverSchedulerInfo.FirstIslandBodyIndices.Length
-                    ? DirectSolverSchedulerInfo.FirstIslandBodyIndices[island + 1]
-                    : DirectSolverSchedulerInfo.IslandBodies.Length;
+                UpdateJacobian(ref *Headers[index].Header, MotionDatas, MotionVelocities, Bodies, StepInput);
+            }
+        }
 
-                for (int substep = 0; substep < stepInput.NumSubsteps; substep++)
+        /// <summary>
+        /// Counts the rows each Jacobian has this substep, which a contact's points change as they come and go, and lays the
+        /// islands' rows out one after another.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct CountIslandRowsJob : IJob
+        {
+            public DirectIslandWork Work;
+
+            public void Execute()
+            {
+                UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
+                int totalRows = 0;
+                for (int i = 0; i < Work.Islands.Length; i++)
                 {
-                    stepInput.CurrentSubstep = substep;
-                    if (substep > 0)
+                    ref DirectIsland island = ref Work.Islands.ElementAt(i);
+                    int rows = 0;
+                    int contactCount = 0;
+                    for (int h = island.FirstHeader; h < island.SolveEnd; h++)
                     {
-                        using ProfilerMarker.AutoScope span = UpdateJacobiansMarker.Auto();
-                        var iterator = new IslandJacobianIterator(JacobiansReader, DirectSolverSchedulerInfo, island, numContacts);
-                        while (iterator.HasJacobiansLeft())
+                        ref JacobianHeader header = ref *Work.Headers[h].Header;
+                        (*headerRows)[h] = rows;
+                        rows += GetConstraintRows(ref header);
+                        contactCount += header.Type == JacobianType.Contact ? 1 : 0;
+                    }
+
+                    for (int h = island.SolveEnd; h < island.HeaderEnd; h++)
+                    {
+                        (*headerRows)[h] = -1;
+                    }
+
+                    // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
+                    island.Dense = contactCount > 0 && island.ContactPairs == 0;
+                    if (island.Dense)
+                    {
+                        for (int h = island.FirstHeader; h < island.SolveEnd; h++)
                         {
-                            UpdateJacobian(ref iterator.ReadJacobianHeader(), MotionDatas, MotionVelocities, Bodies, stepInput);
+                            (*headerRows)[h] = -1;
                         }
+
+                        rows = 0;
                     }
 
-                    using (DirectSolveMarker.Auto())
-                    {
-                        DirectSolver(DirectSolverSchedulerInfo, island, JacobiansReader, ref MotionVelocities, MotionDatas, stepInput,
-                            touchesSomething ? numContacts : 0);
-                    }
+                    island.FirstRow = totalRows;
+                    island.Rows = rows;
+                    (*Work.Buffers.Bounded)[i] = 0;
+                    totalRows += rows;
+                }
 
-                    if (touchesSomething)
-                    {
-                        using ProfilerMarker.AutoScope span = SweepMarker.Auto();
-                        Sweep(island, numContacts, stepInput.NumSolverIterations, stepInput);
-                    }
+                Work.Buffers.Resize(totalRows);
+            }
+        }
 
-                    using (IntegrateMarker.Auto())
-                    {
-                        for (int i = firstBody; i < bodyEnd; i++)
-                        {
-                            Integrator.IntegrateMotion(DirectSolverSchedulerInfo.IslandBodies[i], MotionDatas, MotionVelocities, stepInput.Timestep);
-                        }
-                    }
+        /// <summary> Builds the rows of one Jacobian of a sparse island, which writes no rows but its own. </summary>
+        [BurstCompile]
+        [NoAlias]
+        unsafe struct BuildIslandRowsJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public NativeArray<IslandHeader> Headers;
+
+            [ReadOnly]
+            public NativeArray<DirectIsland> Islands;
+
+            public DirectIslandBuffers Work;
+
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionData> MotionDatas;
+
+            public StepInput StepInput;
+
+            public void Execute(int index)
+            {
+                int startRow = (*Work.HeaderRows)[index];
+                if (startRow < 0)
+                {
+                    return;
+                }
+
+                ref JacobianHeader header = ref *Headers[index].Header;
+                int jacRows = GetConstraintRows(ref header);
+                if (jacRows == 0)
+                {
+                    return;
+                }
+
+                int islandIndex = Headers[index].Island;
+                DirectIsland island = Islands[islandIndex];
+
+                // Every row starts free and unbounded, as a dense solve's do.
+                int firstRow = island.FirstRow + startRow;
+                for (int row = firstRow; row < firstRow + jacRows; row++)
+                {
+                    (*Work.Lower)[row] = float.MinValue;
+                    (*Work.Upper)[row] = float.MaxValue;
+                    (*Work.IndexFlags)[row] = LCP.MLCPIndexFlag.Free;
+                }
+
+                var context = new RowBuildContext
+                {
+                    MotionVelocities = MotionVelocities,
+                    MotionDatas = MotionDatas,
+                    StepInput = StepInput,
+                    JacobianRows = Work.Rows(island),
+                    Eps = DirectIslandBuffers.View(Work.Epsilon, island),
+                    L = DirectIslandBuffers.View(Work.Lower, island),
+                    U = DirectIslandBuffers.View(Work.Upper, island),
+                    RightHandSide = DirectIslandBuffers.View(Work.RightHandSide, island),
+                    IndexSetArray = Work.Flags(island),
+                    SparseContacts = island.ContactPairs > 0,
+                    SolveSparsely = true,
+                };
+
+                Vector* JBlocks = stackalloc Vector[jacRows];
+                BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
+
+                if (context.IsLCP)
+                {
+                    Interlocked.Exchange(ref UnsafeUtility.AsRef<int>(Work.Bounded->Ptr + islandIndex), 1);
                 }
             }
+        }
 
-            /// <summary>
-            /// Whether any of the island's contacts can push on it. A craft's parts sit in each other's bounds all the time, and
-            /// the jobs that read contacts disable most of what that produces, which isn't worth sweeping the joints for.
-            /// </summary>
-            bool HasSolidContact(int island, int numContacts)
+        /// <summary>
+        /// Solves one direct island from the rows built for it and applies the impulses, then sweeps its friction. A dense
+        /// island builds and solves its rows here. The direct solver takes the joints and the contacts' normals together, so a
+        /// heavy stack resting on a light part can't press it into the ground. Friction is outside what it solves, so an
+        /// iterative sweep after it adds friction, limited by the normal impulses it found.
+        /// </summary>
+        [BurstCompile]
+        [NoAlias]
+        unsafe struct SolveDirectIslandJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
+
+            public NativeStream.Reader JacobiansReader;
+
+            [ReadOnly]
+            public NativeArray<DirectIsland> Islands;
+
+            public DirectIslandBuffers Work;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionData> MotionDatas;
+
+            public StepInput StepInput;
+
+            static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
+            static readonly ProfilerMarker SweepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Sweep");
+
+            public void Execute(int islandIndex)
             {
-                var iterator = new IslandJacobianIterator(JacobiansReader, DirectSolverSchedulerInfo, island, numContacts);
-                while (iterator.HasJacobiansLeft())
+                DirectIsland island = Islands[islandIndex];
+                using (DirectSolveMarker.Auto())
                 {
-                    ref JacobianHeader header = ref iterator.ReadJacobianHeader();
-                    if (header.Type == JacobianType.Contact && header.Enabled)
+                    if (island.Dense)
                     {
-                        return true;
+                        DirectSolver(Info, islandIndex, JacobiansReader, ref MotionVelocities, MotionDatas, StepInput, island.ContactPairs);
+                    }
+                    else if (island.Rows > 0)
+                    {
+                        JacobianRows rows = Work.Rows(island);
+                        Vector rightHandSide = DirectIslandBuffers.View(Work.RightHandSide, island);
+                        SolveSparsely(Info, islandIndex, JacobiansReader, MotionVelocities, MotionDatas, StepInput, island.Rows, rows,
+                            DirectIslandBuffers.View(Work.Epsilon, island), DirectIslandBuffers.View(Work.Lower, island),
+                            DirectIslandBuffers.View(Work.Upper, island), rightHandSide, Work.Flags(island),
+                            (*Work.Bounded)[islandIndex] != 0, island.ContactPairs);
+
+                        ApplyImpulses(Info, islandIndex, JacobiansReader, ref MotionVelocities, MotionDatas, island.ContactPairs, rows,
+                            Work.RightHandSide->Ptr + island.FirstRow);
                     }
                 }
 
-                return false;
+                if (island.TouchesSomething)
+                {
+                    using ProfilerMarker.AutoScope span = SweepMarker.Auto();
+                    Sweep(islandIndex, island.ContactPairs, StepInput.NumSolverIterations, StepInput);
+                }
             }
 
             void Sweep(int island, int numContacts, int iterations, StepInput stepInput)
@@ -189,7 +562,7 @@ namespace Unity.Physics
                 for (int iteration = 0; iteration < iterations; iteration++)
                 {
                     stepInput.CurrentSolverIteration = iteration;
-                    var iterator = new IslandJacobianIterator(JacobiansReader, DirectSolverSchedulerInfo, island, numContacts);
+                    var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
                     while (iterator.HasJacobiansLeft())
                     {
                         ref JacobianHeader header = ref iterator.ReadJacobianHeader();
@@ -212,6 +585,27 @@ namespace Unity.Physics
                         }
                     }
                 }
+            }
+        }
+
+        [BurstCompile]
+        [NoAlias]
+        struct IntegrateIslandBodiesJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public NativeArray<int> IslandBodies;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionData> MotionDatas;
+
+            public float Timestep;
+
+            public void Execute(int index)
+            {
+                Integrator.IntegrateMotion(IslandBodies[index], MotionDatas, MotionVelocities, Timestep);
             }
         }
     }
