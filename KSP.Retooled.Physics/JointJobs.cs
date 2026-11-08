@@ -87,6 +87,9 @@ namespace KSP.Retooled.Physics
 
         public NativeList<PhysicsJoint> Output;
 
+        public NativeList<JointGroup> Groups;
+        public NativeList<JointGroupMember> Members;
+
         public int DynamicCount;
         public int AnchorIndex;
         public float DeltaTime;
@@ -98,10 +101,278 @@ namespace KSP.Retooled.Physics
         public void Execute()
         {
             Output.Clear();
-            for (uint i = 0; i < World->jointCount; i++)
+            NativeArray<int> groupOf = FindGroups();
+            for (int i = 0; i < World->jointCount; i++)
             {
-                Append(World->joints[i]);
+                int group = groupOf[i];
+                if (group < 0)
+                {
+                    Append(World->joints[i]);
+                }
+                else if (Groups[group].Leader == i)
+                {
+                    AppendGroup(group);
+                }
             }
+        }
+
+        /// <summary>
+        /// Gathers the joints that hold the same two bodies rigidly together, which the step solves as one: stock holds a
+        /// stack node of size 2 or more with three joints between the same parts. Three joints carry 18 rows where 6 do, and
+        /// those redundant rows make up most of a large craft's direct solve. A joint joins the first such joint found
+        /// between its bodies when the two share their frames' orientation, and a group needs two joints.
+        /// </summary>
+        private NativeArray<int> FindGroups()
+        {
+            Groups.Clear();
+            Members.Clear();
+            int count = (int)World->jointCount;
+            var groupOf = new NativeArray<int>(count, Allocator.Temp);
+            var leaderOf = new NativeArray<int>(count, Allocator.Temp);
+            var memberCount = new NativeArray<int>(count, Allocator.Temp);
+            var leaders = new NativeHashMap<int2, int>(count, Allocator.Temp);
+            for (int i = 0; i < count; i++)
+            {
+                groupOf[i] = -1;
+                leaderOf[i] = -1;
+                NativeStore.JointData* joint = World->joints[i];
+                if (!Mergeable(joint))
+                {
+                    continue;
+                }
+
+                var bodies = new int2(BodyKey(joint->body0), BodyKey(joint->body1));
+                if (!leaders.TryGetValue(bodies, out int leader))
+                {
+                    leader = i;
+                    leaders.Add(bodies, leader);
+                }
+                else if (!SameFrames(World->joints[leader], joint))
+                {
+                    continue;
+                }
+
+                leaderOf[i] = leader;
+                memberCount[leader]++;
+            }
+
+            // A leader comes before its other members, so its group exists by the time they are reached.
+            for (int i = 0; i < count; i++)
+            {
+                int leader = leaderOf[i];
+                if (leader < 0 || memberCount[leader] < 2)
+                {
+                    continue;
+                }
+
+                if (leader == i)
+                {
+                    groupOf[i] = Groups.Length;
+                    Groups.Add(new JointGroup { Leader = i, FirstMember = Members.Length });
+                    Members.ResizeUninitialized(Members.Length + memberCount[i]);
+                }
+
+                int group = groupOf[leader];
+                groupOf[i] = group;
+                JointGroup joined = Groups[group];
+                Members[joined.FirstMember + joined.MemberCount] = new JointGroupMember { Joint = i };
+                joined.MemberCount++;
+                Groups[group] = joined;
+            }
+
+            return groupOf;
+        }
+
+        private static int BodyKey(NativeStore.Body* body)
+        {
+            return body == null ? -1 : (int)body->index;
+        }
+
+        private static bool SameFrames(NativeStore.JointData* first, NativeStore.JointData* second)
+        {
+            return math.all(first->rotation0.value == second->rotation0.value) && math.all(first->rotation1.value == second->rotation1.value)
+                && first->flags == second->flags;
+        }
+
+        /// <summary>
+        /// Whether the joint holds its anchors together and does nothing to their rotation but hold it too: each axis
+        /// locked, or held by a spring towards where it is, or free. Joints like that between the same two bodies add up to
+        /// one. A stock part joint locks its twist, because Unity locks an axis whose two limits are equal, and holds its
+        /// swing with drives.
+        /// </summary>
+        private static bool Mergeable(NativeStore.JointData* joint)
+        {
+            if ((joint->state & JointConstraints.Inactive) != 0 || joint->type != NativeStore.JointTypeDof6)
+            {
+                return false;
+            }
+
+            int lockedAngles = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                if (NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i)->dofLock != NativeStore.DofLocked && !HeldByDrive(joint, i))
+                {
+                    return false;
+                }
+
+                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                {
+                    lockedAngles++;
+                }
+            }
+
+            if (lockedAngles == 3)
+            {
+                return true;
+            }
+
+            bool atRest = joint->targetRotation.value.Equals(quaternion.identity.value) && math.all(joint->targetAngularVelocity == float3.zero);
+            if (!atRest || HasNearAngularLimit(joint))
+            {
+                return false;
+            }
+
+            if (JointConstraints.WholeRotationDrive(joint) != null)
+            {
+                return true;
+            }
+
+            for (int i = 0; i < 3; i++)
+            {
+                NativeStore.JointAxis* drive = AngularDrive(joint, i);
+                bool locked = NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked;
+                if (!locked && HasAxisDrive(drive) && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>The drive on one rotation axis: the twist drive about x, and the swing drive about y and z.</summary>
+        private static NativeStore.JointAxis* AngularDrive(NativeStore.JointData* joint, int axis)
+        {
+            return NativeStore.AxisOf(joint, axis == 0 ? NativeStore.AxisAngularX : NativeStore.AxisAngularYZ);
+        }
+
+        /// <summary>
+        /// Whether a limit <see cref="AddAngularDof"/> would build comes within <see cref="UnreachedAngle"/> of the joint's
+        /// rest. Stock part joints limit their swing near half a turn, which a joint holding its anchors never reaches.
+        /// </summary>
+        private static bool HasNearAngularLimit(NativeStore.JointData* joint)
+        {
+            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
+            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
+            bool nearTwist = twist->dofLock == NativeStore.DofLimited && (twist->min > -UnreachedAngle || twist->max < UnreachedAngle);
+            bool nearY = NativeStore.AxisOf(joint, NativeStore.AxisAngularY)->dofLock == NativeStore.DofLimited && swing->min < UnreachedAngle;
+            bool nearZ = NativeStore.AxisOf(joint, NativeStore.AxisAngularZ)->dofLock == NativeStore.DofLimited && swing->max < UnreachedAngle;
+            return nearTwist || nearY || nearZ;
+        }
+
+        /// <summary>An angle in radians that a merged group, holding its rotation, never turns through.</summary>
+        private const float UnreachedAngle = 0.5f;
+
+        private static bool HasAxisDrive(NativeStore.JointAxis* drive)
+        {
+            return drive->driveMaxForce > 0.0f && (drive->driveSpring > 0.0f || drive->driveDamper > 0.0f);
+        }
+
+        /// <summary>
+        /// One joint at the members' mean anchor, as stiff as all of them together. The direct solve caps each row's
+        /// stiffness, so the merged rows ask for a multiple of that cap: the linear rows for one cap per member, and each
+        /// rotation for every member's own hold on it plus what their linear rows resist through their distance from the
+        /// mean, which for small turns is a stiffness of the linear cap times that distance squared.
+        /// </summary>
+        private void AppendGroup(int index)
+        {
+            JointGroup group = Groups[index];
+            NativeStore.JointData* leader = World->joints[group.Leader];
+            float3 anchor0 = float3.zero;
+            float3 anchor1 = float3.zero;
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                NativeStore.JointData* member = World->joints[Members[group.FirstMember + i].Joint];
+                anchor0 += member->position0;
+                anchor1 += member->position1;
+            }
+
+            anchor0 /= group.MemberCount;
+            anchor1 /= group.MemberCount;
+
+            float inverseMass = MovingInverseMass(leader->body0) + MovingInverseMass(leader->body1);
+            float inverseInertia = MovingInverseInertia(leader->body0) + MovingInverseInertia(leader->body1);
+            float angularCap = DirectStiffness.Maximum(inverseInertia);
+            group.LinearRatio = inverseInertia / math.max(inverseMass, 1e-9f);
+            group.Stiffness = float3.zero;
+            quaternion toJoint = math.conjugate(leader->rotation0);
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                JointGroupMember member = Members[group.FirstMember + i];
+                NativeStore.JointData* joint = World->joints[member.Joint];
+                member.Offset = math.rotate(toJoint, joint->position0 - anchor0);
+                member.AngularStiffness = AngularStiffness(joint, angularCap);
+                group.Stiffness += member.AngularStiffness + group.LinearRatio * (math.lengthsq(member.Offset) - member.Offset * member.Offset);
+                Members[group.FirstMember + i] = member;
+            }
+
+            Groups[index] = group;
+
+            if (!Begin(leader, anchor0, anchor1, new Entity { Index = index, Version = JointGroup.EntityVersion }))
+            {
+                return;
+            }
+
+            Constraint linear = Constraint.BallAndSocket(ReportEveryImpulse);
+            linear.DirectStiffnessScale = group.MemberCount;
+            Add(linear);
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (group.Stiffness[axis] > 0.0f)
+                {
+                    Constraint angular = Constraint.Twist(axis, new FloatRange(0.0f, 0.0f), ReportEveryImpulse);
+                    angular.DirectStiffnessScale = group.Stiffness[axis];
+                    Add(angular);
+                }
+            }
+
+            Flush();
+        }
+
+        /// <summary>
+        /// A member's hold on each rotation, in multiples of the cap. A spring is compared with the cap directly, as the
+        /// stiffness Unity asked for.
+        /// </summary>
+        private static float3 AngularStiffness(NativeStore.JointData* joint, float angularCap)
+        {
+            NativeStore.JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+            float3 stiffness = float3.zero;
+            for (int i = 0; i < 3; i++)
+            {
+                NativeStore.JointAxis* drive = wholeRotation != null ? wholeRotation : AngularDrive(joint, i);
+                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                {
+                    stiffness[i] = 1.0f;
+                }
+                else if (HasAxisDrive(drive))
+                {
+                    stiffness[i] = math.min(drive->driveSpring / angularCap, 1.0f);
+                }
+            }
+
+            return stiffness;
+        }
+
+        /// <summary>The inverse mass the step gives a body, which holds a sleeping one in place.</summary>
+        private static float MovingInverseMass(NativeStore.Body* body)
+        {
+            return HeldInPlace(body) ? 0.0f : StoreOps.Hot(body)->mass->InverseMass;
+        }
+
+        /// <summary>The mean of a body's inverse inertia over its axes, which the cap on a rotation uses.</summary>
+        private static float MovingInverseInertia(NativeStore.Body* body)
+        {
+            return HeldInPlace(body) ? 0.0f : math.csum(StoreOps.Hot(body)->mass->InverseInertia) / 3.0f;
         }
 
         private void Append(NativeStore.JointData* joint)
@@ -111,29 +382,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            int indexA = BuiltIndex(joint->body1);
-            int indexB = BuiltIndex(joint->body0);
-            if (indexA < 0 || indexB < 0 || (indexA >= DynamicCount && indexB >= DynamicCount))
+            if (!Begin(joint, joint->position0, joint->position1, new Entity { Index = (int)joint->index, Version = 1 }))
             {
-                return;
-            }
-
-            pending = new PhysicsJoint
-            {
-                BodyPair = new BodyIndexPair { BodyIndexA = indexA, BodyIndexB = indexB },
-                AFromJoint = new MTransform(joint->rotation1, joint->position1),
-                BFromJoint = new MTransform(joint->rotation0, joint->position0),
-                Entity = new Entity { Index = (int)joint->index, Version = 1 },
-                EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
-            };
-            pendingCount = 0;
-            emitted = false;
-
-            // Nothing on either side can move, and an island's solver may be the direct one, which refuses such a joint.
-            if (HeldInPlace(joint->body0) && HeldInPlace(joint->body1))
-            {
-                pending.Constraints.Length = 0;
-                Output.Add(pending);
                 return;
             }
 
@@ -168,6 +418,38 @@ namespace KSP.Retooled.Physics
             }
 
             Flush();
+        }
+
+        /// <summary>Starts the joint's constraints, and returns false when it gets none.</summary>
+        private bool Begin(NativeStore.JointData* joint, float3 anchor0, float3 anchor1, Entity entity)
+        {
+            int indexA = BuiltIndex(joint->body1);
+            int indexB = BuiltIndex(joint->body0);
+            if (indexA < 0 || indexB < 0 || (indexA >= DynamicCount && indexB >= DynamicCount))
+            {
+                return false;
+            }
+
+            pending = new PhysicsJoint
+            {
+                BodyPair = new BodyIndexPair { BodyIndexA = indexA, BodyIndexB = indexB },
+                AFromJoint = new MTransform(joint->rotation1, anchor1),
+                BFromJoint = new MTransform(joint->rotation0, anchor0),
+                Entity = entity,
+                EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
+            };
+            pendingCount = 0;
+            emitted = false;
+
+            // Nothing on either side can move, and an island's solver may be the direct one, which refuses such a joint.
+            if (HeldInPlace(joint->body0) && HeldInPlace(joint->body1))
+            {
+                pending.Constraints.Length = 0;
+                Output.Add(pending);
+                return false;
+            }
+
+            return true;
         }
 
         private static bool HeldInPlace(NativeStore.Body* body)
@@ -507,6 +789,13 @@ namespace KSP.Retooled.Physics
         public NativeStore.StoreGlobals* Globals;
 
         public ImpulseEvents Events;
+
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
         public float DeltaTime;
         public uint EngineObjectIdOffset;
 
@@ -522,18 +811,42 @@ namespace KSP.Retooled.Physics
                 }
             }
 
+            var groupForces = new NativeArray<float3>(Groups.Length, Allocator.Temp);
+            var groupTorques = new NativeArray<float3>(Groups.Length, Allocator.Temp);
             float scale = 1.0f / DeltaTime;
             foreach (ImpulseEvent impulse in Events)
             {
-                NativeStore.JointData* joint = World->joints[impulse.JointEntity.Index];
+                bool grouped = impulse.JointEntity.Version == JointGroup.EntityVersion;
+                NativeStore.JointData* joint = World->joints[grouped ? Groups[impulse.JointEntity.Index].Leader : impulse.JointEntity.Index];
                 if (impulse.Type == ConstraintType.Linear)
                 {
-                    joint->force -= math.rotate(JointConstraints.WorldRotation0(joint), impulse.Impulse) * scale;
+                    float3 force = math.rotate(JointConstraints.WorldRotation0(joint), impulse.Impulse) * scale;
+                    if (grouped)
+                    {
+                        groupForces[impulse.JointEntity.Index] -= force;
+                    }
+                    else
+                    {
+                        joint->force -= force;
+                    }
                 }
                 else
                 {
-                    joint->torque -= math.rotate(JointConstraints.WorldRotation1(joint), impulse.Impulse) * scale;
+                    float3 torque = math.rotate(JointConstraints.WorldRotation1(joint), impulse.Impulse) * scale;
+                    if (grouped)
+                    {
+                        groupTorques[impulse.JointEntity.Index] -= torque;
+                    }
+                    else
+                    {
+                        joint->torque -= torque;
+                    }
                 }
+            }
+
+            for (int i = 0; i < Groups.Length; i++)
+            {
+                Share(Groups[i], groupForces[i], groupTorques[i]);
             }
 
             World->jointBreakCount = 0;
@@ -563,6 +876,26 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private const float BreakingTimeConstant = 0.1f;
 
+        /// <summary>
+        /// Splits what a group's joint carried among its members as their own joints would have carried it at rest. The
+        /// group turns by its torque over its stiffness; each member holds its own share of that turn as torque, and its
+        /// linear rows hold the turn at their offset as force. Every member takes an equal share of the force.
+        /// </summary>
+        private void Share(JointGroup group, float3 force, float3 torque)
+        {
+            NativeStore.JointData* leader = World->joints[group.Leader];
+            quaternion frame = JointConstraints.WorldRotation0(leader);
+            float3 share = math.rotate(math.conjugate(frame), force) / group.MemberCount;
+            float3 turn = math.select(math.rotate(math.conjugate(frame), torque) / group.Stiffness, float3.zero, group.Stiffness <= 0.0f);
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                JointGroupMember member = Members[group.FirstMember + i];
+                NativeStore.JointData* joint = World->joints[member.Joint];
+                joint->force += math.rotate(frame, share + group.LinearRatio * math.cross(turn, member.Offset));
+                joint->torque += math.rotate(frame, member.AngularStiffness * turn);
+            }
+        }
+
         private static bool IsAsleep(NativeStore.Body* body)
         {
             const NativeStore.BodyFlags resting = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
@@ -585,6 +918,35 @@ namespace KSP.Retooled.Physics
                 angularMagnitude = torque,
             };
         }
+    }
+
+    /// <summary>
+    /// Store joints between the same two bodies that the step builds as one, see <see cref="BuildJointsJob"/>. Stiffness is
+    /// in multiples of the direct solve's cap on a rotation, per axis of the joint frame.
+    /// </summary>
+    internal struct JointGroup
+    {
+        /// <summary>The version of a built joint's entity whose index is a group, not a store joint.</summary>
+        internal const int EntityVersion = 2;
+
+        public int Leader;
+        public int FirstMember;
+        public int MemberCount;
+
+        /// <summary>The cap on a linear row over the cap on a rotation.</summary>
+        public float LinearRatio;
+
+        public float3 Stiffness;
+    }
+
+    internal struct JointGroupMember
+    {
+        public int Joint;
+
+        /// <summary>The member's anchor on body 0 from the group's, in the joint frame.</summary>
+        public float3 Offset;
+
+        public float3 AngularStiffness;
     }
 
     /// <summary>What the joint jobs ask of a store joint: its masses and the state of its two frames.</summary>

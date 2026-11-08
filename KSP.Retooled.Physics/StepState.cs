@@ -28,6 +28,8 @@ namespace KSP.Retooled.Physics
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
         private NativeList<Joint> builtJoints;
+        private NativeList<JointGroup> jointGroups;
+        private NativeList<JointGroupMember> jointGroupMembers;
         private DirectSolverCache directSolverCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -60,6 +62,8 @@ namespace KSP.Retooled.Physics
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
             builtJoints = new NativeList<Joint>(Allocator.Persistent);
+            jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
+            jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -94,6 +98,8 @@ namespace KSP.Retooled.Physics
             staticIndices.Dispose();
             builtIndices.Dispose();
             builtJoints.Dispose();
+            jointGroups.Dispose();
+            jointGroupMembers.Dispose();
             directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -253,6 +259,8 @@ namespace KSP.Retooled.Physics
                     World = store,
                     Globals = globals,
                     Events = simulation.ImpulseEvents,
+                    Groups = jointGroups.AsArray(),
+                    Members = jointGroupMembers.AsArray(),
                     DeltaTime = deltaTime,
                     EngineObjectIdOffset = globals->engineObjectIdOffset,
                 }.Run();
@@ -456,6 +464,8 @@ namespace KSP.Retooled.Physics
                     World = store,
                     BuiltIndices = builtIndices.AsArray(),
                     Output = builtJoints,
+                    Groups = jointGroups,
+                    Members = jointGroupMembers,
                     DynamicCount = dynamicIndices.Length,
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
