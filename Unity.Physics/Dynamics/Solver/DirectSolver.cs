@@ -685,46 +685,59 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The J rows of one solve, taken in order from one block, so that row i of JArray sits at i * 12 floats. Temp memory
-        /// goes when the job ends, so the rows are never disposed one by one.
+        /// The J rows of one solve in one block, row i at i * 12 floats. A Jacobian's rows start where the rows of those before
+        /// it end, so each Jacobian can be built on its own, in any order. Temp memory goes when the job ends, so the rows are
+        /// never disposed one by one.
         /// </summary>
         unsafe struct JacobianRows
         {
             const int Columns = 12;
 
-            float* next;
-            float* end;
-
-            /// <summary>Where row 0 starts, or null once a row had to be allocated on its own and the block no longer holds them all.</summary>
-            public float* Start { get; private set; }
+            float* start;
+            int count;
+            int next;
 
             public JacobianRows(int rows)
+                : this((float*)UnsafeUtility.Malloc(rows * Columns * (long)sizeof(float), 16, Allocator.Temp), rows)
             {
-                next = (float*)UnsafeUtility.Malloc(rows * Columns * (long)sizeof(float), 16, Allocator.Temp);
-                end = next + rows * (long)Columns;
-                Start = next;
+            }
+
+            /// <summary>Rows in memory someone else owns, <see cref="Columns"/> floats each.</summary>
+            public JacobianRows(float* start, int rows)
+            {
+                this.start = start;
+                count = rows;
+                next = 0;
+            }
+
+            public float* Start => start;
+
+            public Vector Row(int index)
+            {
+                return Vector.Create(default, start + index * (long)Columns, 1, Columns);
+            }
+
+            /// <summary>The rows from <paramref name="row"/> on, which <see cref="Next"/> hands out in turn.</summary>
+            public JacobianRows From(int row)
+            {
+                JacobianRows rows = this;
+                rows.next = row;
+                return rows;
             }
 
             public Vector Next(in MemoryManager heap)
             {
                 // A solve counts its rows before building them, so this only runs out if the two disagree.
-                if (next + Columns > end)
-                {
-                    Start = null;
-                    return Vector.Create(heap, Columns);
-                }
-
-                Vector row = Vector.Create(heap, next, 1, Columns);
-                next += Columns;
-                return row;
+                SafetyChecks.CheckAreEqualAndThrow(true, next < count);
+                return Vector.Create(heap, start + next++ * (long)Columns, 1, Columns);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static unsafe void AddAngularLimit1D(in MemoryManager heap, ref JacobianRows jacobianRows, Vector* JBlocks, ref NativeList<Vector> JArray,
+        static unsafe void AddAngularLimit1D(in MemoryManager heap, ref JacobianRows jacobianRows, Vector* JBlocks,
             bool bodyAIsStatic, bool bodyBIsStatic, in float3 hingeAxis, float currentAngle, float minAngle, float maxAngle,
             int startRow, in Vector l, in Vector u, ref Vector eps, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
-            in Matrix RHS, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
+            in Vector rhs, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
             in LimitMotion motion)
         {
             const int startColumnA = 0;
@@ -733,7 +746,6 @@ namespace Unity.Physics
             var J = jacobianRows.Next(heap);
             J.Clear();
             JBlocks[0] = J;
-            JArray.Add(J);
 
             if (!bodyAIsStatic)
             {
@@ -755,7 +767,7 @@ namespace Unity.Physics
             else if (minAngle > -math.INFINITY || maxAngle < math.INFINITY)
             {
                 float rate = motion.Predictive
-                    ? RowRate(JArray, startRow, motion.BodyIndexA, motion.BodyIndexB, motion.BodyAIsDynamic,
+                    ? RowRate(jacobianRows, startRow, motion.BodyIndexA, motion.BodyIndexB, motion.BodyAIsDynamic,
                         motion.BodyBIsDynamic, motion.MotionVelocities, motion.MotionDatas)
                     : 0.0f;
 
@@ -768,7 +780,7 @@ namespace Unity.Physics
             // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
             // After this assignment, we have rhs = -\gamma * \phi(q_)/dt
             // The remaining terms in rhs follow later below.
-            RHS.Cols[0][startRow] = gamma_phi_0;
+            rhs[startRow] = gamma_phi_0;
 
             // epsilon term
             eps[startRow] = jointRegularizationData.Epsilon;
@@ -906,7 +918,7 @@ namespace Unity.Physics
         }
 
         /// <summary> How fast a row's constraint function is changing at the bodies' current velocities. </summary>
-        static unsafe float RowRate(in NativeList<Vector> JArray, int row, int bodyIndexA, int bodyIndexB,
+        static unsafe float RowRate(in JacobianRows jacobianRows, int row, int bodyIndexA, int bodyIndexB,
             bool bodyAIsDynamic, bool bodyBIsDynamic, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas)
         {
@@ -916,12 +928,12 @@ namespace Unity.Physics
             float rate = 0.0f;
             if (bodyAIsDynamic)
             {
-                ComputeRHSGImpulse(JArray, motionVelocities[bodyIndexA], motionDatas[bodyIndexA], row, startColumnA, 1, &rate);
+                ComputeRHSGImpulse(jacobianRows, motionVelocities[bodyIndexA], motionDatas[bodyIndexA], row, startColumnA, 1, &rate);
             }
 
             if (bodyBIsDynamic)
             {
-                ComputeRHSGImpulse(JArray, motionVelocities[bodyIndexB], motionDatas[bodyIndexB], row, startColumnB, 1, &rate);
+                ComputeRHSGImpulse(jacobianRows, motionVelocities[bodyIndexB], motionDatas[bodyIndexB], row, startColumnB, 1, &rate);
             }
 
             return rate;
@@ -1014,7 +1026,7 @@ namespace Unity.Physics
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static unsafe void ComputeRHSGImpulse(in NativeList<Vector> JArray, in MotionVelocity motionVelocity,
+        static unsafe void ComputeRHSGImpulse(in JacobianRows jacobianRows, in MotionVelocity motionVelocity,
             in MotionData motionData, int startRow, int startColumn, int jacRowCount, float* rhsBodyVelocity)
         {
             // bring generalized velocity into constraint space to form rhsBodyVelocity = Ju_ (= JinvM * Mu_):
@@ -1025,7 +1037,7 @@ namespace Unity.Physics
             for (int i = 0; i < jacRowCount; ++i)
             {
                 var rowIndex = startRow + i;
-                var JBlock = JArray[rowIndex].Subvector(startColumn, 6);
+                var JBlock = jacobianRows.Row(rowIndex).Subvector(startColumn, 6);
                 var JBlockLinear = new float3(JBlock[0], JBlock[1], JBlock[2]);
                 var JBlockAngular = new float3(JBlock[3], JBlock[4], JBlock[5]);
                 rhsBodyVelocity[i] += math.mul(JBlockLinear, v) + math.mul(JBlockAngular, omega);
@@ -1033,7 +1045,7 @@ namespace Unity.Physics
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static unsafe void ComputeJinvMJtBlock(in NativeList<Vector> JArray, in NativeList<Vector> JinvMArray,
+        static unsafe void ComputeJinvMJtBlock(in JacobianRows jacobianRows, in NativeList<Vector> JinvMArray,
             int startRow, int startColumn, int jacRowCount,
             int otherStartRow, int otherStartColumn, int otherJacRowCount,
             float* jinvmjt)
@@ -1045,7 +1057,7 @@ namespace Unity.Physics
                 for (int j = 0; j < otherJacRowCount; ++j)
                 {
                     var otherRowIndex = otherStartRow + j;
-                    var JBlock = JArray[otherRowIndex].Subvector(otherStartColumn, 6);
+                    var JBlock = jacobianRows.Row(otherRowIndex).Subvector(otherStartColumn, 6);
 
                     jinvmjt[i * otherJacRowCount + j] += JinvMBlock.Dot(JBlock);
                 }
@@ -1077,7 +1089,7 @@ namespace Unity.Physics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static unsafe void ApplyConstraintImpulse(ref NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, int bodyIndex, int startRow, int startColumn, int jacRowCount,
-            in NativeList<Vector> JArray, float* lambda)
+            in JacobianRows jacobianRows, float* lambda)
         {
             var vel = motionVelocities[bodyIndex];
             var motionAFromWorld = math.conjugate(motionDatas[bodyIndex].WorldFromMotion.rot);
@@ -1086,7 +1098,7 @@ namespace Unity.Physics
                 var rowIndex = startRow + i;
 
                 // get JBlock
-                var JBlock = JArray[rowIndex];
+                var JBlock = jacobianRows.Row(rowIndex);
 
                 // bring constraint impulse into world space as J^t * lambda and split into linear
                 // and angular parts, f and t, respectively.
@@ -1111,13 +1123,13 @@ namespace Unity.Physics
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
-        /// used. Leaves the impulses in RHS, where the dense path leaves them too.
+        /// used. Leaves the impulses in the right-hand side, where the dense path leaves them too.
         /// </summary>
         static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in NativeList<Vector> JArray,
-            in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs, float* contiguousJacobian)
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
+            in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
+            int contactPairs)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1136,8 +1148,8 @@ namespace Unity.Physics
             while (jacobianIterator.HasJacobiansLeft())
             {
                 ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
-                int jacobianRows = GetConstraintRows(ref header);
-                if (jacobianRows == 0)
+                int blockRows = GetConstraintRows(ref header);
+                if (blockRows == 0)
                 {
                     continue;
                 }
@@ -1147,25 +1159,10 @@ namespace Unity.Physics
                     BodyA = CompactBody(header.BodyPair.BodyIndexA, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
                     BodyB = CompactBody(header.BodyPair.BodyIndexB, motionVelocities, motionDatas, stepInput, ref bodies, ref compactBodies),
                     FirstRow = firstRow,
-                    RowCount = jacobianRows,
+                    RowCount = blockRows,
                 });
 
-                firstRow += jacobianRows;
-            }
-
-            // The rows are read where they were built when they sit in one block, as the vectors already do.
-            float* jacobian = contiguousJacobian;
-            if (jacobian == null)
-            {
-                jacobian = (float*)UnsafeUtility.Malloc(rows * SparseConstraintSolver.ColumnsPerRow * (long)sizeof(float), 16, Allocator.Temp);
-                for (int row = 0; row < rows; row++)
-                {
-                    var J = JArray[row];
-                    for (int column = 0; column < SparseConstraintSolver.ColumnsPerRow; column++)
-                    {
-                        jacobian[row * SparseConstraintSolver.ColumnsPerRow + column] = J[column];
-                    }
-                }
+                firstRow += blockRows;
             }
 
             var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -1176,9 +1173,9 @@ namespace Unity.Physics
                 BlockCount = blocks.Length,
                 Blocks = blocks.GetUnsafePtr(),
                 RowCount = rows,
-                Jacobian = jacobian,
+                Jacobian = jacobianRows.Start,
                 Epsilon = (float*)UnsafeUtility.AddressOf(ref eps[0]),
-                RightHandSide = (float*)UnsafeUtility.AddressOf(ref RHS.Cols[0][0]),
+                RightHandSide = (float*)UnsafeUtility.AddressOf(ref rhs[0]),
                 Lower = (float*)UnsafeUtility.AddressOf(ref l[0]),
                 Upper = (float*)UnsafeUtility.AddressOf(ref u[0]),
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
@@ -1201,7 +1198,7 @@ namespace Unity.Physics
 
             for (int row = 0; row < rows; row++)
             {
-                RHS.Cols[0][row] = impulses[row];
+                rhs[row] = impulses[row];
             }
 
             bodies.Dispose();
@@ -1245,156 +1242,72 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Direct Solver for rigid body dynamics, using a regularized, nonsmooth multibody dynamics formulation which
-        /// combines the Newton-Euler equations of motion with constraints for modeling joints and contacts.
-        /// Constraint forces are computed using Lagrange multipliers. For formulation details see Section 5.2
-        /// in Holz et al. (2025), Multiphysics Simulation Methods in Computer Graphics (EG STAR), and Sections 1.1
-        /// to 1.4 in Andrews et al. (2022), Contact and Friction Simulation for Computer Graphics (SIGGRAPH Course).
-        ///
-        /// The constrained rigid body dynamics problem is either formulated as a linear system or as a mixed linear
-        /// complementarity problem (MLCP) if force limits are involved, e.g., in the presence of unilateral contacts
-        /// or maximum motor forces. For modeling of the supported constraints within this framework refer to the
-        /// constraint library provided in Appendix A of Andrews et al. (2017), Geometric Stiffness for Real-Time
-        /// Constrained Multibody Dynamics.
-        ///
-        /// Notation:
-        /// - q: generalized coordinates
-        /// - v: generalized velocity vector
-        /// - q_: generalized coordinates at end of last time step
-        /// - v_: generalized velocity vector at end of last time step
-        /// - lambda: vector of Lagrange multipliers, representing constraint impulses
-        /// - phi(q): constraint function evaluated for generalized coordinates q
-        /// - phi(q_), or phi_0: constraint function evaluated at end ot last time step (i.e., for generalized coordinates q_)
-        /// - J: constraint Jacobian matrix
-        /// - J^t, or Jt: transpose of J
-        /// - M: generalized mass matrix
-        /// - invM: inverse of generalized mass matrix
-        /// - JinvMJt, or ...J^t: product of J, invM and J^t, emerging from the Schur-complement of the full system matrix
-        ///     that is used to solve for both generalized velocities and Lagrange multipliers simultaneously.
-        ///     With the Schur-complement, the system is reduced to solving for Lagrange multipliers only.
-        /// - u: upper bounds for constraint impulses, used in MLCP formulation
-        /// - l: lower bounds for constraint impulses, used in MLCP formulation
-        /// - rhs: right-hand side vector of the system
-        /// - epsilon, gamma: regularization parameters for constraints
-        /// - eps: vector of the n epsilon regularization parameters for all n constraint Jacobian rows
-        /// - \hat(a): skew-symmetric matrix representing the cross-product with vector a, such that \hat(a) * b = a x b
+        /// What building one Jacobian's rows reads and writes, shared by every Jacobian of a solve. A Jacobian writes only its
+        /// own rows, so the Jacobians of a sparse solve can be built in any order and on any thread. The dense solve also adds
+        /// JinvM blocks and bound coupling in order, so its Jacobians are built one after another.
         /// </summary>
-        static unsafe void DirectSolver(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
-            int islandIndex, in NativeStream.Reader jacobiansReader, ref NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int contactPairs = 0)
+        unsafe struct RowBuildContext
         {
+            public NativeArray<MotionVelocity> MotionVelocities;
+            public NativeArray<MotionData> MotionDatas;
+            public StepInput StepInput;
+            public MemoryManager Heap;
+            public JacobianRows JacobianRows;
+            public NativeList<Vector> JinvMArray;
+            public Vector Eps;
+            public Vector L;
+            public Vector U;
+            public Vector RightHandSide;
+            public NativeArray<LCP.MLCPIndexFlag> IndexSetArray;
+            public NativeList<LCP.CouplingData> CouplingDataArray;
+            public bool IsLCP;
+
             // Contacts that follow the island's pairs are solved sparsely, with their normals and without friction.
-            bool sparseContacts = contactPairs > 0;
+            public bool SparseContacts;
+            public bool SolveSparsely;
+        }
 
-            // number of jacobian rows; counted on the fly while iterating over the joints
-            int rows = 0;
-            int maxRows = 0;
-            int contactCount = 0;
-            {
-                var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-                while (jacIterator.HasJacobiansLeft())
-                {
-                    ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
-                    int jacRows = GetConstraintRows(ref header);
-                    maxRows = math.max(jacRows, maxRows);
-                    rows += jacRows;
+        /// <summary>
+        /// Builds one Jacobian's rows of J, epsilon, the bounds and the right-hand side, from <paramref name="startRow"/> on.
+        /// <paramref name="JBlocks"/> and <paramref name="JinvMBlocks"/> are scratch space for <paramref name="jacRows"/> rows.
+        /// </summary>
+        static unsafe void BuildJacobianRows(ref JacobianHeader header, int startRow, int jacRows, ref RowBuildContext context,
+            Vector* JBlocks, Vector* JinvMBlocks)
+        {
+            NativeArray<MotionVelocity> motionVelocities = context.MotionVelocities;
+            NativeArray<MotionData> motionDatas = context.MotionDatas;
+            ref StepInput stepInput = ref context.StepInput;
+            ref MemoryManager heap = ref context.Heap;
+            JacobianRows jacobianRows = context.JacobianRows.From(startRow);
+            ref NativeList<Vector> JinvMArray = ref context.JinvMArray;
+            ref Vector eps = ref context.Eps;
+            ref Vector l = ref context.L;
+            ref Vector u = ref context.U;
+            ref Vector rhs = ref context.RightHandSide;
+            ref NativeArray<LCP.MLCPIndexFlag> indexSetArray = ref context.IndexSetArray;
+            ref NativeList<LCP.CouplingData> couplingDataArray = ref context.CouplingDataArray;
+            ref bool isLCP = ref context.IsLCP;
+            bool sparseContacts = context.SparseContacts;
 
-                    contactCount += math.select(0, 1, header.Type == JacobianType.Contact);
-                }
-            }
+            float maxJointStiffness = stepInput.DirectSolverSettings.MaximumJointStiffness;
+            float maxJointDamping = stepInput.DirectSolverSettings.MaximumJointDamping;
 
-            if (rows > 0)
-            {
-                using var heap = new MemoryManager(Allocator.Temp);
+            float contactStiffness = stepInput.DirectSolverSettings.ContactStiffness;
+            float contactDamping = stepInput.DirectSolverSettings.ContactDamping;
+            float contactSlip = stepInput.DirectSolverSettings.ContactSlip;
 
-                // @todo direct solver (DOTS-11060): Don't use Vector in order to keep all the memory on the heap here.
-                // Instead, do all the computations on the stack using pairs of float3 for each half of the J block
-                // and the JinvM block.
-                var JBlocks = stackalloc Vector[maxRows];
-                var JinvMBlocks = stackalloc Vector[maxRows];
-                var jinvmjt = stackalloc float[maxRows * maxRows];
-                var rhsBodyVelocity = stackalloc float[maxRows];
-                var lambda = stackalloc float[maxRows];
+            JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var defaultJointViscoelasticEpsilon,
+                out var defaultJointViscoelasticGamma, maxJointStiffness, maxJointDamping, stepInput.Timestep);
+            JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var contactViscoelasticEpsilon,
+                out var contactViscoelasticGamma, contactStiffness, contactDamping, stepInput.Timestep);
 
-                // Array of JinvM blocks: 12-component vectors, containing the two non-zero 6-component vectors in each JinvM row
-                var JinvMArray = new NativeList<Vector>(rows, Allocator.Temp);
+            JacobianUtilities.ComputeDirectSolverViscousRegularizationTerm(out var contactViscousEpsilon, contactSlip,
+                stepInput.Timestep);
 
-                // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
-                bool solveSparsely = contactCount == 0 || sparseContacts;
+            JacobianHeader.DirectSolverRegularizationData jointRegularizationData = default;
 
-                // System matrix
-                var JinvMJt = solveSparsely ? default : heap.Matrix(rows, rows);
-                if (!solveSparsely)
-                {
-                    JinvMJt.Clear(); // Note: must clear since we compute it sparsely.
-                }
-
-                // Array of Jacobian blocks: 12-component vector, containing the two non-zero 6-component vectors in each J row
-                var JArray = new NativeList<Vector>(rows, Allocator.Temp);
-                var jacobianRows = new JacobianRows(rows);
-                var eps = heap.Vector(rows);
-                var indexSetArray = new NativeArray<LCP.MLCPIndexFlag>(rows, Allocator.Temp, NativeArrayOptions.ClearMemory);
-                // Note: clearing memory in array above, so that we get free index set value initially (LCP.MLCPIndexFlag.Free).
-                // Equivalent to the following:
-                //      for (int r = 0; r < rows; ++r)
-                //      {
-                //          indexSetArray[r] = LCP.MLCPIndexFlag.Free;
-                //      }
-
-                var l = heap.Vector(rows);
-                var u = heap.Vector(rows);
-
-                // RHS matrix contains rhs, and later lambda (constraint impulse) which we will solve for
-                var RHS = heap.Matrix(rows, 1);
-                //RHS.Clear(); // No need to clear since we will compute and set each rhs component, corresponding to each constraint row.
-
-                bool isLCP = false;
-
-                var couplingDataArray = new NativeList<LCP.CouplingData>(contactCount, Allocator.Temp);
-
-                try
-                {
-                    float maxJointStiffness = stepInput.DirectSolverSettings.MaximumJointStiffness;
-                    float maxJointDamping = stepInput.DirectSolverSettings.MaximumJointDamping;
-
-                    float contactStiffness = stepInput.DirectSolverSettings.ContactStiffness;
-                    float contactDamping = stepInput.DirectSolverSettings.ContactDamping;
-                    float contactSlip = stepInput.DirectSolverSettings.ContactSlip;
-
-                    JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var defaultJointViscoelasticEpsilon,
-                        out var defaultJointViscoelasticGamma, maxJointStiffness, maxJointDamping, stepInput.Timestep);
-                    JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var contactViscoelasticEpsilon,
-                        out var contactViscoelasticGamma, contactStiffness, contactDamping, stepInput.Timestep);
-
-                    JacobianUtilities.ComputeDirectSolverViscousRegularizationTerm(out var contactViscousEpsilon, contactSlip,
-                        stepInput.Timestep);
-
-                    JacobianHeader.DirectSolverRegularizationData jointRegularizationData = default;
-
-                    // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
-                    const float kCollisionTolerance = 0.1f;
-
-                    // set default bounds (all variables by default free and unbounded)
-                    u.Clear(0, -1, float.MaxValue);
-                    l.Clear(0, -1, float.MinValue);
-
-                    // @todo direct solver (DOTS-11060): parallelize, by moving to BuildJacobians phase
-
-                    // compute jacobian matrices for all valid jacobians
-                    {
-                        using ProfilerMarker.AutoScope rowsSpan = BuildRowsMarker.Auto();
-                        int startRow = 0;
-                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-                        while (jacIterator.HasJacobiansLeft())
-                        {
-                            ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
-
-                            var jacRows = GetConstraintRows(ref header);
-                            if (jacRows == 0)
-                            {
-                                continue;
-                            }
-                            // else:
+            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
+            const float kCollisionTolerance = 0.1f;
 
                             int ixBodyA = header.BodyPair.BodyIndexA;
                             int ixBodyB = header.BodyPair.BodyIndexB;
@@ -1442,8 +1355,6 @@ namespace Unity.Physics
                                     var J_1 = jacobianRows.Next(heap);
                                     J_1.Clear();
                                     JBlocks[0] = J_1;
-                                    JArray.Add(J_1);
-
                                     if (!bodyAIsStatic)
                                     {
                                         SetSubVector3(J_1, a, startColumnA + 3);
@@ -1462,7 +1373,7 @@ namespace Unity.Physics
                                     // After this assignment, we have rhs = v0, since \phi(q_) = 0, given that
                                     // this constraint is a velocity based constraint (no \phi position error required).
                                     // The remaining terms in rhs follow later below.
-                                    RHS.Cols[0][startRow] = v0;
+                                    rhs[startRow] = v0;
 
                                     // epsilon term
                                     eps[startRow] = jointRegularizationData.Epsilon;
@@ -1483,11 +1394,11 @@ namespace Unity.Physics
                                     var hingeAxis = math.rotate(angJacobian.WorldFromMotionA, angJacobian.AxisInMotionA);
                                     var currentAngle = angJacobian.CalculateAngle(angJacobian.MotionBFromA);
 
-                                    AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
+                                    AddAngularLimit1D(in heap, ref jacobianRows, JBlocks,
                                         bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                         angJacobian.MinAngle, angJacobian.MaxAngle,
                                         startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                        in RHS, in stepInput, in jointRegularizationData,
+                                        in rhs, in stepInput, in jointRegularizationData,
                                         PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
                                             !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
 
@@ -1528,8 +1439,6 @@ namespace Unity.Physics
                                         J_2.Clear();
                                         JBlocks[0] = J_1;
                                         JBlocks[1] = J_2;
-                                        JArray.Add(J_1);
-                                        JArray.Add(J_2);
 
                                         if (!bodyAIsStatic)
                                         {
@@ -1559,7 +1468,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt
                                         // The remaining terms in rhs follow later below.
-                                        SetSubVector2(RHS.Cols[0], gamma_phi_0, startRow);
+                                        SetSubVector2(rhs, gamma_phi_0, startRow);
 
                                         // epsilon term
                                         SetSubVector2(eps, jointRegularizationData.Epsilon, startRow);
@@ -1594,11 +1503,11 @@ namespace Unity.Physics
                                         // turns about is arbitrary, so a cone has no lower bound to reach. It stays finite,
                                         // because a row without limits on either side is an equality.
                                         float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
-                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
+                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                             minAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                            in RHS, in stepInput, in jointRegularizationData,
+                                            in rhs, in stepInput, in jointRegularizationData,
                                             PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
                                                 !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
                                     }
@@ -1652,10 +1561,6 @@ namespace Unity.Physics
                                         JBlocks[0] = J_1;
                                         JBlocks[1] = J_2;
                                         JBlocks[2] = J_3;
-                                        JArray.Add(J_1);
-                                        JArray.Add(J_2);
-                                        JArray.Add(J_3);
-
                                         if (!bodyAIsStatic)
                                         {
                                             SetSubVector3(J_1, J_u, startColumnA + 3);
@@ -1688,7 +1593,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt
                                         // The remaining terms in rhs follow later below.
-                                        SetSubVector3(RHS.Cols[0], gamma_phi_0, startRow);
+                                        SetSubVector3(rhs, gamma_phi_0, startRow);
 
                                         // epsilon term
                                         SetSubVector3(eps, jointRegularizationData.Epsilon, startRow);
@@ -1701,11 +1606,11 @@ namespace Unity.Physics
 
                                         // ToAngleAxis gives degrees about an axis in body A's space, so this angle's rate is
                                         // not the row's, and the limit acts only once it is passed.
-                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
+                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                             angJacobian.MinAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                            in RHS, in stepInput, in jointRegularizationData, default);
+                                            in rhs, in stepInput, in jointRegularizationData, default);
                                     }
                                     break;
                                 }
@@ -1728,10 +1633,6 @@ namespace Unity.Physics
                                         JBlocks[0] = J_1;
                                         JBlocks[1] = J_2;
                                         JBlocks[2] = J_3;
-                                        JArray.Add(J_1);
-                                        JArray.Add(J_2);
-                                        JArray.Add(J_3);
-
                                         // Add Jacobian to J and obtain constraint error from last step.
                                         float3 phi_0 = AddBallAndSocketJacobian(ref limitJacobian.WorldFromA,
                                             ref limitJacobian.WorldFromB,
@@ -1748,7 +1649,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt.
                                         // The remaining terms in rhs follow later below.
-                                        SetSubVector3(RHS.Cols[0], gamma_phi_0, startRow);
+                                        SetSubVector3(rhs, gamma_phi_0, startRow);
 
                                         // epsilon term
                                         SetSubVector3(eps, jointRegularizationData.Epsilon, startRow);
@@ -1775,8 +1676,6 @@ namespace Unity.Physics
                                         J_2.Clear();
                                         JBlocks[0] = J_1;
                                         JBlocks[1] = J_2;
-                                        JArray.Add(J_1);
-                                        JArray.Add(J_2);
 
                                         var phi_0 = AddLinearLimit2DJacobian(ref limitJacobian.WorldFromA,
                                             ref limitJacobian.WorldFromB,
@@ -1793,7 +1692,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt.
                                         // The remaining terms in rhs follow later below.
-                                        SetSubVector2(RHS.Cols[0], gamma_phi_0, startRow);
+                                        SetSubVector2(rhs, gamma_phi_0, startRow);
 
                                         // epsilon term
                                         SetSubVector2(eps, jointRegularizationData.Epsilon, startRow);
@@ -1804,8 +1703,6 @@ namespace Unity.Physics
                                         var J = jacobianRows.Next(heap);
                                         J.Clear();
                                         JBlocks[0] = J;
-                                        JArray.Add(J);
-
                                         // Constraint:  A scalar dot-2 constraint, preventing any linear displacement along
                                         //              the line defined by the axis n_B, which is defined in body B frame
                                         //              in the 1D constraint case, and which is defined dynamically as the
@@ -1908,7 +1805,7 @@ namespace Unity.Physics
                                         }
                                         else
                                         {
-                                            float rate = RowRate(JArray, startRow, ixBodyA, ixBodyB,
+                                            float rate = RowRate(jacobianRows, startRow, ixBodyA, ixBodyB,
                                                 !bodyAIsStatic && !bodyAIsKinematic, !bodyBIsStatic && !bodyBIsKinematic,
                                                 motionVelocities, motionDatas);
 
@@ -1920,7 +1817,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = -\gamma * \phi(q_)/dt.
                                         // The remaining terms in rhs follow later below.
-                                        RHS.Cols[0][startRow] = gamma_phi_0;
+                                        rhs[startRow] = gamma_phi_0;
 
                                         // epsilon term
                                         eps[startRow] = jointRegularizationData.Epsilon;
@@ -1948,10 +1845,6 @@ namespace Unity.Physics
                                     JBlocks[0] = J_1;
                                     JBlocks[1] = J_2;
                                     JBlocks[2] = J_3;
-                                    JArray.Add(J_1);
-                                    JArray.Add(J_2);
-                                    JArray.Add(J_3);
-
                                     // positional error term for two first rows
                                     var phi_0 = AddLinearLimit2DJacobian(ref motorJacobian.WorldFromA,
                                         ref motorJacobian.WorldFromB,
@@ -1985,7 +1878,7 @@ namespace Unity.Physics
                                     // is velocity based.
                                     float targetVelocity = math.mul(motorJacobian.Target, motorJacobian.AxisInB);
 
-                                    SetSubVector3(RHS.Cols[0], new float3(gamma_phi_0.x, gamma_phi_0.y, targetVelocity), startRow);
+                                    SetSubVector3(rhs, new float3(gamma_phi_0.x, gamma_phi_0.y, targetVelocity), startRow);
 
                                     // epsilon term:
                                     // Note: we use the default viscoelastic epsilon for the first two rows which are
@@ -2009,8 +1902,6 @@ namespace Unity.Physics
                                     var J = jacobianRows.Next(heap);
                                     J.Clear();
                                     JBlocks[0] = J;
-                                    JArray.Add(J);
-
                                     // Constraint:  A scalar dot-2 constraint, preventing any linear displacement along
                                     //              the line defined by the axis n_B, defined in body B frame.
                                     //
@@ -2062,7 +1953,7 @@ namespace Unity.Physics
                                     // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                     // After this assignment, we have rhs = -\gamma * \phi(q_)/dt.
                                     // The remaining terms in rhs follow later below.
-                                    RHS.Cols[0][startRow] = gamma_phi_0;
+                                    rhs[startRow] = gamma_phi_0;
 
                                     // epsilon term
                                     eps[startRow] = jointRegularizationData.Epsilon;
@@ -2084,8 +1975,6 @@ namespace Unity.Physics
                                     var J = jacobianRows.Next(heap);
                                     J.Clear();
                                     JBlocks[0] = J;
-                                    JArray.Add(J);
-
                                     if (!bodyAIsStatic)
                                     {
                                         SetSubVector3(J, hingeAxis, startColumnA + 3);
@@ -2142,7 +2031,7 @@ namespace Unity.Physics
                                     // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                     // After this assignment, we have rhs = -\gamma * \phi(q_)/dt
                                     // The remaining terms in rhs follow later below.
-                                    RHS.Cols[0][startRow] = gamma_phi_0;
+                                    rhs[startRow] = gamma_phi_0;
 
                                     // epsilon term
                                     eps[startRow] = epsilon;
@@ -2211,8 +2100,6 @@ namespace Unity.Physics
                                         var J_normal = jacobianRows.Next(heap);
                                         J_normal.Clear();
                                         JBlocks[activeNormalConstraints] = J_normal;
-                                        JArray.Add(J_normal);
-
                                         ++activeNormalConstraints;
 
                                         // Get world space contact point on surface of B.
@@ -2276,7 +2163,7 @@ namespace Unity.Physics
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
                                         // After this assignment, we have rhs = v0 - \gamma * \phi(q_)/dt.
                                         // The remaining terms in rhs follow later below.
-                                        RHS.Cols[0][normalRow] = gamma_phi_0;
+                                        rhs[normalRow] = gamma_phi_0;
 
                                         // Set lower impulse bound to zero (by default [l,u] = [-inf, inf]) to model
                                         // unilateral contact
@@ -2319,10 +2206,6 @@ namespace Unity.Physics
                                         JBlocks[activeNormalConstraints] = J_frictionDir0;
                                         JBlocks[activeNormalConstraints + 1] = J_frictionDir1;
                                         JBlocks[activeNormalConstraints + 2] = J_frictionNormal;
-                                        JArray.Add(J_frictionDir0);
-                                        JArray.Add(J_frictionDir1);
-                                        JArray.Add(J_frictionNormal);
-
                                         // Choose friction axes
                                         Math.CalculatePerpendicularNormalized(normal,
                                             out float3 frictionDir0, out float3 frictionDir1);
@@ -2364,7 +2247,7 @@ namespace Unity.Physics
                                         }
 
                                         // set target velocity
-                                        SetSubVector3(RHS.Cols[0], surfaceVelLocal, frictionStartRow);
+                                        SetSubVector3(rhs, surfaceVelLocal, frictionStartRow);
 
                                         // model friction as velocity constraint by choosing viscous epsilon
                                         eps[frictionStartRow] = contactViscousEpsilon;
@@ -2380,14 +2263,19 @@ namespace Unity.Physics
                                         u[frictionStartRow + 1] = 0;
                                         u[frictionStartRow + 2] = 0;
 
-                                        couplingDataArray.Add(new LCP.CouplingData
+                                        // Only the dense solve couples the bounds, and a sparse one builds its
+                                        // Jacobians on several threads at once.
+                                        if (!context.SolveSparsely)
                                         {
-                                            coupledVariableStartIndex = frictionStartRow,
-                                            coupledVariableCount = 3,
-                                            variableStartIndex = startRow,
-                                            variableCount = (short)numContacts,
-                                            factor = contactJacobian.CoefficientOfFriction
-                                        });
+                                            couplingDataArray.Add(new LCP.CouplingData
+                                            {
+                                                coupledVariableStartIndex = frictionStartRow,
+                                                coupledVariableCount = 3,
+                                                variableStartIndex = startRow,
+                                                variableCount = (short)numContacts,
+                                                factor = contactJacobian.CoefficientOfFriction
+                                            });
+                                        }
 
                                         // make some initial guess for the MLCP index set: friction force is set to
                                         // initially zero (see above) so that we can get a first guess for the normal
@@ -2422,14 +2310,16 @@ namespace Unity.Physics
 
                                 if (velocityOffset != 0)
                                 {
-                                    RHS.Cols[0][startRow + i] -= velocityOffset;
+                                    rhs[startRow + i] -= velocityOffset;
                                 }
                             }
 
-                            if (solveSparsely)
+                            AddBodyVelocities(startRow, jacRows, bodyAIsStatic || bodyAIsKinematic ? -1 : ixBodyA,
+                                bodyBIsStatic || bodyBIsKinematic ? -1 : ixBodyB, ref context);
+
+                            if (context.SolveSparsely)
                             {
-                                startRow += jacRows;
-                                continue;
+                                return;
                             }
 
                             // compute JInvM blocks
@@ -2452,23 +2342,304 @@ namespace Unity.Physics
                                 ComputeJinvMBlock(motionVelocities[ixBodyB], motionDatas[ixBodyB], stepInput.Timestep,
                                     stepInput.EnableGyroscopicTorque, startColumnB, jacRows, JinvMBlocks, JBlocks);
                             }
+        }
 
+        /// <summary>
+        /// Subtracts Ju_ from one Jacobian's rows of the right-hand side, rhs = v0 - phi_0/dt - JinvM * (dtg + Mu_).
+        /// Gravity is already in u_, and JinvM * Mu_ is Ju_. A body index of -1 marks a body that isn't dynamic.
+        /// </summary>
+        static unsafe void AddBodyVelocities(int startRow, int jacRows, int dynamicBodyA, int dynamicBodyB,
+            ref RowBuildContext context)
+        {
+            const int startColumnA = 0;
+            const int startColumnB = 6;
+
+            float* rhsBodyVelocity = stackalloc float[jacRows];
+            UnsafeUtility.MemClear(rhsBodyVelocity, sizeof(float) * jacRows);
+
+            if (dynamicBodyA >= 0)
+            {
+                ComputeRHSGImpulse(context.JacobianRows, context.MotionVelocities[dynamicBodyA], context.MotionDatas[dynamicBodyA],
+                    startRow, startColumnA, jacRows, rhsBodyVelocity);
+            }
+
+            if (dynamicBodyB >= 0)
+            {
+                ComputeRHSGImpulse(context.JacobianRows, context.MotionVelocities[dynamicBodyB], context.MotionDatas[dynamicBodyB],
+                    startRow, startColumnB, jacRows, rhsBodyVelocity);
+            }
+
+            for (int i = 0; i < jacRows; ++i)
+            {
+                context.RightHandSide[startRow + i] -= rhsBodyVelocity[i];
+            }
+        }
+
+        /// <summary>
+        /// Applies an island's solved impulses, one per row from <paramref name="impulses"/> on, to its bodies, and keeps
+        /// what the events and the friction sweep read from them.
+        /// </summary>
+        static unsafe void ApplyImpulses(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+            int islandIndex, in NativeStream.Reader jacobiansReader, ref NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, int contactPairs, in JacobianRows jacobianRows, float* impulses)
+        {
+            using ProfilerMarker.AutoScope applySpan = ApplyImpulsesMarker.Auto();
+
+            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
+            const float kCollisionTolerance = 0.1f;
+            const int startColumnA = 0;
+            const int startColumnB = 6;
+
+            bool sparseContacts = contactPairs > 0;
+            var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+            int startRow = 0;
+            while (jacIterator.HasJacobiansLeft())
+            {
+                ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
+
+                var jacRows = GetConstraintRows(ref header);
+                if (jacRows == 0)
+                {
+                    continue;
+                }
+
+                int ixBodyA = header.BodyPair.BodyIndexA;
+                int ixBodyB = header.BodyPair.BodyIndexB;
+                bool bodyAIsDynamic = ixBodyA < motionVelocities.Length && !motionVelocities[ixBodyA].IsKinematic;
+                bool bodyBIsDynamic = ixBodyB < motionVelocities.Length && !motionVelocities[ixBodyB].IsKinematic;
+                SafetyChecks.CheckAreEqualAndThrow(true, bodyAIsDynamic || bodyBIsDynamic);
+
+                float* lambda = impulses + startRow;
+
+                // @todo direct solver (DOTS-11060): fast path for both bodies being dynamic to prevent accessing the same JBlocks twice
+                if (bodyAIsDynamic)
+                {
+                    ApplyConstraintImpulse(ref motionVelocities, motionDatas, ixBodyA, startRow, startColumnA, jacRows, jacobianRows, lambda);
+                }
+
+                if (bodyBIsDynamic)
+                {
+                    ApplyConstraintImpulse(ref motionVelocities, motionDatas, ixBodyB, startRow, startColumnB, jacRows, jacobianRows, lambda);
+                }
+
+                // Collect collision or joint impulses for later event exports
+                if (header.Type == JacobianType.Contact && sparseContacts)
+                {
+                    HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
+                }
+                else if (header.Type == JacobianType.Contact &&
+                    (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
+                {
+                    ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
+
+                    var sumNormalImpulses = 0f;
+                    int normalRow = 0;
+                    for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
+                    {
+                        ref var contactAngularJac = ref header.AccessAngularJacobian(i);
+                        var contactDistance = contactAngularJac.ContactDistance;
+                        if (contactDistance <= kCollisionTolerance)
+                        {
+                            sumNormalImpulses += lambda[normalRow++];
+                        }
+                    }
+
+                    contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
+                }
+                else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
+                {
+                    // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
+                    // flag is not set for them.
+
+                    ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
+
+                    // Add impulses to accumulated impulse
+                    switch (header.Type)
+                    {
+                        case JacobianType.AngularLimit1D:
+                            ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
+                            impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
+                            break;
+                        case JacobianType.AngularLimit2D:
+                            ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
+                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
+                            if (jacRows == 1)
+                            {
+                                impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
+                            }
+                            break;
+                        case JacobianType.AngularLimit3D:
+                            for (int i = 0; i < jacRows; ++i)
+                            {
+                                impulseEventData.AccumulatedImpulse[i] += lambda[i];
+                            }
+                            break;
+                        case JacobianType.LinearLimit:
+                            for (int i = 0; i < jacRows; ++i)
+                            {
+                                impulseEventData.AccumulatedImpulse[i] += lambda[i];
+                            }
+                            break;
+                    }
+                }
+
+                startRow += jacRows;
+            }
+        }
+
+        /// <summary>
+        /// Direct Solver for rigid body dynamics, using a regularized, nonsmooth multibody dynamics formulation which
+        /// combines the Newton-Euler equations of motion with constraints for modeling joints and contacts.
+        /// Constraint forces are computed using Lagrange multipliers. For formulation details see Section 5.2
+        /// in Holz et al. (2025), Multiphysics Simulation Methods in Computer Graphics (EG STAR), and Sections 1.1
+        /// to 1.4 in Andrews et al. (2022), Contact and Friction Simulation for Computer Graphics (SIGGRAPH Course).
+        ///
+        /// The constrained rigid body dynamics problem is either formulated as a linear system or as a mixed linear
+        /// complementarity problem (MLCP) if force limits are involved, e.g., in the presence of unilateral contacts
+        /// or maximum motor forces. For modeling of the supported constraints within this framework refer to the
+        /// constraint library provided in Appendix A of Andrews et al. (2017), Geometric Stiffness for Real-Time
+        /// Constrained Multibody Dynamics.
+        ///
+        /// Notation:
+        /// - q: generalized coordinates
+        /// - v: generalized velocity vector
+        /// - q_: generalized coordinates at end of last time step
+        /// - v_: generalized velocity vector at end of last time step
+        /// - lambda: vector of Lagrange multipliers, representing constraint impulses
+        /// - phi(q): constraint function evaluated for generalized coordinates q
+        /// - phi(q_), or phi_0: constraint function evaluated at end ot last time step (i.e., for generalized coordinates q_)
+        /// - J: constraint Jacobian matrix
+        /// - J^t, or Jt: transpose of J
+        /// - M: generalized mass matrix
+        /// - invM: inverse of generalized mass matrix
+        /// - JinvMJt, or ...J^t: product of J, invM and J^t, emerging from the Schur-complement of the full system matrix
+        ///     that is used to solve for both generalized velocities and Lagrange multipliers simultaneously.
+        ///     With the Schur-complement, the system is reduced to solving for Lagrange multipliers only.
+        /// - u: upper bounds for constraint impulses, used in MLCP formulation
+        /// - l: lower bounds for constraint impulses, used in MLCP formulation
+        /// - rhs: right-hand side vector of the system
+        /// - epsilon, gamma: regularization parameters for constraints
+        /// - eps: vector of the n epsilon regularization parameters for all n constraint Jacobian rows
+        /// - \hat(a): skew-symmetric matrix representing the cross-product with vector a, such that \hat(a) * b = a x b
+        /// </summary>
+        static unsafe void DirectSolver(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+            int islandIndex, in NativeStream.Reader jacobiansReader, ref NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int contactPairs = 0)
+        {
+            // Contacts that follow the island's pairs are solved sparsely, with their normals and without friction.
+            bool sparseContacts = contactPairs > 0;
+
+            // number of jacobian rows; counted on the fly while iterating over the joints
+            int rows = 0;
+            int maxRows = 0;
+            int contactCount = 0;
+            {
+                var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+                while (jacIterator.HasJacobiansLeft())
+                {
+                    ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
+                    int jacRows = GetConstraintRows(ref header);
+                    maxRows = math.max(jacRows, maxRows);
+                    rows += jacRows;
+
+                    contactCount += math.select(0, 1, header.Type == JacobianType.Contact);
+                }
+            }
+
+            if (rows > 0)
+            {
+                using var heap = new MemoryManager(Allocator.Temp);
+
+                // @todo direct solver (DOTS-11060): Don't use Vector in order to keep all the memory on the heap here.
+                // Instead, do all the computations on the stack using pairs of float3 for each half of the J block
+                // and the JinvM block.
+                var JBlocks = stackalloc Vector[maxRows];
+                var JinvMBlocks = stackalloc Vector[maxRows];
+                var jinvmjt = stackalloc float[maxRows * maxRows];
+
+                // Array of JinvM blocks: 12-component vectors, containing the two non-zero 6-component vectors in each JinvM row
+                var JinvMArray = new NativeList<Vector>(rows, Allocator.Temp);
+
+                // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
+                bool solveSparsely = contactCount == 0 || sparseContacts;
+
+                // System matrix
+                var JinvMJt = solveSparsely ? default : heap.Matrix(rows, rows);
+                if (!solveSparsely)
+                {
+                    JinvMJt.Clear(); // Note: must clear since we compute it sparsely.
+                }
+
+                // Array of Jacobian blocks: 12-component vector, containing the two non-zero 6-component vectors in each J row
+                var jacobianRows = new JacobianRows(rows);
+
+                var eps = heap.Vector(rows);
+                var indexSetArray = new NativeArray<LCP.MLCPIndexFlag>(rows, Allocator.Temp, NativeArrayOptions.ClearMemory);
+                // Note: clearing memory in array above, so that we get free index set value initially (LCP.MLCPIndexFlag.Free).
+                // Equivalent to the following:
+                //      for (int r = 0; r < rows; ++r)
+                //      {
+                //          indexSetArray[r] = LCP.MLCPIndexFlag.Free;
+                //      }
+
+                var l = heap.Vector(rows);
+                var u = heap.Vector(rows);
+
+                // RHS matrix contains rhs, and later lambda (constraint impulse) which we will solve for
+                var RHS = heap.Matrix(rows, 1);
+                //RHS.Clear(); // No need to clear since we will compute and set each rhs component, corresponding to each constraint row.
+
+                bool isLCP = false;
+
+                var couplingDataArray = new NativeList<LCP.CouplingData>(contactCount, Allocator.Temp);
+
+                try
+                {
+                    // set default bounds (all variables by default free and unbounded)
+                    u.Clear(0, -1, float.MaxValue);
+                    l.Clear(0, -1, float.MinValue);
+
+                    var context = new RowBuildContext
+                    {
+                        MotionVelocities = motionVelocities,
+                        MotionDatas = motionDatas,
+                        StepInput = stepInput,
+                        Heap = heap,
+                        JacobianRows = jacobianRows,
+                        JinvMArray = JinvMArray,
+                        Eps = eps,
+                        L = l,
+                        U = u,
+                        RightHandSide = RHS.Cols[0],
+                        IndexSetArray = indexSetArray,
+                        CouplingDataArray = couplingDataArray,
+                        SparseContacts = sparseContacts,
+                        SolveSparsely = solveSparsely,
+                    };
+
+                    // compute jacobian matrices for all valid jacobians
+                    {
+                        using ProfilerMarker.AutoScope rowsSpan = BuildRowsMarker.Auto();
+                        int startRow = 0;
+                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+                        while (jacIterator.HasJacobiansLeft())
+                        {
+                            ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
+
+                            var jacRows = GetConstraintRows(ref header);
+                            if (jacRows == 0)
+                            {
+                                continue;
+                            }
+                            // else:
+
+                            BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, JinvMBlocks);
                             startRow += jacRows;
                         }
 
-                        // Construct the right-hand-side (rhs) vector and the system matrix JinvMJ^t (+ epsilon).
-                        //
-                        // 1) rhs: compute rhs = v0 -\phi_0/dt - JinvM * (dtg + Mu_)
-                        //  For each constraint row, pre-multiply the generalized momentum vectors for
-                        //  the bodies involved in the constraint with the constraint's JinvM blocks, forming a
-                        //  constraint space velocity, and assign the result to the corresponding row in the rhs vector,
-                        //  which at this point is already set to v0 -\phi_0/dt.
-                        //  Note that the gravitational impulse has already been applied to u_ (as u_ += invM * dtg)
-                        //  at this point, and we can therefore ignore it. Therefore, as an optimization,
-                        //  we can avoid multipling the momentum Mu_ with JinvM and instead simply compute Ju_ (= JinvM * Mu_)
-                        //  instead.
-                        //
-                        // 2) JinvMJ^t (+ epsilon): form the system matrix
+                        isLCP = context.IsLCP;
+
+                        // Construct the system matrix JinvMJ^t (+ epsilon), which only the dense solve needs.
                         //  For each Jacobian row i, iterative over all Jacobian rows j.
                         //  Multiply their JinvM and J row blocks depending on whether the corresponding constraints share
                         //  bodies, resulting in a block of the JinvMJ^t matrix with size n_i x n_j, where n_k is the number of
@@ -2478,7 +2649,7 @@ namespace Unity.Physics
                         //  Form the sum of both parts and set the result as the (row, column) entry (i, j) in the JinvMJ^t matrix.
                         jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         startRow = 0;
-                        while (jacIterator.HasJacobiansLeft())
+                        while (!solveSparsely && jacIterator.HasJacobiansLeft())
                         {
                             ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
 
@@ -2514,42 +2685,6 @@ namespace Unity.Physics
                             const int startColumnA = 0;
                             const int startColumnB = 6;
 
-                            // Compute rhs:
-
-                            UnsafeUtility.MemClear(rhsBodyVelocity, sizeof(float) * jacRows);
-
-                            if (bodyAIsDynamic)
-                            {
-                                var motionVelocity = motionVelocities[ixBodyA];
-                                var motionData = motionDatas[ixBodyA];
-
-                                ComputeRHSGImpulse(JArray, motionVelocity, motionData, startRow, startColumnA, jacRows, rhsBodyVelocity);
-                            }
-
-                            if (bodyBIsDynamic)
-                            {
-                                var motionVelocity = motionVelocities[ixBodyB];
-                                var motionData = motionDatas[ixBodyB];
-
-                                ComputeRHSGImpulse(JArray, motionVelocity, motionData, startRow, startColumnB, jacRows, rhsBodyVelocity);
-                            }
-
-                            // apply rhs_bodyVelocity to global rhs vector
-                            for (int i = 0; i < jacRows; ++i)
-                            {
-                                var rowIndex = startRow + i;
-                                // rhs = v0 -\phi_0/dt - JinvM * (dtg + Mu_)
-                                // Note: rhs is at this point set to v0 -\phi_0/dt. So we need to subtract
-                                // rhsBodyVelocity = JinvM * (dtg + Mu_).
-                                RHS.Cols[0][rowIndex] -= rhsBodyVelocity[i];
-                            }
-
-                            if (solveSparsely)
-                            {
-                                startRow += jacRows;
-                                continue;
-                            }
-
                             // Compute JinvMJ^t (+ epsilon) matrix:
 
                             // Note: since the JinvMJ^t matrix is symmetric, we only need to iterate over all other
@@ -2576,13 +2711,13 @@ namespace Unity.Physics
                             // body A contribution
                             if (bodyAIsDynamic)
                             {
-                                ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnA, jacRows, startRow, startColumnA, jacRows, jinvmjt);
+                                ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnA, jacRows, startRow, startColumnA, jacRows, jinvmjt);
                             }
 
                             // body B contribution
                             if (bodyBIsDynamic)
                             {
-                                ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnB, jacRows, startRow, startColumnB, jacRows, jinvmjt);
+                                ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnB, jacRows, startRow, startColumnB, jacRows, jinvmjt);
                             }
 
                             SetJinvMJtBlock(JinvMJt, startRow, jacRows, startRow, jacRows, jinvmjt);
@@ -2616,12 +2751,12 @@ namespace Unity.Physics
                                         // @todo direct solver (DOTS-11060): we can optimize this by using a cached version
                                         // of the JBlocks and JinvMBlocks for the first constraint here, since these are
                                         // always the same. Just copy them into some local stack storage.
-                                        ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnA, jacRows, otherStartRow, startColumnA, otherJacRows, jinvmjt);
+                                        ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnA, jacRows, otherStartRow, startColumnA, otherJacRows, jinvmjt);
                                         blockIsNonZero = true;
                                     }
                                     else if (ixBodyA == otherIxBodyB)
                                     {
-                                        ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnA, jacRows, otherStartRow, startColumnB, otherJacRows, jinvmjt);
+                                        ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnA, jacRows, otherStartRow, startColumnB, otherJacRows, jinvmjt);
                                         blockIsNonZero = true;
                                     }
                                 }
@@ -2630,12 +2765,12 @@ namespace Unity.Physics
                                 {
                                     if (ixBodyB == otherIxBodyA)
                                     {
-                                        ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnB, jacRows, otherStartRow, startColumnA, otherJacRows, jinvmjt);
+                                        ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnB, jacRows, otherStartRow, startColumnA, otherJacRows, jinvmjt);
                                         blockIsNonZero = true;
                                     }
                                     else if (ixBodyB == otherIxBodyB)
                                     {
-                                        ComputeJinvMJtBlock(JArray, JinvMArray, startRow, startColumnB, jacRows, otherStartRow, startColumnB, otherJacRows, jinvmjt);
+                                        ComputeJinvMJtBlock(jacobianRows, JinvMArray, startRow, startColumnB, jacRows, otherStartRow, startColumnB, otherJacRows, jinvmjt);
                                         blockIsNonZero = true;
                                     }
                                 }
@@ -2675,8 +2810,7 @@ namespace Unity.Physics
                     if (solveSparsely)
                     {
                         SolveSparsely(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities, motionDatas,
-                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP, contactPairs,
-                            JArray.Length == rows ? jacobianRows.Start : null);
+                            stepInput, rows, jacobianRows, eps, l, u, RHS.Cols[0], indexSetArray, isLCP, contactPairs);
                     }
                     else if (isLCP && !kForceLCPOff)
                     {
@@ -2784,129 +2918,8 @@ namespace Unity.Physics
                     }
 
                     // Stage 3: Apply constraint impulses to bodies, integrating body velocities based on solver results
-                    {
-                        using ProfilerMarker.AutoScope applySpan = ApplyImpulsesMarker.Auto();
-                        var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-                        int startRow = 0;
-                        while (jacIterator.HasJacobiansLeft())
-                        {
-                            ref JacobianHeader header = ref jacIterator.ReadJacobianHeader();
-
-                            var jacRows = GetConstraintRows(ref header);
-                            if (jacRows == 0)
-                            {
-                                continue;
-                            }
-                            // else:
-
-                            int ixBodyA = header.BodyPair.BodyIndexA;
-                            int ixBodyB = header.BodyPair.BodyIndexB;
-
-                            bool bodyAIsStatic = ixBodyA >= motionVelocities.Length;
-                            bool bodyBIsStatic = ixBodyB >= motionVelocities.Length;
-
-                            bool bodyAIsKinematic = false;
-                            bool bodyBIsKinematic = false;
-                            if (!bodyAIsStatic)
-                            {
-                                bodyAIsKinematic = motionVelocities[ixBodyA].IsKinematic;
-                            }
-
-                            if (!bodyBIsStatic)
-                            {
-                                bodyBIsKinematic = motionVelocities[ixBodyB].IsKinematic;
-                            }
-
-                            var bodyAIsDynamic = !(bodyAIsStatic || bodyAIsKinematic);
-                            var bodyBIsDynamic = !(bodyBIsStatic || bodyBIsKinematic);
-                            SafetyChecks.CheckAreEqualAndThrow(true, bodyAIsDynamic || bodyBIsDynamic);
-
-                            const int startColumnA = 0;
-                            const int startColumnB = 6;
-
-                            // obtain constraint impulses
-                            for (int i = 0; i < jacRows; ++i)
-                            {
-                                var rowIndex = startRow + i;
-                                lambda[i] = RHS.Cols[0][rowIndex];
-                            }
-
-                            // apply impulses to bodies
-                            // @todo direct solver (DOTS-11060): fast path for both bodies being dynamic to prevent accessing the same JBlocks twice
-                            if (bodyAIsDynamic)
-                            {
-                                ApplyConstraintImpulse(ref motionVelocities, motionDatas, ixBodyA, startRow, startColumnA, jacRows, JArray, lambda);
-                            }
-
-                            if (bodyBIsDynamic)
-                            {
-                                ApplyConstraintImpulse(ref motionVelocities, motionDatas, ixBodyB, startRow, startColumnB, jacRows, JArray, lambda);
-                            }
-
-                            // Collect collision or joint impulses for later event exports
-                            if (header.Type == JacobianType.Contact && sparseContacts)
-                            {
-                                HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
-                            }
-                            else if (header.Type == JacobianType.Contact &&
-                                (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
-                            {
-                                ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
-
-                                var sumNormalImpulses = 0f;
-                                int normalRow = 0;
-                                for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
-                                {
-                                    ref var contactAngularJac = ref header.AccessAngularJacobian(i);
-                                    var contactDistance = contactAngularJac.ContactDistance;
-                                    if (contactDistance <= kCollisionTolerance)
-                                    {
-                                        sumNormalImpulses += lambda[normalRow++];
-                                    }
-                                }
-
-                                contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
-                            }
-                            else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
-                            {
-                                // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
-                                // flag is not set for them.
-
-                                ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
-
-                                // Add impulses to accumulated impulse
-                                switch (header.Type)
-                                {
-                                    case JacobianType.AngularLimit1D:
-                                        ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
-                                        impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
-                                        break;
-                                    case JacobianType.AngularLimit2D:
-                                        ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
-                                        impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
-                                        if (jacRows == 1)
-                                        {
-                                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
-                                        }
-                                        break;
-                                    case JacobianType.AngularLimit3D:
-                                        for (int i = 0; i < jacRows; ++i)
-                                        {
-                                            impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                                        }
-                                        break;
-                                    case JacobianType.LinearLimit:
-                                        for (int i = 0; i < jacRows; ++i)
-                                        {
-                                            impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                                        }
-                                        break;
-                                }
-                            }
-
-                            startRow += jacRows;
-                        }
-                    }
+                    ApplyImpulses(directSolverSchedulerInfo, islandIndex, jacobiansReader, ref motionVelocities, motionDatas,
+                        contactPairs, jacobianRows, (float*)UnsafeUtility.AddressOf(ref RHS.Cols[0][0]));
                 }
                 finally
                 {
@@ -2920,12 +2933,6 @@ namespace Unity.Physics
                     l.Dispose();
                     u.Dispose();
                     RHS.Dispose();
-
-                    // dispose all vectors in JArray
-                    foreach (var vector in JArray)
-                    {
-                        vector.Dispose();
-                    }
 
                     // dispose all vectors in JinvMarray
                     foreach (var vector in JinvMArray)
