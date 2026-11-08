@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Profiling;
 
 namespace Unity.Physics
 {
@@ -110,6 +111,11 @@ namespace Unity.Physics
 
             public StepInput StepInput;
 
+            static readonly ProfilerMarker UpdateJacobiansMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.UpdateJacobians");
+            static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
+            static readonly ProfilerMarker SweepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Sweep");
+            static readonly ProfilerMarker IntegrateMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Integrate");
+
             public void Execute(int island)
             {
                 // The job's own copy is shared with every thread running it.
@@ -127,6 +133,7 @@ namespace Unity.Physics
                     stepInput.CurrentSubstep = substep;
                     if (substep > 0)
                     {
+                        using ProfilerMarker.AutoScope span = UpdateJacobiansMarker.Auto();
                         var iterator = new IslandJacobianIterator(JacobiansReader, DirectSolverSchedulerInfo, island, numContacts);
                         while (iterator.HasJacobiansLeft())
                         {
@@ -134,17 +141,24 @@ namespace Unity.Physics
                         }
                     }
 
-                    DirectSolver(DirectSolverSchedulerInfo, island, JacobiansReader, ref MotionVelocities, MotionDatas, stepInput,
-                        touchesSomething ? numContacts : 0);
+                    using (DirectSolveMarker.Auto())
+                    {
+                        DirectSolver(DirectSolverSchedulerInfo, island, JacobiansReader, ref MotionVelocities, MotionDatas, stepInput,
+                            touchesSomething ? numContacts : 0);
+                    }
 
                     if (touchesSomething)
                     {
+                        using ProfilerMarker.AutoScope span = SweepMarker.Auto();
                         Sweep(island, numContacts, stepInput.NumSolverIterations, stepInput);
                     }
 
-                    for (int i = firstBody; i < bodyEnd; i++)
+                    using (IntegrateMarker.Auto())
                     {
-                        Integrator.IntegrateMotion(DirectSolverSchedulerInfo.IslandBodies[i], MotionDatas, MotionVelocities, stepInput.Timestep);
+                        for (int i = firstBody; i < bodyEnd; i++)
+                        {
+                            Integrator.IntegrateMotion(DirectSolverSchedulerInfo.IslandBodies[i], MotionDatas, MotionVelocities, stepInput.Timestep);
+                        }
                     }
                 }
             }

@@ -112,6 +112,8 @@ namespace Unity.Physics
         static readonly ProfilerMarker FactorizeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Factorize");
         static readonly ProfilerMarker SubstituteMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Substitute");
         static readonly ProfilerMarker PivotMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Pivot");
+        static readonly ProfilerMarker ResidualMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Residual");
+        static readonly ProfilerMarker RightHandSideMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.RightHandSide");
 
         const byte Free = 0;
         const byte LowerTight = 1;
@@ -653,6 +655,8 @@ namespace Unity.Physics
 
         void AssembleRightHandSide(in Problem problem)
         {
+            using ProfilerMarker.AutoScope span = RightHandSideMarker.Auto();
+
             double* target = right.Ptr;
             UnsafeUtility.MemClear(target, right.Length * sizeof(double));
 
@@ -720,6 +724,8 @@ namespace Unity.Physics
         /// </summary>
         double ComputeResidual(in Problem problem)
         {
+            using ProfilerMarker.AutoScope span = ResidualMarker.Auto();
+
             double* x = solution.Ptr;
             double* residual = correction.Ptr;
             UnsafeUtility.MemCpy(residual, right.Ptr, correction.Length * sizeof(double));

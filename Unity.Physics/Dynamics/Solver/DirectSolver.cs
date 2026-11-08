@@ -1069,6 +1069,9 @@ namespace Unity.Physics
         }
 
         static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Solve");
+        static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Setup");
+        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.BuildRows");
+        static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.ApplyImpulses");
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
@@ -1082,6 +1085,7 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
+            SparseSetupMarker.Begin();
             var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
             var compactBodies = new NativeHashMap<int, int>(16, Allocator.Temp);
@@ -1142,6 +1146,7 @@ namespace Unity.Physics
                 Upper = (float*)upper.GetUnsafeReadOnlyPtr(),
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
             };
+            SparseSetupMarker.End();
 
             SparseConstraintSolver* kept = stepInput.DirectSolverCache.Solver(islandIndex);
             if (kept != null)
@@ -1343,6 +1348,7 @@ namespace Unity.Physics
 
                     // compute jacobian matrices for all valid jacobians
                     {
+                        using ProfilerMarker.AutoScope rowsSpan = BuildRowsMarker.Auto();
                         int startRow = 0;
                         var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         while (jacIterator.HasJacobiansLeft())
@@ -2744,6 +2750,7 @@ namespace Unity.Physics
 
                     // Stage 3: Apply constraint impulses to bodies, integrating body velocities based on solver results
                     {
+                        using ProfilerMarker.AutoScope applySpan = ApplyImpulsesMarker.Auto();
                         var jacIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
                         int startRow = 0;
                         while (jacIterator.HasJacobiansLeft())
