@@ -640,10 +640,7 @@ namespace Unity.Physics
                     SolveSparsely(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
                         DirectIslandBuffers.View(work.Epsilon, island), DirectIslandBuffers.View(work.Lower, island),
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
-                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team);
-
-                    ApplyImpulses(info, islandIndex, jacobiansReader, ref motionVelocities, motionDatas, island.ContactPairs, rows,
-                        work.RightHandSide->Ptr + island.FirstRow);
+                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true);
                 }
             }
         }

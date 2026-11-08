@@ -17,8 +17,9 @@ namespace Unity.Physics
         /// </summary>
         const int PatienceSpins = 1 << 20;
 
-        /// <summary>A stage of <see cref="Solver.PredictDrift"/>'s, and not of a sparse solver's.</summary>
+        /// <summary>Stages of the direct solver's own, around a sparse solver's.</summary>
         public const int PredictDriftKind = -1;
+        public const int ApplyImpulsesKind = -2;
 
         struct Stage
         {
@@ -114,6 +115,10 @@ namespace Unity.Physics
             if (stage.Kind == PredictDriftKind)
             {
                 Solver.PredictDriftTask(stage.Context, task);
+            }
+            else if (stage.Kind == ApplyImpulsesKind)
+            {
+                Solver.ApplyImpulsesTask(stage.Context, task);
             }
             else
             {

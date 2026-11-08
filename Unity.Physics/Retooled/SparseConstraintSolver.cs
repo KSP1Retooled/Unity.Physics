@@ -223,8 +223,7 @@ namespace Unity.Physics
         UnsafeList<int> topUpdateStarts;
         UnsafeList<int2> topUpdates;
 
-        // Each body's rows, as row * 2 + 1 for side B, starting at its entry in bodyRowStarts. Rows that join no node aren't
-        // there.
+        // Each body's rows, as row * 2 + 1 for side B, starting at its entry in bodyRowStarts.
         UnsafeList<int> bodyRowStarts;
         UnsafeList<int> bodyRows;
 
@@ -337,15 +336,20 @@ namespace Unity.Physics
         public Statistics Stats => statistics;
 
         /// <summary>
-        /// The impulse the last solve's answer puts on a body, in the frame of the Jacobian's columns: J^t z, summed over every
-        /// row on the body, which the solve holds equal to M du.
+        /// What a body takes from the impulses of the rows on it, in the frame of the Jacobian's columns: its part of J^t z. A
+        /// body reads only its own rows, so bodies can do this on any thread.
         /// </summary>
-        public void BodyImpulse(in Problem problem, int body, out double3 linear, out double3 angular)
+        public void BodyImpulse(in Problem problem, float* impulses, int body, out float3 linear, out float3 angular)
         {
-            double* du = solution.Ptr + nodes[body].Start;
-            Body source = problem.Bodies[body];
-            linear = source.Mass * new double3(du[0], du[1], du[2]);
-            angular = math.mul(source.Inertia, new double3(du[3], du[4], du[5]));
+            linear = float3.zero;
+            angular = float3.zero;
+            for (int i = bodyRowStarts[body]; i < bodyRowStarts[body + 1]; i++)
+            {
+                int row = bodyRows[i] >> 1;
+                float* columns = problem.Jacobian + row * ColumnsPerRow + (bodyRows[i] & 1) * SideColumns;
+                linear += impulses[row] * new float3(columns[0], columns[1], columns[2]);
+                angular += impulses[row] * new float3(columns[3], columns[4], columns[5]);
+            }
         }
 
         /// <summary>The bounds the last solve held a row to, which for a coupled row are what its coupling settled on.</summary>
@@ -741,11 +745,6 @@ namespace Unity.Physics
                     ConstraintBlock block = problem.Blocks[b];
                     for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                     {
-                        if (rowNode[row] == NoNode)
-                        {
-                            continue;
-                        }
-
                         for (int side = 0; side < 2; side++)
                         {
                             int body = side == 0 ? block.BodyA : block.BodyB;
@@ -1305,7 +1304,7 @@ namespace Unity.Physics
                 for (int i = bodyRowStarts[body]; i < bodyRowStarts[body + 1]; i++)
                 {
                     int row = bodyRows[i] >> 1;
-                    if (state[row] == Free)
+                    if (rowNode[row] != NoNode && state[row] == Free)
                     {
                         float* columns = problem.Jacobian + row * ColumnsPerRow + (bodyRows[i] & 1) * SideColumns;
                         double impulse = x[nodes[rowNode[row]].Start + rowInNode[row]];

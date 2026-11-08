@@ -1231,7 +1231,7 @@ namespace Unity.Physics
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs, SparseSolveTeam* team = null)
+            int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1327,7 +1327,7 @@ namespace Unity.Physics
 
             var drift = new NativeArray<float>(rows, Allocator.Temp);
             float* driftPtr = (float*)drift.GetUnsafePtr();
-            if (holdsPositions && AimAtPredictedDrift(problem, kept, compactBodies, headers, motionVelocities, motionDatas,
+            if (holdsPositions && AimAtPredictedDrift(problem, kept, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
                 stepInput.Timestep, jacobianRows, driftPtr, team)
                 && !kept->SolveChange(problem, driftPtr, impulsesPtr))
             {
@@ -1340,6 +1340,12 @@ namespace Unity.Physics
             }
 
             drift.Dispose();
+            if (applyImpulses)
+            {
+                ApplySparseImpulses(problem, kept, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
+                    contactPairs > 0, team);
+            }
+
             kept->Team = null;
 
             if (kept == &temporary)
@@ -1371,13 +1377,13 @@ namespace Unity.Physics
         /// would throw the craft apart.
         /// </summary>
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
-            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, in NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, float timestep, in JacobianRows jacobianRows, float* rhsChange,
-            SparseSolveTeam* team)
+            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
+            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team)
         {
             using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
-            // A body takes the sum of its rows' impulses, as ApplyImpulses will give it them.
+            // A body takes its rows' impulses as the solve's impulses will give it them.
             var solved = new NativeArray<MotionVelocity>(motionVelocities, Allocator.Temp);
             for (int body = 0; body < compactBodies.Length; body++)
             {
@@ -1387,10 +1393,10 @@ namespace Unity.Physics
                     continue;
                 }
 
-                solver->BodyImpulse(problem, compact, out double3 linear, out double3 angular);
+                solver->BodyImpulse(problem, impulses, compact, out float3 linear, out float3 angular);
                 MotionVelocity velocity = solved[body];
-                velocity.ApplyLinearImpulse((float3)linear);
-                velocity.ApplyAngularImpulse(math.rotate(math.conjugate(motionDatas[body].WorldFromMotion.rot), (float3)angular));
+                velocity.ApplyLinearImpulse(linear);
+                velocity.ApplyAngularImpulse(math.rotate(math.conjugate(motionDatas[body].WorldFromMotion.rot), angular));
                 solved[body] = velocity;
             }
 
@@ -1472,6 +1478,95 @@ namespace Unity.Physics
                         ixBodyB < solved.Length, solved, motionDatas);
                     prediction->Change[startRow + i] = rate - change[i] / timestep;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Applies a sparse solve's impulses: each body takes all its rows' at once, and each Jacobian keeps what its events
+        /// read. Neither writes what another body or Jacobian does, so both split among a team's lanes.
+        /// </summary>
+        static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
+            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, bool sparseContacts,
+            SparseSolveTeam* team)
+        {
+            using ProfilerMarker.AutoScope span = ApplyImpulsesMarker.Auto();
+
+            var worldBodies = new NativeArray<int>(problem.BodyCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int body = 0; body < compactBodies.Length; body++)
+            {
+                if (compactBodies[body] >= 0)
+                {
+                    worldBodies[compactBodies[body]] = body;
+                }
+            }
+
+            var application = new ImpulseApplication
+            {
+                Problem = problem,
+                Solver = solver,
+                Impulses = impulses,
+                Headers = (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(),
+                WorldBodies = (int*)worldBodies.GetUnsafeReadOnlyPtr(),
+                MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafePtr(),
+                MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                SparseContacts = sparseContacts,
+                BodyTasks = (problem.BodyCount + BodiesPerApplyTask - 1) / BodiesPerApplyTask,
+            };
+
+            int headerTasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
+            SparseSolveTeam.RunAll(team, &application, SparseSolveTeam.ApplyImpulsesKind, application.BodyTasks + headerTasks, null);
+            worldBodies.Dispose();
+        }
+
+        const int BodiesPerApplyTask = 64;
+
+        /// <summary>What applying a sparse solve's impulses reads and writes, shared by the lanes that split it.</summary>
+        unsafe struct ImpulseApplication
+        {
+            public SparseConstraintSolver.Problem Problem;
+            public SparseConstraintSolver* Solver;
+            public float* Impulses;
+            public JacobianHeader** Headers;
+            public int* WorldBodies;
+            public MotionVelocity* MotionVelocities;
+            public MotionData* MotionDatas;
+            public bool SparseContacts;
+
+            /// <summary>The tasks before this apply to bodies, and the rest record Jacobians' impulses.</summary>
+            public int BodyTasks;
+        }
+
+        /// <summary>One task of <see cref="ApplySparseImpulses"/>.</summary>
+        internal static unsafe void ApplyImpulsesTask(void* context, int task)
+        {
+            var application = (ImpulseApplication*)context;
+            if (task < application->BodyTasks)
+            {
+                int end = math.min((task + 1) * BodiesPerApplyTask, application->Problem.BodyCount);
+                for (int compact = task * BodiesPerApplyTask; compact < end; compact++)
+                {
+                    int body = application->WorldBodies[compact];
+                    application->Solver->BodyImpulse(application->Problem, application->Impulses, compact, out float3 linear,
+                        out float3 angular);
+                    ref MotionVelocity velocity = ref application->MotionVelocities[body];
+                    velocity.ApplyLinearImpulse(linear);
+
+                    // An angular impulse goes in in motion space, the body's own frame.
+                    quaternion motionFromWorld = math.conjugate(application->MotionDatas[body].WorldFromMotion.rot);
+                    velocity.ApplyAngularImpulse(math.rotate(motionFromWorld, angular));
+                }
+
+                return;
+            }
+
+            int headerTask = task - application->BodyTasks;
+            int endBlock = math.min((headerTask + 1) * DriftBlocksPerTask, application->Problem.BlockCount);
+            for (int block = headerTask * DriftBlocksPerTask; block < endBlock; block++)
+            {
+                SparseConstraintSolver.ConstraintBlock rows = application->Problem.Blocks[block];
+                RecordImpulses(ref *application->Headers[block], application->Impulses + rows.FirstRow, rows.RowCount,
+                    application->SparseContacts);
             }
         }
 
@@ -2663,8 +2758,6 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope applySpan = ApplyImpulsesMarker.Auto();
 
-            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
-            const float kCollisionTolerance = 0.1f;
             const int startColumnA = 0;
             const int startColumnB = 6;
 
@@ -2700,80 +2793,91 @@ namespace Unity.Physics
                     ApplyConstraintImpulse(ref motionVelocities, motionDatas, ixBodyB, startRow, startColumnB, jacRows, jacobianRows, lambda);
                 }
 
-                // Collect collision or joint impulses for later event exports
-                if (header.Type == JacobianType.Contact && sparseContacts)
-                {
-                    HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
-                }
-                else if (header.Type == JacobianType.Contact &&
-                    (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
-                {
-                    ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
+                RecordImpulses(ref header, lambda, jacRows, sparseContacts);
+                startRow += jacRows;
+            }
+        }
 
-                    var sumNormalImpulses = 0f;
-                    int normalRow = 0;
-                    for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
+        /// <summary>
+        /// Keeps what the events and the next substep read of one Jacobian's solved impulses. A Jacobian writes only its own
+        /// data, so Jacobians can do this on any thread.
+        /// </summary>
+        static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows, bool sparseContacts)
+        {
+            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
+            const float kCollisionTolerance = 0.1f;
+
+            // Collect collision or joint impulses for later event exports
+            if (header.Type == JacobianType.Contact && sparseContacts)
+            {
+                HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
+            }
+            else if (header.Type == JacobianType.Contact &&
+                (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
+            {
+                ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
+
+                var sumNormalImpulses = 0f;
+                int normalRow = 0;
+                for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
+                {
+                    ref var contactAngularJac = ref header.AccessAngularJacobian(i);
+                    var contactDistance = contactAngularJac.ContactDistance;
+                    if (contactDistance <= kCollisionTolerance)
                     {
-                        ref var contactAngularJac = ref header.AccessAngularJacobian(i);
-                        var contactDistance = contactAngularJac.ContactDistance;
-                        if (contactDistance <= kCollisionTolerance)
-                        {
-                            sumNormalImpulses += lambda[normalRow++];
-                        }
+                        sumNormalImpulses += lambda[normalRow++];
                     }
-
-                    contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
                 }
-                else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
+
+                contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
+            }
+            else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
+            {
+                // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
+                // flag is not set for them.
+
+                ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
+
+                // Add impulses to accumulated impulse
+                switch (header.Type)
                 {
-                    // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
-                    // flag is not set for them.
-
-                    ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
-
-                    // Add impulses to accumulated impulse
-                    switch (header.Type)
-                    {
-                        case JacobianType.AngularLimit1D:
-                            ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
-                            impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
-                            break;
-                        case JacobianType.AngularLimit2D:
-                            ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
-                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
-                            if (jacRows == 1)
-                            {
-                                impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
-                            }
-                            break;
-                        case JacobianType.AngularLimit3D:
+                    case JacobianType.AngularLimit1D:
+                        ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
+                        impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
+                        break;
+                    case JacobianType.AngularLimit2D:
+                        ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
+                        impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
+                        if (jacRows == 1)
+                        {
+                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
+                        }
+                        break;
+                    case JacobianType.AngularLimit3D:
+                        for (int i = 0; i < jacRows; ++i)
+                        {
+                            impulseEventData.AccumulatedImpulse[i] += lambda[i];
+                        }
+                        break;
+                    case JacobianType.LinearLimit:
+                        if (jacRows == 3)
+                        {
+                            // A ball and socket's rows run along the world axes, and an event reports the impulse in
+                            // constraint B's frame, as the iterative solver does.
+                            ref var linearLimit = ref header.AccessBaseJacobian<LinearLimitJacobian>();
+                            quaternion constraintBInWorld = math.mul(linearLimit.WorldFromB.rot, new quaternion(linearLimit.BodyFromConstraintB.Rotation));
+                            impulseEventData.AccumulatedImpulse += math.rotate(math.conjugate(constraintBInWorld), new float3(lambda[0], lambda[1], lambda[2]));
+                        }
+                        else
+                        {
                             for (int i = 0; i < jacRows; ++i)
                             {
                                 impulseEventData.AccumulatedImpulse[i] += lambda[i];
                             }
-                            break;
-                        case JacobianType.LinearLimit:
-                            if (jacRows == 3)
-                            {
-                                // A ball and socket's rows run along the world axes, and an event reports the impulse in
-                                // constraint B's frame, as the iterative solver does.
-                                ref var linearLimit = ref header.AccessBaseJacobian<LinearLimitJacobian>();
-                                quaternion constraintBInWorld = math.mul(linearLimit.WorldFromB.rot, new quaternion(linearLimit.BodyFromConstraintB.Rotation));
-                                impulseEventData.AccumulatedImpulse += math.rotate(math.conjugate(constraintBInWorld), new float3(lambda[0], lambda[1], lambda[2]));
-                            }
-                            else
-                            {
-                                for (int i = 0; i < jacRows; ++i)
-                                {
-                                    impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                                }
-                            }
+                        }
 
-                            break;
-                    }
+                        break;
                 }
-
-                startRow += jacRows;
             }
         }
 
