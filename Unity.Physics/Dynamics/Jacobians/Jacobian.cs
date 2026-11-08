@@ -712,7 +712,7 @@ namespace Unity.Physics
             }
             else
             {
-                float maximumStiffness = MaximumDirectStiffness(header, velocityA, velocityB, timeStep);
+                float maximumStiffness = MaximumDirectStiffness(header, velocityA, velocityB);
                 float dampingPerStiffness = directSolverSettings.MaximumJointDamping / directSolverSettings.MaximumJointStiffness;
                 var cappedStiffnessCoefficient = math.min(stiffnessCoefficient, maximumStiffness);
                 var cappedDampingCoefficient = math.min(dampingCoefficient, maximumStiffness * dampingPerStiffness);
@@ -735,13 +735,19 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The stiffest a joint can be: one that would swing the mass it moves through a whole period in a single substep. A
-        /// stiffer one adds nothing a substep can resolve, and one capped by a single number for every joint is too soft
-        /// between heavy parts and too stiff for light ones, which then take far more than their share of a load wherever
-        /// joints close a loop. The mass is the effective mass of the pair, so a light part on a heavy one sets it.
+        /// The period, in seconds, of the stiffest joint a direct solve builds. It is fixed rather than the substep, because
+        /// a joint's static sag under a load is the load over its stiffness: a cap that followed the substep would make a
+        /// craft sag with the square of the substep and tie its stiffness to how many substeps run.
         /// </summary>
-        static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB,
-            float timeStep)
+        const float DirectStiffnessPeriod = 0.005f;
+
+        /// <summary>
+        /// The stiffest a joint can be: one that would swing the mass it moves through <see cref="DirectStiffnessPeriod"/>.
+        /// One capped by a single number for every joint is too soft between heavy parts and too stiff for light ones, which
+        /// then take far more than their share of a load wherever joints close a loop. The mass is the effective mass of the
+        /// pair, so a light part on a heavy one sets it.
+        /// </summary>
+        static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB)
         {
             float inverseMass;
             if (header.IsAngular)
@@ -755,7 +761,7 @@ namespace Unity.Physics
                     + (velocityB.IsKinematic ? 0.0f : velocityB.InverseMass);
             }
 
-            float angularFrequency = Math.Constants.Tau / timeStep;
+            float angularFrequency = Math.Constants.Tau / DirectStiffnessPeriod;
             return angularFrequency * angularFrequency / math.max(inverseMass, 1e-9f);
         }
 
