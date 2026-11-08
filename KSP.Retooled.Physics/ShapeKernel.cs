@@ -305,6 +305,16 @@ namespace KSP.Retooled.Physics
             if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0)
             {
                 BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
+
+                // A floating origin shift moves a static and its shapes together, and taking the body's new pose out of
+                // the shape's rounds differently each time. A change that small is rounding, not a move.
+                float tolerance = 1e-6f * (math.cmax(math.abs(a->position)) + 1.0f);
+                if (math.all(math.abs(shape->data.localPosition - position) <= tolerance)
+                    && math.all(math.abs(shape->data.localRotation.value - rotation.value) <= 1e-6f))
+                {
+                    shape->data.localPosition = position;
+                    shape->data.localRotation = rotation;
+                }
             }
             else
             {

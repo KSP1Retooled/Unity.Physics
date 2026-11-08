@@ -372,6 +372,7 @@ namespace KSP.Retooled.Physics
         private static void SetFlags(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
             NativeStore.BodyFlags bits = (NativeStore.BodyFlags)a->flags & NativeStore.BodyFlags.PublicMask;
+            NativeStore.BodyFlags before = hot->flags;
             if (a->enabled != 0)
             {
                 hot->flags |= bits;
@@ -388,7 +389,12 @@ namespace KSP.Retooled.Physics
                 hot->flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
             }
 
-            StoreOps.MarkPoseChanged(body, hot->flags);
+            // Unity sets flags far more often than it changes them. A body that stops being static leaves the static tree
+            // as surely as one that starts.
+            if (hot->flags != before)
+            {
+                StoreOps.MarkPoseChanged(body, before | hot->flags);
+            }
         }
 
         /// <summary>

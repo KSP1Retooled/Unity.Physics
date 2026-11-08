@@ -43,7 +43,6 @@ namespace KSP.Retooled.Physics
         private uint stepCount;
         private uint builtStaticsVersion;
         private uint builtMaterialVersion;
-        private int builtDynamicCount;
 
         // False from the start of a build until it finished, so a build that fails is followed by a whole one.
         private bool builtWhole;
@@ -433,11 +432,11 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            // The static tree addresses bodies relative to the dynamic ones before them.
-            bool changed = !builtWhole || store->staticsVersion != builtStaticsVersion || dynamicIndices.Length != builtDynamicCount;
+            // The static tree numbers the statics among themselves, and queries and pair finding add the dynamic count, so
+            // only the statics decide whether it is built again.
+            bool changed = !builtWhole || store->staticsVersion != builtStaticsVersion;
             staticsChanged.Value = changed ? 1 : 0;
             builtStaticsVersion = store->staticsVersion;
-            builtDynamicCount = dynamicIndices.Length;
             builtWhole = false;
 
             for (int i = 0; i < builtIndices.Length; i++)

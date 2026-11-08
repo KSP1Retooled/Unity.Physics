@@ -197,7 +197,12 @@ namespace KSP.Retooled.Physics
             hot->target->Position = a->position;
             BodyEntities.Adopt(hot);
 
-            world->staticsVersion++;
+            // A new body goes last, so the statics keep their order unless it is one of them.
+            if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
+            {
+                world->staticsVersion++;
+            }
+
             StoreOps.MarkQueryDirty(world);
             return body;
         }
@@ -227,15 +232,22 @@ namespace KSP.Retooled.Physics
                 world->deadColliders[world->deadColliderCount++] = hot->collider->Value.GetUnsafePtr();
             }
 
+            // The last body takes the destroyed one's place, which reorders the statics only if either of them is static.
+            bool staticsMove = (hot->flags & NativeStore.BodyFlags.Static) != 0;
             uint last = --world->bodyCount;
             if (body->index != last)
             {
+                staticsMove |= (world->bodies[last].flags & NativeStore.BodyFlags.Static) != 0;
                 *hot = world->bodies[last];
                 hot->owner->index = body->index;
             }
 
             StoreOps.Release(globals, body);
-            world->staticsVersion++;
+            if (staticsMove)
+            {
+                world->staticsVersion++;
+            }
+
             StoreOps.MarkQueryDirty(world);
         }
 
