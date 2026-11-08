@@ -35,7 +35,10 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
 {
     private EntityQuery settings;
     private EntityQuery worlds;
-    private EntityQuery buildData;
+
+    // Held rather than read from BuildPhysicsWorldData each step: a query on that component would register this system's
+    // jobs against it, and the stock systems that read it through the EntityManager would then wait for the whole build.
+    private NativeReference<int> staticsChanged;
 
     public void OnCreate(ref SystemState state)
     {
@@ -43,7 +46,9 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
         state.GetEntityQuery(ComponentType.ReadWrite<PhysicsCollider>());
         settings = state.GetEntityQuery(ComponentType.ReadWrite<PhysicsStep>());
         worlds = state.GetEntityQuery(ComponentType.ReadWrite<PhysicsWorldSingleton>());
-        buildData = new EntityQueryBuilder(Allocator.Temp).WithAllRW<BuildPhysicsWorldData>().WithOptions(EntityQueryOptions.IncludeSystems).Build(ref state);
+
+        SystemHandle stockBuild = state.WorldUnmanaged.GetExistingUnmanagedSystem<BuildPhysicsWorld>();
+        staticsChanged = state.EntityManager.GetComponentData<BuildPhysicsWorldData>(stockBuild).HaveStaticBodiesChanged;
         DisableStockSystem<BuildPhysicsWorld>(ref state);
         DisableStockSystem<ExportPhysicsWorld>(ref state);
     }
@@ -57,8 +62,7 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
 
         settings.SetSingleton(StepKernel.Current->Settings);
         worlds.GetSingletonRW<PhysicsWorldSingleton>().ValueRW.PhysicsWorld = StepKernel.Current->World;
-        BuildPhysicsWorldData data = buildData.GetSingleton<BuildPhysicsWorldData>();
-        data.PhysicsData.HaveStaticBodiesChanged.Value = StepKernel.Current->StaticsChanged;
+        staticsChanged.Value = StepKernel.Current->StaticsChanged;
     }
 
     private static void DisableStockSystem<T>(ref SystemState state)
