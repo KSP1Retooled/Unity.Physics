@@ -671,6 +671,7 @@ namespace Unity.Physics
                 iterative.NumActivePhases[0] = NumIslandPhases;
                 iterative.NumWorkItems[0] = numIterativeWorkItems;
                 iterative.NumDispatchPairs.Value = numIterativePairs;
+                iterative.FindLinkedWorkItemRanges(PhasedDispatchPairs);
 
                 int numDirectPairs = BucketCounts[NumIslandPhases];
                 IterativeSolverSchedulerInfo direct = SolverSchedulerInfo.DirectPairsIterativeScheduling;

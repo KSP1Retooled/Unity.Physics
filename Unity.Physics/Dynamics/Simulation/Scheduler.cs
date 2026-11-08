@@ -505,6 +505,10 @@ namespace Unity.Physics
             // Total number of dispatch pairs in all phases for this scheduler info.
             internal NativeReference<int> NumDispatchPairs;
 
+            /// <summary> Each work item's first pair and count, in phases of links. </summary>
+            [NoAlias]
+            internal NativeList<int2> LinkedWorkItemRanges;
+
             // For a given work item index offset returns phase id.
             internal int FindPhaseId(int workItemIndexOffset)
             {
@@ -544,11 +548,40 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// As <see cref="GetWorkItemReadOffset(int, out int)"/>, for jobs that read the pairs. In a phase of links, a link
-            /// belongs to the work item it starts in, however far it reaches: two work items of a phase run at once. A work item
-            /// that lies wholly inside a link is left with nothing.
+            /// As <see cref="GetWorkItemReadOffset(int, out int)"/>, for jobs that read the pairs, which in a phase of links
+            /// take the ranges <see cref="FindLinkedWorkItemRanges"/> set.
             /// </summary>
-            internal int GetWorkItemReadOffset(int workItemIndexOffset, NativeArray<DispatchPair> dispatchPairs, out int pairReadCount)
+            internal int GetLinkedWorkItemReadOffset(int workItemIndexOffset, out int pairReadCount)
+            {
+                if (PhaseInfo[FindPhaseId(workItemIndexOffset)].LinkedNumDynamicBodies == 0)
+                {
+                    return GetWorkItemReadOffset(workItemIndexOffset, out pairReadCount);
+                }
+
+                int2 range = LinkedWorkItemRanges[workItemIndexOffset];
+                pairReadCount = range.y;
+                return range.x;
+            }
+
+            /// <summary>
+            /// Sets every work item's range in the phases of links. It has to run before any job reads the pairs: building
+            /// Jacobians invalidates a pair without contacts while other work items are still finding where theirs start.
+            /// </summary>
+            internal void FindLinkedWorkItemRanges(NativeArray<DispatchPair> dispatchPairs)
+            {
+                LinkedWorkItemRanges.Clear();
+                for (int workItem = 0; workItem < NumWorkItems[0]; workItem++)
+                {
+                    int start = FindLinkedReadOffset(workItem, dispatchPairs, out int pairReadCount);
+                    LinkedWorkItemRanges.Add(new int2(start, pairReadCount));
+                }
+            }
+
+            /// <summary>
+            /// In a phase of links, a link belongs to the work item it starts in, however far it reaches: two work items of a
+            /// phase run at once. A work item that lies wholly inside a link is left with nothing.
+            /// </summary>
+            int FindLinkedReadOffset(int workItemIndexOffset, NativeArray<DispatchPair> dispatchPairs, out int pairReadCount)
             {
                 int start = GetWorkItemReadOffset(workItemIndexOffset, out pairReadCount);
                 SolvePhaseInfo phaseInfo = PhaseInfo[FindPhaseId(workItemIndexOffset)];
@@ -590,6 +623,7 @@ namespace Unity.Physics
                 NumWorkItems = new NativeArray<int>(1, allocator);
                 FirstDispatchPairIndex = new NativeReference<int>(0, allocator);
                 NumDispatchPairs = new NativeReference<int>(0, allocator);
+                LinkedWorkItemRanges = new NativeList<int2>(allocator);
             }
 
             public void Dispose()
@@ -623,12 +657,18 @@ namespace Unity.Physics
                 {
                     NumDispatchPairs.Dispose();
                 }
+
+                if (LinkedWorkItemRanges.IsCreated)
+                {
+                    LinkedWorkItemRanges.Dispose();
+                }
             }
 
             public JobHandle ScheduleDisposeJob(JobHandle inputDeps)
             {
                 return JobHandle.CombineDependencies(new DisposeJob { PhaseInfo = PhaseInfo, NumActivePhases = NumActivePhases, NumWorkItems = NumWorkItems }.Schedule(inputDeps),
-                    JobHandle.CombineDependencies(FirstWorkItemIndex.Dispose(inputDeps), NumDispatchPairs.Dispose(inputDeps), FirstDispatchPairIndex.Dispose(inputDeps)));
+                    JobHandle.CombineDependencies(FirstWorkItemIndex.Dispose(inputDeps), NumDispatchPairs.Dispose(inputDeps), FirstDispatchPairIndex.Dispose(inputDeps)),
+                    LinkedWorkItemRanges.Dispose(inputDeps));
             }
 
             // A job to dispose the phase information

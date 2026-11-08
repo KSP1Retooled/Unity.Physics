@@ -347,7 +347,7 @@ namespace Unity.Physics
             public void Execute(int workItemIndexOffset)
             {
                 var firstDispatchPairIndex = IterativeSolverSchedulerInfo.FirstDispatchPairIndex.Value
-                    + IterativeSolverSchedulerInfo.GetWorkItemReadOffset(workItemIndexOffset, DispatchPairs, out int dispatchPairCount);
+                    + IterativeSolverSchedulerInfo.GetLinkedWorkItemReadOffset(workItemIndexOffset, out int dispatchPairCount);
                 var workItemIndex = IterativeSolverSchedulerInfo.FirstWorkItemIndex.Value + workItemIndexOffset;
 
                 BuildJacobians(Input.World, Timestep, GravityMagnitude, NumSubsteps, Input.NumSolverIterations,
