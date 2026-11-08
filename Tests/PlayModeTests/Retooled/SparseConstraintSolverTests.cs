@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
@@ -207,7 +208,43 @@ namespace KSP.Retooled.Physics.Tests
             return impulses;
         }
 
-        private static bool Solve(ref SparseConstraintSolver solver, Scenario scenario, bool bounded, float[] impulses, byte[] guess = null)
+        /// <summary>Solves on every lane of a job, the first to run leading, as a direct island's big solve runs.</summary>
+        private struct SharedSolveJob : IJobParallelFor
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public SparseSolveTeam* Team;
+
+            [NativeDisableUnsafePtrRestriction]
+            public SparseConstraintSolver* Solver;
+
+            [NativeDisableUnsafePtrRestriction]
+            public SparseConstraintSolver.Problem* Problem;
+
+            [NativeDisableUnsafePtrRestriction]
+            public float* Impulses;
+
+            [NativeDisableUnsafePtrRestriction]
+            public bool* Converged;
+
+            public bool Bounded;
+
+            public void Execute(int lane)
+            {
+                if (!Team->TryLead())
+                {
+                    Team->Help();
+                    return;
+                }
+
+                Solver->Team = Team;
+                *Converged = Solver->Solve(*Problem, Impulses, Bounded);
+                Solver->Team = null;
+                Team->Finish();
+            }
+        }
+
+        private static bool Solve(ref SparseConstraintSolver solver, Scenario scenario, bool bounded, float[] impulses, byte[] guess = null,
+            int lanes = 0)
         {
             SparseConstraintSolver.Body[] bodies = scenario.Bodies.ToArray();
             SparseConstraintSolver.ConstraintBlock[] blocks = scenario.Blocks.ToArray();
@@ -242,7 +279,27 @@ namespace KSP.Retooled.Physics.Tests
                     Couplings = couplingsPointer,
                 };
 
-                return solver.Solve(problem, output, bounded);
+                if (lanes == 0)
+                {
+                    return solver.Solve(problem, output, bounded);
+                }
+
+                SparseSolveTeam team = default;
+                bool converged = false;
+                fixed (SparseConstraintSolver* solverPointer = &solver)
+                {
+                    new SharedSolveJob
+                    {
+                        Team = &team,
+                        Solver = solverPointer,
+                        Problem = &problem,
+                        Impulses = output,
+                        Converged = &converged,
+                        Bounded = bounded,
+                    }.Schedule(lanes, 1).Complete();
+                }
+
+                return converged;
             }
         }
 
@@ -484,6 +541,26 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(converged, Is.True);
             Assert.That(couplings, Is.LessThan(25), "the friction bounds never settled");
             AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void LanesSharingASolveGetTheSameAnswer([Range(1u, 4u)] uint seed, [Values(2, 8)] int lanes)
+        {
+            Scenario scenario = Craft(seed, 600, 20, 0.5f);
+            Random contacts = new Random(seed + 70);
+            for (int i = 0; i < 10; i++)
+            {
+                scenario.AddContact(contacts.NextInt(scenario.Bodies.Count), contacts.NextInt(1, 4), 0.8f);
+            }
+
+            float[] alone = Solve(scenario, true, out SparseConstraintSolver.Statistics statistics, out _);
+            var solver = new SparseConstraintSolver(Allocator.TempJob);
+            float[] shared = new float[scenario.Rows];
+            Solve(ref solver, scenario, true, shared, null, lanes);
+            solver.Dispose();
+
+            Assert.That(statistics.Tasks, Is.GreaterThan(lanes), "the craft didn't split into subtrees");
+            Assert.That(shared, Is.EqualTo(alone));
         }
 
         [Test]
