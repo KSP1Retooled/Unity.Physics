@@ -684,8 +684,44 @@ namespace Unity.Physics
             return phi_0;
         }
 
+        /// <summary>
+        /// The J rows of one solve, taken in order from one block, so that row i of JArray sits at i * 12 floats. Temp memory
+        /// goes when the job ends, so the rows are never disposed one by one.
+        /// </summary>
+        unsafe struct JacobianRows
+        {
+            const int Columns = 12;
+
+            float* next;
+            float* end;
+
+            /// <summary>Where row 0 starts, or null once a row had to be allocated on its own and the block no longer holds them all.</summary>
+            public float* Start { get; private set; }
+
+            public JacobianRows(int rows)
+            {
+                next = (float*)UnsafeUtility.Malloc(rows * Columns * (long)sizeof(float), 16, Allocator.Temp);
+                end = next + rows * (long)Columns;
+                Start = next;
+            }
+
+            public Vector Next(in MemoryManager heap)
+            {
+                // A solve counts its rows before building them, so this only runs out if the two disagree.
+                if (next + Columns > end)
+                {
+                    Start = null;
+                    return Vector.Create(heap, Columns);
+                }
+
+                Vector row = Vector.Create(heap, next, 1, Columns);
+                next += Columns;
+                return row;
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static unsafe void AddAngularLimit1D(in MemoryManager heap, Vector* JBlocks, ref NativeList<Vector> JArray,
+        static unsafe void AddAngularLimit1D(in MemoryManager heap, ref JacobianRows jacobianRows, Vector* JBlocks, ref NativeList<Vector> JArray,
             bool bodyAIsStatic, bool bodyBIsStatic, in float3 hingeAxis, float currentAngle, float minAngle, float maxAngle,
             int startRow, in Vector l, in Vector u, ref Vector eps, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
             in Matrix RHS, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
@@ -694,7 +730,7 @@ namespace Unity.Physics
             const int startColumnA = 0;
             const int startColumnB = 6;
 
-            var J = Vector.Create(heap, 12);
+            var J = jacobianRows.Next(heap);
             J.Clear();
             JBlocks[0] = J;
             JArray.Add(J);
@@ -1081,14 +1117,19 @@ namespace Unity.Physics
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in NativeList<Vector> JArray,
             in Vector eps, in Vector l, in Vector u, in Matrix RHS, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs)
+            int contactPairs, float* contiguousJacobian)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
             SparseSetupMarker.Begin();
             var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
-            var compactBodies = new NativeHashMap<int, int>(16, Allocator.Temp);
+            // Where each moving body sits among the island's, by its index in the world, which counts from zero.
+            var compactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int i = 0; i < compactBodies.Length; i++)
+            {
+                compactBodies[i] = -1;
+            }
 
             var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
             int firstRow = 0;
@@ -1112,26 +1153,22 @@ namespace Unity.Physics
                 firstRow += jacobianRows;
             }
 
-            var jacobian = new NativeArray<float>(rows * SparseConstraintSolver.ColumnsPerRow, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var epsilon = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var rightHandSide = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var lower = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var upper = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            for (int row = 0; row < rows; row++)
+            // The rows are read where they were built when they sit in one block, as the vectors already do.
+            float* jacobian = contiguousJacobian;
+            if (jacobian == null)
             {
-                var J = JArray[row];
-                for (int column = 0; column < SparseConstraintSolver.ColumnsPerRow; column++)
+                jacobian = (float*)UnsafeUtility.Malloc(rows * SparseConstraintSolver.ColumnsPerRow * (long)sizeof(float), 16, Allocator.Temp);
+                for (int row = 0; row < rows; row++)
                 {
-                    jacobian[row * SparseConstraintSolver.ColumnsPerRow + column] = J[column];
+                    var J = JArray[row];
+                    for (int column = 0; column < SparseConstraintSolver.ColumnsPerRow; column++)
+                    {
+                        jacobian[row * SparseConstraintSolver.ColumnsPerRow + column] = J[column];
+                    }
                 }
-
-                epsilon[row] = eps[row];
-                rightHandSide[row] = RHS.Cols[0][row];
-                lower[row] = l[row];
-                upper[row] = u[row];
             }
 
+            var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var problem = new SparseConstraintSolver.Problem
             {
                 BodyCount = bodies.Length,
@@ -1139,11 +1176,11 @@ namespace Unity.Physics
                 BlockCount = blocks.Length,
                 Blocks = blocks.GetUnsafePtr(),
                 RowCount = rows,
-                Jacobian = (float*)jacobian.GetUnsafeReadOnlyPtr(),
-                Epsilon = (float*)epsilon.GetUnsafeReadOnlyPtr(),
-                RightHandSide = (float*)rightHandSide.GetUnsafeReadOnlyPtr(),
-                Lower = (float*)lower.GetUnsafeReadOnlyPtr(),
-                Upper = (float*)upper.GetUnsafeReadOnlyPtr(),
+                Jacobian = jacobian,
+                Epsilon = (float*)UnsafeUtility.AddressOf(ref eps[0]),
+                RightHandSide = (float*)UnsafeUtility.AddressOf(ref RHS.Cols[0][0]),
+                Lower = (float*)UnsafeUtility.AddressOf(ref l[0]),
+                Upper = (float*)UnsafeUtility.AddressOf(ref u[0]),
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
             };
             SparseSetupMarker.End();
@@ -1170,11 +1207,6 @@ namespace Unity.Physics
             bodies.Dispose();
             blocks.Dispose();
             compactBodies.Dispose();
-            jacobian.Dispose();
-            epsilon.Dispose();
-            rightHandSide.Dispose();
-            lower.Dispose();
-            upper.Dispose();
             impulses.Dispose();
         }
 
@@ -1183,14 +1215,15 @@ namespace Unity.Physics
         /// mass nor inertia, so an axis with none needs a value that stands for infinite, and this one is far past any body.
         /// </summary>
         static int CompactBody(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
-            in StepInput stepInput, ref NativeList<SparseConstraintSolver.Body> bodies, ref NativeHashMap<int, int> compactBodies)
+            in StepInput stepInput, ref NativeList<SparseConstraintSolver.Body> bodies, ref NativeArray<int> compactBodies)
         {
             if (bodyIndex >= motionVelocities.Length || motionVelocities[bodyIndex].IsKinematic)
             {
                 return -1;
             }
 
-            if (compactBodies.TryGetValue(bodyIndex, out int compact))
+            int compact = compactBodies[bodyIndex];
+            if (compact >= 0)
             {
                 return compact;
             }
@@ -1201,7 +1234,7 @@ namespace Unity.Physics
             ComputeInertiaTensor(motion, motionDatas[bodyIndex], stepInput.Timestep, stepInput.EnableGyroscopicTorque, out float3x3 inertia, out _);
 
             compact = bodies.Length;
-            compactBodies.Add(bodyIndex, compact);
+            compactBodies[bodyIndex] = compact;
             bodies.Add(new SparseConstraintSolver.Body
             {
                 Mass = 1.0 / math.max(motion.InverseMass, smallestInverse),
@@ -1298,6 +1331,7 @@ namespace Unity.Physics
 
                 // Array of Jacobian blocks: 12-component vector, containing the two non-zero 6-component vectors in each J row
                 var JArray = new NativeList<Vector>(rows, Allocator.Temp);
+                var jacobianRows = new JacobianRows(rows);
                 var eps = heap.Vector(rows);
                 var indexSetArray = new NativeArray<LCP.MLCPIndexFlag>(rows, Allocator.Temp, NativeArrayOptions.ClearMemory);
                 // Note: clearing memory in array above, so that we get free index set value initially (LCP.MLCPIndexFlag.Free).
@@ -1405,7 +1439,7 @@ namespace Unity.Physics
                                     // hinge axis in world space
                                     var a = math.rotate(angJacobian.WorldFromA, angJacobian.AxisInMotionA);
 
-                                    var J_1 = Vector.Create(heap, 12);
+                                    var J_1 = jacobianRows.Next(heap);
                                     J_1.Clear();
                                     JBlocks[0] = J_1;
                                     JArray.Add(J_1);
@@ -1449,7 +1483,7 @@ namespace Unity.Physics
                                     var hingeAxis = math.rotate(angJacobian.WorldFromMotionA, angJacobian.AxisInMotionA);
                                     var currentAngle = angJacobian.CalculateAngle(angJacobian.MotionBFromA);
 
-                                    AddAngularLimit1D(in heap, JBlocks, ref JArray,
+                                    AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
                                         bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                         angJacobian.MinAngle, angJacobian.MaxAngle,
                                         startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
@@ -1488,8 +1522,8 @@ namespace Unity.Physics
                                         var J_u = math.cross(n_A, u_B);
                                         var J_v = math.cross(n_A, v_B);
 
-                                        var J_1 = Vector.Create(heap, 12);
-                                        var J_2 = Vector.Create(heap, 12);
+                                        var J_1 = jacobianRows.Next(heap);
+                                        var J_2 = jacobianRows.Next(heap);
                                         J_1.Clear();
                                         J_2.Clear();
                                         JBlocks[0] = J_1;
@@ -1560,7 +1594,7 @@ namespace Unity.Physics
                                         // turns about is arbitrary, so a cone has no lower bound to reach. It stays finite,
                                         // because a row without limits on either side is an equality.
                                         float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
-                                        AddAngularLimit1D(in heap, JBlocks, ref JArray,
+                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                             minAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
@@ -1609,9 +1643,9 @@ namespace Unity.Physics
                                         var J_v = math.cross(n_A, v_B);
                                         var J_n = math.cross(u_A, v_B);
 
-                                        var J_1 = Vector.Create(heap, 12);
-                                        var J_2 = Vector.Create(heap, 12);
-                                        var J_3 = Vector.Create(heap, 12);
+                                        var J_1 = jacobianRows.Next(heap);
+                                        var J_2 = jacobianRows.Next(heap);
+                                        var J_3 = jacobianRows.Next(heap);
                                         J_1.Clear();
                                         J_2.Clear();
                                         J_3.Clear();
@@ -1667,7 +1701,7 @@ namespace Unity.Physics
 
                                         // ToAngleAxis gives degrees about an axis in body A's space, so this angle's rate is
                                         // not the row's, and the limit acts only once it is passed.
-                                        AddAngularLimit1D(in heap, JBlocks, ref JArray,
+                                        AddAngularLimit1D(in heap, ref jacobianRows, JBlocks, ref JArray,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                             angJacobian.MinAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
@@ -1685,9 +1719,9 @@ namespace Unity.Physics
                                     if (lockAll && limitJacobian.MinDistance < math.EPSILON && limitJacobian.MaxDistance < math.EPSILON)
                                     {
                                         // ball & socket case: 3 linear constraint functions
-                                        var J_1 = Vector.Create(heap, 12);
-                                        var J_2 = Vector.Create(heap, 12);
-                                        var J_3 = Vector.Create(heap, 12);
+                                        var J_1 = jacobianRows.Next(heap);
+                                        var J_2 = jacobianRows.Next(heap);
+                                        var J_3 = jacobianRows.Next(heap);
                                         J_1.Clear();
                                         J_2.Clear();
                                         J_3.Clear();
@@ -1735,8 +1769,8 @@ namespace Unity.Physics
 
                                         // 2D case: linear limit 2D's 2 linear constraint functions
 
-                                        var J_1 = Vector.Create(heap, 12);
-                                        var J_2 = Vector.Create(heap, 12);
+                                        var J_1 = jacobianRows.Next(heap);
+                                        var J_2 = jacobianRows.Next(heap);
                                         J_1.Clear();
                                         J_2.Clear();
                                         JBlocks[0] = J_1;
@@ -1767,7 +1801,7 @@ namespace Unity.Physics
                                     // Cases: 1D constraint, 3D spring / distance constraint, or 2D line constraint with min/max distance
                                     else
                                     {
-                                        var J = Vector.Create(heap, 12);
+                                        var J = jacobianRows.Next(heap);
                                         J.Clear();
                                         JBlocks[0] = J;
                                         JArray.Add(J);
@@ -1905,9 +1939,9 @@ namespace Unity.Physics
                                     int axis1 = (motorJacobian.AxisIndex + 1) % 3;
                                     int axis2 = (motorJacobian.AxisIndex + 2) % 3;
 
-                                    var J_1 = Vector.Create(heap, 12);
-                                    var J_2 = Vector.Create(heap, 12);
-                                    var J_3 = Vector.Create(heap, 12);
+                                    var J_1 = jacobianRows.Next(heap);
+                                    var J_2 = jacobianRows.Next(heap);
+                                    var J_3 = jacobianRows.Next(heap);
                                     J_1.Clear();
                                     J_2.Clear();
                                     J_3.Clear();
@@ -1972,7 +2006,7 @@ namespace Unity.Physics
                                     ref PositionMotorJacobian motorJacobian =
                                         ref header.AccessBaseJacobian<PositionMotorJacobian>();
 
-                                    var J = Vector.Create(heap, 12);
+                                    var J = jacobianRows.Next(heap);
                                     J.Clear();
                                     JBlocks[0] = J;
                                     JArray.Add(J);
@@ -2047,7 +2081,7 @@ namespace Unity.Physics
 
                                     var hingeAxis = math.rotate(motorJacobian.WorldFromMotionA, motorJacobian.AxisInMotionA);
 
-                                    var J = Vector.Create(heap, 12);
+                                    var J = jacobianRows.Next(heap);
                                     J.Clear();
                                     JBlocks[0] = J;
                                     JArray.Add(J);
@@ -2174,7 +2208,7 @@ namespace Unity.Physics
                                         // normal row index for active contact.
                                         var normalRow = startRow + activeNormalConstraints;
 
-                                        var J_normal = Vector.Create(heap, 12);
+                                        var J_normal = jacobianRows.Next(heap);
                                         J_normal.Clear();
                                         JBlocks[activeNormalConstraints] = J_normal;
                                         JArray.Add(J_normal);
@@ -2274,9 +2308,9 @@ namespace Unity.Physics
                                     {
                                         var frictionStartRow = startRow + activeNormalConstraints;
 
-                                        var J_frictionDir0 = Vector.Create(heap, 12);
-                                        var J_frictionDir1 = Vector.Create(heap, 12);
-                                        var J_frictionNormal = Vector.Create(heap, 12);
+                                        var J_frictionDir0 = jacobianRows.Next(heap);
+                                        var J_frictionDir1 = jacobianRows.Next(heap);
+                                        var J_frictionNormal = jacobianRows.Next(heap);
 
                                         J_frictionDir0.Clear();
                                         J_frictionDir1.Clear();
@@ -2641,7 +2675,8 @@ namespace Unity.Physics
                     if (solveSparsely)
                     {
                         SolveSparsely(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities, motionDatas,
-                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP, contactPairs);
+                            stepInput, rows, JArray, eps, l, u, RHS, indexSetArray, isLCP, contactPairs,
+                            JArray.Length == rows ? jacobianRows.Start : null);
                     }
                     else if (isLCP && !kForceLCPOff)
                     {
