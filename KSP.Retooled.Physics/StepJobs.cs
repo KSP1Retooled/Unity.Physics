@@ -94,7 +94,7 @@ namespace KSP.Retooled.Physics
     /// With a <see cref="DeltaTime"/> of zero the kinematic velocities stay zero, which is what a query world wants.
     /// </summary>
     [BurstCompile]
-    internal unsafe struct BuildBodiesJob : IJob
+    internal unsafe struct BuildBodiesJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.BodyData* Store;
@@ -111,23 +111,27 @@ namespace KSP.Retooled.Physics
 
         public float DeltaTime;
 
-        public void Execute()
+        /// <summary>One for each built body, the anchor included.</summary>
+        public int Count => DynamicIndices.Length + StaticIndices.Length + 1;
+
+        public void Execute(int builtIndex)
         {
-            for (int i = 0; i < DynamicIndices.Length; i++)
+            if (builtIndex < DynamicIndices.Length)
             {
-                int index = DynamicIndices[i];
+                int index = DynamicIndices[builtIndex];
                 ref NativeStore.BodyData body = ref Store[index];
-                Bodies[i] = RigidBodyOf(ref body, index);
-                WriteMotion(i, ref body);
+                Bodies[builtIndex] = RigidBodyOf(ref body, index);
+                WriteMotion(builtIndex, ref body);
             }
-
-            for (int i = 0; i < StaticIndices.Length; i++)
+            else if (builtIndex < DynamicIndices.Length + StaticIndices.Length)
             {
-                int index = StaticIndices[i];
-                Bodies[DynamicIndices.Length + i] = RigidBodyOf(ref Store[index], index);
+                int index = StaticIndices[builtIndex - DynamicIndices.Length];
+                Bodies[builtIndex] = RigidBodyOf(ref Store[index], index);
             }
-
-            Bodies[DynamicIndices.Length + StaticIndices.Length] = RigidBody.Zero;
+            else
+            {
+                Bodies[builtIndex] = RigidBody.Zero;
+            }
         }
 
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
@@ -201,9 +205,12 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Copies what a query reads about bodies and shapes out of the store, in the built world's body order.</summary>
+    /// <summary>
+    /// Copies what a query reads about bodies and shapes out of the store, in the built world's body order, one body a
+    /// work item. <see cref="FirstShapes"/> holds where each body's shapes start.
+    /// </summary>
     [BurstCompile]
-    internal unsafe struct SnapshotQueryDataJob : IJob
+    internal unsafe struct SnapshotQueryDataJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.BodyData* Store;
@@ -211,44 +218,47 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<RigidBody> Bodies;
 
+        [ReadOnly]
+        public NativeArray<int> FirstShapes;
+
         public NativeArray<QueryBody> QueryBodies;
+
+        [NativeDisableParallelForRestriction]
         public NativeArray<QueryShape> QueryShapes;
+
         public uint EngineObjectIdOffset;
 
-        public void Execute()
+        public void Execute(int i)
         {
-            int nextShape = 0;
-            for (int i = 0; i < Bodies.Length; i++)
+            Entity entity = Bodies[i].Entity;
+            if (entity.Version == 0)
             {
-                Entity entity = Bodies[i].Entity;
-                if (entity.Version == 0)
-                {
-                    QueryBodies[i] = default;
-                    continue;
-                }
+                QueryBodies[i] = default;
+                return;
+            }
 
-                NativeStore.BodyData* body = Store + entity.Index;
-                QueryBodies[i] = new QueryBody
+            int nextShape = FirstShapes[i];
+            NativeStore.BodyData* body = Store + entity.Index;
+            QueryBodies[i] = new QueryBody
+            {
+                Owner = body->owner,
+                FirstShape = nextShape,
+                SingleShape = ColliderBuilder.FirstSupported(body),
+                IsStatic = (body->flags & NativeStore.BodyFlags.Static) != 0 ? 1 : 0,
+            };
+
+            for (int s = 0; s < body->shapeCount; s++)
+            {
+                NativeStore.ShapeData* shape = body->shapes[s];
+                shape->owner->querySlot = (uint)nextShape + 1;
+                QueryShapes[nextShape++] = new QueryShape
                 {
-                    Owner = body->owner,
-                    FirstShape = nextShape,
-                    SingleShape = ColliderBuilder.FirstSupported(body),
-                    IsStatic = (body->flags & NativeStore.BodyFlags.Static) != 0 ? 1 : 0,
+                    EngineObjectId = shape->userData != null ? *(ulong*)((byte*)shape->userData + EngineObjectIdOffset) : 0,
+                    UserData = shape->userData,
+                    Handle = shape->owner,
+                    Flags = shape->flags,
+                    GeometryType = shape->geometryType,
                 };
-
-                for (int s = 0; s < body->shapeCount; s++)
-                {
-                    NativeStore.ShapeData* shape = body->shapes[s];
-                    shape->owner->querySlot = (uint)nextShape + 1;
-                    QueryShapes[nextShape++] = new QueryShape
-                    {
-                        EngineObjectId = shape->userData != null ? *(ulong*)((byte*)shape->userData + EngineObjectIdOffset) : 0,
-                        UserData = shape->userData,
-                        Handle = shape->owner,
-                        Flags = shape->flags,
-                        GeometryType = shape->geometryType,
-                    };
-                }
             }
         }
     }

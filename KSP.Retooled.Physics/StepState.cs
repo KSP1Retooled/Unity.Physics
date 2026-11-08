@@ -31,6 +31,7 @@ namespace KSP.Retooled.Physics
         private DirectSolverCache directSolverCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
+        private NativeList<int> queryFirstShapes;
         private NativeList<ManifoldRecord> manifolds;
         private NativeList<ManifoldPoint> manifoldPoints;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
@@ -60,7 +61,8 @@ namespace KSP.Retooled.Physics
             directSolverCache = DirectSolverCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
-            manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
+            queryFirstShapes = new NativeList<int>(Allocator.Persistent);
+            manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
@@ -90,6 +92,7 @@ namespace KSP.Retooled.Physics
             directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
+            queryFirstShapes.Dispose();
             manifolds.Dispose();
             manifoldPoints.Dispose();
             touching.Dispose();
@@ -142,7 +145,8 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
 
-            JobHandle built = Build(deltaTime).Schedule(dependency);
+            BuildBodiesJob bodies = Build(deltaTime);
+            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, dependency);
             return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
         }
 
@@ -290,7 +294,8 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
             RefreshColliders();
-            JobHandle built = Build(0.0f).Schedule();
+            BuildBodiesJob bodies = Build(0.0f);
+            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize);
             world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
             PublishQueryWorld();
         }
@@ -323,15 +328,16 @@ namespace KSP.Retooled.Physics
         private void PublishQueryWorld()
         {
             queryBodies.ResizeUninitialized(world.NumBodies);
-            queryShapes.ResizeUninitialized(ShapeCount());
+            queryShapes.ResizeUninitialized(FindFirstShapes());
             new SnapshotQueryDataJob
             {
                 Store = store->bodies,
                 Bodies = world.Bodies,
+                FirstShapes = queryFirstShapes.AsArray(),
                 QueryBodies = queryBodies.AsArray(),
                 QueryShapes = queryShapes.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
-            }.Schedule().Complete();
+            }.Schedule(world.NumBodies, ParallelBatchSize).Complete();
 
             query->Collision = world.CollisionWorld;
             query->Bodies = queryBodies.GetUnsafeReadOnlyPtr();
@@ -341,11 +347,14 @@ namespace KSP.Retooled.Physics
             builtWhole = true;
         }
 
-        private int ShapeCount()
+        /// <summary>Sets where each built body's shapes start among the query's shapes, and returns how many there are.</summary>
+        private int FindFirstShapes()
         {
+            queryFirstShapes.ResizeUninitialized(world.NumBodies);
             int count = 0;
             for (int i = 0; i < world.NumBodies; i++)
             {
+                queryFirstShapes[i] = count;
                 Unity.Entities.Entity entity = world.Bodies[i].Entity;
                 if (entity.Version != 0)
                 {

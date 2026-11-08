@@ -406,7 +406,7 @@ namespace KSP.Retooled.Physics.Tests
             using NativeArray<MotionData> motions = new NativeArray<MotionData>(1, Allocator.TempJob);
             using NativeArray<MotionVelocity> velocities = new NativeArray<MotionVelocity>(1, Allocator.TempJob);
 
-            new BuildBodiesJob
+            var job = new BuildBodiesJob
             {
                 Store = &body,
                 DynamicIndices = dynamicIndices,
@@ -415,7 +415,9 @@ namespace KSP.Retooled.Physics.Tests
                 MotionDatas = motions,
                 MotionVelocities = velocities,
                 DeltaTime = deltaTime,
-            }.Execute();
+            };
+
+            job.Execute(0);
 
             float3 reached = motions[0].WorldFromMotion.pos + velocities[0].LinearVelocity * deltaTime;
             float3 expected = targetPosition + math.rotate(targetRotation, centerOfMass);
