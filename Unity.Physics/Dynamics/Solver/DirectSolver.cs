@@ -816,6 +816,110 @@ namespace Unity.Physics
             };
         }
 
+        /// <summary> Where a body's motion will be after a substep at the given velocity, as the integrator moves it. </summary>
+        static RigidTransform PredictedMotion(in RigidTransform worldFromMotion, int bodyIndex, in NativeArray<MotionVelocity> motionVelocities,
+            float timestep)
+        {
+            RigidTransform predicted = worldFromMotion;
+            if (bodyIndex < motionVelocities.Length)
+            {
+                Integrator.Integrate(ref predicted, motionVelocities[bodyIndex], timestep);
+            }
+
+            return predicted;
+        }
+
+        static float3 MotionAngularVelocity(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities)
+        {
+            return bodyIndex < motionVelocities.Length ? motionVelocities[bodyIndex].AngularVelocity : float3.zero;
+        }
+
+        /// <summary>
+        /// How far each row of an equality Jacobian's constraint will move in a substep if its bodies keep
+        /// <paramref name="motionVelocities"/>, as the integrator moves them, one value per row in <paramref name="change"/>.
+        /// False for a Jacobian with a range or no position to hold, which has nothing to predict.
+        /// </summary>
+        static unsafe bool PredictEqualityChange(ref JacobianHeader header, in NativeArray<MotionVelocity> motionVelocities,
+            float timestep, float* change)
+        {
+            int ixBodyA = header.BodyPair.BodyIndexA;
+            int ixBodyB = header.BodyPair.BodyIndexB;
+            switch (header.Type)
+            {
+                case JacobianType.AngularLimit1D:
+                {
+                    ref AngularLimit1DJacobian angJacobian = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
+                    if (math.abs(angJacobian.MinAngle - angJacobian.MaxAngle) >= math.EPSILON)
+                    {
+                        return false;
+                    }
+
+                    quaternion predictedBFromA = JacobianUtilities.IntegrateOrientationBFromA(angJacobian.MotionBFromA,
+                        MotionAngularVelocity(ixBodyA, motionVelocities), MotionAngularVelocity(ixBodyB, motionVelocities), timestep);
+                    float angleChange = angJacobian.CalculateAngle(predictedBFromA) - angJacobian.CalculateAngle(angJacobian.MotionBFromA);
+                    change[0] = math.atan2(math.sin(angleChange), math.cos(angleChange));
+                    return true;
+                }
+                case JacobianType.LinearLimit:
+                {
+                    ref LinearLimitJacobian limitJacobian = ref header.AccessBaseJacobian<LinearLimitJacobian>();
+                    if (math.abs(limitJacobian.MinDistance - limitJacobian.MaxDistance) >= math.EPSILON)
+                    {
+                        return false;
+                    }
+
+                    RigidTransform predictedA = PredictedMotion(limitJacobian.WorldFromA, ixBodyA, motionVelocities, timestep);
+                    RigidTransform predictedB = PredictedMotion(limitJacobian.WorldFromB, ixBodyB, motionVelocities, timestep);
+                    float3 offset = math.transform(limitJacobian.WorldFromA, limitJacobian.BodyFromConstraintA.Translation)
+                        - math.transform(limitJacobian.WorldFromB, limitJacobian.BodyFromConstraintB.Translation);
+                    float3 predictedOffset = math.transform(predictedA, limitJacobian.BodyFromConstraintA.Translation)
+                        - math.transform(predictedB, limitJacobian.BodyFromConstraintB.Translation);
+
+                    // The same cases, in the same order, as the rows BuildJacobianRows builds for a linear limit.
+                    bool lockAll = math.all(limitJacobian.ConstrainedAxes);
+                    bool atZero = limitJacobian.MinDistance < math.EPSILON;
+                    if (lockAll && atZero)
+                    {
+                        float3 offsetChange = predictedOffset - offset;
+                        change[0] = offsetChange.x;
+                        change[1] = offsetChange.y;
+                        change[2] = offsetChange.z;
+                        return true;
+                    }
+
+                    if (!lockAll && !limitJacobian.Is1D && atZero)
+                    {
+                        int axis0 = limitJacobian.ConstrainedAxes[0] ? 0 : 1;
+                        int axis1 = axis0 == 1 ? 2 : (limitJacobian.ConstrainedAxes[1] ? 1 : 2);
+                        float3x3 axes = limitJacobian.BodyFromConstraintB.Rotation;
+                        change[0] = math.dot(predictedOffset, math.rotate(predictedB, axes[axis0]))
+                            - math.dot(offset, math.rotate(limitJacobian.WorldFromB, axes[axis0]));
+                        change[1] = math.dot(predictedOffset, math.rotate(predictedB, axes[axis1]))
+                            - math.dot(offset, math.rotate(limitJacobian.WorldFromB, axes[axis1]));
+                        return true;
+                    }
+
+                    if (limitJacobian.Is1D)
+                    {
+                        change[0] = math.dot(predictedOffset, math.rotate(predictedB, limitJacobian.AxisInB))
+                            - math.dot(offset, math.rotate(limitJacobian.WorldFromB, limitJacobian.AxisInB));
+                        return true;
+                    }
+
+                    // A fixed distance between the anchors. A line with a distance from it has no one direction to hold.
+                    if (lockAll && math.lengthsq(offset) > math.EPSILON)
+                    {
+                        change[0] = math.length(predictedOffset) - math.length(offset);
+                        return true;
+                    }
+
+                    return false;
+                }
+                default:
+                    return false;
+            }
+        }
+
         /// <summary>
         /// Arming a row this far inside a limit, in metres or radians, stops a body resting on it from switching the row on
         /// and off.
@@ -1145,6 +1249,7 @@ namespace Unity.Physics
 
             var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
             int firstRow = 0;
+            bool holdsPositions = false;
             while (jacobianIterator.HasJacobiansLeft())
             {
                 ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
@@ -1153,6 +1258,8 @@ namespace Unity.Physics
                 {
                     continue;
                 }
+
+                holdsPositions |= header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
 
                 blocks.Add(new SparseConstraintSolver.ConstraintBlock
                 {
@@ -1183,15 +1290,25 @@ namespace Unity.Physics
             SparseSetupMarker.End();
 
             SparseConstraintSolver* kept = stepInput.DirectSolverCache.Solver(islandIndex);
-            if (kept != null)
+            var temporary = default(SparseConstraintSolver);
+            if (kept == null)
+            {
+                temporary = new SparseConstraintSolver(Allocator.Temp);
+                kept = &temporary;
+            }
+
+            kept->Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+
+            // The second solve has the same matrix, so it reuses the first one's factor and costs about a substitution.
+            if (holdsPositions && AimAtPredictedDrift(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities,
+                motionDatas, stepInput.Timestep, contactPairs, jacobianRows, (float*)impulses.GetUnsafePtr(), rhs))
             {
                 kept->Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
             }
-            else
+
+            if (kept == &temporary)
             {
-                var solver = new SparseConstraintSolver(Allocator.Temp);
-                solver.Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
-                solver.Dispose();
+                temporary.Dispose();
             }
 
             SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
@@ -1205,6 +1322,74 @@ namespace Unity.Physics
             blocks.Dispose();
             compactBodies.Dispose();
             impulses.Dispose();
+        }
+
+        /// <summary>
+        /// Aims the rows that hold a position at where the integrator will really take their constraint, and returns whether
+        /// any changed. A row holds the constraint's rate, which is its drift only to first order: a spinning pair swings its
+        /// anchors along a curve the row can't see, and they part a little every substep. The curve is measured at the
+        /// velocities <paramref name="impulses"/> give, not the ones before the solve: a body can start a step far out of
+        /// line with its joints, and extrapolating that motion, which the solve takes away, would throw the craft apart.
+        /// </summary>
+        static unsafe bool AimAtPredictedDrift(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+            int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, float timestep, int contactPairs, in JacobianRows jacobianRows,
+            float* impulses, in Vector rhs)
+        {
+            const int startColumnA = 0;
+            const int startColumnB = 6;
+
+            var solved = new NativeArray<MotionVelocity>(motionVelocities, Allocator.Temp);
+            var iterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+            int startRow = 0;
+            while (iterator.HasJacobiansLeft())
+            {
+                ref JacobianHeader header = ref iterator.ReadJacobianHeader();
+                int jacRows = GetConstraintRows(ref header);
+                int ixBodyA = header.BodyPair.BodyIndexA;
+                int ixBodyB = header.BodyPair.BodyIndexB;
+                if (ixBodyA < solved.Length && !solved[ixBodyA].IsKinematic)
+                {
+                    ApplyConstraintImpulse(ref solved, motionDatas, ixBodyA, startRow, startColumnA, jacRows, jacobianRows, impulses + startRow);
+                }
+
+                if (ixBodyB < solved.Length && !solved[ixBodyB].IsKinematic)
+                {
+                    ApplyConstraintImpulse(ref solved, motionDatas, ixBodyB, startRow, startColumnB, jacRows, jacobianRows, impulses + startRow);
+                }
+
+                startRow += jacRows;
+            }
+
+            bool changed = false;
+            float* change = stackalloc float[3];
+            iterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+            startRow = 0;
+            while (iterator.HasJacobiansLeft())
+            {
+                ref JacobianHeader header = ref iterator.ReadJacobianHeader();
+                int jacRows = GetConstraintRows(ref header);
+                if (jacRows > 0 && jacRows <= 3 && PredictEqualityChange(ref header, solved, timestep, change))
+                {
+                    int ixBodyA = header.BodyPair.BodyIndexA;
+                    int ixBodyB = header.BodyPair.BodyIndexB;
+                    for (int i = 0; i < jacRows; i++)
+                    {
+                        // The row asks for -gamma * phi / dt - Ju. Swapping Ju's first-order drift for the predicted one at the
+                        // solved velocities takes away the part of the drift the row misses.
+                        float rate = RowRate(jacobianRows, startRow + i, ixBodyA, ixBodyB, ixBodyA < solved.Length,
+                            ixBodyB < solved.Length, solved, motionDatas);
+                        float missed = change[i] / timestep - rate;
+                        rhs[startRow + i] -= missed;
+                        changed |= missed != 0.0f;
+                    }
+                }
+
+                startRow += jacRows;
+            }
+
+            solved.Dispose();
+            return changed;
         }
 
         /// <summary>
