@@ -17,9 +17,12 @@ namespace Unity.Physics
         /// </summary>
         const int PatienceSpins = 1 << 20;
 
+        /// <summary>A stage of <see cref="Solver.PredictDrift"/>'s, and not of a sparse solver's.</summary>
+        public const int PredictDriftKind = -1;
+
         struct Stage
         {
-            public SparseConstraintSolver* Solver;
+            public void* Context;
             public double* Vector;
             public int Kind;
             public int TaskCount;
@@ -50,8 +53,11 @@ namespace Unity.Physics
             Interlocked.Exchange(ref finished, 1);
         }
 
-        /// <summary>Runs every task of a stage, on this lane and any helping, and returns once all are done.</summary>
-        public void Lead(SparseConstraintSolver* solver, int kind, int taskCount, double* vector)
+        /// <summary>
+        /// Runs every task of a stage, on this lane and any helping, and returns once all are done. The context is the sparse
+        /// solver whose stage it is, or for <see cref="PredictDriftKind"/> what that stage reads and writes.
+        /// </summary>
+        public void Lead(void* context, int kind, int taskCount, double* vector)
         {
             if (taskCount == 0)
             {
@@ -59,7 +65,7 @@ namespace Unity.Physics
             }
 
             long generation = (Interlocked.Read(ref next) >> 32) + 1;
-            var stage = new Stage { Solver = solver, Vector = vector, Kind = kind, TaskCount = taskCount };
+            var stage = new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = taskCount };
             if ((generation & 1) == 0)
             {
                 even = stage;
@@ -103,6 +109,34 @@ namespace Unity.Physics
             }
         }
 
+        static void Run(in Stage stage, int task)
+        {
+            if (stage.Kind == PredictDriftKind)
+            {
+                Solver.PredictDriftTask(stage.Context, task);
+            }
+            else
+            {
+                ((SparseConstraintSolver*)stage.Context)->RunTask(stage.Kind, task, stage.Vector);
+            }
+        }
+
+        /// <summary>Runs a stage's tasks on a team, or one after another on this thread if there is none.</summary>
+        public static void RunAll(SparseSolveTeam* team, void* context, int kind, int taskCount, double* vector)
+        {
+            if (team != null)
+            {
+                team->Lead(context, kind, taskCount, vector);
+                return;
+            }
+
+            var stage = new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = taskCount };
+            for (int task = 0; task < taskCount; task++)
+            {
+                Run(stage, task);
+            }
+        }
+
         void Work(long generation, Stage stage)
         {
             while (true)
@@ -119,7 +153,7 @@ namespace Unity.Physics
                     continue;
                 }
 
-                stage.Solver->RunTask(stage.Kind, (int)task, stage.Vector);
+                Run(stage, (int)task);
                 Interlocked.Increment(ref done);
             }
         }

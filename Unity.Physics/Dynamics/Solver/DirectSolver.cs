@@ -1239,6 +1239,10 @@ namespace Unity.Physics
             var bodies = new NativeList<SparseConstraintSolver.Body>(Allocator.Temp);
             var blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp);
             var couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp);
+
+            // Each block's Jacobian, which stays where it is in the stream for the whole step.
+            var headers = new NativeList<IntPtr>(Allocator.Temp);
+
             // Where each moving body sits among the island's, by its index in the world, which counts from zero.
             var compactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int i = 0; i < compactBodies.Length; i++)
@@ -1284,6 +1288,7 @@ namespace Unity.Physics
                     FirstRow = firstRow,
                     RowCount = blockRows,
                 });
+                headers.Add((IntPtr)UnsafeUtility.AddressOf(ref header));
 
                 firstRow += blockRows;
             }
@@ -1322,8 +1327,8 @@ namespace Unity.Physics
 
             var drift = new NativeArray<float>(rows, Allocator.Temp);
             float* driftPtr = (float*)drift.GetUnsafePtr();
-            if (holdsPositions && AimAtPredictedDrift(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities,
-                motionDatas, stepInput.Timestep, contactPairs, jacobianRows, impulsesPtr, driftPtr)
+            if (holdsPositions && AimAtPredictedDrift(problem, kept, compactBodies, headers, motionVelocities, motionDatas,
+                stepInput.Timestep, jacobianRows, driftPtr, team)
                 && !kept->SolveChange(problem, driftPtr, impulsesPtr))
             {
                 for (int row = 0; row < rows; row++)
@@ -1352,6 +1357,7 @@ namespace Unity.Physics
             bodies.Dispose();
             blocks.Dispose();
             couplings.Dispose();
+            headers.Dispose();
             compactBodies.Dispose();
             impulses.Dispose();
         }
@@ -1360,69 +1366,123 @@ namespace Unity.Physics
         /// Writes to <paramref name="rhsChange"/> what would aim the rows that hold a position at where the integrator will
         /// really take their constraint, and returns whether any is nonzero. A row holds the constraint's rate, which is its
         /// drift only to first order: a spinning pair swings its anchors along a curve the row can't see, and they part a
-        /// little every substep. The curve is measured at the
-        /// velocities <paramref name="impulses"/> give, not the ones before the solve: a body can start a step far out of
-        /// line with its joints, and extrapolating that motion, which the solve takes away, would throw the craft apart.
+        /// little every substep. The curve is measured at the velocities the solve's answer gives, not the ones before it: a
+        /// body can start a step far out of line with its joints, and extrapolating that motion, which the solve takes away,
+        /// would throw the craft apart.
         /// </summary>
-        static unsafe bool AimAtPredictedDrift(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
-            int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, float timestep, int contactPairs, in JacobianRows jacobianRows,
-            float* impulses, float* rhsChange)
+        static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
+            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, float timestep, in JacobianRows jacobianRows, float* rhsChange,
+            SparseSolveTeam* team)
         {
-            const int startColumnA = 0;
-            const int startColumnB = 6;
+            using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
+            // A body takes the sum of its rows' impulses, as ApplyImpulses will give it them.
             var solved = new NativeArray<MotionVelocity>(motionVelocities, Allocator.Temp);
-            var iterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-            int startRow = 0;
-            while (iterator.HasJacobiansLeft())
+            for (int body = 0; body < compactBodies.Length; body++)
             {
-                ref JacobianHeader header = ref iterator.ReadJacobianHeader();
-                int jacRows = GetConstraintRows(ref header);
+                int compact = compactBodies[body];
+                if (compact < 0)
+                {
+                    continue;
+                }
+
+                solver->BodyImpulse(problem, compact, out double3 linear, out double3 angular);
+                MotionVelocity velocity = solved[body];
+                velocity.ApplyLinearImpulse((float3)linear);
+                velocity.ApplyAngularImpulse(math.rotate(math.conjugate(motionDatas[body].WorldFromMotion.rot), (float3)angular));
+                solved[body] = velocity;
+            }
+
+            var prediction = new DriftPrediction
+            {
+                Headers = (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(),
+                Blocks = problem.Blocks,
+                BlockCount = problem.BlockCount,
+                JacobianRows = jacobianRows,
+                Solved = (MotionVelocity*)solved.GetUnsafeReadOnlyPtr(),
+                BodyCount = solved.Length,
+                MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                MotionDataCount = motionDatas.Length,
+                Timestep = timestep,
+                Change = rhsChange,
+            };
+
+            int tasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
+            SparseSolveTeam.RunAll(team, &prediction, SparseSolveTeam.PredictDriftKind, tasks, null);
+            solved.Dispose();
+
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (rhsChange[row] != 0.0f)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        static readonly ProfilerMarker PredictDriftMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.PredictDrift");
+
+        /// <summary>How many Jacobians one task of a drift prediction takes, which is a few microseconds of work.</summary>
+        const int DriftBlocksPerTask = 16;
+
+        /// <summary>What predicting the drift reads and writes, shared by the lanes that split its Jacobians.</summary>
+        unsafe struct DriftPrediction
+        {
+            public JacobianHeader** Headers;
+            public SparseConstraintSolver.ConstraintBlock* Blocks;
+            public int BlockCount;
+            public JacobianRows JacobianRows;
+            public MotionVelocity* Solved;
+            public int BodyCount;
+            public MotionData* MotionDatas;
+            public int MotionDataCount;
+            public float Timestep;
+            public float* Change;
+        }
+
+        /// <summary>One task of <see cref="AimAtPredictedDrift"/>, whose Jacobians write only their own rows.</summary>
+        internal static unsafe void PredictDriftTask(void* context, int task)
+        {
+            var prediction = (DriftPrediction*)context;
+            NativeArray<MotionVelocity> solved = View(prediction->Solved, prediction->BodyCount);
+            NativeArray<MotionData> motionDatas = View(prediction->MotionDatas, prediction->MotionDataCount);
+            float timestep = prediction->Timestep;
+            float* change = stackalloc float[3];
+            int end = math.min((task + 1) * DriftBlocksPerTask, prediction->BlockCount);
+            for (int block = task * DriftBlocksPerTask; block < end; block++)
+            {
+                ref JacobianHeader header = ref *prediction->Headers[block];
+                int startRow = prediction->Blocks[block].FirstRow;
+                int jacRows = prediction->Blocks[block].RowCount;
+                if (jacRows > 3 || !PredictEqualityChange(ref header, solved, timestep, change))
+                {
+                    continue;
+                }
+
                 int ixBodyA = header.BodyPair.BodyIndexA;
                 int ixBodyB = header.BodyPair.BodyIndexB;
-                if (ixBodyA < solved.Length && !solved[ixBodyA].IsKinematic)
+                for (int i = 0; i < jacRows; i++)
                 {
-                    ApplyConstraintImpulse(ref solved, motionDatas, ixBodyA, startRow, startColumnA, jacRows, jacobianRows, impulses + startRow);
+                    // The row asks for -gamma * phi / dt - Ju. Swapping Ju's first-order drift for the predicted one at the
+                    // solved velocities takes away the part of the drift the row misses.
+                    float rate = RowRate(prediction->JacobianRows, startRow + i, ixBodyA, ixBodyB, ixBodyA < solved.Length,
+                        ixBodyB < solved.Length, solved, motionDatas);
+                    prediction->Change[startRow + i] = rate - change[i] / timestep;
                 }
-
-                if (ixBodyB < solved.Length && !solved[ixBodyB].IsKinematic)
-                {
-                    ApplyConstraintImpulse(ref solved, motionDatas, ixBodyB, startRow, startColumnB, jacRows, jacobianRows, impulses + startRow);
-                }
-
-                startRow += jacRows;
             }
+        }
 
-            bool changed = false;
-            float* change = stackalloc float[3];
-            iterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
-            startRow = 0;
-            while (iterator.HasJacobiansLeft())
-            {
-                ref JacobianHeader header = ref iterator.ReadJacobianHeader();
-                int jacRows = GetConstraintRows(ref header);
-                if (jacRows > 0 && jacRows <= 3 && PredictEqualityChange(ref header, solved, timestep, change))
-                {
-                    int ixBodyA = header.BodyPair.BodyIndexA;
-                    int ixBodyB = header.BodyPair.BodyIndexB;
-                    for (int i = 0; i < jacRows; i++)
-                    {
-                        // The row asks for -gamma * phi / dt - Ju. Swapping Ju's first-order drift for the predicted one at the
-                        // solved velocities takes away the part of the drift the row misses.
-                        float rate = RowRate(jacobianRows, startRow + i, ixBodyA, ixBodyB, ixBodyA < solved.Length,
-                            ixBodyB < solved.Length, solved, motionDatas);
-                        float missed = change[i] / timestep - rate;
-                        rhsChange[startRow + i] = -missed;
-                        changed |= missed != 0.0f;
-                    }
-                }
-
-                startRow += jacRows;
-            }
-
-            solved.Dispose();
-            return changed;
+        /// <summary>An array over memory another lane owns, for code that takes arrays.</summary>
+        static unsafe NativeArray<T> View<T>(T* data, int length) where T : unmanaged
+        {
+            var array = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<T>(data, length, Allocator.None);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref array, AtomicSafetyHandle.GetTempMemoryHandle());
+#endif
+            return array;
         }
 
         /// <summary>

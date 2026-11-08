@@ -159,6 +159,16 @@ namespace Unity.Physics
         const int BackwardTask = 2;
         const int BoundaryUpdateTask = 3;
         const int TopUpdateTask = 4;
+        const int ClearTask = 5;
+        const int AssembleTask = 6;
+        const int RowResidualTask = 7;
+        const int BodyResidualTask = 8;
+        const int BoundaryPushTask = 9;
+
+        /// <summary>How much of the factor one task clears, and how many blocks or bodies one task assembles or checks.</summary>
+        const int ScalarsPerClearTask = 16384;
+        const int BlocksPerTask = 64;
+        const int BodiesPerTask = 64;
 
         /// <summary>
         /// How many neighbours a top node needs before its updates are worth handing out one neighbour each. Fewer finish
@@ -213,8 +223,15 @@ namespace Unity.Physics
         UnsafeList<int> topUpdateStarts;
         UnsafeList<int2> topUpdates;
 
-        // The top node whose updates a stage splits by neighbour.
+        // Each body's rows, as row * 2 + 1 for side B, starting at its entry in bodyRowStarts. Rows that join no node aren't
+        // there.
+        UnsafeList<int> bodyRowStarts;
+        UnsafeList<int> bodyRows;
+
+        // The top node whose updates a stage splits by neighbour, the problem a stage reads, and each task's largest miss.
         int stageNode;
+        Problem stageProblem;
+        UnsafeList<double> stageWorst;
 
         UnsafeList<int> rowNode;
         UnsafeList<int> rowInNode;
@@ -258,6 +275,9 @@ namespace Unity.Physics
             boundaryPositions = new UnsafeList<int>(InitialCapacity, allocator);
             topUpdateStarts = new UnsafeList<int>(InitialCapacity, allocator);
             topUpdates = new UnsafeList<int2>(InitialCapacity, allocator);
+            bodyRowStarts = new UnsafeList<int>(InitialCapacity, allocator);
+            bodyRows = new UnsafeList<int>(InitialCapacity, allocator);
+            stageWorst = new UnsafeList<double>(InitialCapacity, allocator);
             stageNode = NoNode;
             Team = null;
             rowNode = new UnsafeList<int>(InitialCapacity, allocator);
@@ -290,6 +310,9 @@ namespace Unity.Physics
             boundaryPositions.Dispose();
             topUpdateStarts.Dispose();
             topUpdates.Dispose();
+            bodyRowStarts.Dispose();
+            bodyRows.Dispose();
+            stageWorst.Dispose();
             rowNode.Dispose();
             rowInNode.Dispose();
             factor.Dispose();
@@ -312,6 +335,18 @@ namespace Unity.Physics
         public SparseSolveTeam* Team;
 
         public Statistics Stats => statistics;
+
+        /// <summary>
+        /// The impulse the last solve's answer puts on a body, in the frame of the Jacobian's columns: J^t z, summed over every
+        /// row on the body, which the solve holds equal to M du.
+        /// </summary>
+        public void BodyImpulse(in Problem problem, int body, out double3 linear, out double3 angular)
+        {
+            double* du = solution.Ptr + nodes[body].Start;
+            Body source = problem.Bodies[body];
+            linear = source.Mass * new double3(du[0], du[1], du[2]);
+            angular = math.mul(source.Inertia, new double3(du[3], du[4], du[5]));
+        }
 
         /// <summary>The bounds the last solve held a row to, which for a coupled row are what its coupling settled on.</summary>
         public float2 Bounds(int row) => new float2(lower[row], upper[row]);
@@ -696,6 +731,60 @@ namespace Unity.Physics
             }
 
             pairs.Dispose();
+
+            bodyRowStarts.Clear();
+            bodyRowStarts.Resize(problem.BodyCount + 1, NativeArrayOptions.ClearMemory);
+            for (int pass = 0; pass < 2; pass++)
+            {
+                for (int b = 0; b < problem.BlockCount; b++)
+                {
+                    ConstraintBlock block = problem.Blocks[b];
+                    for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                    {
+                        if (rowNode[row] == NoNode)
+                        {
+                            continue;
+                        }
+
+                        for (int side = 0; side < 2; side++)
+                        {
+                            int body = side == 0 ? block.BodyA : block.BodyB;
+                            if (body < 0)
+                            {
+                                continue;
+                            }
+
+                            // The first pass counts, and the second places each row at its body's next free slot.
+                            if (pass == 0)
+                            {
+                                bodyRowStarts[body + 1]++;
+                            }
+                            else
+                            {
+                                bodyRows[bodyRowStarts[body]++] = row * 2 + side;
+                            }
+                        }
+                    }
+                }
+
+                if (pass == 0)
+                {
+                    for (int body = 0; body < problem.BodyCount; body++)
+                    {
+                        bodyRowStarts[body + 1] += bodyRowStarts[body];
+                    }
+
+                    bodyRows.Resize(bodyRowStarts[problem.BodyCount]);
+                }
+            }
+
+            // Placing moved each start to the next body's, so shift them back.
+            for (int body = problem.BodyCount; body > 0; body--)
+            {
+                bodyRowStarts[body] = bodyRowStarts[body - 1];
+            }
+
+            bodyRowStarts[0] = 0;
         }
 
         /// <summary>
@@ -1022,9 +1111,10 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = AssembleMarker.Auto();
 
-            double* values = factor.Ptr;
-            UnsafeUtility.MemClear(values, factor.Length * sizeof(double));
+            stageProblem = problem;
+            RunTasks(ClearTask, (factor.Length + ScalarsPerClearTask - 1) / ScalarsPerClearTask, null);
 
+            double* values = factor.Ptr;
             for (int body = 0; body < problem.BodyCount; body++)
             {
                 Node node = nodes[body];
@@ -1040,7 +1130,14 @@ namespace Unity.Physics
                 }
             }
 
-            for (int b = 0; b < problem.BlockCount; b++)
+            // Each row writes only its own entries.
+            RunTasks(AssembleTask, (problem.BlockCount + BlocksPerTask - 1) / BlocksPerTask, null);
+        }
+
+        void AssembleBlocks(in Problem problem, int firstBlock, int endBlock)
+        {
+            double* values = factor.Ptr;
+            for (int b = firstBlock; b < endBlock; b++)
             {
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
@@ -1141,12 +1238,32 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = ResidualMarker.Auto();
 
-            double* x = solution.Ptr;
-            double* residual = correction.Ptr;
-            UnsafeUtility.MemCpy(residual, right.Ptr, correction.Length * sizeof(double));
+            UnsafeUtility.MemCpy(correction.Ptr, right.Ptr, correction.Length * sizeof(double));
+
+            // A body gathers its rows rather than each row adding to its bodies, so that both split without sharing a value.
+            stageProblem = problem;
+            int rowTasks = (problem.BlockCount + BlocksPerTask - 1) / BlocksPerTask;
+            int bodyTasks = (problem.BodyCount + BodiesPerTask - 1) / BodiesPerTask;
+            stageWorst.Resize(rowTasks + bodyTasks);
+            RunTasks(RowResidualTask, rowTasks, null);
+            RunTasks(BodyResidualTask, bodyTasks, null);
 
             double worst = 0.0;
-            for (int b = 0; b < problem.BlockCount; b++)
+            for (int i = 0; i < stageWorst.Length; i++)
+            {
+                worst = math.max(worst, stageWorst[i]);
+            }
+
+            return worst;
+        }
+
+        /// <summary>What the rows of some blocks miss, and the largest of it as a speed.</summary>
+        double RowResidual(in Problem problem, int firstBlock, int endBlock)
+        {
+            double* x = solution.Ptr;
+            double* residual = correction.Ptr;
+            double worst = 0.0;
+            for (int b = firstBlock; b < endBlock; b++)
             {
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
@@ -1168,16 +1285,37 @@ namespace Unity.Physics
                     residual[own] += problem.Epsilon[row] * x[own]
                         - BodySpeed(block.BodyA, jacobian) - BodySpeed(block.BodyB, jacobian + SideColumns);
                     worst = math.max(worst, math.abs(residual[own]));
-                    AddToBody(block.BodyA, jacobian, -x[own], residual);
-                    AddToBody(block.BodyB, jacobian + SideColumns, -x[own], residual);
                 }
             }
 
-            for (int body = 0; body < problem.BodyCount; body++)
+            return worst;
+        }
+
+        /// <summary>What some bodies miss, from their own momentum and their free rows' impulses, as a speed.</summary>
+        double BodyResidual(in Problem problem, int firstBody, int endBody)
+        {
+            double* x = solution.Ptr;
+            double* residual = correction.Ptr;
+            double worst = 0.0;
+            for (int body = firstBody; body < endBody; body++)
             {
                 int start = nodes[body].Start;
                 double* speed = x + start;
                 double* miss = residual + start;
+                for (int i = bodyRowStarts[body]; i < bodyRowStarts[body + 1]; i++)
+                {
+                    int row = bodyRows[i] >> 1;
+                    if (state[row] == Free)
+                    {
+                        float* columns = problem.Jacobian + row * ColumnsPerRow + (bodyRows[i] & 1) * SideColumns;
+                        double impulse = x[nodes[rowNode[row]].Start + rowInNode[row]];
+                        for (int column = 0; column < SideColumns; column++)
+                        {
+                            miss[column] -= columns[column] * impulse;
+                        }
+                    }
+                }
+
                 Body source = problem.Bodies[body];
                 double3 momentum = math.mul(source.Inertia, new double3(speed[3], speed[4], speed[5]));
                 double2 scale = bodySpeedScale[body];
@@ -1266,17 +1404,7 @@ namespace Unity.Physics
         /// <summary>Runs a stage's tasks on the team if there is one.</summary>
         void RunTasks(int kind, int tasks, double* x)
         {
-            if (Team == null)
-            {
-                for (int task = 0; task < tasks; task++)
-                {
-                    RunTask(kind, task, x);
-                }
-
-                return;
-            }
-
-            Team->Lead((SparseConstraintSolver*)UnsafeUtility.AddressOf(ref this), kind, tasks, x);
+            SparseSolveTeam.RunAll(Team, UnsafeUtility.AddressOf(ref this), kind, tasks, x);
         }
 
         /// <summary>One task of a stage, which touches nothing another task of it does.</summary>
@@ -1296,6 +1424,41 @@ namespace Unity.Physics
             if (kind == TopUpdateTask)
             {
                 UpdateLaterNodes(nodes[stageNode], task, task + 1);
+                return;
+            }
+
+            if (kind == ClearTask)
+            {
+                int start = task * ScalarsPerClearTask;
+                int length = math.min(ScalarsPerClearTask, factor.Length - start);
+                UnsafeUtility.MemClear(factor.Ptr + start, length * sizeof(double));
+                return;
+            }
+
+            if (kind == AssembleTask)
+            {
+                AssembleBlocks(stageProblem, task * BlocksPerTask, math.min((task + 1) * BlocksPerTask, stageProblem.BlockCount));
+                return;
+            }
+
+            if (kind == RowResidualTask)
+            {
+                int endBlock = math.min((task + 1) * BlocksPerTask, stageProblem.BlockCount);
+                stageWorst[task] = RowResidual(stageProblem, task * BlocksPerTask, endBlock);
+                return;
+            }
+
+            if (kind == BodyResidualTask)
+            {
+                int rowTasks = (stageProblem.BlockCount + BlocksPerTask - 1) / BlocksPerTask;
+                int endBody = math.min((task + 1) * BodiesPerTask, stageProblem.BodyCount);
+                stageWorst[rowTasks + task] = BodyResidual(stageProblem, task * BodiesPerTask, endBody);
+                return;
+            }
+
+            if (kind == BoundaryPushTask)
+            {
+                PushToTop(task, x);
                 return;
             }
 
@@ -1447,32 +1610,10 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
 
-            double* values = factor.Ptr;
             RunTasks(ForwardTask, taskStarts.Length - 1, x);
 
-            // What the subtrees pass to the top, from their nodes' answers, which already carry the node's sign.
-            for (int i = 0; i < boundaryPositions.Length; i++)
-            {
-                Node node = nodes[order[boundaryPositions[i]]];
-                double* own = x + node.Start;
-                Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
-                for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
-                {
-                    Node other = nodes[column[n].Node];
-                    double* block = values + column[n].Offset;
-                    double* target = x + other.Start;
-                    for (int row = 0; row < other.Size; row++)
-                    {
-                        double sum = 0.0;
-                        for (int k = 0; k < node.Size; k++)
-                        {
-                            sum += block[row * node.Size + k] * own[k];
-                        }
-
-                        target[row] -= sum;
-                    }
-                }
-            }
+            // Two subtrees can owe the same top node, so what they owe goes by the node it is owed to.
+            RunTasks(BoundaryPushTask, topPositions.Length, x);
 
             for (int i = 0; i < topPositions.Length; i++)
             {
@@ -1486,6 +1627,33 @@ namespace Unity.Physics
             }
 
             RunTasks(BackwardTask, taskStarts.Length - 1, x);
+        }
+
+        /// <summary>
+        /// Passes one top node what the subtrees owe it, from their boundary nodes' answers, which already carry each node's
+        /// sign.
+        /// </summary>
+        void PushToTop(int top, double* x)
+        {
+            Node target = nodes[order[topPositions[top]]];
+            double* into = x + target.Start;
+            for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
+            {
+                int2 update = topUpdates[i];
+                Node node = nodes[order[update.x]];
+                double* own = x + node.Start;
+                double* block = factor.Ptr + neighbours[node.FirstNeighbour + update.y].Offset;
+                for (int row = 0; row < target.Size; row++)
+                {
+                    double sum = 0.0;
+                    for (int k = 0; k < node.Size; k++)
+                    {
+                        sum += block[row * node.Size + k] * own[k];
+                    }
+
+                    into[row] -= sum;
+                }
+            }
         }
 
         /// <summary>
