@@ -261,6 +261,8 @@ namespace KSP.Retooled.Physics
 
         internal static NativeStore.JointData* Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateJoint.Auto();
+
             if (world->jointCount == world->jointCapacity)
             {
                 world->jointCapacity = StoreOps.Grown(world->jointCapacity);
@@ -298,6 +300,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyJoint.Auto();
+
             uint last = --world->jointCount;
             if (joint->index != last)
             {
@@ -311,6 +315,8 @@ namespace KSP.Retooled.Physics
         /// <summary>A joint can outlive a body it connects, and must not keep a pointer to the freed record.</summary>
         internal static void ForgetBody(NativeStore.WorldData* world, NativeStore.Body* body)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
+
             for (uint i = 0; i < world->jointCount; i++)
             {
                 NativeStore.JointData* joint = world->joints[i];

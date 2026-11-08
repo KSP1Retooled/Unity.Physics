@@ -225,6 +225,8 @@ namespace KSP.Retooled.Physics
 
         private static void StoreGeometry(NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.SetGeometry.Auto();
+
             void* previousMesh = ShapeMath.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
             if (shape->data.geometryType == NativeStore.GeometryHeightField)
             {
@@ -248,6 +250,8 @@ namespace KSP.Retooled.Physics
 
         private static NativeStore.Shape* Create(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateShape.Auto();
+
             NativeStore.Shape* shape = StoreOps.Allocate<NativeStore.Shape>(globals);
             shape->data.owner = shape;
             shape->data.localRotation = quaternion.identity;
@@ -260,6 +264,8 @@ namespace KSP.Retooled.Physics
 
         private static void Destroy(NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyShape.Auto();
+
             if (shape->body != null)
             {
                 StoreOps.RemoveShape(shape->body, shape, globals);

@@ -161,6 +161,7 @@ namespace KSP.Retooled.Physics
                 case BodyCommand.DetachShape:
                     if (a->pointer != null)
                     {
+                        using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DetachShape.Auto();
                         StoreOps.RemoveShape(body, (NativeStore.Shape*)a->pointer, globals);
                     }
 
@@ -389,6 +390,8 @@ namespace KSP.Retooled.Physics
 
         private static void AttachShape(NativeStore.Body* body, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AttachShape.Auto();
+
             // A shape has one owner, and the old owner's entry would dangle once the shape is destroyed.
             NativeStore.Shape* shape = (NativeStore.Shape*)a->pointer;
             if (shape == null)
@@ -597,6 +600,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Distributes the body's mass over its non-trigger shapes by volume, as PhysX's updateMassAndInertia does.</summary>
         private static void RecomputeMassProperties(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RecomputeMassProperties.Auto();
+
             bool overrideCenter = (a->flags & OverrideCenterOfMass) != 0;
             bool overrideInertia = (a->flags & OverrideInertiaTensor) != 0;
 
@@ -730,6 +735,8 @@ namespace KSP.Retooled.Physics
 
         private static void ClosestPointOnBounds(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ClosestPointOnBounds.Auto();
+
             float3 position = a->vector;
             float3 closest = position;
             if (body->shapeCount != 0)

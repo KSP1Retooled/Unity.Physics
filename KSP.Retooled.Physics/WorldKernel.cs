@@ -125,6 +125,8 @@ namespace KSP.Retooled.Physics
 
         private static void CountBodies(NativeStore.WorldData* world, BodyCounts* counts)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CountBodies.Auto();
+
             for (uint i = 0; i < world->bodyCount; i++)
             {
                 NativeStore.BodyFlags flags = world->bodies[i].flags;
@@ -153,6 +155,8 @@ namespace KSP.Retooled.Physics
 
         private static NativeStore.Body* CreateBody(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateBody.Auto();
+
             if (world->bodyCount == world->bodyCapacity)
             {
                 world->bodyCapacity = StoreOps.Grown(world->bodyCapacity);
@@ -205,6 +209,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyBody.Auto();
+
             StoreOps.DetachAllShapes(body, globals);
             JointKernel.ForgetBody(world, body);
 
@@ -250,6 +256,8 @@ namespace KSP.Retooled.Physics
         /// <summary>The plugin hands the list to Unity's callback, then frees it.</summary>
         private static void CollectShapesByLayerMask(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ShapesByLayerMask.Auto();
+
             uint capacity = 0;
             for (uint i = 0; i < world->bodyCount; i++)
             {

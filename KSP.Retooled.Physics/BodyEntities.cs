@@ -112,6 +112,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AdoptBody.Auto();
+
             Place(hot);
             StampAll();
         }
@@ -140,6 +142,8 @@ namespace KSP.Retooled.Physics
             {
                 return;
             }
+
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ReleaseBody.Auto();
 
             Refresh(hot);
             NativeStore.BodyHome* home = &hot->owner->home;
@@ -187,6 +191,8 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private static void HandOver(EntityStorageInfo slot, NativeStore.BodyData* vacated)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.HandOverRow.Auto();
+
             ref EntityManager manager = ref Current.Data.Manager;
             int worlds = NativeStore.RetooledPhysics_WorldCount();
             for (int w = 0; w < worlds; w++)
@@ -222,6 +228,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Marks every row current, after a structural change here that left none of them behind.</summary>
         private static void StampAll()
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StampRows.Auto();
+
             int version = Version();
             int worlds = NativeStore.RetooledPhysics_WorldCount();
             for (int w = 0; w < worlds; w++)

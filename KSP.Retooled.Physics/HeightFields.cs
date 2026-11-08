@@ -11,6 +11,8 @@ namespace KSP.Retooled.Physics
     {
         internal static NativeStore.HeightField* Create(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateHeightField.Auto();
+
             // A descriptor's count of heights is often zero, so the resolution is what sizes them.
             uint resolution = a->value;
             long sampleCount = resolution * (long)resolution;
@@ -38,6 +40,8 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static void Update(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.UpdateHeightField.Auto();
+
             NativeStore.HeightField* field = (NativeStore.HeightField*)a->pointer3;
             if (field == null || a->pointer == null || a->value != field->resolution)
             {

@@ -56,6 +56,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Ignores or restores a pair. An id of 0 gets a real one when ignoring, and the caller passes it back to Unity.</summary>
         internal static void Set(NativeStore.StoreGlobals* globals, ref uint first, ref uint second, bool ignored)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.IgnoreCollision.Auto();
+
             if (!ignored)
             {
                 if (globals->ignoreTable != null)
@@ -78,6 +80,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Drops every pair of a destroyed collider and frees its id.</summary>
         internal static void Forget(NativeStore.StoreGlobals* globals, uint id)
         {
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetIgnoredCollisions.Auto();
+
             IgnoreTable* table = globals->ignoreTable;
             if (table == null || id == 0)
             {
