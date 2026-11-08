@@ -15,6 +15,9 @@ namespace KSP.Retooled.Physics
     {
         private const int ParallelBatchSize = 64;
 
+        // Building a joint costs much more than building a body, so a batch takes fewer of them.
+        private const int JointBatchSize = 8;
+
         // The write-back gives these bodies a pose other than their solved motion.
         private const NativeStore.BodyFlags PosedByWriteBack = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.HasKinematicTarget;
 
@@ -29,6 +32,7 @@ namespace KSP.Retooled.Physics
         private NativeList<int> builtIndices;
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
+        private NativeList<JointUnit> jointUnits;
         private DirectSolverCache directSolverCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -65,6 +69,7 @@ namespace KSP.Retooled.Physics
             builtIndices = new NativeList<int>(Allocator.Persistent);
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
+            jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -103,6 +108,7 @@ namespace KSP.Retooled.Physics
             builtIndices.Dispose();
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
+            jointUnits.Dispose();
             directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -512,17 +518,36 @@ namespace KSP.Retooled.Physics
             {
                 using var jointsSpan = BackendMarkers.BuildJoints.Auto();
 
-                joints = new BuildJointsJob
+                JobHandle grouped = new GroupJointsJob
+                {
+                    World = store,
+                    Groups = jointGroups,
+                    Members = jointGroupMembers,
+                    Units = jointUnits,
+                }.Schedule(dependency);
+
+                // Each unit builds a number of joints only it knows, so each writes its own run of a stream.
+                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, jointUnits, grouped, Allocator.TempJob);
+                JobHandle emitted = new BuildJointsJob
                 {
                     World = store,
                     BuiltIndices = builtIndices.AsArray(),
-                    Output = world.DynamicsWorld.InternalJointsList,
-                    Groups = jointGroups,
-                    Members = jointGroupMembers,
+                    Units = jointUnits.AsDeferredJobArray(),
+                    Output = stream.AsWriter(),
+                    Groups = jointGroups.AsDeferredJobArray(),
+                    Members = jointGroupMembers.AsDeferredJobArray(),
                     DynamicCount = dynamicIndices.Length,
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
-                }.Schedule(dependency);
+                }.Schedule(jointUnits, JointBatchSize, allocated);
+
+                JobHandle gathered = new GatherJointsJob
+                {
+                    Input = stream.AsReader(),
+                    Output = world.DynamicsWorld.InternalJointsList,
+                }.Schedule(emitted);
+
+                joints = stream.Dispose(gathered);
             }
 
             using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();

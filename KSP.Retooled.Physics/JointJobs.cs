@@ -63,15 +63,16 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Turns each store joint into the Unity Physics joints that express it. One of ours can take several: a Unity Physics
-    /// joint holds three constraints, and all of them share one pair of frames.
+    /// Turns each store joint, or group of them that <see cref="GroupJointsJob"/> found, into the Unity Physics joints that
+    /// express it. One of ours can take several: a Unity Physics joint holds three constraints, and all of them share one
+    /// pair of frames. Each unit writes its own run of the stream, which <see cref="GatherJointsJob"/> lays out in order.
     /// </summary>
     /// <remarks>
     /// Body A of a built joint is the store's body1, the connected body, and body B is body0, the joint's owner, because the
     /// limits Unity sends measure frame 1 relative to frame 0 and a Unity Physics constraint measures A relative to B.
     /// </remarks>
     [BurstCompile]
-    internal unsafe struct BuildJointsJob : IJob
+    internal unsafe struct BuildJointsJob : IJobParallelForDefer
     {
         // The solver hands out a constraint's impulse only as an event past a threshold, so a threshold of zero reports them all.
         private static readonly float3 ReportEveryImpulse = float3.zero;
@@ -85,10 +86,17 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<int> BuiltIndices;
 
-        public NativeList<PhysicsJoint> Output;
+        [ReadOnly]
+        public NativeArray<JointUnit> Units;
 
-        public NativeList<JointGroup> Groups;
-        public NativeList<JointGroupMember> Members;
+        public NativeStream.Writer Output;
+
+        // A unit writes only its own group and that group's members.
+        [NativeDisableParallelForRestriction]
+        public NativeArray<JointGroup> Groups;
+
+        [NativeDisableParallelForRestriction]
+        public NativeArray<JointGroupMember> Members;
 
         public int DynamicCount;
         public int AnchorIndex;
@@ -98,97 +106,28 @@ namespace KSP.Retooled.Physics
         private int pendingCount;
         private bool emitted;
 
-        public void Execute()
+        public void Execute(int index)
         {
-            Output.Clear();
-            NativeArray<int> groupOf = FindGroups();
-            for (int i = 0; i < World->jointCount; i++)
+            Output.BeginForEachIndex(index);
+            JointUnit unit = Units[index];
+            if (unit.Group < 0)
             {
-                int group = groupOf[i];
-                if (group < 0)
-                {
-                    Append(World->joints[i]);
-                }
-                else if (Groups[group].Leader == i)
-                {
-                    AppendGroup(group);
-                }
+                Append(World->joints[unit.Joint]);
             }
+            else
+            {
+                AppendGroup(unit.Group);
+            }
+
+            Output.EndForEachIndex();
         }
 
-        /// <summary>
-        /// Gathers the joints that hold the same two bodies rigidly together, which the step solves as one: stock holds a
-        /// stack node of size 2 or more with three joints between the same parts. Three joints carry 18 rows where 6 do, and
-        /// those redundant rows make up most of a large craft's direct solve. A joint joins the first such joint found
-        /// between its bodies when the two share their frames' orientation, and a group needs two joints.
-        /// </summary>
-        private NativeArray<int> FindGroups()
-        {
-            Groups.Clear();
-            Members.Clear();
-            int count = (int)World->jointCount;
-            var groupOf = new NativeArray<int>(count, Allocator.Temp);
-            var leaderOf = new NativeArray<int>(count, Allocator.Temp);
-            var memberCount = new NativeArray<int>(count, Allocator.Temp);
-            var leaders = new NativeHashMap<int2, int>(count, Allocator.Temp);
-            for (int i = 0; i < count; i++)
-            {
-                groupOf[i] = -1;
-                leaderOf[i] = -1;
-                NativeStore.JointData* joint = World->joints[i];
-                if (!Mergeable(joint))
-                {
-                    continue;
-                }
-
-                var bodies = new int2(BodyKey(joint->body0), BodyKey(joint->body1));
-                if (!leaders.TryGetValue(bodies, out int leader))
-                {
-                    leader = i;
-                    leaders.Add(bodies, leader);
-                }
-                else if (!SameFrames(World->joints[leader], joint))
-                {
-                    continue;
-                }
-
-                leaderOf[i] = leader;
-                memberCount[leader]++;
-            }
-
-            // A leader comes before its other members, so its group exists by the time they are reached.
-            for (int i = 0; i < count; i++)
-            {
-                int leader = leaderOf[i];
-                if (leader < 0 || memberCount[leader] < 2)
-                {
-                    continue;
-                }
-
-                if (leader == i)
-                {
-                    groupOf[i] = Groups.Length;
-                    Groups.Add(new JointGroup { Leader = i, FirstMember = Members.Length });
-                    Members.ResizeUninitialized(Members.Length + memberCount[i]);
-                }
-
-                int group = groupOf[leader];
-                groupOf[i] = group;
-                JointGroup joined = Groups[group];
-                Members[joined.FirstMember + joined.MemberCount] = new JointGroupMember { Joint = i };
-                joined.MemberCount++;
-                Groups[group] = joined;
-            }
-
-            return groupOf;
-        }
-
-        private static int BodyKey(NativeStore.Body* body)
+        internal static int BodyKey(NativeStore.Body* body)
         {
             return body == null ? -1 : (int)body->index;
         }
 
-        private static bool SameFrames(NativeStore.JointData* first, NativeStore.JointData* second)
+        internal static bool SameFrames(NativeStore.JointData* first, NativeStore.JointData* second)
         {
             return math.all(first->rotation0.value == second->rotation0.value) && math.all(first->rotation1.value == second->rotation1.value)
                 && first->flags == second->flags;
@@ -200,7 +139,7 @@ namespace KSP.Retooled.Physics
         /// one. A stock part joint locks its twist, because Unity locks an axis whose two limits are equal, and holds its
         /// swing with drives.
         /// </summary>
-        private static bool Mergeable(NativeStore.JointData* joint)
+        internal static bool Mergeable(NativeStore.JointData* joint)
         {
             if ((joint->state & JointConstraints.Inactive) != 0 || joint->type != NativeStore.JointTypeDof6)
             {
@@ -414,7 +353,7 @@ namespace KSP.Retooled.Physics
             if (!emitted && pendingCount == 0)
             {
                 pending.Constraints.Length = 0;
-                Output.Add(pending);
+                Output.Write(pending);
             }
 
             Flush();
@@ -445,7 +384,7 @@ namespace KSP.Retooled.Physics
             if (HeldInPlace(joint->body0) && HeldInPlace(joint->body1))
             {
                 pending.Constraints.Length = 0;
-                Output.Add(pending);
+                Output.Write(pending);
                 return false;
             }
 
@@ -478,7 +417,7 @@ namespace KSP.Retooled.Physics
             if (pendingCount > 0)
             {
                 pending.Constraints.Length = (byte)pendingCount;
-                Output.Add(pending);
+                Output.Write(pending);
                 pendingCount = 0;
                 emitted = true;
             }
@@ -769,6 +708,135 @@ namespace KSP.Retooled.Physics
                 dampingRatio = damper / (2.0f * math.sqrt(spring * effectiveMass));
             }
         }
+    }
+
+    /// <summary>
+    /// Lists what <see cref="BuildJointsJob"/> builds, one unit for each store joint outside a group and one for each
+    /// group, in the store's order, which the built joints keep.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct GroupJointsJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        public NativeList<JointGroup> Groups;
+        public NativeList<JointGroupMember> Members;
+        public NativeList<JointUnit> Units;
+
+        public void Execute()
+        {
+            Units.Clear();
+            NativeArray<int> groupOf = FindGroups();
+            for (int i = 0; i < World->jointCount; i++)
+            {
+                int group = groupOf[i];
+                if (group < 0 || Groups[group].Leader == i)
+                {
+                    Units.Add(new JointUnit { Joint = i, Group = group });
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gathers the joints that hold the same two bodies rigidly together, which the step solves as one: stock holds a
+        /// stack node of size 2 or more with three joints between the same parts. Three joints carry 18 rows where 6 do, and
+        /// those redundant rows make up most of a large craft's direct solve. A joint joins the first such joint found
+        /// between its bodies when the two share their frames' orientation, and a group needs two joints.
+        /// </summary>
+        private NativeArray<int> FindGroups()
+        {
+            Groups.Clear();
+            Members.Clear();
+            int count = (int)World->jointCount;
+            var groupOf = new NativeArray<int>(count, Allocator.Temp);
+            var leaderOf = new NativeArray<int>(count, Allocator.Temp);
+            var memberCount = new NativeArray<int>(count, Allocator.Temp);
+            var leaders = new NativeHashMap<int2, int>(count, Allocator.Temp);
+            for (int i = 0; i < count; i++)
+            {
+                groupOf[i] = -1;
+                leaderOf[i] = -1;
+                NativeStore.JointData* joint = World->joints[i];
+                if (!BuildJointsJob.Mergeable(joint))
+                {
+                    continue;
+                }
+
+                var bodies = new int2(BuildJointsJob.BodyKey(joint->body0), BuildJointsJob.BodyKey(joint->body1));
+                if (!leaders.TryGetValue(bodies, out int leader))
+                {
+                    leader = i;
+                    leaders.Add(bodies, leader);
+                }
+                else if (!BuildJointsJob.SameFrames(World->joints[leader], joint))
+                {
+                    continue;
+                }
+
+                leaderOf[i] = leader;
+                memberCount[leader]++;
+            }
+
+            // A leader comes before its other members, so its group exists by the time they are reached.
+            for (int i = 0; i < count; i++)
+            {
+                int leader = leaderOf[i];
+                if (leader < 0 || memberCount[leader] < 2)
+                {
+                    continue;
+                }
+
+                if (leader == i)
+                {
+                    groupOf[i] = Groups.Length;
+                    Groups.Add(new JointGroup { Leader = i, FirstMember = Members.Length });
+                    Members.ResizeUninitialized(Members.Length + memberCount[i]);
+                }
+
+                int group = groupOf[leader];
+                groupOf[i] = group;
+                JointGroup joined = Groups[group];
+                Members[joined.FirstMember + joined.MemberCount] = new JointGroupMember { Joint = i };
+                joined.MemberCount++;
+                Groups[group] = joined;
+            }
+
+            return groupOf;
+        }
+    }
+
+    /// <summary>Copies what <see cref="BuildJointsJob"/> wrote into the world's joints, unit by unit.</summary>
+    [BurstCompile]
+    internal struct GatherJointsJob : IJob
+    {
+        public NativeStream.Reader Input;
+        public NativeList<PhysicsJoint> Output;
+
+        public void Execute()
+        {
+            Output.ResizeUninitialized(Input.Count());
+            int next = 0;
+            for (int i = 0; i < Input.ForEachCount; i++)
+            {
+                int count = Input.BeginForEachIndex(i);
+                for (int j = 0; j < count; j++)
+                {
+                    Output[next++] = Input.Read<PhysicsJoint>();
+                }
+
+                Input.EndForEachIndex();
+            }
+        }
+    }
+
+    /// <summary>What one lane of <see cref="BuildJointsJob"/> builds: a store joint alone, or the group it leads.</summary>
+    internal struct JointUnit
+    {
+        public int Joint;
+
+        /// <summary>The group the joint leads, or -1 for a joint built alone.</summary>
+        public int Group;
     }
 
     /// <summary>
