@@ -12,7 +12,7 @@ namespace KSP.Retooled.Physics
     internal sealed unsafe class WorldState : IDisposable
     {
         internal const int SolverIterations = 12;
-        internal const int DirectIslandSubsteps = 4;
+        internal const int DirectIslandSubsteps = 2;
 
         private readonly StepState* state;
         private readonly QueryWorld* query;
