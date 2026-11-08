@@ -502,7 +502,9 @@ namespace KSP.Retooled.Physics
             public uint jointDataSize;
             public uint bodyDataSize;
             public uint bodySize;
-            private readonly uint reserved0;
+
+            /// <summary>Bumped whenever the ignored pairs change, so that what was worked out from them can be kept.</summary>
+            public uint ignoreVersion;
 
             public IgnoreTable* ignoreTable;
 

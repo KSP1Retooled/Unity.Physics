@@ -58,6 +58,7 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.IgnoreCollision.Auto();
 
+            globals->ignoreVersion++;
             if (!ignored)
             {
                 if (globals->ignoreTable != null)
@@ -82,6 +83,7 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetIgnoredCollisions.Auto();
 
+            globals->ignoreVersion++;
             IgnoreTable* table = globals->ignoreTable;
             if (table == null || id == 0)
             {

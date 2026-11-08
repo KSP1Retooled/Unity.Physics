@@ -40,6 +40,9 @@ namespace KSP.Retooled.Physics
         private NativeHashMap<JacobianKey, float2> warmStarts;
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
+        private NativeReference<uint> wholeColliderBuilds;
+        private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
+        private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
         private uint stepCount;
         private uint builtStaticsVersion;
@@ -73,6 +76,9 @@ namespace KSP.Retooled.Physics
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
+            wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
+            knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
+            learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
 
         internal void Dispose()
@@ -108,6 +114,9 @@ namespace KSP.Retooled.Physics
             warmStarts.Dispose();
             colliderWork.Dispose();
             colliderResults.Dispose();
+            wholeColliderBuilds.Dispose();
+            knownBodyPairs.Dispose();
+            learnedBodyPairs.Dispose();
         }
 
         /// <summary>The built world, which the simulation's systems step.</summary>
@@ -184,9 +193,20 @@ namespace KSP.Retooled.Physics
                 Store = store->bodies,
                 Globals = globals,
                 Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
+                Known = knownBodyPairs,
+                WholeBuilds = wholeColliderBuilds,
+                Learned = learnedBodyPairs.AsParallelWriter(),
             }.Schedule(pairs, ParallelBatchSize, dependency);
 
-            return simulation->ScheduleIslandJobs(input, filtered);
+            // Nothing in this step reads what it learned, so keeping it runs beside the islands.
+            JobHandle remembered = new RememberBodyPairsJob
+            {
+                Known = knownBodyPairs,
+                Learned = learnedBodyPairs,
+                Bodies = (int)store->bodyCount,
+            }.Schedule(filtered);
+
+            return JobHandle.CombineDependencies(simulation->ScheduleIslandJobs(input, filtered), remembered);
         }
 
         /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
@@ -396,7 +416,8 @@ namespace KSP.Retooled.Physics
             ReleaseDeadColliders();
 
             uint materialVersion = globals->materialVersion;
-            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults, dependency);
+            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults,
+                wholeColliderBuilds, dependency);
             builtMaterialVersion = materialVersion;
             return collidersBuilt;
         }

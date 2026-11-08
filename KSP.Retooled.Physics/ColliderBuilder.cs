@@ -50,13 +50,15 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Schedules a new collider for every body that asks for one; <paramref name="all"/> treats every body as asking. The
         /// builds overlap whatever the main thread does next. Nothing may read a body's collider or write its flags until the
-        /// returned handle completes, and <paramref name="work"/> and <paramref name="results"/> must outlive it.
+        /// returned handle completes, and <paramref name="work"/> and <paramref name="results"/> must outlive it. A refresh
+        /// that builds any body whole bumps <paramref name="wholeBuilds"/>, since that body's shapes may have changed.
         /// </summary>
         internal static JobHandle ScheduleRefresh(
             NativeStore.WorldData* world,
             bool all,
             NativeList<Work> work,
             NativeList<long> results,
+            NativeReference<uint> wholeBuilds,
             JobHandle dependency)
         {
             if (work.Capacity < world->bodyCount)
@@ -72,7 +74,7 @@ namespace KSP.Retooled.Physics
                 All = all
             }.ScheduleBatch((int)world->bodyCount, 1024, dependency);
 
-            dependency = new InitializeResultsJob { Work = work, Results = results }.Schedule(aggregateWork);
+            dependency = new InitializeResultsJob { Work = work, Results = results, WholeBuilds = wholeBuilds }.Schedule(aggregateWork);
 
             // One body a work item: a mesh can take a thousand times as long as a box.
             JobHandle built = new BuildCollidersJob
@@ -154,12 +156,23 @@ namespace KSP.Retooled.Physics
 
             public NativeList<long> Results;
 
+            public NativeReference<uint> WholeBuilds;
+
             public void Execute()
             {
                 Results.ResizeUninitialized(Work.Length);
 
+                bool whole = false;
                 for (int i = 0; i < Results.Length; ++i)
+                {
                     Results[i] = Failed;
+                    whole |= Work[i].Whole;
+                }
+
+                if (whole)
+                {
+                    WholeBuilds.Value++;
+                }
             }
         }
 

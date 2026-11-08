@@ -334,7 +334,8 @@ namespace Retooled
         uint32_t jointDataSize;
         uint32_t bodyDataSize;
         uint32_t bodySize;
-        uint32_t reserved0;
+        // Bumped by managed whenever the ignored pairs change, so that what was worked out from them can be kept.
+        uint32_t ignoreVersion;
 
         // Which collision pairs Physics.IgnoreCollision switched off. IgnoreTable.cs owns the layout, and it stays on the
         // store's heap across a reload.

@@ -153,10 +153,25 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// Whether every collider pair between two bodies is ignored, as worked out when the ignored pairs and the bodies' shapes
+    /// were at the versions it holds.
+    /// </summary>
+    internal struct KnownBodyPair
+    {
+        public uint IgnoreVersion;
+        public uint WholeBuilds;
+        public bool Ignored;
+    }
+
+    /// <summary>
     /// Takes out the overlaps whose every collider pair is under Physics.IgnoreCollision, which is what the parts of one craft
     /// are. There are many times more of those than of joints, and left in they would make a craft one crowded island and
     /// send them all through the narrow phase for nothing. Body pairs with some colliders still in contact stay, and
     /// <see cref="ReadContactsJob"/> tells those colliders apart.
+    ///
+    /// Finding that out takes a lookup per collider pair, each a likely cache miss in a table of a craft's every ignored pair,
+    /// so the answer is kept per body pair. It holds until the ignored pairs change or a body's shapes may have: a body
+    /// whose shapes change, or that is made, gets a whole collider build, which bumps the count it was kept with.
     /// </summary>
     [BurstCompile]
     internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
@@ -173,19 +188,50 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public RigidBody* Bodies;
 
+        [ReadOnly]
+        public NativeHashMap<ulong, KnownBodyPair> Known;
+
+        [ReadOnly]
+        public NativeReference<uint> WholeBuilds;
+
+        /// <summary>What this step worked out afresh, for <see cref="RememberBodyPairsJob"/> to keep.</summary>
+        public NativeQueue<KeyValue>.ParallelWriter Learned;
+
+        internal struct KeyValue
+        {
+            public ulong Key;
+            public KnownBodyPair Value;
+        }
+
         public void Execute(int index)
         {
             DispatchPairSequencer.DispatchPair pair = Pairs[index];
-            if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && IsIgnored(RowOf(pair.BodyIndexA), RowOf(pair.BodyIndexB)))
+            if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && IsIgnored(pair))
             {
                 pair.DisableCollision();
                 Pairs[index] = pair;
             }
         }
 
-        private NativeStore.BodyData* RowOf(int body)
+        private bool IsIgnored(DispatchPairSequencer.DispatchPair pair)
         {
-            return Store + Bodies[body].Entity.Index;
+            uint rowA = (uint)Bodies[pair.BodyIndexA].Entity.Index;
+            uint rowB = (uint)Bodies[pair.BodyIndexB].Entity.Index;
+            ulong key = ((ulong)math.min(rowA, rowB) << 32) | math.max(rowA, rowB);
+            uint ignoreVersion = Globals->ignoreVersion;
+            uint wholeBuilds = WholeBuilds.Value;
+            if (Known.TryGetValue(key, out KnownBodyPair known) && known.IgnoreVersion == ignoreVersion && known.WholeBuilds == wholeBuilds)
+            {
+                return known.Ignored;
+            }
+
+            bool ignored = IsIgnored(Store + rowA, Store + rowB);
+            Learned.Enqueue(new KeyValue
+            {
+                Key = key,
+                Value = new KnownBodyPair { IgnoreVersion = ignoreVersion, WholeBuilds = wholeBuilds, Ignored = ignored },
+            });
+            return ignored;
         }
 
         private bool IsIgnored(NativeStore.BodyData* rowA, NativeStore.BodyData* rowB)
@@ -209,6 +255,36 @@ namespace KSP.Retooled.Physics
             }
 
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Keeps what <see cref="DropIgnoredPairsJob"/> worked out afresh. Pairs that stopped overlapping leave their answers
+    /// behind, so past several times the overlaps a craft's parts have, everything is dropped and the next step works out what
+    /// it needs again.
+    /// </summary>
+    [BurstCompile]
+    internal struct RememberBodyPairsJob : IJob
+    {
+        private const int KeptPerBody = 32;
+
+        public NativeHashMap<ulong, KnownBodyPair> Known;
+
+        public NativeQueue<DropIgnoredPairsJob.KeyValue> Learned;
+
+        public int Bodies;
+
+        public void Execute()
+        {
+            if (Known.Count + Learned.Count > KeptPerBody * Bodies + 1024)
+            {
+                Known.Clear();
+            }
+
+            while (Learned.TryDequeue(out DropIgnoredPairsJob.KeyValue learned))
+            {
+                Known[learned.Key] = learned.Value;
+            }
         }
     }
 

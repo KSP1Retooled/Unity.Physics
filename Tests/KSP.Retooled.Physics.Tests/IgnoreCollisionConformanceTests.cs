@@ -86,6 +86,24 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void AColliderAddedToAnIgnoredBodyCollides()
+        {
+            Rigidbody first = WeightlessBox(new Vector3(0.0f, 0.0f, 0.0f));
+            Rigidbody second = WeightlessBox(new Vector3(0.2f, 0.0f, 0.0f));
+            UnityEngine.Physics.IgnoreCollision(first.GetComponent<Collider>(), second.GetComponent<Collider>());
+
+            // The boxes overlap from the start, so their bodies are already known to ignore each other when the new
+            // collider arrives.
+            Simulate(5);
+            AssertVector(new Vector3(0.2f, 0.0f, 0.0f), second.position, 0.01f, "ignored, so left overlapping");
+
+            first.gameObject.AddComponent<BoxCollider>();
+            Simulate(100);
+
+            Assert.That(second.position.x - first.position.x, Is.GreaterThan(0.5f), "the new collider isn't ignored, so it pushes them apart");
+        }
+
+        [Test]
         public void AnIgnoredPairStaysIgnoredThroughDisablingACollider()
         {
             Collider ground = Ground().GetComponent<Collider>();
