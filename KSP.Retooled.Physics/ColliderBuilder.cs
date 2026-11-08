@@ -49,9 +49,8 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Schedules a new collider for every body that asks for one; <paramref name="all"/> treats every body as asking. The
-        /// main thread only picks the bodies, so the builds overlap whatever it does next. Nothing may read a body's collider
-        /// until the returned handle completes, and <paramref name="work"/> and <paramref name="results"/> must outlive it.
-        /// A body's flags are cleared here, not in a job, because the main thread writes other flags meanwhile.
+        /// builds overlap whatever the main thread does next. Nothing may read a body's collider or write its flags until the
+        /// returned handle completes, and <paramref name="work"/> and <paramref name="results"/> must outlive it.
         /// </summary>
         internal static JobHandle ScheduleRefresh(
             NativeStore.WorldData* world,
@@ -60,46 +59,39 @@ namespace KSP.Retooled.Physics
             NativeList<long> results,
             JobHandle dependency)
         {
+            if (work.Capacity < world->bodyCount)
+                work.Capacity = (int)world->bodyCount;
             work.Clear();
-            for (int i = 0; i < world->bodyCount; i++)
-            {
-                NativeStore.BodyData* body = world->bodies + i;
-                if (all || (body->flags & NeedsBuild) != 0)
-                {
-                    work.Add(new Work { Body = i, Whole = all || (body->flags & NativeStore.BodyFlags.ColliderDirty) != 0 });
-                    body->flags &= ~NeedsBuild;
-                }
-            }
 
-            results.ResizeUninitialized(work.Length);
-            if (work.Length == 0)
+            // This writes the flags but nothing else writes them until it
+            // completes, so it is safe to do so.
+            var aggregateWork = new AggregateColliderWorkJob
             {
-                return dependency;
-            }
+                World = world,
+                Work = work.AsParallelWriter(),
+                All = all
+            }.ScheduleBatch((int)world->bodyCount, 1024, dependency);
 
-            for (int i = 0; i < results.Length; i++)
-            {
-                results[i] = Failed;
-            }
+            dependency = new InitializeResultsJob { Work = work, Results = results }.Schedule(aggregateWork);
 
             // One body a work item: a mesh can take a thousand times as long as a box.
             JobHandle built = new BuildCollidersJob
             {
                 Bodies = world->bodies,
-                Work = work.AsArray(),
-                Results = results.AsArray(),
-            }.Schedule(work.Length, 1, dependency);
+                Work = work.AsDeferredJobArray(),
+                Results = results.AsDeferredJobArray(),
+            }.Schedule(work, 1, dependency);
 
-            // Builds can take milliseconds, and scheduled jobs wait in a batch until something flushes it, so start them now
-            // rather than after the rest of the step is scheduled.
-            JobHandle.ScheduleBatchedJobs();
-
-            return new SwapCollidersJob
+            var handle = new SwapCollidersJob
             {
                 Bodies = world->bodies,
-                Work = work.AsArray(),
-                Results = results.AsArray(),
+                Work = work.AsDeferredJobArray(),
+                Results = results.AsDeferredJobArray(),
             }.Schedule(built);
+
+            JobHandle.ScheduleBatchedJobs();
+
+            return handle;
         }
 
         /// <summary>
@@ -120,7 +112,59 @@ namespace KSP.Retooled.Physics
         }
 
         [BurstCompile]
-        private struct BuildCollidersJob : IJobParallelFor
+        private struct AggregateColliderWorkJob : IJobParallelForBatch
+        {
+            [NoAlias]
+            [NativeDisableUnsafePtrRestriction]
+            public NativeStore.WorldData* World;
+
+            public NativeList<Work>.ParallelWriter Work;
+            public bool All;
+
+            public void Execute(int start, int length)
+            {
+                var end = start + length;
+
+                var chunk = new NativeList<Work>(1024, Allocator.Temp);
+
+                for (int i = start; i < end; ++i)
+                {
+                    ref var body = ref World->bodies[i];
+
+                    if (!All && (body.flags & NeedsBuild) == 0)
+                        continue;
+
+                    chunk.Add(new()
+                    {
+                        Body = i,
+                        Whole = All || (body.flags & NativeStore.BodyFlags.ColliderDirty) != 0
+                    });
+                    body.flags &= ~NeedsBuild;
+                }
+
+                Work.AddRangeNoResize(chunk.AsArray());
+            }
+        }
+
+        [BurstCompile]
+        private struct InitializeResultsJob : IJob
+        {
+            [ReadOnly]
+            public NativeList<Work> Work;
+
+            public NativeList<long> Results;
+
+            public void Execute()
+            {
+                Results.ResizeUninitialized(Work.Length);
+
+                for (int i = 0; i < Results.Length; ++i)
+                    Results[i] = Failed;
+            }
+        }
+
+        [BurstCompile]
+        private struct BuildCollidersJob : IJobParallelForDefer
         {
             [NativeDisableUnsafePtrRestriction]
             public NativeStore.BodyData* Bodies;
