@@ -27,7 +27,6 @@ namespace KSP.Retooled.Physics
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
-        private NativeList<Joint> builtJoints;
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private DirectSolverCache directSolverCache;
@@ -61,7 +60,6 @@ namespace KSP.Retooled.Physics
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
-            builtJoints = new NativeList<Joint>(Allocator.Persistent);
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -97,7 +95,6 @@ namespace KSP.Retooled.Physics
             dynamicIndices.Dispose();
             staticIndices.Dispose();
             builtIndices.Dispose();
-            builtJoints.Dispose();
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
             directSolverCache.Dispose();
@@ -158,11 +155,14 @@ namespace KSP.Retooled.Physics
             using var span = BackendMarkers.StepSchedule.Auto();
 
             JobHandle colliders = RefreshColliders(dependency);
-            JobHandle built = Build(deltaTime, colliders);
+            JobHandle built = Build(deltaTime, colliders, out JobHandle joints);
 
             using (BackendMarkers.BuildScheduleBroadphase.Auto())
             {
-                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
+                JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
+
+                // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside the trees.
+                return JobHandle.CombineDependencies(broadphase, joints);
             }
         }
 
@@ -312,7 +312,7 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
             JobHandle colliders = RefreshColliders(default);
-            JobHandle built = Build(0.0f, colliders);
+            JobHandle built = Build(0.0f, colliders, out _);
             world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
             PublishQueryWorld();
         }
@@ -411,7 +411,10 @@ namespace KSP.Retooled.Physics
             store->deadColliderCount = 0;
         }
 
-        private JobHandle Build(float deltaTime, JobHandle dependency)
+        /// <summary>
+        /// Schedules the bodies, returned, and the joints, handed out separately so the broadphase needn't wait for them.
+        /// </summary>
+        private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
         {
             using (BackendMarkers.BuildPartition.Auto())
             {
@@ -460,31 +463,32 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            // A query world never solves, so only a step needs the joints, and only a step has a time to give their motors.
-            using (BackendMarkers.BuildJoints.Auto())
-            {
-                builtJoints.Clear();
-                if (deltaTime > 0.0f)
-                {
-                    new BuildJointsJob
-                    {
-                        World = store,
-                        BuiltIndices = builtIndices.AsArray(),
-                        Output = builtJoints,
-                        Groups = jointGroups,
-                        Members = jointGroupMembers,
-                        DynamicCount = dynamicIndices.Length,
-                        AnchorIndex = dynamicIndices.Length + staticIndices.Length,
-                        DeltaTime = deltaTime,
-                    }.Run();
-                }
-            }
-
+            // The joints start empty and their job fills them. Unity Physics reads them through deferred arrays, so nothing
+            // scheduled before that job finishes needs to know how many there are.
             using (BackendMarkers.BuildReset.Auto())
             {
-                world.Reset(staticIndices.Length + 1, dynamicIndices.Length, builtJoints.Length);
-                world.DynamicsWorld.Joints.CopyFrom(builtJoints.AsArray());
+                world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
+            }
+
+            // A query world never solves, so only a step needs the joints, and only a step has a time to give their motors.
+            // Like the bodies, they wait for the collider jobs, which write the body flags the joints read.
+            joints = dependency;
+            if (deltaTime > 0.0f)
+            {
+                using var jointsSpan = BackendMarkers.BuildJoints.Auto();
+
+                joints = new BuildJointsJob
+                {
+                    World = store,
+                    BuiltIndices = builtIndices.AsArray(),
+                    Output = world.DynamicsWorld.InternalJointsList,
+                    Groups = jointGroups,
+                    Members = jointGroupMembers,
+                    DynamicCount = dynamicIndices.Length,
+                    AnchorIndex = dynamicIndices.Length + staticIndices.Length,
+                    DeltaTime = deltaTime,
+                }.Schedule(dependency);
             }
 
             using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();
