@@ -159,10 +159,10 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.BuildScheduleBroadphase.Auto())
             {
-                JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
-
-                // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside the trees.
-                return JobHandle.CombineDependencies(broadphase, joints);
+                // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside
+                // the trees and the overlaps, and only the dispatch pairs wait for them.
+                world.DynamicsWorld.JointsBuilt = joints;
+                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
             }
         }
 
