@@ -608,6 +608,26 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void DestroyingABodyTheJointWasMovedToFreesTheOwner()
+        {
+            Rigidbody first = DynamicBox(new Vector3(0.0f, 5.0f, 0.0f));
+            first.isKinematic = true;
+            Rigidbody moved = DynamicBox(new Vector3(3.0f, 5.0f, 0.0f));
+            moved.isKinematic = true;
+            Rigidbody second = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
+            ConfigurableJoint joint = Lock(second, first, new Vector3(0.0f, 1.0f, 0.0f), new Vector3(0.0f, -1.0f, 0.0f));
+            Simulate(5);
+
+            joint.connectedBody = moved;
+            Simulate(5);
+            float held = second.position.y;
+            Object.DestroyImmediate(moved.gameObject);
+            Simulate(25);
+
+            Assert.That(second.position.y, Is.LessThan(held - 0.5f));
+        }
+
+        [Test]
         public void DestroyingTheOwnerLeavesTheConnectedBodySimulated()
         {
             Rigidbody first = DynamicBox(new Vector3(0.0f, 5.0f, 0.0f));

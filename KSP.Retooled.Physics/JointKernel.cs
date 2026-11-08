@@ -133,8 +133,12 @@ namespace KSP.Retooled.Physics
 
                     break;
                 case JointCommand.SetActors:
+                    CountEnd(joint->body0, -1);
+                    CountEnd(joint->body1, -1);
                     joint->body0 = ((NativeStore.ActorDescriptor*)a->pointer)[0].actor;
                     joint->body1 = ((NativeStore.ActorDescriptor*)a->pointer)[1].actor;
+                    CountEnd(joint->body0, 1);
+                    CountEnd(joint->body1, 1);
                     joint->state &= ~NativeStore.JointState.BodyDestroyed;
                     break;
                 case JointCommand.GetActors:
@@ -278,6 +282,8 @@ namespace KSP.Retooled.Physics
             joint->body0 = (NativeStore.Body*)a->pointer;
             joint->body1 = (NativeStore.Body*)a->pointer2;
             joint->userData = a->pointer3;
+            CountEnd(joint->body0, 1);
+            CountEnd(joint->body1, 1);
             joint->breakForce = float.PositiveInfinity;
             joint->breakTorque = float.PositiveInfinity;
             joint->inverseMassScale0 = 1.0f;
@@ -302,6 +308,8 @@ namespace KSP.Retooled.Physics
 
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyJoint.Auto();
 
+            CountEnd(joint->body0, -1);
+            CountEnd(joint->body1, -1);
             uint last = --world->jointCount;
             if (joint->index != last)
             {
@@ -317,20 +325,32 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
 
-            for (uint i = 0; i < world->jointCount; i++)
+            NativeStore.BodyData* hot = world->bodies + body->index;
+            for (uint i = 0; i < world->jointCount && hot->jointEnds > 0; i++)
             {
                 NativeStore.JointData* joint = world->joints[i];
                 if (joint->body0 == body)
                 {
                     joint->body0 = null;
                     joint->state |= NativeStore.JointState.BodyDestroyed;
+                    hot->jointEnds--;
                 }
 
                 if (joint->body1 == body)
                 {
                     joint->body1 = null;
                     joint->state |= NativeStore.JointState.BodyDestroyed;
+                    hot->jointEnds--;
                 }
+            }
+        }
+
+        private static void CountEnd(NativeStore.Body* body, int change)
+        {
+            if (body != null)
+            {
+                NativeStore.BodyData* hot = body->world->bodies + body->index;
+                hot->jointEnds += change;
             }
         }
     }

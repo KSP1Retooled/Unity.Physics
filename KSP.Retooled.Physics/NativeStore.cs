@@ -84,7 +84,9 @@ namespace KSP.Retooled.Physics
 
             public Entity entity;
             public int orderVersion;
-            private readonly uint reserved0;
+
+            /// <summary>How many joint ends point at the body, so destroying one that none do skips searching the joints.</summary>
+            public int jointEnds;
         }
 
         /// <summary>A body's components, for as long as they aren't on an entity.</summary>
