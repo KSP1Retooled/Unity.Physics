@@ -688,7 +688,8 @@ namespace Unity.Physics
         static unsafe void AddAngularLimit1D(in MemoryManager heap, Vector* JBlocks, ref NativeList<Vector> JArray,
             bool bodyAIsStatic, bool bodyBIsStatic, in float3 hingeAxis, float currentAngle, float minAngle, float maxAngle,
             int startRow, in Vector l, in Vector u, ref Vector eps, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
-            in Matrix RHS, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData)
+            in Matrix RHS, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
+            in LimitMotion motion)
         {
             const int startColumnA = 0;
             const int startColumnB = 6;
@@ -708,55 +709,25 @@ namespace Unity.Physics
                 SetSubVector3(J, -hingeAxis, startColumnB + 3);
             }
 
-            // Constraint error from last step, at coordinates q_:
-            var phi_0 = 0f;
+            // Constraint error and gamma term:
+            var gamma_phi_0 = 0f;
 
             if (math.abs(minAngle - maxAngle) < math.EPSILON)
             {
-                phi_0 = currentAngle - minAngle;
+                gamma_phi_0 = -(jointRegularizationData.Gamma / stepInput.Timestep) * (currentAngle - minAngle);
             }
-            else
+            else if (minAngle > -math.INFINITY || maxAngle < math.INFINITY)
             {
-                // check whether we hit the limits and choose the constraint regularization accordingly.
-                // If we are within the limits, we use the user-specified regularization parameters.
-                // Otherwise, we use the maximum joint stiffness parameter with zero damping to enforce perfectly hard limits.
-                var hasLimits = minAngle > -math.INFINITY || maxAngle < math.INFINITY;
-                if (hasLimits)
-                {
-                    // @todo direct solver (PHYS-445): implement predictive limit here by checking whether we might
-                    // hit the limit in the next step, given current angle and constraint space velocity.
-                    // Like predictive contacts, regularize with zero damping in this case, to prevent slowdown on approach.
-                    if (currentAngle > maxAngle)
-                    {
-                        phi_0 = currentAngle - maxAngle;
+                float rate = motion.Predictive
+                    ? RowRate(JArray, startRow, motion.BodyIndexA, motion.BodyIndexB, motion.BodyAIsDynamic,
+                        motion.BodyBIsDynamic, motion.MotionVelocities, motion.MotionDatas)
+                    : 0.0f;
 
-                        u[startRow] = 0;
-                        isLCP = true;
-                    }
-                    else if (currentAngle < minAngle)
-                    {
-                        phi_0 = currentAngle - minAngle;
-
-                        l[startRow] = 0;
-                        isLCP = true;
-                    }
-                    else
-                    {
-                        // disable the row.
-                        // @todo direct solver (PHYS-445): completely discard row instead by reducing
-                        // row count and using SubMatrix of system matrix for solve. This doesn't force use of LCP solver also.
-                        l[startRow] = 0;
-                        u[startRow] = 0;
-                        indexSetArray[startRow] = LCP.MLCPIndexFlag.LowerTight;
-                        isLCP = true;
-                    }
-                }
+                gamma_phi_0 = SetLimitRow(currentAngle, minAngle, maxAngle, rate, jointRegularizationData,
+                    stepInput.Timestep, startRow, in l, in u, ref indexSetArray, ref isLCP);
             }
 
             // Assemble right hand side (rhs):
-
-            // Constraint error and gamma term
-            var gamma_phi_0 = -(jointRegularizationData.Gamma / stepInput.Timestep) * phi_0;
 
             // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
             // After this assignment, we have rhs = -\gamma * \phi(q_)/dt
@@ -767,17 +738,50 @@ namespace Unity.Physics
             eps[startRow] = jointRegularizationData.Epsilon;
         }
 
-        /// <summary> Arming a row this far inside a limit stops a body resting on it from switching the row on and off. </summary>
+        /// <summary>
+        /// What a limit's row needs to tell whether the substep will reach the limit. Without it, the row only acts once the
+        /// limit is passed.
+        /// </summary>
+        struct LimitMotion
+        {
+            public bool Predictive;
+            public int BodyIndexA;
+            public int BodyIndexB;
+            public bool BodyAIsDynamic;
+            public bool BodyBIsDynamic;
+            public NativeArray<MotionVelocity> MotionVelocities;
+            public NativeArray<MotionData> MotionDatas;
+        }
+
+        static LimitMotion PredictiveLimit(int bodyIndexA, int bodyIndexB, bool bodyAIsDynamic, bool bodyBIsDynamic,
+            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas)
+        {
+            return new LimitMotion
+            {
+                Predictive = true,
+                BodyIndexA = bodyIndexA,
+                BodyIndexB = bodyIndexB,
+                BodyAIsDynamic = bodyAIsDynamic,
+                BodyBIsDynamic = bodyBIsDynamic,
+                MotionVelocities = motionVelocities,
+                MotionDatas = motionDatas,
+            };
+        }
+
+        /// <summary>
+        /// Arming a row this far inside a limit, in metres or radians, stops a body resting on it from switching the row on
+        /// and off.
+        /// </summary>
         const float LimitArmingMargin = 0.001f;
 
         /// <summary>
-        /// Picks the bound a linear limit's row acts on this substep and returns its \gamma * \phi(q_)/dt term for the right
-        /// hand side. A hard limit is armed when the substep would reach it, with its gap as the target, so that a body stops
-        /// on the limit. A row armed only past the limit takes all the speed off and then pushes back at its correction
+        /// Picks the bound a limit's row acts on this substep and returns its \gamma * \phi(q_)/dt term for the right hand
+        /// side. A hard limit is armed when the substep would reach it, with its gap as the target, so that a body stops on
+        /// the limit. A row armed only past the limit takes all the speed off and then pushes back at its correction
         /// velocity, which nothing takes off again once the body is inside, so the body leaves the limit. A soft limit is a
         /// spring, which has nothing to do until the limit is passed.
         /// </summary>
-        static float SetLinearLimitRow(float distance, float minimum, float maximum, float rate,
+        static float SetLimitRow(float distance, float minimum, float maximum, float rate,
             in JacobianHeader.DirectSolverRegularizationData regularization, float timestep, int row,
             in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP)
         {
@@ -1443,7 +1447,9 @@ namespace Unity.Physics
                                         bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                         angJacobian.MinAngle, angJacobian.MaxAngle,
                                         startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                        in RHS, in stepInput, in jointRegularizationData);
+                                        in RHS, in stepInput, in jointRegularizationData,
+                                        PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
+                                            !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
 
                                     break;
                                 }
@@ -1531,7 +1537,8 @@ namespace Unity.Physics
 
                                         if (sinAngle > math.EPSILON)
                                         {
-                                            rotationAxis /= sinAngle;
+                                            // The axes are in body B's motion space, and a row's Jacobian is in world space.
+                                            rotationAxis = math.rotate(angJacobian.WorldFromB.rot, rotationAxis / sinAngle);
                                         }
                                         else
                                         {
@@ -1543,11 +1550,17 @@ namespace Unity.Physics
 
                                         var hingeAxis = rotationAxis;
 
+                                        // The angle between the axes is never negative, and where they line up the axis it
+                                        // turns about is arbitrary, so a cone has no lower bound to reach. It stays finite,
+                                        // because a row without limits on either side is an equality.
+                                        float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
                                         AddAngularLimit1D(in heap, JBlocks, ref JArray,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
-                                            angJacobian.MinAngle, angJacobian.MaxAngle,
+                                            minAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                            in RHS, in stepInput, in jointRegularizationData);
+                                            in RHS, in stepInput, in jointRegularizationData,
+                                            PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
+                                                !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
                                     }
 
                                     break;
@@ -1646,11 +1659,13 @@ namespace Unity.Physics
                                         ((Quaternion)deltaRotation).ToAngleAxis(out float currentAngle, out Vector3 hingeAxisVec3);
                                         float3 hingeAxis = hingeAxisVec3;
 
+                                        // ToAngleAxis gives degrees about an axis in body A's space, so this angle's rate is
+                                        // not the row's, and the limit acts only once it is passed.
                                         AddAngularLimit1D(in heap, JBlocks, ref JArray,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
                                             angJacobian.MinAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
-                                            in RHS, in stepInput, in jointRegularizationData);
+                                            in RHS, in stepInput, in jointRegularizationData, default);
                                     }
                                     break;
                                 }
@@ -1857,7 +1872,7 @@ namespace Unity.Physics
                                                 !bodyAIsStatic && !bodyAIsKinematic, !bodyBIsStatic && !bodyBIsKinematic,
                                                 motionVelocities, motionDatas);
 
-                                            gamma_phi_0 = SetLinearLimitRow(currentDistance, limitJacobian.MinDistance,
+                                            gamma_phi_0 = SetLimitRow(currentDistance, limitJacobian.MinDistance,
                                                 limitJacobian.MaxDistance, rate, jointRegularizationData, stepInput.Timestep,
                                                 startRow, in l, in u, ref indexSetArray, ref isLCP);
                                         }
