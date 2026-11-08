@@ -256,12 +256,16 @@ namespace Unity.Physics
                 ScheduleDynamicTreeBuildJobs(ref world, timeStep, gravity, threadCount, inputDeps, incrementalDynamicTree));
         }
 
+        static readonly ProfilerMarker ScheduleStaticTreeBuildJobsMarker = new("ScheduleStaticTreeBuildJobs");
+
         /// <summary>
         /// Schedule a set of jobs to build the static tree of the broadphase based on the given world.
         /// </summary>
         public JobHandle ScheduleStaticTreeBuildJobs(
             ref PhysicsWorld world, int numThreadsHint, NativeReference<int>.ReadOnly shouldDoWork, JobHandle inputDeps, bool incremental = false)
         {
+            using var scope = ScheduleStaticTreeBuildJobsMarker.Auto();
+
             Assert.AreEqual(world.NumStaticBodies, StaticTree.NumBodies);
 
             if (world.NumStaticBodies == 0)
@@ -312,12 +316,16 @@ namespace Unity.Physics
             return JobHandle.CombineDependencies(buildHandle, numStaticBodiesArray.Dispose(handle));
         }
 
+        static readonly ProfilerMarker ScheduleDynamicBuildJobsMarker = new("ScheduleDynamicTreeBuildJobs");
+
         /// <summary>
         /// Schedule a set of jobs to build the dynamic tree of the broadphase based on the given world.
         /// </summary>
         public JobHandle ScheduleDynamicTreeBuildJobs(
             ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint, JobHandle inputDeps, bool incremental = false)
         {
+            using var scope = ScheduleDynamicBuildJobsMarker.Auto();
+
             Assert.AreEqual(world.NumDynamicBodies, DynamicTree.NumBodies);
 
             if (world.NumDynamicBodies == 0)
