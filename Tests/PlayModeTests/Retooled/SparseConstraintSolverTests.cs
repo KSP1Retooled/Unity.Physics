@@ -30,6 +30,7 @@ namespace KSP.Retooled.Physics.Tests
             public readonly List<float> RightHandSide = new List<float>();
             public readonly List<float> Lower = new List<float>();
             public readonly List<float> Upper = new List<float>();
+            public readonly List<SparseConstraintSolver.Coupling> Couplings = new List<SparseConstraintSolver.Coupling>();
 
             private Random random;
 
@@ -73,6 +74,56 @@ namespace KSP.Retooled.Physics.Tests
                     RightHandSide.Add(random.NextFloat(-5.0f, 5.0f));
                     Lower.Add(bound == float.MaxValue ? float.MinValue : -bound);
                     Upper.Add(bound);
+                }
+            }
+
+            /// <summary>
+            /// A contact of a body on the world, with rows as the direct solver builds them: a normal row for each point that
+            /// only pushes, then friction along two tangents and about the normal, whose bounds follow the normals' sum.
+            /// </summary>
+            public void AddContact(int body, int normals, float friction)
+            {
+                int first = Rows;
+                AddBlock(-1, body, normals + 3);
+                float3 normal = random.NextFloat3Direction();
+                Math.CalculatePerpendicularNormalized(normal, out float3 tangent0, out float3 tangent1);
+                float3 averageArm = float3.zero;
+                for (int row = first; row < first + normals; row++)
+                {
+                    float3 arm = random.NextFloat3(-1.0f, 1.0f);
+                    averageArm += arm / normals;
+                    SetSide(row, normal, math.cross(arm, normal));
+                    RightHandSide[row] = random.NextFloat(0.0f, 5.0f);
+                    Lower[row] = 0.0f;
+                    Upper[row] = float.MaxValue;
+                }
+
+                SetSide(first + normals, tangent0, math.cross(averageArm, tangent0));
+                SetSide(first + normals + 1, tangent1, math.cross(averageArm, tangent1));
+                SetSide(first + normals + 2, float3.zero, normal);
+                for (int row = first + normals; row < Rows; row++)
+                {
+                    Lower[row] = 0.0f;
+                    Upper[row] = 0.0f;
+                }
+
+                Couplings.Add(new SparseConstraintSolver.Coupling
+                {
+                    FirstRow = first + normals,
+                    RowCount = 3,
+                    FirstSourceRow = first,
+                    SourceRowCount = normals,
+                    Factor = friction,
+                });
+            }
+
+            private void SetSide(int row, float3 linear, float3 angular)
+            {
+                int start = row * Columns + Columns / 2;
+                for (int i = 0; i < 3; i++)
+                {
+                    Jacobian[start + i] = linear[i];
+                    Jacobian[start + 3 + i] = angular[i];
                 }
             }
 
@@ -165,7 +216,9 @@ namespace KSP.Retooled.Physics.Tests
             float[] rightHandSide = scenario.RightHandSide.ToArray();
             float[] lower = scenario.Lower.ToArray();
             float[] upper = scenario.Upper.ToArray();
+            SparseConstraintSolver.Coupling[] couplings = scenario.Couplings.ToArray();
 
+            fixed (SparseConstraintSolver.Coupling* couplingsPointer = couplings)
             fixed (SparseConstraintSolver.Body* bodiesPointer = bodies)
             fixed (SparseConstraintSolver.ConstraintBlock* blocksPointer = blocks)
             fixed (float* jacobianPointer = jacobian, epsilonPointer = epsilon, rightPointer = rightHandSide)
@@ -185,6 +238,8 @@ namespace KSP.Retooled.Physics.Tests
                     Lower = lowerPointer,
                     Upper = upperPointer,
                     InitialStates = guessPointer,
+                    CouplingCount = couplings.Length,
+                    Couplings = couplingsPointer,
                 };
 
                 return solver.Solve(problem, output, bounded);
@@ -387,6 +442,47 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.That(converged, Is.True);
             Assert.That(statistics.PivotingIterations, Is.EqualTo(1));
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
+        public void FrictionSolvesWithinItsShareOfTheNormalImpulse([Range(1u, 6u)] uint seed, [Values(0.2f, 1.0f)] float friction)
+        {
+            Scenario scenario = Craft(seed, 12, 3);
+            Random contacts = new Random(seed + 50);
+            for (int i = 0; i < 4; i++)
+            {
+                scenario.AddContact(contacts.NextInt(scenario.Bodies.Count), contacts.NextInt(1, 4), friction);
+            }
+
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            bool converged = Solve(ref solver, scenario, true, impulses);
+            int couplings = solver.Stats.CouplingIterations;
+
+            // The bounds it settled on have to be the friction's share of the normals it found, and the answer has to
+            // solve the problem with those bounds.
+            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            {
+                float normal = 0.0f;
+                for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                {
+                    normal += impulses[row];
+                }
+
+                float share = friction * math.max(normal, 0.0f);
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    float2 bounds = solver.Bounds(row);
+                    Assert.That(bounds.y, Is.EqualTo(share).Within(1e-3f * share + 1e-4f), $"row {row} has the wrong bound");
+                    scenario.Lower[row] = bounds.x;
+                    scenario.Upper[row] = bounds.y;
+                }
+            }
+
+            solver.Dispose();
+            Assert.That(converged, Is.True);
+            Assert.That(couplings, Is.LessThan(25), "the friction bounds never settled");
             AssertSolves(scenario, impulses, 2e-3);
         }
 

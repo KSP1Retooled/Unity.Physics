@@ -24,7 +24,7 @@ namespace KSP.Retooled.Physics.Tests
         private const int RunLength = 12;
         private const int MaxRuns = 8;
         private const int SmallestRows = 64;
-        private const int Magic = 0x31505352;
+        private const int Magic = 0x32505352;
 
         private static string folder;
         private static int solves;
@@ -54,6 +54,7 @@ namespace KSP.Retooled.Physics.Tests
             public float[] Lower;
             public float[] Upper;
             public byte[] InitialStates;
+            public SparseConstraintSolver.Coupling[] Couplings;
             public float[] Impulses;
             public bool Bounded;
 
@@ -71,6 +72,7 @@ namespace KSP.Retooled.Physics.Tests
             int bodyCount = reader.ReadInt32();
             int blockCount = reader.ReadInt32();
             int rowCount = reader.ReadInt32();
+            int couplingCount = reader.ReadInt32();
             Saved saved = new Saved
             {
                 Bounded = reader.ReadBoolean(),
@@ -82,6 +84,7 @@ namespace KSP.Retooled.Physics.Tests
                 Lower = new float[rowCount],
                 Upper = new float[rowCount],
                 InitialStates = new byte[rowCount],
+                Couplings = new SparseConstraintSolver.Coupling[couplingCount],
                 Impulses = new float[rowCount],
             };
 
@@ -93,6 +96,7 @@ namespace KSP.Retooled.Physics.Tests
             ReadArray(reader, saved.Lower);
             ReadArray(reader, saved.Upper);
             ReadArray(reader, saved.InitialStates);
+            ReadArray(reader, saved.Couplings);
             ReadArray(reader, saved.Impulses);
             return saved;
         }
@@ -128,6 +132,7 @@ namespace KSP.Retooled.Physics.Tests
             writer.Write(problem->BodyCount);
             writer.Write(problem->BlockCount);
             writer.Write(problem->RowCount);
+            writer.Write(problem->CouplingCount);
             writer.Write(bounded);
 
             int rows = problem->RowCount;
@@ -139,6 +144,7 @@ namespace KSP.Retooled.Physics.Tests
             WriteBytes(writer, problem->Lower, rows * sizeof(float));
             WriteBytes(writer, problem->Upper, rows * sizeof(float));
             WriteBytes(writer, problem->InitialStates, rows);
+            WriteBytes(writer, problem->Couplings, problem->CouplingCount * sizeof(SparseConstraintSolver.Coupling));
             WriteBytes(writer, impulses, rows * sizeof(float));
         }
 

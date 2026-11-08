@@ -188,6 +188,7 @@ namespace KSP.Retooled.Physics.Tests
             fixed (float* lower = saved.Lower)
             fixed (float* upper = saved.Upper)
             fixed (byte* initialStates = saved.InitialStates)
+            fixed (SparseConstraintSolver.Coupling* couplings = saved.Couplings)
             fixed (float* output = impulses)
             fixed (SparseConstraintSolver* solverPointer = &solver)
             {
@@ -204,6 +205,8 @@ namespace KSP.Retooled.Physics.Tests
                     Lower = lower,
                     Upper = upper,
                     InitialStates = initialStates,
+                    CouplingCount = saved.Couplings.Length,
+                    Couplings = couplings,
                 };
 
                 new SolveJob
