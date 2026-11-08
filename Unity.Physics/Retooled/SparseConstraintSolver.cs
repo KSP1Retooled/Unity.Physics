@@ -156,6 +156,13 @@ namespace Unity.Physics
         UnsafeList<double> right;
         UnsafeList<double> solution;
         UnsafeList<double> correction;
+
+        // One over each diagonal of the factor, by unknown, so that a substitution multiplies where it would divide.
+        UnsafeList<double> inverseDiagonal;
+
+        // One over each body's mass and over its smallest inertia, which turn its residual into speeds.
+        UnsafeList<double2> bodySpeedScale;
+
         UnsafeList<byte> state;
 
         // The shape of the problem the structure above belongs to.
@@ -179,6 +186,8 @@ namespace Unity.Physics
             right = new UnsafeList<double>(InitialCapacity, allocator);
             solution = new UnsafeList<double>(InitialCapacity, allocator);
             correction = new UnsafeList<double>(InitialCapacity, allocator);
+            inverseDiagonal = new UnsafeList<double>(InitialCapacity, allocator);
+            bodySpeedScale = new UnsafeList<double2>(InitialCapacity, allocator);
             state = new UnsafeList<byte>(InitialCapacity, allocator);
             analyzedBlocks = new UnsafeList<ConstraintBlock>(InitialCapacity, allocator);
             analyzedBodies = -1;
@@ -198,6 +207,8 @@ namespace Unity.Physics
             right.Dispose();
             solution.Dispose();
             correction.Dispose();
+            inverseDiagonal.Dispose();
+            bodySpeedScale.Dispose();
             state.Dispose();
             analyzedBlocks.Dispose();
         }
@@ -230,6 +241,14 @@ namespace Unity.Physics
             }
 
             statistics.AnalyzeTime = Lap(ref started);
+
+            bodySpeedScale.Resize(problem.BodyCount);
+            for (int body = 0; body < problem.BodyCount; body++)
+            {
+                double3x3 inertia = problem.Bodies[body].Inertia;
+                double smallestInertia = math.min(inertia.c0.x, math.min(inertia.c1.y, inertia.c2.z));
+                bodySpeedScale[body] = new double2(1.0 / problem.Bodies[body].Mass, 1.0 / smallestInertia);
+            }
 
             if (!factored)
             {
@@ -571,6 +590,7 @@ namespace Unity.Physics
             right.Resize(start);
             solution.Resize(start);
             correction.Resize(start);
+            inverseDiagonal.Resize(start);
         }
 
         /// <summary>Where the block between two nodes is, which only the earlier of them holds.</summary>
@@ -765,13 +785,13 @@ namespace Unity.Physics
                 double* miss = residual + start;
                 Body source = problem.Bodies[body];
                 double3 momentum = math.mul(source.Inertia, new double3(speed[3], speed[4], speed[5]));
-                double smallestInertia = math.min(source.Inertia.c0.x, math.min(source.Inertia.c1.y, source.Inertia.c2.z));
+                double2 scale = bodySpeedScale[body];
                 for (int i = 0; i < 3; i++)
                 {
                     miss[i] -= source.Mass * speed[i];
                     miss[i + 3] -= momentum[i];
-                    worst = math.max(worst, math.abs(miss[i]) / source.Mass);
-                    worst = math.max(worst, math.abs(miss[i + 3]) / smallestInertia);
+                    worst = math.max(worst, math.abs(miss[i]) * scale.x);
+                    worst = math.max(worst, math.abs(miss[i + 3]) * scale.y);
                 }
             }
 
@@ -862,6 +882,16 @@ namespace Unity.Physics
                     }
                 }
             }
+
+            for (int i = 0; i < nodes.Length; i++)
+            {
+                Node node = nodes[i];
+                double* diagonal = values + node.Diagonal;
+                for (int row = 0; row < node.Size; row++)
+                {
+                    inverseDiagonal[node.Start + row] = 1.0 / diagonal[row * node.Size + row];
+                }
+            }
         }
 
         static void CholeskyInPlace(double* a, int size, double sign)
@@ -942,6 +972,7 @@ namespace Unity.Physics
                 int size = node.Size;
                 double* c = values + node.Diagonal;
                 double* own = x + node.Start;
+                double* inverse = inverseDiagonal.Ptr + node.Start;
                 for (int row = 0; row < size; row++)
                 {
                     double sum = own[row];
@@ -950,7 +981,7 @@ namespace Unity.Physics
                         sum -= c[row * size + k] * own[k];
                     }
 
-                    own[row] = sum / c[row * size + row];
+                    own[row] = sum * inverse[row];
                 }
 
                 Neighbour* column = allNeighbours + node.FirstNeighbour;
@@ -999,6 +1030,7 @@ namespace Unity.Physics
                     }
                 }
 
+                double* inverse = inverseDiagonal.Ptr + node.Start;
                 for (int row = size - 1; row >= 0; row--)
                 {
                     double sum = own[row];
@@ -1007,7 +1039,7 @@ namespace Unity.Physics
                         sum -= c[k * size + row] * own[k];
                     }
 
-                    own[row] = sum / c[row * size + row];
+                    own[row] = sum * inverse[row];
                 }
             }
         }
