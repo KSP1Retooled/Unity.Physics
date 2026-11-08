@@ -97,6 +97,19 @@ namespace KSP.Retooled.Physics
             table->freeIds[table->freeIdCount++] = (ushort)id;
         }
 
+        /// <summary>
+        /// Places every pair again with this domain's hash. The table outlives a domain reload, and the code before it may
+        /// have placed pairs by another hash, which would leave them unfound.
+        /// </summary>
+        internal static void Reslot(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            if (table != null && table->slotCount != 0)
+            {
+                table->Rehash(globals);
+            }
+        }
+
         private static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
         {
             if (globals->ignoreTable == null)
@@ -119,6 +132,21 @@ namespace KSP.Retooled.Physics
         private static uint KeyOf(uint first, uint second)
         {
             return (math.min(first, second) << 16) | math.max(first, second);
+        }
+
+        /// <summary>
+        /// Spreads every bit of a key over the slot index. Ids are handed out in order, so the keys of one craft differ in few
+        /// bits of each half, and masking a plain product keeps only the low ones: every pair sharing its higher id then starts
+        /// on one of a handful of slots, and the probes run long.
+        /// </summary>
+        private static uint Mix(uint key)
+        {
+            key ^= key >> 16;
+            key *= 0x7FEB352Du;
+            key ^= key >> 15;
+            key *= 0x846CA68Bu;
+            key ^= key >> 16;
+            return key;
         }
 
         private uint AllocateId()
@@ -147,7 +175,7 @@ namespace KSP.Retooled.Physics
 
             uint mask = slotCount - 1;
             uint firstDeleted = uint.MaxValue;
-            for (uint slot = (key * 0x9E3779B1u) & mask; ; slot = (slot + 1) & mask)
+            for (uint slot = Mix(key) & mask; ; slot = (slot + 1) & mask)
             {
                 uint content = slots[slot];
                 if (content == EmptySlot)
@@ -301,7 +329,7 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                uint slot = (edges[content - 1].Key * 0x9E3779B1u) & mask;
+                uint slot = Mix(edges[content - 1].Key) & mask;
                 while (slots[slot] != EmptySlot)
                 {
                     slot = (slot + 1) & mask;

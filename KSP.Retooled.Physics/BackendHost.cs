@@ -130,6 +130,7 @@ namespace KSP.Retooled.Physics
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
+            IgnoreTable.Reslot(NativeStore.RetooledPhysics_Globals());
             attached = true;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
 
