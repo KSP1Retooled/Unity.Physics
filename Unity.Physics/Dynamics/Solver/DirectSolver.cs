@@ -1297,14 +1297,24 @@ namespace Unity.Physics
                 kept = &temporary;
             }
 
-            kept->Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+            float* impulsesPtr = (float*)impulses.GetUnsafePtr();
+            kept->Solve(problem, impulsesPtr, bounded);
 
-            // The second solve has the same matrix, so it reuses the first one's factor and costs about a substitution.
+            var drift = new NativeArray<float>(rows, Allocator.Temp);
+            float* driftPtr = (float*)drift.GetUnsafePtr();
             if (holdsPositions && AimAtPredictedDrift(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities,
-                motionDatas, stepInput.Timestep, contactPairs, jacobianRows, (float*)impulses.GetUnsafePtr(), rhs))
+                motionDatas, stepInput.Timestep, contactPairs, jacobianRows, impulsesPtr, driftPtr)
+                && !kept->SolveChange(problem, driftPtr, impulsesPtr))
             {
-                kept->Solve(problem, (float*)impulses.GetUnsafePtr(), bounded);
+                for (int row = 0; row < rows; row++)
+                {
+                    rhs[row] += drift[row];
+                }
+
+                kept->Solve(problem, impulsesPtr, bounded);
             }
+
+            drift.Dispose();
 
             if (kept == &temporary)
             {
@@ -1325,8 +1335,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Aims the rows that hold a position at where the integrator will really take their constraint, and returns whether
-        /// any changed. A row holds the constraint's rate, which is its drift only to first order: a spinning pair swings its
+        /// Writes to <paramref name="rhsChange"/> what would aim the rows that hold a position at where the integrator will
+        /// really take their constraint, and returns whether any is nonzero. A row holds the constraint's rate, which is its drift only to first order: a spinning pair swings its
         /// anchors along a curve the row can't see, and they part a little every substep. The curve is measured at the
         /// velocities <paramref name="impulses"/> give, not the ones before the solve: a body can start a step far out of
         /// line with its joints, and extrapolating that motion, which the solve takes away, would throw the craft apart.
@@ -1334,7 +1344,7 @@ namespace Unity.Physics
         static unsafe bool AimAtPredictedDrift(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, float timestep, int contactPairs, in JacobianRows jacobianRows,
-            float* impulses, in Vector rhs)
+            float* impulses, float* rhsChange)
         {
             const int startColumnA = 0;
             const int startColumnB = 6;
@@ -1380,7 +1390,7 @@ namespace Unity.Physics
                         float rate = RowRate(jacobianRows, startRow + i, ixBodyA, ixBodyB, ixBodyA < solved.Length,
                             ixBodyB < solved.Length, solved, motionDatas);
                         float missed = change[i] / timestep - rate;
-                        rhs[startRow + i] -= missed;
+                        rhsChange[startRow + i] = -missed;
                         changed |= missed != 0.0f;
                     }
                 }

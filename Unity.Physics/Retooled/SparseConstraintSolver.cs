@@ -318,6 +318,44 @@ namespace Unity.Physics
             return false;
         }
 
+        /// <summary>
+        /// Adds to <paramref name="impulses"/>, the answer of the last <see cref="Solve"/>, what a small change to the free
+        /// rows' right-hand side asks of them. The matrix is the same, so one substitution with the factor in hand is the
+        /// whole of it: the factor may be of an earlier problem, but its error is a fraction of a correction that is itself
+        /// small, so it isn't refined. Tight rows stay where they are. Returns false, changing nothing, if there is no factor.
+        /// </summary>
+        public bool SolveChange(in Problem problem, float* rightHandSideChange, float* impulses)
+        {
+            if (!factored)
+            {
+                return false;
+            }
+
+            long started = ProfilerUnsafeUtility.Timestamp;
+            double* step = correction.Ptr;
+            UnsafeUtility.MemClear(step, correction.Length * sizeof(double));
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (state[row] == Free)
+                {
+                    step[nodes[rowNode[row]].Start + rowInNode[row]] = rightHandSideChange[row];
+                }
+            }
+
+            Substitute(step);
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (state[row] == Free)
+                {
+                    float impulse = impulses[row] - (float)step[nodes[rowNode[row]].Start + rowInNode[row]];
+                    impulses[row] = math.clamp(impulse, problem.Lower[row], problem.Upper[row]);
+                }
+            }
+
+            statistics.SubstituteTime += Lap(ref started);
+            return true;
+        }
+
         static long Lap(ref long started)
         {
             long now = ProfilerUnsafeUtility.Timestamp;
