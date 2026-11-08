@@ -90,6 +90,10 @@ namespace KSP.Retooled.Physics
                 Results = results.AsArray(),
             }.Schedule(work.Length, 1, dependency);
 
+            // Builds can take milliseconds, and scheduled jobs wait in a batch until something flushes it, so start them now
+            // rather than after the rest of the step is scheduled.
+            JobHandle.ScheduleBatchedJobs();
+
             return new SwapCollidersJob
             {
                 Bodies = world->bodies,
