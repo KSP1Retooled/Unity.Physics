@@ -58,7 +58,8 @@ namespace KSP.Retooled.Physics
                 ComponentType.ReadWrite<BodySleep>(),
                 ComponentType.ReadWrite<BodyForces>(),
                 ComponentType.ReadWrite<BodyTarget>(),
-                ComponentType.ReadWrite<PhysicsCollider>());
+                ComponentType.ReadWrite<PhysicsCollider>(),
+                ComponentType.ReadOnly<BodyOwner>());
             binding.Bound = true;
 
             int worlds = NativeStore.RetooledPhysics_WorldCount();
@@ -132,7 +133,9 @@ namespace KSP.Retooled.Physics
         private static void Place(NativeStore.BodyData* hot)
         {
             NativeStore.BodyHome* home = &hot->owner->home;
-            hot->entity = Current.Data.Manager.CreateEntity(Current.Data.Archetype);
+            ref EntityManager manager = ref Current.Data.Manager;
+            hot->entity = manager.CreateEntity(Current.Data.Archetype);
+            manager.SetComponentData(hot->entity, new BodyOwner { Body = hot->owner });
             Resolve(hot);
             *hot->pose = home->pose;
             *hot->velocity = home->velocity;
@@ -209,36 +212,20 @@ namespace KSP.Retooled.Physics
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.HandOverRow.Auto();
 
             ref EntityManager manager = ref Current.Data.Manager;
-            int worlds = NativeStore.RetooledPhysics_WorldCount();
-            for (int w = 0; w < worlds; w++)
-            {
-                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
-                for (uint i = 0; i < world->bodyCount; i++)
-                {
-                    NativeStore.BodyData* hot = world->bodies + i;
-                    if (hot->entity == Entity.Null)
-                    {
-                        continue;
-                    }
-
-                    EntityStorageInfo moved = manager.GetStorageInfo(hot->entity);
-                    if (moved.Chunk == slot.Chunk && moved.IndexInChunk == slot.IndexInChunk)
-                    {
-                        hot->pose = vacated->pose;
-                        hot->velocity = vacated->velocity;
-                        hot->mass = vacated->mass;
-                        hot->bodyMass = vacated->bodyMass;
-                        hot->damping = vacated->damping;
-                        hot->limits = vacated->limits;
-                        hot->sleep = vacated->sleep;
-                        hot->forces = vacated->forces;
-                        hot->target = vacated->target;
-                        hot->collider = vacated->collider;
-                        hot->orderVersion = Version();
-                        return;
-                    }
-                }
-            }
+            ComponentTypeHandle<BodyOwner> owners = manager.GetComponentTypeHandle<BodyOwner>(true);
+            NativeStore.Body* body = slot.Chunk.GetNativeArray(ref owners)[slot.IndexInChunk].Body;
+            NativeStore.BodyData* hot = body->world->bodies + body->index;
+            hot->pose = vacated->pose;
+            hot->velocity = vacated->velocity;
+            hot->mass = vacated->mass;
+            hot->bodyMass = vacated->bodyMass;
+            hot->damping = vacated->damping;
+            hot->limits = vacated->limits;
+            hot->sleep = vacated->sleep;
+            hot->forces = vacated->forces;
+            hot->target = vacated->target;
+            hot->collider = vacated->collider;
+            hot->orderVersion = Version();
         }
 
         private static bool Clean()
@@ -323,5 +310,14 @@ namespace KSP.Retooled.Physics
         {
             return (T*)UnsafeUtility.AddressOf(ref component.ValueRW);
         }
+    }
+
+    /// <summary>
+    /// The body a body entity belongs to, which finds its row when Entities moves the entity: the record stays put and
+    /// knows the row's index.
+    /// </summary>
+    internal unsafe struct BodyOwner : IComponentData
+    {
+        public NativeStore.Body* Body;
     }
 }
