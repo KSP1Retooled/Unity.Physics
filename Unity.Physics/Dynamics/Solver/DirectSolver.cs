@@ -1231,7 +1231,7 @@ namespace Unity.Physics
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs)
+            int contactPairs, SparseSolveTeam* team = null)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1315,6 +1315,8 @@ namespace Unity.Physics
                 kept = &temporary;
             }
 
+            // The team lives for one substep, and a kept solver for many.
+            kept->Team = team;
             float* impulsesPtr = (float*)impulses.GetUnsafePtr();
             kept->Solve(problem, impulsesPtr, bounded);
 
@@ -1333,6 +1335,7 @@ namespace Unity.Physics
             }
 
             drift.Dispose();
+            kept->Team = null;
 
             if (kept == &temporary)
             {

@@ -113,6 +113,11 @@ namespace Unity.Physics
         public struct Statistics
         {
             public int Nodes;
+
+            /// <summary>The independent subtrees the factorization splits into, and the nodes above them that run alone.</summary>
+            public int Tasks;
+            public int TopNodes;
+
             public int FactorBlocks;
             public long FactorScalars;
             public int PivotingIterations;
@@ -143,6 +148,23 @@ namespace Unity.Physics
         const byte UpperTight = 2;
 
         const int NoNode = -1;
+        const int Top = -1;
+
+        /// <summary>How many subtrees a factorization aims to split into, enough for every lane to keep busy.</summary>
+        const int TasksPerFactorization = 64;
+
+        // What a task of a team's stage does.
+        const int FactorizeTask = 0;
+        const int ForwardTask = 1;
+        const int BackwardTask = 2;
+        const int BoundaryUpdateTask = 3;
+        const int TopUpdateTask = 4;
+
+        /// <summary>
+        /// How many neighbours a top node needs before its updates are worth handing out one neighbour each. Fewer finish
+        /// before the lanes would notice them.
+        /// </summary>
+        const int SharedUpdateNeighbours = 6;
 
         /// <summary>A node of the graph: a body, or all the rows between one pair of bodies.</summary>
         struct Node
@@ -160,6 +182,10 @@ namespace Unity.Physics
             public int Diagonal;
             public int FirstNeighbour;
             public int NeighbourCount;
+
+            // The subtree it is eliminated in, or Top, and how many of its neighbours come first and are in that subtree too.
+            public int Task;
+            public int OwnNeighbours;
         }
 
         struct Neighbour
@@ -173,6 +199,23 @@ namespace Unity.Physics
         UnsafeList<Node> nodes;
         UnsafeList<int> order;
         UnsafeList<Neighbour> neighbours;
+
+        // The subtrees of the elimination tree that factor and substitute independently: each one's positions, in order, start
+        // at its entry in taskStarts. The top joins them and runs alone, and the boundary is every subtree node that has a
+        // neighbour in the top, whose updates of the top wait until the subtrees are done.
+        UnsafeList<int> taskStarts;
+        UnsafeList<int> taskPositions;
+        UnsafeList<int> topPositions;
+        UnsafeList<int> boundaryPositions;
+
+        // The boundary's updates of the top, by the top node whose blocks they land in: a boundary node's position and which
+        // of its neighbours that is. Each top node's list starts at its entry in topUpdateStarts.
+        UnsafeList<int> topUpdateStarts;
+        UnsafeList<int2> topUpdates;
+
+        // The top node whose updates a stage splits by neighbour.
+        int stageNode;
+
         UnsafeList<int> rowNode;
         UnsafeList<int> rowInNode;
         UnsafeList<double> factor;
@@ -209,6 +252,14 @@ namespace Unity.Physics
             nodes = new UnsafeList<Node>(InitialCapacity, allocator);
             order = new UnsafeList<int>(InitialCapacity, allocator);
             neighbours = new UnsafeList<Neighbour>(InitialCapacity, allocator);
+            taskStarts = new UnsafeList<int>(InitialCapacity, allocator);
+            taskPositions = new UnsafeList<int>(InitialCapacity, allocator);
+            topPositions = new UnsafeList<int>(InitialCapacity, allocator);
+            boundaryPositions = new UnsafeList<int>(InitialCapacity, allocator);
+            topUpdateStarts = new UnsafeList<int>(InitialCapacity, allocator);
+            topUpdates = new UnsafeList<int2>(InitialCapacity, allocator);
+            stageNode = NoNode;
+            Team = null;
             rowNode = new UnsafeList<int>(InitialCapacity, allocator);
             rowInNode = new UnsafeList<int>(InitialCapacity, allocator);
             factor = new UnsafeList<double>(InitialCapacity, allocator);
@@ -233,6 +284,12 @@ namespace Unity.Physics
             nodes.Dispose();
             order.Dispose();
             neighbours.Dispose();
+            taskStarts.Dispose();
+            taskPositions.Dispose();
+            topPositions.Dispose();
+            boundaryPositions.Dispose();
+            topUpdateStarts.Dispose();
+            topUpdates.Dispose();
             rowNode.Dispose();
             rowInNode.Dispose();
             factor.Dispose();
@@ -247,6 +304,12 @@ namespace Unity.Physics
             coupled.Dispose();
             analyzedBlocks.Dispose();
         }
+
+        /// <summary>
+        /// The lanes that share this solver's factorizations and substitutions, or null to run them on the caller's thread
+        /// alone. The answer is the same either way.
+        /// </summary>
+        public SparseSolveTeam* Team;
 
         public Statistics Stats => statistics;
 
@@ -267,6 +330,8 @@ namespace Unity.Physics
             statistics = new Statistics
             {
                 Nodes = statistics.Nodes,
+                Tasks = statistics.Tasks,
+                TopNodes = statistics.TopNodes,
                 FactorBlocks = statistics.FactorBlocks,
                 FactorScalars = statistics.FactorScalars,
             };
@@ -577,6 +642,7 @@ namespace Unity.Physics
             MergeBlocksByBodyPair(problem, bounded);
             Order();
             LayOut();
+            Partition();
 
             analyzedBodies = problem.BodyCount;
             analyzedBounded = bounded;
@@ -584,6 +650,8 @@ namespace Unity.Physics
             UnsafeUtility.MemCpy(analyzedBlocks.Ptr, problem.Blocks, problem.BlockCount * sizeof(ConstraintBlock));
 
             statistics.Nodes = nodes.Length;
+            statistics.Tasks = taskStarts.Length - 1;
+            statistics.TopNodes = topPositions.Length;
             statistics.FactorBlocks = neighbours.Length;
             statistics.FactorScalars = factor.Length;
         }
@@ -776,6 +844,148 @@ namespace Unity.Physics
             solution.Resize(start);
             correction.Resize(start);
             inverseDiagonal.Resize(start);
+        }
+
+        /// <summary>
+        /// Splits the elimination tree into subtrees that factor independently. A node's neighbours are all its ancestors in
+        /// the tree, whose parent link is a node's first neighbour, so a node only ever updates its own subtree or the nodes
+        /// above every subtree. Those top nodes join the subtrees, which on a craft is mostly its core stack. Each subtree is
+        /// at most a share of the whole work, so that lanes taking them as they come stay balanced. The split depends on the
+        /// structure alone, which keeps the answer the same however many lanes share it.
+        /// </summary>
+        void Partition()
+        {
+            int count = order.Length;
+            var subtree = new NativeArray<double>(count, Allocator.Temp);
+            var parent = new NativeArray<int>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            double total = 0.0;
+            for (int position = 0; position < count; position++)
+            {
+                Node node = nodes[order[position]];
+                parent[position] = node.NeighbourCount > 0 ? nodes[neighbours[node.FirstNeighbour].Node].Position : -1;
+
+                // Roughly the multiplications its elimination takes: its own block, one solve per neighbour, and one update
+                // per pair of them.
+                double size = node.Size;
+                double work = size * size * size;
+                double below = 0.0;
+                for (int i = node.NeighbourCount - 1; i >= 0; i--)
+                {
+                    double neighbourSize = nodes[neighbours[node.FirstNeighbour + i].Node].Size;
+                    below += neighbourSize;
+                    work += neighbourSize * size * (size + below);
+                }
+
+                subtree[position] += work;
+                total += work;
+                if (parent[position] >= 0)
+                {
+                    subtree[parent[position]] += subtree[position];
+                }
+            }
+
+            // Parents come after their children, so walking back reaches each node after its parent.
+            double largestTask = total / TasksPerFactorization;
+            int tasks = 0;
+            for (int position = count - 1; position >= 0; position--)
+            {
+                ref Node node = ref nodes.ElementAt(order[position]);
+                int above = parent[position] < 0 ? Top : nodes[order[parent[position]]].Task;
+                node.Task = above != Top ? above : subtree[position] <= largestTask ? tasks++ : Top;
+            }
+
+            taskStarts.Clear();
+            taskStarts.Resize(tasks + 1, NativeArrayOptions.ClearMemory);
+            topPositions.Clear();
+            boundaryPositions.Clear();
+            for (int position = 0; position < count; position++)
+            {
+                ref Node node = ref nodes.ElementAt(order[position]);
+                node.OwnNeighbours = node.NeighbourCount;
+                if (node.Task == Top)
+                {
+                    topPositions.Add(position);
+                    continue;
+                }
+
+                taskStarts[node.Task + 1]++;
+                for (int i = 0; i < node.NeighbourCount; i++)
+                {
+                    if (nodes[neighbours[node.FirstNeighbour + i].Node].Task == Top)
+                    {
+                        node.OwnNeighbours = i;
+                        boundaryPositions.Add(position);
+                        break;
+                    }
+                }
+            }
+
+            for (int task = 0; task < tasks; task++)
+            {
+                taskStarts[task + 1] += taskStarts[task];
+            }
+
+            taskPositions.Resize(taskStarts[tasks]);
+            var filled = new NativeArray<int>(tasks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int task = 0; task < tasks; task++)
+            {
+                filled[task] = taskStarts[task];
+            }
+
+            for (int position = 0; position < count; position++)
+            {
+                int task = nodes[order[position]].Task;
+                if (task != Top)
+                {
+                    taskPositions[filled[task]++] = position;
+                }
+            }
+
+            var topIndex = new NativeArray<int>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            topUpdateStarts.Clear();
+            topUpdateStarts.Resize(topPositions.Length + 1, NativeArrayOptions.ClearMemory);
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                topIndex[topPositions[i]] = i;
+            }
+
+            for (int i = 0; i < boundaryPositions.Length; i++)
+            {
+                Node node = nodes[order[boundaryPositions[i]]];
+                for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
+                {
+                    topUpdateStarts[topIndex[nodes[neighbours[node.FirstNeighbour + n].Node].Position] + 1]++;
+                }
+            }
+
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                topUpdateStarts[i + 1] += topUpdateStarts[i];
+            }
+
+            topUpdates.Resize(topUpdateStarts[topPositions.Length]);
+            var placed = new NativeArray<int>(topPositions.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int i = 0; i < topPositions.Length; i++)
+            {
+                placed[i] = topUpdateStarts[i];
+            }
+
+            for (int i = 0; i < boundaryPositions.Length; i++)
+            {
+                Node node = nodes[order[boundaryPositions[i]]];
+                for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
+                {
+                    int target = topIndex[nodes[neighbours[node.FirstNeighbour + n].Node].Position];
+                    topUpdates[placed[target]++] = new int2(boundaryPositions[i], n);
+                }
+            }
+
+            placed.Dispose();
+            topIndex.Dispose();
+
+            filled.Dispose();
+            parent.Dispose();
+            subtree.Dispose();
         }
 
         /// <summary>Where the block between two nodes is, which only the earlier of them holds.</summary>
@@ -1031,50 +1241,139 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = FactorizeMarker.Auto();
 
-            double* values = factor.Ptr;
-            Neighbour* allNeighbours = neighbours.Ptr;
-            for (int position = 0; position < order.Length; position++)
+            RunTasks(FactorizeTask, taskStarts.Length - 1, null);
+
+            // The subtrees' updates of the top land in blocks the top holds, which two subtrees can share, so they go by the
+            // top node that holds them.
+            RunTasks(BoundaryUpdateTask, topPositions.Length, null);
+
+            // The top nodes run in order, but each one's updates of its neighbours land in blocks each neighbour holds.
+            for (int i = 0; i < topPositions.Length; i++)
             {
-                Node node = nodes[order[position]];
-                int size = node.Size;
-                double* diagonal = values + node.Diagonal;
-                CholeskyInPlace(diagonal, size, node.Sign);
-
-                Neighbour* column = allNeighbours + node.FirstNeighbour;
-                for (int i = 0; i < node.NeighbourCount; i++)
+                Node node = nodes[order[topPositions[i]]];
+                Eliminate(node);
+                if (node.NeighbourCount < SharedUpdateNeighbours)
                 {
-                    SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, size);
+                    UpdateLaterNodes(node, 0, node.NeighbourCount);
+                    continue;
                 }
 
-                for (int i = 0; i < node.NeighbourCount; i++)
+                stageNode = order[topPositions[i]];
+                RunTasks(TopUpdateTask, node.NeighbourCount, null);
+            }
+        }
+
+        /// <summary>Runs a stage's tasks on the team if there is one.</summary>
+        void RunTasks(int kind, int tasks, double* x)
+        {
+            if (Team == null)
+            {
+                for (int task = 0; task < tasks; task++)
                 {
-                    Node first = nodes[column[i].Node];
-                    double* firstBlock = values + column[i].Offset;
-                    Update(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
-
-                    // Elimination gave the first neighbour every later one, in the same order, so one walk finds them all.
-                    Neighbour* targets = allNeighbours + first.FirstNeighbour;
-                    int target = 0;
-                    for (int j = i + 1; j < node.NeighbourCount; j++)
-                    {
-                        while (targets[target].Node != column[j].Node)
-                        {
-                            target++;
-                        }
-
-                        int laterSize = nodes[column[j].Node].Size;
-                        Update(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
-                    }
+                    RunTask(kind, task, x);
                 }
+
+                return;
             }
 
-            for (int i = 0; i < nodes.Length; i++)
+            Team->Lead((SparseConstraintSolver*)UnsafeUtility.AddressOf(ref this), kind, tasks, x);
+        }
+
+        /// <summary>One task of a stage, which touches nothing another task of it does.</summary>
+        internal void RunTask(int kind, int task, double* x)
+        {
+            if (kind == BoundaryUpdateTask)
             {
-                Node node = nodes[i];
-                double* diagonal = values + node.Diagonal;
-                for (int row = 0; row < node.Size; row++)
+                for (int i = topUpdateStarts[task]; i < topUpdateStarts[task + 1]; i++)
                 {
-                    inverseDiagonal[node.Start + row] = 1.0 / diagonal[row * node.Size + row];
+                    int2 update = topUpdates[i];
+                    UpdateLaterNodes(nodes[order[update.x]], update.y, update.y + 1);
+                }
+
+                return;
+            }
+
+            if (kind == TopUpdateTask)
+            {
+                UpdateLaterNodes(nodes[stageNode], task, task + 1);
+                return;
+            }
+
+            int first = taskStarts[task];
+            int end = taskStarts[task + 1];
+            if (kind == FactorizeTask)
+            {
+                for (int i = first; i < end; i++)
+                {
+                    Node node = nodes[order[taskPositions[i]]];
+                    Eliminate(node);
+                    UpdateLaterNodes(node, 0, node.OwnNeighbours);
+                }
+            }
+            else if (kind == ForwardTask)
+            {
+                for (int i = first; i < end; i++)
+                {
+                    Node node = nodes[order[taskPositions[i]]];
+                    SubstituteForward(node, x, node.OwnNeighbours);
+                }
+            }
+            else
+            {
+                for (int i = end - 1; i >= first; i--)
+                {
+                    SubstituteBackward(nodes[order[taskPositions[i]]], x);
+                }
+            }
+        }
+
+        /// <summary>Factors a node's diagonal block, which every update from earlier nodes has reached, and its column.</summary>
+        void Eliminate(in Node node)
+        {
+            double* values = factor.Ptr;
+            int size = node.Size;
+            double* diagonal = values + node.Diagonal;
+            CholeskyInPlace(diagonal, size, node.Sign);
+            for (int row = 0; row < size; row++)
+            {
+                inverseDiagonal[node.Start + row] = 1.0 / diagonal[row * size + row];
+            }
+
+            Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            for (int i = 0; i < node.NeighbourCount; i++)
+            {
+                SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, size);
+            }
+        }
+
+        /// <summary>
+        /// Subtracts an eliminated node from the blocks its neighbours from <paramref name="firstNeighbour"/> on hold: each
+        /// one's diagonal, and its blocks with every later neighbour.
+        /// </summary>
+        void UpdateLaterNodes(in Node node, int firstNeighbour, int endNeighbour)
+        {
+            double* values = factor.Ptr;
+            Neighbour* allNeighbours = neighbours.Ptr;
+            Neighbour* column = allNeighbours + node.FirstNeighbour;
+            int size = node.Size;
+            for (int i = firstNeighbour; i < endNeighbour; i++)
+            {
+                Node first = nodes[column[i].Node];
+                double* firstBlock = values + column[i].Offset;
+                Update(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
+
+                // Elimination gave the first neighbour every later one, in the same order, so one walk finds them all.
+                Neighbour* targets = allNeighbours + first.FirstNeighbour;
+                int target = 0;
+                for (int j = i + 1; j < node.NeighbourCount; j++)
+                {
+                    while (targets[target].Node != column[j].Node)
+                    {
+                        target++;
+                    }
+
+                    int laterSize = nodes[column[j].Node].Size;
+                    Update(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
                 }
             }
         }
@@ -1149,83 +1448,125 @@ namespace Unity.Physics
             using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
 
             double* values = factor.Ptr;
-            Neighbour* allNeighbours = neighbours.Ptr;
+            RunTasks(ForwardTask, taskStarts.Length - 1, x);
 
-            for (int position = 0; position < order.Length; position++)
+            // What the subtrees pass to the top, from their nodes' answers, which already carry the node's sign.
+            for (int i = 0; i < boundaryPositions.Length; i++)
             {
-                Node node = nodes[order[position]];
-                int size = node.Size;
-                double* c = values + node.Diagonal;
+                Node node = nodes[order[boundaryPositions[i]]];
                 double* own = x + node.Start;
-                double* inverse = inverseDiagonal.Ptr + node.Start;
-                for (int row = 0; row < size; row++)
+                Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+                for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
                 {
-                    double sum = own[row];
-                    for (int k = 0; k < row; k++)
-                    {
-                        sum -= c[row * size + k] * own[k];
-                    }
-
-                    own[row] = sum * inverse[row];
-                }
-
-                Neighbour* column = allNeighbours + node.FirstNeighbour;
-                for (int i = 0; i < node.NeighbourCount; i++)
-                {
-                    Node other = nodes[column[i].Node];
-                    double* block = values + column[i].Offset;
+                    Node other = nodes[column[n].Node];
+                    double* block = values + column[n].Offset;
                     double* target = x + other.Start;
                     for (int row = 0; row < other.Size; row++)
                     {
                         double sum = 0.0;
-                        for (int k = 0; k < size; k++)
+                        for (int k = 0; k < node.Size; k++)
                         {
-                            sum += block[row * size + k] * own[k];
+                            sum += block[row * node.Size + k] * own[k];
                         }
 
-                        target[row] -= node.Sign * sum;
+                        target[row] -= sum;
                     }
-                }
-
-                for (int row = 0; row < size; row++)
-                {
-                    own[row] *= node.Sign;
                 }
             }
 
-            for (int position = order.Length - 1; position >= 0; position--)
+            for (int i = 0; i < topPositions.Length; i++)
             {
-                Node node = nodes[order[position]];
-                int size = node.Size;
-                double* c = values + node.Diagonal;
-                double* own = x + node.Start;
+                Node node = nodes[order[topPositions[i]]];
+                SubstituteForward(node, x, node.NeighbourCount);
+            }
 
-                Neighbour* column = allNeighbours + node.FirstNeighbour;
-                for (int i = 0; i < node.NeighbourCount; i++)
+            for (int i = topPositions.Length - 1; i >= 0; i--)
+            {
+                SubstituteBackward(nodes[order[topPositions[i]]], x);
+            }
+
+            RunTasks(BackwardTask, taskStarts.Length - 1, x);
+        }
+
+        /// <summary>
+        /// Solves for a node through L and S, once every earlier node has passed it its share, and passes its own share to its
+        /// neighbours before <paramref name="endNeighbour"/>.
+        /// </summary>
+        void SubstituteForward(in Node node, double* x, int endNeighbour)
+        {
+            double* values = factor.Ptr;
+            int size = node.Size;
+            double* c = values + node.Diagonal;
+            double* own = x + node.Start;
+            double* inverse = inverseDiagonal.Ptr + node.Start;
+            for (int row = 0; row < size; row++)
+            {
+                double sum = own[row];
+                for (int k = 0; k < row; k++)
                 {
-                    Node other = nodes[column[i].Node];
-                    double* block = values + column[i].Offset;
-                    double* source = x + other.Start;
-                    for (int row = 0; row < other.Size; row++)
-                    {
-                        for (int k = 0; k < size; k++)
-                        {
-                            own[k] -= node.Sign * block[row * size + k] * source[row];
-                        }
-                    }
+                    sum -= c[row * size + k] * own[k];
                 }
 
-                double* inverse = inverseDiagonal.Ptr + node.Start;
-                for (int row = size - 1; row >= 0; row--)
+                own[row] = sum * inverse[row];
+            }
+
+            Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            for (int i = 0; i < endNeighbour; i++)
+            {
+                Node other = nodes[column[i].Node];
+                double* block = values + column[i].Offset;
+                double* target = x + other.Start;
+                for (int row = 0; row < other.Size; row++)
                 {
-                    double sum = own[row];
-                    for (int k = row + 1; k < size; k++)
+                    double sum = 0.0;
+                    for (int k = 0; k < size; k++)
                     {
-                        sum -= c[k * size + row] * own[k];
+                        sum += block[row * size + k] * own[k];
                     }
 
-                    own[row] = sum * inverse[row];
+                    target[row] -= node.Sign * sum;
                 }
+            }
+
+            for (int row = 0; row < size; row++)
+            {
+                own[row] *= node.Sign;
+            }
+        }
+
+        /// <summary>Solves for a node through L^t, once all its neighbours, which come later, have their answers.</summary>
+        void SubstituteBackward(in Node node, double* x)
+        {
+            double* values = factor.Ptr;
+            int size = node.Size;
+            double* c = values + node.Diagonal;
+            double* own = x + node.Start;
+
+            Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            for (int i = 0; i < node.NeighbourCount; i++)
+            {
+                Node other = nodes[column[i].Node];
+                double* block = values + column[i].Offset;
+                double* source = x + other.Start;
+                for (int row = 0; row < other.Size; row++)
+                {
+                    for (int k = 0; k < size; k++)
+                    {
+                        own[k] -= node.Sign * block[row * size + k] * source[row];
+                    }
+                }
+            }
+
+            double* inverse = inverseDiagonal.Ptr + node.Start;
+            for (int row = size - 1; row >= 0; row--)
+            {
+                double sum = own[row];
+                for (int k = row + 1; k < size; k++)
+                {
+                    sum -= c[k * size + row] * own[k];
+                }
+
+                own[row] = sum * inverse[row];
             }
         }
 

@@ -2,6 +2,8 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Jobs.LowLevel.Unsafe;
+using Unity.Mathematics;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Profiling;
@@ -79,15 +81,20 @@ namespace Unity.Physics
 
         /// <summary>
         /// The substeps of every direct island. Each substep updates the Jacobians, counts their rows, builds the rows, solves
-        /// each island and integrates its bodies, and only the counting and the solves run one island at a time.
+        /// each island and integrates its bodies. Only the counting runs alone. Small islands solve one per thread, and each big
+        /// one shares its solve among the lanes of a job of its own.
         /// </summary>
-        static JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
+        static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
             in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle inputDeps)
         {
             const int headersPerBatch = 16;
             const int bodiesPerBatch = 32;
+            const int maxSolveLanes = 8;
 
-            var work = new DirectIslandWork(Allocator.TempJob);
+            var work = new DirectIslandWork(substeps, Allocator.TempJob);
+
+            // Lanes past what the subtrees of a craft keep busy only spin.
+            int lanes = math.min(JobsUtility.JobWorkerCount + 1, maxSolveLanes);
 
             JobHandle handle = new IndexDirectIslandsJob
             {
@@ -128,7 +135,7 @@ namespace Unity.Physics
                     StepInput = substepInput,
                 }.Schedule(work.Headers, headersPerBatch, handle);
 
-                handle = new SolveDirectIslandJob
+                JobHandle alone = new SolveDirectIslandJob
                 {
                     Info = info,
                     JacobiansReader = jacobians.AsReader(),
@@ -138,6 +145,20 @@ namespace Unity.Physics
                     MotionDatas = world.MotionDatas,
                     StepInput = substepInput,
                 }.Schedule(work.Islands, 1, handle);
+
+                JobHandle shared = new SolveSharedDirectIslandsJob
+                {
+                    Info = info,
+                    JacobiansReader = jacobians.AsReader(),
+                    Islands = work.Islands.AsDeferredJobArray(),
+                    Work = work.Buffers,
+                    MotionVelocities = world.MotionVelocities,
+                    MotionDatas = world.MotionDatas,
+                    StepInput = substepInput,
+                    Team = work.Buffers.Teams->Ptr + substep,
+                }.Schedule(lanes, 1, handle);
+
+                handle = JobHandle.CombineDependencies(alone, shared);
 
                 handle = new IntegrateIslandBodiesJob
                 {
@@ -169,7 +190,15 @@ namespace Unity.Physics
 
             public int FirstRow;
             public int Rows;
+
+            /// <summary>
+            /// Whether the island's sparse solve is big enough to share among lanes. A smaller one finishes before helpers
+            /// would gain anything, and runs beside the others.
+            /// </summary>
+            public bool SolvesInTeam => !Dense && Rows >= SharedSolveRows;
         }
+
+        const int SharedSolveRows = 512;
 
         unsafe struct IslandHeader
         {
@@ -196,8 +225,13 @@ namespace Unity.Physics
             /// <summary> Per island, 1 once any of its rows has a bound, which makes its solve a bounded one. </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* Bounded;
 
-            public DirectIslandBuffers(Allocator allocator)
+            /// <summary> One team per substep, since a team has one leader and lets its helpers go for good. </summary>
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<SparseSolveTeam>* Teams;
+
+            public DirectIslandBuffers(int substeps, Allocator allocator)
             {
+                Teams = UnsafeList<SparseSolveTeam>.Create(substeps, allocator);
+                Teams->Resize(substeps, NativeArrayOptions.ClearMemory);
                 HeaderRows = UnsafeList<int>.Create(0, allocator);
                 Jacobian = UnsafeList<float>.Create(0, allocator);
                 Epsilon = UnsafeList<float>.Create(0, allocator);
@@ -249,6 +283,7 @@ namespace Unity.Physics
                 UnsafeList<float>.Destroy(RightHandSide);
                 UnsafeList<LCP.MLCPIndexFlag>.Destroy(IndexFlags);
                 UnsafeList<int>.Destroy(Bounded);
+                UnsafeList<SparseSolveTeam>.Destroy(Teams);
             }
         }
 
@@ -258,11 +293,11 @@ namespace Unity.Physics
             public NativeList<DirectIsland> Islands;
             public DirectIslandBuffers Buffers;
 
-            public DirectIslandWork(Allocator allocator)
+            public DirectIslandWork(int substeps, Allocator allocator)
             {
                 Headers = new NativeList<IslandHeader>(allocator);
                 Islands = new NativeList<DirectIsland>(allocator);
-                Buffers = new DirectIslandBuffers(allocator);
+                Buffers = new DirectIslandBuffers(substeps, allocator);
             }
 
             public JobHandle Dispose(JobHandle inputDeps)
@@ -521,29 +556,94 @@ namespace Unity.Physics
 
             public StepInput StepInput;
 
-            static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
-
             public void Execute(int islandIndex)
             {
-                DirectIsland island = Islands[islandIndex];
-                using (DirectSolveMarker.Auto())
+                if (!Islands[islandIndex].SolvesInTeam)
                 {
-                    if (island.Dense)
-                    {
-                        DirectSolver(Info, islandIndex, JacobiansReader, ref MotionVelocities, MotionDatas, StepInput, island.ContactPairs);
-                    }
-                    else if (island.Rows > 0)
-                    {
-                        JacobianRows rows = Work.Rows(island);
-                        Vector rightHandSide = DirectIslandBuffers.View(Work.RightHandSide, island);
-                        SolveSparsely(Info, islandIndex, JacobiansReader, MotionVelocities, MotionDatas, StepInput, island.Rows, rows,
-                            DirectIslandBuffers.View(Work.Epsilon, island), DirectIslandBuffers.View(Work.Lower, island),
-                            DirectIslandBuffers.View(Work.Upper, island), rightHandSide, Work.Flags(island),
-                            (*Work.Bounded)[islandIndex] != 0, island.ContactPairs);
+                    SolveDirectIsland(Info, JacobiansReader, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
+                }
+            }
+        }
 
-                        ApplyImpulses(Info, islandIndex, JacobiansReader, ref MotionVelocities, MotionDatas, island.ContactPairs, rows,
-                            Work.RightHandSide->Ptr + island.FirstRow);
+        /// <summary>
+        /// Solves the islands big enough to share, one after another, with every lane of this job sharing each solve. It runs
+        /// beside <see cref="SolveDirectIslandJob"/>, which takes the rest.
+        /// </summary>
+        [BurstCompile]
+        [NoAlias]
+        unsafe struct SolveSharedDirectIslandsJob : IJobParallelFor
+        {
+            [ReadOnly]
+            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
+
+            public NativeStream.Reader JacobiansReader;
+
+            [ReadOnly]
+            public NativeArray<DirectIsland> Islands;
+
+            public DirectIslandBuffers Work;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionData> MotionDatas;
+
+            public StepInput StepInput;
+
+            [NativeDisableUnsafePtrRestriction]
+            public SparseSolveTeam* Team;
+
+            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.HelpSolve");
+
+            public void Execute(int lane)
+            {
+                if (!Team->TryLead())
+                {
+                    using (HelpMarker.Auto())
+                    {
+                        Team->Help();
                     }
+
+                    return;
+                }
+
+                for (int islandIndex = 0; islandIndex < Islands.Length; islandIndex++)
+                {
+                    if (Islands[islandIndex].SolvesInTeam)
+                    {
+                        SolveDirectIsland(Info, JacobiansReader, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
+                    }
+                }
+
+                Team->Finish();
+            }
+        }
+
+        static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
+
+        static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
+            in NativeArray<DirectIsland> islands, in DirectIslandBuffers work, ref NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int islandIndex, SparseSolveTeam* team)
+        {
+            DirectIsland island = islands[islandIndex];
+            using (DirectSolveMarker.Auto())
+            {
+                if (island.Dense)
+                {
+                    DirectSolver(info, islandIndex, jacobiansReader, ref motionVelocities, motionDatas, stepInput, island.ContactPairs);
+                }
+                else if (island.Rows > 0)
+                {
+                    JacobianRows rows = work.Rows(island);
+                    Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
+                    SolveSparsely(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
+                        DirectIslandBuffers.View(work.Epsilon, island), DirectIslandBuffers.View(work.Lower, island),
+                        DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
+                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team);
+
+                    ApplyImpulses(info, islandIndex, jacobiansReader, ref motionVelocities, motionDatas, island.ContactPairs, rows,
+                        work.RightHandSide->Ptr + island.FirstRow);
                 }
             }
         }
