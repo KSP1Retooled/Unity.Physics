@@ -112,6 +112,23 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void ABodyAnotherChangeShuffledKeepsItsEntityThroughACreate()
+        {
+            float3 movedAt = new float3(410.0f, 0.0f, 0.0f);
+            float3 shuffledAt = new float3(420.0f, 0.0f, 0.0f);
+            WeightlessBox(movedAt);
+            Rigidbody shuffled = WeightlessBox(shuffledAt);
+            Entity shuffledEntity = EntityAt(shuffledAt);
+
+            // The moved entity leaves its chunk, and the chunk's last entity takes its slot.
+            Manager.AddComponentData(EntityAt(movedAt), new Moved { Value = 1 });
+            WeightlessBox(new float3(430.0f, 0.0f, 0.0f));
+            shuffled.linearVelocity = Vector3.up;
+
+            Assert.That(Manager.GetComponentData<PhysicsVelocity>(shuffledEntity).Linear.y, Is.EqualTo(1.0f));
+        }
+
+        [Test]
         public void DestroyingABodyLeavesTheOthersAlone()
         {
             float3 kept = new float3(500.0f, 0.0f, 0.0f);

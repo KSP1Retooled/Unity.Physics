@@ -29,6 +29,12 @@ namespace KSP.Retooled.Physics
             public EntityManager Manager;
             public EntityArchetype Archetype;
             public bool Bound;
+
+            /// <summary>
+            /// An order version at which every row was current. Only structural changes made here move the version on
+            /// from it, so while it matches, no row needs a look.
+            /// </summary>
+            public int CleanVersion;
         }
 
         private readonly struct BindingKey { }
@@ -65,7 +71,7 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            StampAll();
+            binding.CleanVersion = Version();
         }
 
         /// <summary>
@@ -114,8 +120,13 @@ namespace KSP.Retooled.Physics
 
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AdoptBody.Auto();
 
+            // A created entity moves no other, so rows that were all current stay so, and stale ones stay stale.
+            bool clean = Clean();
             Place(hot);
-            StampAll();
+            if (clean)
+            {
+                Current.Data.CleanVersion = Version();
+            }
         }
 
         private static void Place(NativeStore.BodyData* hot)
@@ -146,6 +157,7 @@ namespace KSP.Retooled.Physics
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ReleaseBody.Auto();
 
             Refresh(hot);
+            bool clean = Clean();
             NativeStore.BodyHome* home = &hot->owner->home;
             home->pose = *hot->pose;
             home->velocity = *hot->velocity;
@@ -170,7 +182,10 @@ namespace KSP.Retooled.Physics
                 HandOver(slot, &vacated);
             }
 
-            StampAll();
+            if (clean)
+            {
+                Current.Data.CleanVersion = Version();
+            }
         }
 
         /// <summary>Points a row home without its entity's state, for a world that can't give it back.</summary>
@@ -219,31 +234,16 @@ namespace KSP.Retooled.Physics
                         hot->forces = vacated->forces;
                         hot->target = vacated->target;
                         hot->collider = vacated->collider;
+                        hot->orderVersion = Version();
                         return;
                     }
                 }
             }
         }
 
-        /// <summary>Marks every row current, after a structural change here that left none of them behind.</summary>
-        private static void StampAll()
+        private static bool Clean()
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StampRows.Auto();
-
-            int version = Version();
-            int worlds = NativeStore.RetooledPhysics_WorldCount();
-            for (int w = 0; w < worlds; w++)
-            {
-                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
-                for (uint i = 0; i < world->bodyCount; i++)
-                {
-                    NativeStore.BodyData* hot = world->bodies + i;
-                    if (hot->entity != Entity.Null)
-                    {
-                        hot->orderVersion = version;
-                    }
-                }
-            }
+            return Current.Data.CleanVersion == Version();
         }
 
         /// <summary>
@@ -258,7 +258,8 @@ namespace KSP.Retooled.Physics
         /// <summary>Makes a row's pointers current, if its body has an entity. Only the main thread can, as the remarks say.</summary>
         internal static void Refresh(NativeStore.BodyData* hot)
         {
-            if (hot->entity == Entity.Null || hot->orderVersion == Version())
+            int version = Version();
+            if (hot->entity == Entity.Null || hot->orderVersion == version || Current.Data.CleanVersion == version)
             {
                 return;
             }

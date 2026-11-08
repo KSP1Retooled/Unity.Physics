@@ -45,8 +45,6 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker AdoptBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.Adopt");
         internal static readonly ProfilerMarker ReleaseBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.Release");
         internal static readonly ProfilerMarker HandOverRow = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.HandOver");
-        internal static readonly ProfilerMarker StampRows = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.StampAll");
-
         internal static readonly ProfilerMarker StepApplyForces = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
         internal static readonly ProfilerMarker StepSchedule = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
         internal static readonly ProfilerMarker StepScheduleSolve = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ScheduleSolve");
