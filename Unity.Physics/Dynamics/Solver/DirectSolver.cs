@@ -1355,8 +1355,9 @@ namespace Unity.Physics
 
         /// <summary>
         /// Writes to <paramref name="rhsChange"/> what would aim the rows that hold a position at where the integrator will
-        /// really take their constraint, and returns whether any is nonzero. A row holds the constraint's rate, which is its drift only to first order: a spinning pair swings its
-        /// anchors along a curve the row can't see, and they part a little every substep. The curve is measured at the
+        /// really take their constraint, and returns whether any is nonzero. A row holds the constraint's rate, which is its
+        /// drift only to first order: a spinning pair swings its anchors along a curve the row can't see, and they part a
+        /// little every substep. The curve is measured at the
         /// velocities <paramref name="impulses"/> give, not the ones before the solve: a body can start a step far out of
         /// line with its joints, and extrapolating that motion, which the solve takes away, would throw the craft apart.
         /// </summary>
