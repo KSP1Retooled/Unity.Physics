@@ -37,6 +37,9 @@ namespace KSP.Retooled.Physics
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
         private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
         private NativeHashMap<JacobianKey, float2> warmStarts;
+        private NativeList<ColliderBuilder.Work> colliderWork;
+        private NativeList<long> colliderResults;
+        private JobHandle collidersBuilt;
         private uint stepCount;
         private uint builtStaticsVersion;
         private uint builtMaterialVersion;
@@ -67,12 +70,15 @@ namespace KSP.Retooled.Physics
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
+            colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
+            colliderResults = new NativeList<long>(Allocator.Persistent);
         }
 
         internal void Dispose()
         {
             store->queryWorld = null;
 
+            collidersBuilt.Complete();
             ReleaseDeadColliders();
             for (uint i = 0; i < store->bodyCount; i++)
             {
@@ -98,6 +104,8 @@ namespace KSP.Retooled.Physics
             touching.Dispose();
             lastImpulses.Dispose();
             warmStarts.Dispose();
+            colliderWork.Dispose();
+            colliderResults.Dispose();
         }
 
         /// <summary>The built world, which the simulation's systems step.</summary>
@@ -125,7 +133,6 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             store->queryDirty = 1;
             BodyEntities.PrepareForJobs(store);
-            RefreshColliders();
 
             using (BackendMarkers.StepApplyForces.Auto())
             {
@@ -145,8 +152,9 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.StepSchedule.Auto();
 
+            JobHandle colliders = RefreshColliders(dependency);
             BuildBodiesJob bodies = Build(deltaTime);
-            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, dependency);
+            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, colliders);
             return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
         }
 
@@ -293,9 +301,9 @@ namespace KSP.Retooled.Physics
         {
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
-            RefreshColliders();
+            JobHandle colliders = RefreshColliders(default);
             BuildBodiesJob bodies = Build(0.0f);
-            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize);
+            JobHandle built = bodies.Schedule(bodies.Count, ParallelBatchSize, colliders);
             world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
             PublishQueryWorld();
         }
@@ -365,15 +373,23 @@ namespace KSP.Retooled.Physics
             return count;
         }
 
-        private void RefreshColliders()
+        /// <summary>
+        /// Schedules the colliders the store asks for. The bodies get them when the returned handle completes, and nothing
+        /// between here and the jobs that depend on it reads a collider.
+        /// </summary>
+        private JobHandle RefreshColliders(JobHandle dependency)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RefreshColliders.Auto();
 
+            // Every step and query build completes the one before it, so this is only ever a wait on a finished handle.
+            collidersBuilt.Complete();
+            ColliderBuilder.AskAgainForFailed(store, colliderWork, colliderResults);
             ReleaseDeadColliders();
 
             uint materialVersion = globals->materialVersion;
-            ColliderBuilder.Refresh(store, materialVersion != builtMaterialVersion);
+            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults, dependency);
             builtMaterialVersion = materialVersion;
+            return collidersBuilt;
         }
 
         private void ReleaseDeadColliders()

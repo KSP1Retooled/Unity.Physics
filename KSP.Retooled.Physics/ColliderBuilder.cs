@@ -40,55 +40,79 @@ namespace KSP.Retooled.Physics
         // What a build that threw leaves in its result.
         private const long Failed = -1;
 
-        /// <summary>Rebuilds the collider of every body that asks for it. <paramref name="all"/> treats every body as asking.</summary>
-        internal static void Refresh(NativeStore.WorldData* world, bool all)
+        /// <summary>A body whose collider a refresh builds, and whether it needs a whole build or only a move of its children.</summary>
+        internal struct Work
         {
-            var indices = new NativeList<int>(Allocator.TempJob);
+            public int Body;
+            public bool Whole;
+        }
+
+        /// <summary>
+        /// Schedules a new collider for every body that asks for one; <paramref name="all"/> treats every body as asking. The
+        /// main thread only picks the bodies, so the builds overlap whatever it does next. Nothing may read a body's collider
+        /// until the returned handle completes, and <paramref name="work"/> and <paramref name="results"/> must outlive it.
+        /// A body's flags are cleared here, not in a job, because the main thread writes other flags meanwhile.
+        /// </summary>
+        internal static JobHandle ScheduleRefresh(
+            NativeStore.WorldData* world,
+            bool all,
+            NativeList<Work> work,
+            NativeList<long> results,
+            JobHandle dependency)
+        {
+            work.Clear();
             for (int i = 0; i < world->bodyCount; i++)
             {
-                if (all || (world->bodies[i].flags & NeedsBuild) != 0)
+                NativeStore.BodyData* body = world->bodies + i;
+                if (all || (body->flags & NeedsBuild) != 0)
                 {
-                    indices.Add(i);
+                    work.Add(new Work { Body = i, Whole = all || (body->flags & NativeStore.BodyFlags.ColliderDirty) != 0 });
+                    body->flags &= ~NeedsBuild;
                 }
             }
 
-            if (indices.Length == 0)
+            results.ResizeUninitialized(work.Length);
+            if (work.Length == 0)
             {
-                indices.Dispose();
-                return;
+                return dependency;
             }
 
-            var results = new NativeArray<long>(indices.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
             for (int i = 0; i < results.Length; i++)
             {
                 results[i] = Failed;
             }
 
             // One body a work item: a mesh can take a thousand times as long as a box.
-            new BuildCollidersJob
+            JobHandle built = new BuildCollidersJob
             {
                 Bodies = world->bodies,
-                Indices = indices.AsArray(),
-                Results = results,
-                All = all,
-            }.Schedule(indices.Length, 1).Complete();
+                Work = work.AsArray(),
+                Results = results.AsArray(),
+            }.Schedule(work.Length, 1, dependency);
 
+            return new SwapCollidersJob
+            {
+                Bodies = world->bodies,
+                Work = work.AsArray(),
+                Results = results.AsArray(),
+            }.Schedule(built);
+        }
+
+        /// <summary>
+        /// Asks again for a whole build of every body whose last build threw, which left it with its last collider. Main
+        /// thread only, once that refresh completed.
+        /// </summary>
+        internal static void AskAgainForFailed(NativeStore.WorldData* world, NativeList<Work> work, NativeList<long> results)
+        {
             for (int i = 0; i < results.Length; i++)
             {
-                // A build that throws leaves the body with its last collider, and still asking for a new one.
-                if (results[i] == Failed)
+                if (results[i] == Failed && work[i].Body < world->bodyCount)
                 {
-                    continue;
+                    world->bodies[work[i].Body].flags |= NativeStore.BodyFlags.ColliderDirty;
                 }
-
-                NativeStore.BodyData* body = world->bodies + indices[i];
-                Release(body->collider->Value.GetUnsafePtr());
-                body->collider->Value = FromPointer((void*)results[i]);
-                body->flags &= ~NeedsBuild;
             }
 
-            results.Dispose();
-            indices.Dispose();
+            results.Clear();
         }
 
         [BurstCompile]
@@ -98,17 +122,44 @@ namespace KSP.Retooled.Physics
             public NativeStore.BodyData* Bodies;
 
             [ReadOnly]
-            public NativeArray<int> Indices;
+            public NativeArray<Work> Work;
 
             public NativeArray<long> Results;
-            public bool All;
 
             public void Execute(int index)
             {
-                NativeStore.BodyData* body = Bodies + Indices[index];
-                bool onlyMoved = !All && (body->flags & NativeStore.BodyFlags.ColliderDirty) == 0;
-                void* collider = onlyMoved ? Repose(body) : null;
+                NativeStore.BodyData* body = Bodies + Work[index].Body;
+                void* collider = Work[index].Whole ? null : Repose(body);
                 Results[index] = (long)(collider != null ? collider : Build(body));
+            }
+        }
+
+        /// <summary>Gives each body the collider built for it and releases the one it replaces.</summary>
+        [BurstCompile]
+        private struct SwapCollidersJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public NativeStore.BodyData* Bodies;
+
+            [ReadOnly]
+            public NativeArray<Work> Work;
+
+            [ReadOnly]
+            public NativeArray<long> Results;
+
+            public void Execute()
+            {
+                for (int i = 0; i < Results.Length; i++)
+                {
+                    if (Results[i] == Failed)
+                    {
+                        continue;
+                    }
+
+                    NativeStore.BodyData* body = Bodies + Work[i].Body;
+                    Release(body->collider->Value.GetUnsafePtr());
+                    body->collider->Value = FromPointer((void*)Results[i]);
+                }
             }
         }
 
