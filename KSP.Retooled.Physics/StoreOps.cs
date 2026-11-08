@@ -1,6 +1,8 @@
 using System.Threading;
 using Unity.Burst;
+using Unity.Entities;
 using Unity.Mathematics;
+using Unity.Physics;
 
 namespace KSP.Retooled.Physics
 {
@@ -149,6 +151,25 @@ namespace KSP.Retooled.Physics
             NativeStore.BodyData* hot = Hot(body);
             hot->flags |= NativeStore.BodyFlags.ColliderDirty;
             MarkPoseChanged(body, hot->flags);
+        }
+
+        /// <summary>
+        /// For a shape that moved within its body. A compound is copied about its children, where any other collider has the
+        /// pose baked in and is built again.
+        /// </summary>
+        internal static void MarkCollidersMoved(NativeStore.Body* body)
+        {
+            NativeStore.BodyData* hot = Hot(body);
+            BlobAssetReference<Collider> built = hot->collider->Value;
+            if (built.IsCreated && built.Value.Type == ColliderType.Compound)
+            {
+                hot->flags |= NativeStore.BodyFlags.CollidersMoved;
+                MarkPoseChanged(body, hot->flags);
+            }
+            else
+            {
+                MarkColliderDirty(body);
+            }
         }
 
         private static void PublishShapes(NativeStore.Body* body)

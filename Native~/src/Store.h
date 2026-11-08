@@ -60,6 +60,8 @@ namespace Retooled
         kBodyHasKinematicTarget = 1 << 10,
         // The body's collider no longer matches its shapes, so managed rebuilds it before the next use.
         kBodyColliderDirty = 1 << 11,
+        // Only shapes' poses changed since the collider was built, so managed can rebuild a compound from its children.
+        kBodyCollidersMoved = 1 << 12,
     };
 
     // The start of one rigid body's row, static or not, mirrored. Managed allocates the rows and keeps its own fields after

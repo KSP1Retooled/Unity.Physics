@@ -146,10 +146,7 @@ namespace KSP.Retooled.Physics
                     a->scalar2 = hot->damping->Angular;
                     break;
                 case BodyCommand.SetPose:
-                    hot->pose->Position = a->position;
-                    StoreOps.SetRotation(*hot, a->rotation);
-                    WakeIfAsked(hot, a);
-                    StoreOps.MarkPoseChanged(body, hot->flags);
+                    SetPose(body, hot, a);
                     break;
                 case BodyCommand.GetPose:
                     a->position = hot->pose->Position;
@@ -353,6 +350,23 @@ namespace KSP.Retooled.Physics
         {
             hot->bodyMass->Inertia = inertia;
             hot->mass->InverseInertia = new float3(InverseOrZero(inertia.x), InverseOrZero(inertia.y), InverseOrZero(inertia.z));
+        }
+
+        /// <summary>
+        /// Unity poses every body under a transform that moved, most of them where they already were, and a static body that
+        /// moves has the static tree built again.
+        /// </summary>
+        private static void SetPose(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        {
+            float3 position = hot->pose->Position;
+            quaternion rotation = hot->pose->Rotation;
+            hot->pose->Position = a->position;
+            StoreOps.SetRotation(*hot, a->rotation);
+            WakeIfAsked(hot, a);
+            if (math.any(hot->pose->Position != position) || math.any(hot->pose->Rotation.value != rotation.value))
+            {
+                StoreOps.MarkPoseChanged(body, hot->flags);
+            }
         }
 
         private static void SetFlags(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)

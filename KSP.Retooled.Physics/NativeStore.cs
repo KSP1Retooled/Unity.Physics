@@ -54,6 +54,9 @@ namespace KSP.Retooled.Physics
             Sleeping = 1 << 9,
             HasKinematicTarget = 1 << 10,
             ColliderDirty = 1 << 11,
+
+            // Only shapes' poses changed since the collider was built, so a compound can keep its children.
+            CollidersMoved = 1 << 12,
             PublicMask = Gravity | Kinematic | Simulated,
         }
 

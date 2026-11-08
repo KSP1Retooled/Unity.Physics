@@ -35,22 +35,126 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        private const NativeStore.BodyFlags NeedsBuild = NativeStore.BodyFlags.ColliderDirty | NativeStore.BodyFlags.CollidersMoved;
+
+        // What a build that threw leaves in its result.
+        private const long Failed = -1;
+
         /// <summary>Rebuilds the collider of every body that asks for it. <paramref name="all"/> treats every body as asking.</summary>
         internal static void Refresh(NativeStore.WorldData* world, bool all)
         {
-            for (uint i = 0; i < world->bodyCount; i++)
+            var indices = new NativeList<int>(Allocator.TempJob);
+            for (int i = 0; i < world->bodyCount; i++)
             {
-                NativeStore.BodyData* body = world->bodies + i;
-                if (!all && (body->flags & NativeStore.BodyFlags.ColliderDirty) == 0)
+                if (all || (world->bodies[i].flags & NeedsBuild) != 0)
+                {
+                    indices.Add(i);
+                }
+            }
+
+            if (indices.Length == 0)
+            {
+                indices.Dispose();
+                return;
+            }
+
+            var results = new NativeArray<long>(indices.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            for (int i = 0; i < results.Length; i++)
+            {
+                results[i] = Failed;
+            }
+
+            // One body a work item: a mesh can take a thousand times as long as a box.
+            new BuildCollidersJob
+            {
+                Bodies = world->bodies,
+                Indices = indices.AsArray(),
+                Results = results,
+                All = all,
+            }.Schedule(indices.Length, 1).Complete();
+
+            for (int i = 0; i < results.Length; i++)
+            {
+                // A build that throws leaves the body with its last collider, and still asking for a new one.
+                if (results[i] == Failed)
                 {
                     continue;
                 }
 
-                // A build that throws leaves the body with its last collider, and still asking for a new one.
-                void* collider = Build(body);
+                NativeStore.BodyData* body = world->bodies + indices[i];
                 Release(body->collider->Value.GetUnsafePtr());
-                body->collider->Value = FromPointer(collider);
-                body->flags &= ~NativeStore.BodyFlags.ColliderDirty;
+                body->collider->Value = FromPointer((void*)results[i]);
+                body->flags &= ~NeedsBuild;
+            }
+
+            results.Dispose();
+            indices.Dispose();
+        }
+
+        [BurstCompile]
+        private struct BuildCollidersJob : IJobParallelFor
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public NativeStore.BodyData* Bodies;
+
+            [ReadOnly]
+            public NativeArray<int> Indices;
+
+            public NativeArray<long> Results;
+            public bool All;
+
+            public void Execute(int index)
+            {
+                NativeStore.BodyData* body = Bodies + Indices[index];
+                bool onlyMoved = !All && (body->flags & NativeStore.BodyFlags.ColliderDirty) == 0;
+                void* collider = onlyMoved ? Repose(body) : null;
+                Results[index] = (long)(collider != null ? collider : Build(body));
+            }
+        }
+
+        /// <summary>
+        /// A compound again from the children of the one built before, at its shapes' new poses, or null if the body has none.
+        /// Building a child again would mean building its hull or hierarchy, while this only copies it.
+        /// </summary>
+        private static void* Repose(NativeStore.BodyData* body)
+        {
+            BlobAssetReference<Collider> built = body->collider->Value;
+            if (!built.IsCreated || built.Value.Type != ColliderType.Compound)
+            {
+                return null;
+            }
+
+            ref CompoundCollider compound = ref UnsafeUtility.As<Collider, CompoundCollider>(ref built.Value);
+            var children = new NativeArray<CompoundCollider.ColliderBlobInstance>(compound.NumChildren, Allocator.Temp);
+            try
+            {
+                for (int i = 0; i < compound.NumChildren; i++)
+                {
+                    ref CompoundCollider.Child child = ref compound.Children[i];
+                    NativeStore.ShapeData* shape = body->shapes[child.Entity.Index];
+                    RigidTransform compoundFromShape = new RigidTransform(shape->localRotation, shape->localPosition);
+                    bool heightField = shape->geometryType == NativeStore.GeometryHeightField;
+                    children[i] = new CompoundCollider.ColliderBlobInstance
+                    {
+                        Collider = BlobAssetReference<Collider>.Create(child.Collider, child.Collider->MemorySize),
+                        CompoundFromChild = heightField ? math.mul(compoundFromShape, ShapeFromGrid(shape)) : compoundFromShape,
+                        Entity = child.Entity,
+                    };
+                }
+
+                return CompoundCollider.Create(children).GetUnsafePtr();
+            }
+            finally
+            {
+                foreach (CompoundCollider.ColliderBlobInstance child in children)
+                {
+                    if (child.Collider.IsCreated)
+                    {
+                        child.Collider.Dispose();
+                    }
+                }
+
+                children.Dispose();
             }
         }
 
@@ -75,9 +179,17 @@ namespace KSP.Retooled.Physics
             if (usable == 1 && body->shapes[lastUsable]->geometryType != NativeStore.GeometryHeightField)
             {
                 NativeStore.ShapeData* shape = body->shapes[lastUsable];
-                return PosedShape(body) != null
-                    ? Create(shape, float3.zero, quaternion.identity).GetUnsafePtr()
-                    : Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
+                if (PosedShape(body) != null)
+                {
+                    return Create(shape, float3.zero, quaternion.identity).GetUnsafePtr();
+                }
+
+                // A mesh away from its body's origin is a compound of one, so that moving it again only moves the child:
+                // with the pose baked in, each move would build its hull or hierarchy again.
+                if (!ShapeMath.IsMeshGeometry(shape->geometryType) || IsAtOrigin(shape))
+                {
+                    return Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
+                }
             }
 
             var children = new NativeArray<CompoundCollider.ColliderBlobInstance>(usable, Allocator.Temp);
@@ -162,6 +274,11 @@ namespace KSP.Retooled.Physics
             }
 
             return posed != null && posed->geometryType != NativeStore.GeometryHeightField ? posed : null;
+        }
+
+        private static bool IsAtOrigin(NativeStore.ShapeData* shape)
+        {
+            return math.all(shape->localPosition == float3.zero) && math.all(shape->localRotation.value == quaternion.identity.value);
         }
 
         /// <summary>The index of the shape a body's collider stands for when it isn't a compound.</summary>
@@ -259,7 +376,7 @@ namespace KSP.Retooled.Physics
                 Filter = filter,
                 Material = material,
                 Result = &collider,
-            }.Run();
+            }.Execute();
 
             return FromPointer(collider);
         }
@@ -311,7 +428,7 @@ namespace KSP.Retooled.Physics
                 Filter = filter,
                 Material = material,
                 Result = &collider,
-            }.Run();
+            }.Execute();
 
             return FromPointer(collider);
         }
@@ -391,7 +508,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The solid of a convex mesh's hull, unscaled. Burst compiled, like <see cref="MeshColliderJob"/>, so that it stays
+        /// The solid of a convex mesh's hull, unscaled. Burst compiled, like <see cref="BuildCollidersJob"/>, so that it stays
         /// quick when a body command in Mono asks for it. A command runs on the main thread, which has a temp allocator.
         /// </summary>
         [BurstCompile]
@@ -419,7 +536,7 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Builds one mesh's blob, with the shape's scale and pose baked in, since Unity Physics has neither per collider.
-        /// A job so that Burst runs it: a mesh's hierarchy or hull is far slower to build in Mono.
+        /// <see cref="BuildCollidersJob"/> calls it in place.
         /// </summary>
         [BurstCompile]
         private struct MeshColliderJob : IJob

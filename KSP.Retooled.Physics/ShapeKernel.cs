@@ -300,6 +300,8 @@ namespace KSP.Retooled.Physics
 
         private static void SetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
+            float3 position = shape->data.localPosition;
+            quaternion rotation = shape->data.localRotation;
             if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0)
             {
                 BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
@@ -310,13 +312,20 @@ namespace KSP.Retooled.Physics
                 shape->data.localRotation = a->rotation;
             }
 
-            if (shape->body == null || ColliderBuilder.PosedShape(StoreOps.Hot(shape->body)) == null)
+            // Unity poses every collider under a transform that moved, and most of them keep their place in their body.
+            bool moved = math.any(shape->data.localPosition != position) || math.any(shape->data.localRotation.value != rotation.value);
+            if (shape->body == null || !moved)
             {
-                TouchBody(shape);
+                return;
+            }
+
+            if (ColliderBuilder.PosedShape(StoreOps.Hot(shape->body)) != null)
+            {
+                StoreOps.MarkPoseChanged(shape->body, StoreOps.Hot(shape->body)->flags);
             }
             else
             {
-                StoreOps.MarkPoseChanged(shape->body, StoreOps.Hot(shape->body)->flags);
+                StoreOps.MarkCollidersMoved(shape->body);
             }
         }
 

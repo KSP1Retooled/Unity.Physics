@@ -63,6 +63,60 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void AChildColliderMovedWithinItsBodyIsFoundWhereItWent()
+        {
+            Rigidbody body = WeightlessBox(Vector3.zero);
+            GameObject child = Track(new GameObject("child"));
+            child.transform.SetParent(body.transform, false);
+            child.transform.localPosition = new Vector3(3.0f, 0.0f, 0.0f);
+            SphereCollider sphere = child.AddComponent<SphereCollider>();
+            Simulate(1);
+
+            child.transform.localPosition = new Vector3(6.0f, 0.0f, 0.0f);
+            Simulate(1);
+
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(3.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.False, "left its old place");
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(6.0f, 5.0f, 0.0f), Vector3.down, out RaycastHit hit, 10.0f), Is.True);
+            Assert.That(hit.collider, Is.SameAs(sphere));
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, out hit, 10.0f), Is.True, "the box stays");
+            Assert.That(hit.collider, Is.SameAs(body.GetComponent<Collider>()));
+        }
+
+        [Test]
+        public void AMeshAloneOnAMovedChildIsFoundWhereItWent()
+        {
+            GameObject primitive = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            Mesh mesh = Object.Instantiate(primitive.GetComponent<MeshFilter>().sharedMesh);
+            Object.DestroyImmediate(primitive);
+            try
+            {
+                Rigidbody body = WeightlessBox(Vector3.zero);
+                Object.DestroyImmediate(body.GetComponent<Collider>());
+                GameObject child = Track(new GameObject("child"));
+                child.transform.SetParent(body.transform, false);
+                child.transform.localPosition = new Vector3(3.0f, 0.0f, 0.0f);
+                MeshCollider hull = child.AddComponent<MeshCollider>();
+                hull.convex = true;
+                hull.sharedMesh = mesh;
+                Simulate(1);
+
+                for (int x = 4; x <= 6; x++)
+                {
+                    child.transform.localPosition = new Vector3(x, 0.0f, 0.0f);
+                    Simulate(1);
+
+                    Assert.That(UnityEngine.Physics.Raycast(new Vector3(x - 1.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.False, $"left {x - 1}");
+                    Assert.That(UnityEngine.Physics.Raycast(new Vector3(x, 5.0f, 0.0f), Vector3.down, out RaycastHit hit, 10.0f), Is.True, $"at {x}");
+                    Assert.That(hit.collider, Is.SameAs(hull));
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
         public void MovingAParentCarriesAChildBody()
         {
             GameObject parent = Track(new GameObject("parent"));
