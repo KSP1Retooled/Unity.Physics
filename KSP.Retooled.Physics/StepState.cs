@@ -133,7 +133,9 @@ namespace KSP.Retooled.Physics
                 settings.Gravity = float3.zero;
                 settings.DirectIslandSubsteps = WorldState.DirectIslandSubsteps;
                 settings.SolverIterationCount = WorldState.SolverIterations;
-                settings.SynchronizeCollisionWorld = 1;
+
+                // FinishStep synchronizes the collision world itself, while it reads the step's results.
+                settings.SynchronizeCollisionWorld = 0;
                 return settings;
             }
         }
@@ -264,6 +266,12 @@ namespace KSP.Retooled.Physics
                 simulation.FinalJobHandle.Complete();
             }
 
+            // Only the query world reads the dynamic tree, so it is rebuilt at the solved poses while this thread writes the
+            // motions back and reads the joints. Reading the impulses has to wait for it: it holds the whole world, whose
+            // bodies the rebuild writes.
+            JobHandle tree = world.CollisionWorld.ScheduleUpdateDynamicTree(ref world, deltaTime, float3.zero, default);
+            JobHandle.ScheduleBatchedJobs();
+
             using (BackendMarkers.StepWriteBack.Auto())
             {
                 new WriteBackJob
@@ -287,6 +295,11 @@ namespace KSP.Retooled.Physics
                     DeltaTime = deltaTime,
                     EngineObjectIdOffset = globals->engineObjectIdOffset,
                 }.Run();
+            }
+
+            using (BackendMarkers.StepWaitForTree.Auto())
+            {
+                tree.Complete();
             }
 
             using (BackendMarkers.StepReadImpulses.Auto())
