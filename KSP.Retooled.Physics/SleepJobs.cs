@@ -11,6 +11,9 @@ namespace KSP.Retooled.Physics
     /// Wakes the sleeping bodies a step's contacts reach, before the solver sees them, so that a sleeping body is pushed by
     /// the step that hits it rather than stopping what hit it like a wall. Waking spreads through touching bodies and joints,
     /// as it does through a PhysX island, and a sleeping body's contact with something at rest wakes nothing.
+    ///
+    /// It reads the manifolds from <see cref="ReadContactsJob"/>'s buckets rather than waiting for them to be merged, since
+    /// the Jacobians wait for this job and nothing else on their way needs the merged list.
     /// </summary>
     [BurstCompile]
     internal unsafe struct WakeTouchedBodiesJob : IJob
@@ -18,9 +21,13 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        /// <summary>How many of the buckets this step filled.</summary>
+        [ReadOnly]
+        public NativeReference<int> Filled;
+
         [ReadOnly]
         [NativeDisableContainerSafetyRestriction]
-        public NativeList<ManifoldRecord> Records;
+        public NativeList<ContactBucket> Buckets;
 
         [ReadOnly]
         public NativeArray<int> DynamicIndices;
@@ -30,6 +37,18 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
+            // The joints spread waking as the step began, so only a contact can start any here.
+            bool wakes = false;
+            for (int bucket = 0; bucket < Filled.Value; bucket++)
+            {
+                wakes |= Buckets[bucket].Wakes;
+            }
+
+            if (!wakes)
+            {
+                return;
+            }
+
             bool woke = true;
             bool any = false;
             while (woke)
@@ -48,17 +67,29 @@ namespace KSP.Retooled.Physics
         private bool WakeThroughContacts()
         {
             bool woke = false;
-            for (int i = 0; i < Records.Length; i++)
+            for (int bucket = 0; bucket < Filled.Value; bucket++)
             {
-                ManifoldRecord record = Records[i];
-                if (record.Touching && !record.Trigger)
+                UnsafeList<ManifoldRecord> records = Buckets[bucket].Records;
+                for (int i = 0; i < records.Length; i++)
                 {
-                    woke |= WakeFrom(World->bodies + record.RowA, World->bodies + record.RowB);
-                    woke |= WakeFrom(World->bodies + record.RowB, World->bodies + record.RowA);
+                    ManifoldRecord record = records[i];
+                    if (record.Touching && !record.Trigger)
+                    {
+                        woke |= WakeFrom(World->bodies + record.RowA, World->bodies + record.RowB);
+                        woke |= WakeFrom(World->bodies + record.RowB, World->bodies + record.RowA);
+                    }
                 }
             }
 
             return woke;
+        }
+
+        /// <summary>Whether a contact between two bodies wakes either, as the contacts stood when they were read.</summary>
+        internal static bool Wakes(NativeStore.BodyData* a, NativeStore.BodyData* b)
+        {
+            bool sleepingA = (a->flags & NativeStore.BodyFlags.Sleeping) != 0;
+            bool sleepingB = (b->flags & NativeStore.BodyFlags.Sleeping) != 0;
+            return (sleepingB && Moves(a)) || (sleepingA && Moves(b));
         }
 
         private static bool WakeFrom(NativeStore.BodyData* source, NativeStore.BodyData* target)

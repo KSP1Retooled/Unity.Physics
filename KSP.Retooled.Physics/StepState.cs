@@ -42,6 +42,7 @@ namespace KSP.Retooled.Physics
         private NativeList<ManifoldRecord> manifolds;
         private NativeList<ManifoldPoint> manifoldPoints;
         private NativeList<ContactBucket> contactBuckets;
+        private NativeReference<int> filledContactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
         private NativeList<int> sleepParents;
         private NativeList<int> sleepContacts;
@@ -55,6 +56,7 @@ namespace KSP.Retooled.Physics
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
         private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
+        private JobHandle warmStartsIndexed;
         private uint stepCount;
         private uint builtStaticsVersion;
         private uint builtMaterialVersion;
@@ -86,6 +88,7 @@ namespace KSP.Retooled.Physics
             manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
+            filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
@@ -137,6 +140,7 @@ namespace KSP.Retooled.Physics
             }
 
             contactBuckets.Dispose();
+            filledContactBuckets.Dispose();
             touching.Dispose();
             sleepParents.Dispose();
             sleepContacts.Dispose();
@@ -253,13 +257,19 @@ namespace KSP.Retooled.Physics
 
             manifolds.Clear();
             manifoldPoints.Clear();
-            JobHandle built = dependency;
+            JobHandle read = dependency;
+            JobHandle merged = dependency;
             NativeStream contacts = singleton.AsSimulationPtr()->StepContext.Contacts;
             if (contacts.IsCreated)
             {
                 NativeStream.Reader reader = contacts.AsReader();
-                built = new PrepareContactBucketsJob { Contacts = reader, Buckets = contactBuckets }.Schedule(built);
-                built = new ReadContactsJob
+                read = new PrepareContactBucketsJob
+                {
+                    Contacts = reader,
+                    Buckets = contactBuckets,
+                    Filled = filledContactBuckets,
+                }.Schedule(read);
+                read = new ReadContactsJob
                 {
                     Contacts = reader,
                     Buckets = contactBuckets,
@@ -269,26 +279,34 @@ namespace KSP.Retooled.Physics
                     LastImpulses = lastImpulses,
                     DeltaTime = deltaTime,
                     BounceThreshold = store->bounceThreshold,
-                }.ScheduleUnsafe(contacts, 1, built);
+                }.ScheduleUnsafe(contacts, 1, read);
 
-                built = new MergeContactBucketsJob
+                merged = new MergeContactBucketsJob
                 {
-                    Contacts = reader,
+                    Filled = filledContactBuckets,
                     Buckets = contactBuckets,
                     Records = manifolds,
                     Points = manifoldPoints,
-                }.Schedule(built);
+                }.Schedule(read);
             }
 
-            built = new WakeTouchedBodiesJob
+            // Only the warm starts need the merged manifolds before the solve, so the merge runs beside the Jacobian build.
+            warmStartsIndexed = new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(merged);
+
+            // Without contacts nothing is woken: the joints already spread waking as the step began.
+            if (!contacts.IsCreated)
+            {
+                return read;
+            }
+
+            return new WakeTouchedBodiesJob
             {
                 World = store,
-                Records = manifolds,
+                Filled = filledContactBuckets,
+                Buckets = contactBuckets,
                 DynamicIndices = dynamicIndices.AsArray(),
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
-            }.Schedule(built);
-
-            return new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(built);
+            }.Schedule(read);
         }
 
         /// <summary>Warm starts the Jacobians.</summary>
@@ -302,7 +320,7 @@ namespace KSP.Retooled.Physics
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = dynamicIndices.Length,
-            }.Schedule(singleton, ref world, dependency);
+            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed));
         }
 
         /// <summary>
@@ -367,6 +385,9 @@ namespace KSP.Retooled.Physics
             using (BackendMarkers.StepWaitForSolve.Auto())
             {
                 simulation.FinalJobHandle.Complete();
+
+                // The solve waits for the merged manifolds through the warm starts, but a step with nothing to solve doesn't.
+                warmStartsIndexed.Complete();
             }
 
             // Only the query world reads the dynamic tree, so it is rebuilt at the solved poses while this thread writes the

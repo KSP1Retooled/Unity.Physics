@@ -330,6 +330,7 @@ namespace KSP.Retooled.Physics
             ref ContactBucket output = ref Buckets.ElementAt(bucket);
             output.Records.Clear();
             output.Points.Clear();
+            output.Wakes = false;
 
             // The narrow phase writes each manifold as its header followed by its points.
             NativeStream.Reader reader = Contacts;
@@ -349,7 +350,10 @@ namespace KSP.Retooled.Physics
 
                 if (kept)
                 {
-                    SetCoefficients(ref *header, ref output.Records.ElementAt(output.Records.Length - 1), ref output.Points);
+                    ref ManifoldRecord record = ref output.Records.ElementAt(output.Records.Length - 1);
+                    SetCoefficients(ref *header, ref record, ref output.Points);
+                    output.Wakes |= record.Touching && !record.Trigger
+                        && WakeTouchedBodiesJob.Wakes(Store + record.RowA, Store + record.RowB);
                 }
             }
 
@@ -597,6 +601,9 @@ namespace KSP.Retooled.Physics
         public UnsafeList<ManifoldRecord> Records;
         public UnsafeList<ManifoldPoint> Points;
 
+        /// <summary>Whether a manifold here has a moving body touch a sleeping one, the only thing that wakes a body.</summary>
+        public bool Wakes;
+
         internal void Dispose()
         {
             Records.Dispose();
@@ -606,7 +613,8 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Gives every bucket of the narrow phase's stream its lists, whose number is only known once the stream is made. The
-    /// lists stay from step to step, so this seldom has anything to do.
+    /// lists stay from step to step, so this seldom has anything to do. It also records how many buckets this step fills,
+    /// for the jobs that read the buckets after the stream is gone.
     /// </summary>
     [BurstCompile]
     internal struct PrepareContactBucketsJob : IJob
@@ -616,8 +624,11 @@ namespace KSP.Retooled.Physics
 
         public NativeList<ContactBucket> Buckets;
 
+        public NativeReference<int> Filled;
+
         public void Execute()
         {
+            Filled.Value = Contacts.ForEachCount;
             while (Buckets.Length < Contacts.ForEachCount)
             {
                 Buckets.Add(new ContactBucket
@@ -634,7 +645,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct MergeContactBucketsJob : IJob
     {
         [ReadOnly]
-        public NativeStream.Reader Contacts;
+        public NativeReference<int> Filled;
 
         [ReadOnly]
         public NativeList<ContactBucket> Buckets;
@@ -647,7 +658,7 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
-            for (int bucket = 0; bucket < Contacts.ForEachCount; bucket++)
+            for (int bucket = 0; bucket < Filled.Value; bucket++)
             {
                 ContactBucket kept = Buckets[bucket];
                 int firstRecord = Records.Length;
