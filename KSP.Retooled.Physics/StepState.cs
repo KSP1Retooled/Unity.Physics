@@ -39,6 +39,7 @@ namespace KSP.Retooled.Physics
         private NativeList<int> queryFirstShapes;
         private NativeList<ManifoldRecord> manifolds;
         private NativeList<ManifoldPoint> manifoldPoints;
+        private NativeList<ContactBucket> contactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
         private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
         private NativeHashMap<JacobianKey, float2> warmStarts;
@@ -76,6 +77,7 @@ namespace KSP.Retooled.Physics
             queryFirstShapes = new NativeList<int>(Allocator.Persistent);
             manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
+            contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
@@ -115,6 +117,12 @@ namespace KSP.Retooled.Physics
             queryFirstShapes.Dispose();
             manifolds.Dispose();
             manifoldPoints.Dispose();
+            for (int i = 0; i < contactBuckets.Length; i++)
+            {
+                contactBuckets[i].Dispose();
+            }
+
+            contactBuckets.Dispose();
             touching.Dispose();
             lastImpulses.Dispose();
             warmStarts.Dispose();
@@ -227,17 +235,32 @@ namespace KSP.Retooled.Physics
 
             manifolds.Clear();
             manifoldPoints.Clear();
-            JobHandle built = new ReadContactsJob
+            JobHandle built = dependency;
+            NativeStream contacts = singleton.AsSimulationPtr()->StepContext.Contacts;
+            if (contacts.IsCreated)
             {
-                Store = store->bodies,
-                Globals = globals,
-                Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
-                Records = manifolds,
-                Points = manifoldPoints,
-                LastImpulses = lastImpulses,
-                DeltaTime = deltaTime,
-                BounceThreshold = store->bounceThreshold,
-            }.Schedule(singleton, ref world, dependency);
+                NativeStream.Reader reader = contacts.AsReader();
+                built = new PrepareContactBucketsJob { Contacts = reader, Buckets = contactBuckets }.Schedule(built);
+                built = new ReadContactsJob
+                {
+                    Contacts = reader,
+                    Buckets = contactBuckets,
+                    Store = store->bodies,
+                    Globals = globals,
+                    Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
+                    LastImpulses = lastImpulses,
+                    DeltaTime = deltaTime,
+                    BounceThreshold = store->bounceThreshold,
+                }.ScheduleUnsafe(contacts, 1, built);
+
+                built = new MergeContactBucketsJob
+                {
+                    Contacts = reader,
+                    Buckets = contactBuckets,
+                    Records = manifolds,
+                    Points = manifoldPoints,
+                }.Schedule(built);
+            }
 
             built = new WakeTouchedBodiesJob
             {

@@ -293,13 +293,22 @@ namespace KSP.Retooled.Physics
     /// the body pairs <see cref="DropIgnoredPairsJob"/> left in, because a manifold names the leaves that touched, so the pairs
     /// of a compound can be told apart. So do friction and restitution, which need both shapes' materials and the points that
     /// touched. The manifolds it keeps are what the step's events and sleeping work from.
+    ///
+    /// Each of the narrow phase's buckets is read on its own, into lists of its own, and
+    /// <see cref="MergeContactBucketsJob"/> joins them in bucket order, so the records come out in the order a single pass
+    /// over the stream would give them.
     /// </summary>
     [BurstCompile]
-    internal unsafe struct ReadContactsJob : IContactsJob
+    internal unsafe struct ReadContactsJob : IJobParallelForDefer
     {
         // Measured against PhysX: a 0.015 m box slides on one anchor and a 0.02 m box on two, and their diagonals are 0.021 m
         // and 0.028 m. Points nearer each other than this share an anchor.
         private const float FrictionOffsetThreshold = 0.025f;
+
+        public NativeStream.Reader Contacts;
+
+        [NativeDisableContainerSafetyRestriction]
+        public NativeList<ContactBucket> Buckets;
 
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.BodyData* Store;
@@ -310,54 +319,60 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public RigidBody* Bodies;
 
-        [NativeDisableContainerSafetyRestriction]
-        public NativeList<ManifoldRecord> Records;
-
-        [NativeDisableContainerSafetyRestriction]
-        public NativeList<ManifoldPoint> Points;
-
         [ReadOnly]
         public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
 
         public float DeltaTime;
         public float BounceThreshold;
 
-        private bool skipping;
-        private float touchDistance;
-
-        public void Execute(ref ModifiableContactHeader header, ref ModifiableContactPoint contact)
+        public void Execute(int bucket)
         {
-            if (contact.Index == 0)
+            ref ContactBucket output = ref Buckets.ElementAt(bucket);
+            output.Records.Clear();
+            output.Points.Clear();
+
+            // The narrow phase writes each manifold as its header followed by its points.
+            NativeStream.Reader reader = Contacts;
+            reader.BeginForEachIndex(bucket);
+            while (reader.RemainingItemCount > 0)
             {
-                skipping = !Begin(ref header);
+                ContactHeader* header = (ContactHeader*)reader.ReadUnsafePtr(sizeof(ContactHeader));
+                bool kept = Begin(ref *header, ref output.Records, output.Points.Length, out float touchDistance);
+                for (int i = 0; i < header->NumContacts; i++)
+                {
+                    ContactPoint* point = (ContactPoint*)reader.ReadUnsafePtr(sizeof(ContactPoint));
+                    if (kept)
+                    {
+                        Add(ref output, point->Position, point->Distance, touchDistance);
+                    }
+                }
+
+                if (kept)
+                {
+                    SetCoefficients(ref *header, ref output.Records.ElementAt(output.Records.Length - 1), ref output.Points);
+                }
             }
 
-            if (skipping)
-            {
-                return;
-            }
-
-            Add(contact.Position, contact.Distance);
-            if (contact.Index == header.NumContacts - 1)
-            {
-                SetCoefficients(ref header, ref Records.ElementAt(Records.Length - 1));
-            }
+            reader.EndForEachIndex();
         }
 
         /// <summary>Starts a manifold's record, or disables or passes over the manifold and returns false.</summary>
-        private bool Begin(ref ModifiableContactHeader header)
+        private bool Begin(ref ContactHeader header, ref UnsafeList<ManifoldRecord> records, int firstPoint, out float touchDistance)
         {
-            RigidBody bodyA = Bodies[header.BodyIndexA];
-            RigidBody bodyB = Bodies[header.BodyIndexB];
-            NativeStore.ShapeData* shapeA = ShapeOf(bodyA, header.ColliderKeyA);
-            NativeStore.ShapeData* shapeB = ShapeOf(bodyB, header.ColliderKeyB);
+            touchDistance = 0.0f;
+            RigidBody bodyA = Bodies[header.BodyPair.BodyIndexA];
+            RigidBody bodyB = Bodies[header.BodyPair.BodyIndexB];
+            ColliderKey keyA = header.ColliderKeys.ColliderKeyA;
+            ColliderKey keyB = header.ColliderKeys.ColliderKeyB;
+            NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA);
+            NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB);
             if (IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
                 return false;
             }
 
-            if (IsBehindField(bodyA, header.ColliderKeyA, shapeA, bodyB, shapeB) || IsBehindField(bodyB, header.ColliderKeyB, shapeB, bodyA, shapeA))
+            if (IsBehindField(bodyA, keyA, shapeA, bodyB, shapeB) || IsBehindField(bodyB, keyB, shapeB, bodyA, shapeA))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
                 return false;
@@ -380,15 +395,15 @@ namespace KSP.Retooled.Physics
 
             // Triggers go by true overlap, and a solid pair by PhysX's rule: within both contact offsets.
             touchDistance = trigger ? 0.0f : ((NativeStore.Shape*)shapeA)->contactOffset + ((NativeStore.Shape*)shapeB)->contactOffset;
-            Records.Add(new ManifoldRecord
+            records.Add(new ManifoldRecord
             {
                 ShapeA = swapped ? shapeB : shapeA,
                 ShapeB = swapped ? shapeA : shapeB,
                 RowA = swapped ? rowB : rowA,
                 RowB = swapped ? rowA : rowB,
-                BuiltPair = new BodyIndexPair { BodyIndexA = header.BodyIndexA, BodyIndexB = header.BodyIndexB },
-                BuiltKeys = new ColliderKeyPair { ColliderKeyA = header.ColliderKeyA, ColliderKeyB = header.ColliderKeyB },
-                FirstPoint = Points.Length,
+                BuiltPair = header.BodyPair,
+                BuiltKeys = header.ColliderKeys,
+                FirstPoint = firstPoint,
                 Normal = normal,
                 BuiltNormal = header.Normal,
                 LinearVelocityA = first.velocity->Linear,
@@ -401,10 +416,10 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
-        private void Add(float3 position, float distance)
+        private void Add(ref ContactBucket output, float3 position, float distance, float touchDistance)
         {
-            ref ManifoldRecord record = ref Records.ElementAt(Records.Length - 1);
-            Points.Add(new ManifoldPoint { Position = position, Distance = distance });
+            ref ManifoldRecord record = ref output.Records.ElementAt(output.Records.Length - 1);
+            output.Points.Add(new ManifoldPoint { Position = position, Distance = distance });
             record.PointCount++;
 
             // Unity Physics stops a fast body at the surface with a contact that looks well apart, where PhysX lets it in and
@@ -417,7 +432,7 @@ namespace KSP.Retooled.Physics
         /// Gives a manifold the coefficients PhysX would solve it with. A material pair can't say this: Unity Physics has no
         /// multiply, ranks the combine modes differently and keeps one friction, and only here is the number of anchors known.
         /// </summary>
-        private void SetCoefficients(ref ModifiableContactHeader header, ref ManifoldRecord record)
+        private void SetCoefficients(ref ContactHeader header, ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
             if (record.Trigger)
             {
@@ -426,16 +441,17 @@ namespace KSP.Retooled.Physics
 
             NativeStore.MaterialData* a = record.ShapeA->material;
             NativeStore.MaterialData* b = record.ShapeB->material;
-            float anchors = FrictionAnchors(ref record);
+            float anchors = FrictionAnchors(ref record, ref points);
             float dynamicFriction = Combine(a->dynamicFriction, b->dynamicFriction, a->frictionCombine, b->frictionCombine);
             float staticFriction = Combine(a->staticFriction, b->staticFriction, a->frictionCombine, b->frictionCombine);
 
-            bool sticks = InFrictionCone(ref record, anchors * staticFriction);
+            float3 center = PatchCenter(ref record, ref points);
+            bool sticks = InFrictionCone(ref record, center, anchors * staticFriction);
             header.CoefficientOfFriction = anchors * (sticks ? staticFriction : dynamicFriction);
 
             // The solver's own resting test measures against gravity, and the step gives it none, so a body at rest would
             // bounce on a step's worth of gravity. PhysX's test is the threshold.
-            bool bounces = ClosingSpeed(ref record, PatchCenter(ref record)) > BounceThreshold;
+            bool bounces = ClosingSpeed(ref record, center) > BounceThreshold;
             header.CoefficientOfRestitution = bounces ? Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine) : 0.0f;
 
             // With substeps, a bouncy contact's rows stay shut until it bounces, so they couldn't take back a warm start.
@@ -451,13 +467,13 @@ namespace KSP.Retooled.Physics
         /// says, a sphere's single point holds what it says, and Unity Physics' one row at the manifold's centre is given the
         /// sum of the two.
         /// </summary>
-        private float FrictionAnchors(ref ManifoldRecord record)
+        private static float FrictionAnchors(ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
-            float3 first = Points[record.FirstPoint].Position;
+            float3 first = points[record.FirstPoint].Position;
             float farthest = 0.0f;
             for (int i = 1; i < record.PointCount; i++)
             {
-                farthest = math.max(farthest, math.distancesq(first, Points[record.FirstPoint + i].Position));
+                farthest = math.max(farthest, math.distancesq(first, points[record.FirstPoint + i].Position));
             }
 
             return farthest > FrictionOffsetThreshold * FrictionOffsetThreshold ? 2.0f : 1.0f;
@@ -468,9 +484,8 @@ namespace KSP.Retooled.Physics
         /// friction. PhysX decides it by the impulse the solve asks for. Both impulses would stop their own velocity through
         /// the same effective mass, so comparing the velocities at the patch's centre comes to the same thing.
         /// </summary>
-        private bool InFrictionCone(ref ManifoldRecord record, float coefficient)
+        private bool InFrictionCone(ref ManifoldRecord record, float3 center, float coefficient)
         {
-            float3 center = PatchCenter(ref record);
             float3 velocityA = PointVelocity(ref Store[record.RowA], record.LinearVelocityA, record.AngularVelocityA, center);
             float3 velocityB = PointVelocity(ref Store[record.RowB], record.LinearVelocityB, record.AngularVelocityB, center);
             float3 relative = velocityB - velocityA;
@@ -479,12 +494,12 @@ namespace KSP.Retooled.Physics
             return math.lengthsq(sliding) <= math.square(coefficient * math.max(closing, 0.0f));
         }
 
-        private float3 PatchCenter(ref ManifoldRecord record)
+        private static float3 PatchCenter(ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
             float3 center = float3.zero;
             for (int i = 0; i < record.PointCount; i++)
             {
-                center += Points[record.FirstPoint + i].Position;
+                center += points[record.FirstPoint + i].Position;
             }
 
             return center / record.PointCount;
@@ -570,6 +585,80 @@ namespace KSP.Retooled.Physics
         {
             NativeStore.BodyData* row = Store + body.Entity.Index;
             return row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, key, ColliderBuilder.FirstSupported(row))];
+        }
+    }
+
+    /// <summary>
+    /// What <see cref="ReadContactsJob"/> kept from one bucket of the narrow phase's stream. A record's first point counts
+    /// from the start of its bucket's points.
+    /// </summary>
+    internal struct ContactBucket
+    {
+        public UnsafeList<ManifoldRecord> Records;
+        public UnsafeList<ManifoldPoint> Points;
+
+        internal void Dispose()
+        {
+            Records.Dispose();
+            Points.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Gives every bucket of the narrow phase's stream its lists, whose number is only known once the stream is made. The
+    /// lists stay from step to step, so this seldom has anything to do.
+    /// </summary>
+    [BurstCompile]
+    internal struct PrepareContactBucketsJob : IJob
+    {
+        [ReadOnly]
+        public NativeStream.Reader Contacts;
+
+        public NativeList<ContactBucket> Buckets;
+
+        public void Execute()
+        {
+            while (Buckets.Length < Contacts.ForEachCount)
+            {
+                Buckets.Add(new ContactBucket
+                {
+                    Records = new UnsafeList<ManifoldRecord>(16, Allocator.Persistent),
+                    Points = new UnsafeList<ManifoldPoint>(64, Allocator.Persistent),
+                });
+            }
+        }
+    }
+
+    /// <summary>Joins what <see cref="ReadContactsJob"/> kept from each bucket into the step's manifolds, in bucket order.</summary>
+    [BurstCompile]
+    internal unsafe struct MergeContactBucketsJob : IJob
+    {
+        [ReadOnly]
+        public NativeStream.Reader Contacts;
+
+        [ReadOnly]
+        public NativeList<ContactBucket> Buckets;
+
+        [NativeDisableContainerSafetyRestriction]
+        public NativeList<ManifoldRecord> Records;
+
+        [NativeDisableContainerSafetyRestriction]
+        public NativeList<ManifoldPoint> Points;
+
+        public void Execute()
+        {
+            for (int bucket = 0; bucket < Contacts.ForEachCount; bucket++)
+            {
+                ContactBucket kept = Buckets[bucket];
+                int firstRecord = Records.Length;
+                int pointOffset = Points.Length;
+                Records.AddRange(kept.Records.Ptr, kept.Records.Length);
+                Points.AddRange(kept.Points.Ptr, kept.Points.Length);
+                for (int i = firstRecord; i < Records.Length; i++)
+                {
+                    Records.ElementAt(i).FirstPoint += pointOffset;
+                }
+            }
         }
     }
 
