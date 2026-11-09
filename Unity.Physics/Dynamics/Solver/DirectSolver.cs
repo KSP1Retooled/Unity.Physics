@@ -1254,7 +1254,6 @@ namespace Unity.Physics
                 Headers = new NativeList<IntPtr>(Allocator.Temp),
                 WorldBodies = new NativeList<int>(Allocator.Temp),
                 CompactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory),
-                MotionVelocities = motionVelocities,
             };
 
             // All ones is -1, for a body not in the island.
@@ -1262,22 +1261,75 @@ namespace Unity.Physics
 
             if (islandHeaders != null)
             {
-                // The row builders laid out each Jacobian's rows already, and a Jacobian's rows end where the next one's start.
+                // Only numbering the bodies, in the order the Jacobians reach them, has to follow the Jacobians in order. The
+                // lanes split reading the Jacobians and then writing the lists, each task starting where the tasks before it
+                // end.
+                int taskCount = (headerCount + JacobiansPerSummaryTask - 1) / JacobiansPerSummaryTask;
+                var summaries = new NativeArray<JacobianSummary>(headerCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var taskBlocks = new NativeArray<int>(taskCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var taskCouplings = new NativeArray<int>(taskCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var summarizing = new JacobianSummaries
+                {
+                    Headers = islandHeaders,
+                    HeaderRows = headerRows,
+                    Count = headerCount,
+                    Rows = rows,
+                    MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                    MotionCount = motionVelocities.Length,
+                    Summaries = (JacobianSummary*)summaries.GetUnsafePtr(),
+                    TaskBlocks = (int*)taskBlocks.GetUnsafePtr(),
+                    TaskCouplings = (int*)taskCouplings.GetUnsafePtr(),
+                    CompactBodies = (int*)setup.CompactBodies.GetUnsafePtr(),
+                };
+
+                SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.SummarizeJacobiansKind, taskCount, null);
+
                 for (int h = 0; h < headerCount; h++)
                 {
-                    int end = h + 1 < headerCount ? headerRows[h + 1] : rows;
-                    setup.Add(ref *islandHeaders[h].Header, headerRows[h], end - headerRows[h]);
+                    if (summaries[h].Rows > 0)
+                    {
+                        setup.HoldsPositions |= summaries[h].HoldsPosition;
+                        setup.Number(summaries[h].BodyA);
+                        setup.Number(summaries[h].BodyB);
+                    }
                 }
+
+                // From each task's counts to where its blocks and couplings start.
+                int blockCount = 0;
+                int couplingCount = 0;
+                for (int task = 0; task < taskCount; task++)
+                {
+                    int ownBlocks = taskBlocks[task];
+                    int ownCouplings = taskCouplings[task];
+                    taskBlocks[task] = blockCount;
+                    taskCouplings[task] = couplingCount;
+                    blockCount += ownBlocks;
+                    couplingCount += ownCouplings;
+                }
+
+                setup.Blocks.ResizeUninitialized(blockCount);
+                setup.Headers.ResizeUninitialized(blockCount);
+                setup.Couplings.ResizeUninitialized(couplingCount);
+                summarizing.Blocks = setup.Blocks.GetUnsafePtr();
+                summarizing.HeaderPointers = setup.Headers.GetUnsafePtr();
+                summarizing.Couplings = setup.Couplings.GetUnsafePtr();
+                SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.FillBlocksKind, taskCount, null);
+
+                summaries.Dispose();
+                taskBlocks.Dispose();
+                taskCouplings.Dispose();
             }
             else
             {
                 var jacobianIterator = new IslandJacobianIterator(jacobiansReader, directSolverSchedulerInfo, islandIndex, contactPairs);
+                var motions = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr();
                 int firstRow = 0;
                 while (jacobianIterator.HasJacobiansLeft())
                 {
                     ref JacobianHeader header = ref jacobianIterator.ReadJacobianHeader();
                     int blockRows = GetConstraintRows(ref header);
-                    setup.Add(ref header, firstRow, blockRows);
+                    JacobianSummary summary = Summarize(ref header, blockRows, motions, motionVelocities.Length);
+                    setup.Add(summary, (JacobianHeader*)UnsafeUtility.AddressOf(ref header), firstRow);
                     firstRow += blockRows;
                 }
             }
@@ -1394,58 +1446,35 @@ namespace Unity.Physics
             /// <summary>Where each moving body sits among the island's, by its index in the world, or -1.</summary>
             public NativeArray<int> CompactBodies;
 
-            public NativeArray<MotionVelocity> MotionVelocities;
             public bool HoldsPositions;
 
-            public void Add(ref JacobianHeader header, int firstRow, int blockRows)
+            public void Add(in JacobianSummary summary, JacobianHeader* header, int firstRow)
             {
-                if (blockRows == 0)
+                if (summary.Rows == 0)
                 {
                     return;
                 }
 
-                HoldsPositions |= header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
-
-                // A contact's friction rows follow its normal rows, and only when it has friction.
-                float friction = header.Type == JacobianType.Contact
-                    ? header.AccessBaseJacobian<ContactJacobian>().CoefficientOfFriction
-                    : 0.0f;
-                if (friction > 0)
+                HoldsPositions |= summary.HoldsPosition;
+                if (summary.Friction > 0)
                 {
-                    // Earlier substeps' pushes are in the totals, and this one's warm start, if it has one, in its points.
-                    ref ContactJacobian contact = ref header.AccessBaseJacobian<ContactJacobian>();
-                    float held = contact.NormalImpulseOverSubsteps;
-                    for (int i = 0; i < contact.BaseJacobian.NumContacts; i++)
-                    {
-                        held += header.AccessAngularJacobian(i).Jac.Impulse;
-                    }
-
-                    int normals = blockRows - 3;
-                    Couplings.Add(new SparseConstraintSolver.Coupling
-                    {
-                        FirstRow = firstRow + normals,
-                        RowCount = 3,
-                        FirstSourceRow = firstRow,
-                        SourceRowCount = normals,
-                        Factor = friction,
-                        HeldSourceImpulse = held,
-                    });
+                    Couplings.Add(FrictionCoupling(summary, firstRow));
                 }
 
                 Blocks.Add(new SparseConstraintSolver.ConstraintBlock
                 {
-                    BodyA = Compact(header.BodyPair.BodyIndexA),
-                    BodyB = Compact(header.BodyPair.BodyIndexB),
+                    BodyA = Number(summary.BodyA),
+                    BodyB = Number(summary.BodyB),
                     FirstRow = firstRow,
-                    RowCount = blockRows,
+                    RowCount = summary.Rows,
                 });
-                Headers.Add((IntPtr)UnsafeUtility.AddressOf(ref header));
+                Headers.Add((IntPtr)header);
             }
 
-            /// <summary>Where a body sits among the moving bodies of the island, or -1 if it doesn't move.</summary>
-            int Compact(int bodyIndex)
+            /// <summary>Where a moving body sits among the island's, numbering it if it is new, or -1 for none.</summary>
+            public int Number(int bodyIndex)
             {
-                if (bodyIndex >= MotionVelocities.Length || MotionVelocities[bodyIndex].IsKinematic)
+                if (bodyIndex < 0)
                 {
                     return -1;
                 }
@@ -1459,6 +1488,167 @@ namespace Unity.Physics
                 }
 
                 return compact;
+            }
+        }
+
+        /// <summary>What a sparse solve takes from one Jacobian, which needs nothing from the others.</summary>
+        struct JacobianSummary
+        {
+            /// <summary>The Jacobian's bodies by their index in the world, or -1 for one that doesn't move.</summary>
+            public int BodyA;
+            public int BodyB;
+
+            public int Rows;
+
+            /// <summary>The contact's coefficient of friction, or 0 for a joint or a contact without friction rows.</summary>
+            public float Friction;
+
+            /// <summary>
+            /// The normal impulse the contact holds already: earlier substeps' in its total, and this one's warm start, if it
+            /// has one, in its points.
+            /// </summary>
+            public float HeldImpulse;
+
+            public bool HoldsPosition;
+        }
+
+        static unsafe JacobianSummary Summarize(ref JacobianHeader header, int rows, MotionVelocity* motionVelocities,
+            int motionCount)
+        {
+            var summary = new JacobianSummary { Rows = rows };
+            if (rows == 0)
+            {
+                return summary;
+            }
+
+            summary.BodyA = Moving(header.BodyPair.BodyIndexA, motionVelocities, motionCount);
+            summary.BodyB = Moving(header.BodyPair.BodyIndexB, motionVelocities, motionCount);
+            summary.HoldsPosition = header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
+            if (header.Type == JacobianType.Contact)
+            {
+                ref ContactJacobian contact = ref header.AccessBaseJacobian<ContactJacobian>();
+                summary.Friction = math.max(contact.CoefficientOfFriction, 0.0f);
+                if (summary.Friction > 0)
+                {
+                    float held = contact.NormalImpulseOverSubsteps;
+                    for (int i = 0; i < contact.BaseJacobian.NumContacts; i++)
+                    {
+                        held += header.AccessAngularJacobian(i).Jac.Impulse;
+                    }
+
+                    summary.HeldImpulse = held;
+                }
+            }
+
+            return summary;
+        }
+
+        static unsafe int Moving(int bodyIndex, MotionVelocity* motionVelocities, int motionCount)
+        {
+            return bodyIndex < motionCount && !motionVelocities[bodyIndex].IsKinematic ? bodyIndex : -1;
+        }
+
+        /// <summary>A contact's friction rows, which follow its normal rows and are bounded by them.</summary>
+        static SparseConstraintSolver.Coupling FrictionCoupling(in JacobianSummary summary, int firstRow)
+        {
+            int normals = summary.Rows - 3;
+            return new SparseConstraintSolver.Coupling
+            {
+                FirstRow = firstRow + normals,
+                RowCount = 3,
+                FirstSourceRow = firstRow,
+                SourceRowCount = normals,
+                Factor = summary.Friction,
+                HeldSourceImpulse = summary.HeldImpulse,
+            };
+        }
+
+        const int JacobiansPerSummaryTask = 256;
+
+        /// <summary>
+        /// What gathering a sparse solve's blocks from an island's Jacobians reads and writes, shared by the lanes that split
+        /// the Jacobians. Each task covers the same Jacobians in both stages.
+        /// </summary>
+        unsafe struct JacobianSummaries
+        {
+            public IslandHeader* Headers;
+
+            /// <summary>Each Jacobian's first row; a Jacobian's rows end where the next one's start.</summary>
+            public int* HeaderRows;
+
+            public int Count;
+            public int Rows;
+            public MotionVelocity* MotionVelocities;
+            public int MotionCount;
+            public JacobianSummary* Summaries;
+
+            /// <summary>
+            /// Each task's count of blocks and of couplings once it has summarized, and by the time the lists are filled,
+            /// where its first ones go.
+            /// </summary>
+            public int* TaskBlocks;
+            public int* TaskCouplings;
+
+            /// <summary>Where each moving body sits among the island's, by its index in the world, once all are numbered.</summary>
+            public int* CompactBodies;
+
+            public SparseConstraintSolver.ConstraintBlock* Blocks;
+            public IntPtr* HeaderPointers;
+            public SparseConstraintSolver.Coupling* Couplings;
+        }
+
+        internal static unsafe void SummarizeJacobiansTask(void* context, int task)
+        {
+            var summaries = (JacobianSummaries*)context;
+            int end = math.min((task + 1) * JacobiansPerSummaryTask, summaries->Count);
+            int blocks = 0;
+            int couplings = 0;
+            for (int h = task * JacobiansPerSummaryTask; h < end; h++)
+            {
+                int rowEnd = h + 1 < summaries->Count ? summaries->HeaderRows[h + 1] : summaries->Rows;
+                JacobianSummary summary = Summarize(ref *summaries->Headers[h].Header, rowEnd - summaries->HeaderRows[h],
+                    summaries->MotionVelocities, summaries->MotionCount);
+                summaries->Summaries[h] = summary;
+                if (summary.Rows > 0)
+                {
+                    blocks++;
+                    couplings += summary.Friction > 0 ? 1 : 0;
+                }
+            }
+
+            summaries->TaskBlocks[task] = blocks;
+            summaries->TaskCouplings[task] = couplings;
+        }
+
+        internal static unsafe void FillBlocksTask(void* context, int task)
+        {
+            var summaries = (JacobianSummaries*)context;
+            int end = math.min((task + 1) * JacobiansPerSummaryTask, summaries->Count);
+            int block = summaries->TaskBlocks[task];
+            int coupling = summaries->TaskCouplings[task];
+            for (int h = task * JacobiansPerSummaryTask; h < end; h++)
+            {
+                JacobianSummary summary = summaries->Summaries[h];
+                if (summary.Rows == 0)
+                {
+                    continue;
+                }
+
+                int firstRow = summaries->HeaderRows[h];
+                if (summary.Friction > 0)
+                {
+                    summaries->Couplings[coupling++] = FrictionCoupling(summary, firstRow);
+                }
+
+                summaries->Blocks[block] = new SparseConstraintSolver.ConstraintBlock
+                {
+                    BodyA = summary.BodyA < 0 ? -1 : summaries->CompactBodies[summary.BodyA],
+                    BodyB = summary.BodyB < 0 ? -1 : summaries->CompactBodies[summary.BodyB],
+                    FirstRow = firstRow,
+                    RowCount = summary.Rows,
+                };
+                summaries->HeaderPointers[block] = (IntPtr)summaries->Headers[h].Header;
+                block++;
             }
         }
 

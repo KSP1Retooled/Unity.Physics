@@ -21,6 +21,8 @@ namespace Unity.Physics
         public const int PredictDriftKind = -1;
         public const int ApplyImpulsesKind = -2;
         public const int SetupBodiesKind = -3;
+        public const int SummarizeJacobiansKind = -4;
+        public const int FillBlocksKind = -5;
 
         struct Stage
         {
@@ -130,6 +132,14 @@ namespace Unity.Physics
             else if (stage.Kind == SetupBodiesKind)
             {
                 Solver.SetupBodiesTask(stage.Context, task);
+            }
+            else if (stage.Kind == SummarizeJacobiansKind)
+            {
+                Solver.SummarizeJacobiansTask(stage.Context, task);
+            }
+            else if (stage.Kind == FillBlocksKind)
+            {
+                Solver.FillBlocksTask(stage.Context, task);
             }
             else
             {
