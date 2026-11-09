@@ -247,6 +247,9 @@ namespace Unity.Physics
 
         UnsafeList<int> rowNode;
         UnsafeList<int> rowInNode;
+
+        // Each row's own unknown in the solution, or NoNode for a row without one.
+        UnsafeList<int> rowUnknown;
         UnsafeList<double> factor;
         UnsafeList<double> right;
         UnsafeList<double> solution;
@@ -297,6 +300,7 @@ namespace Unity.Physics
             Team = null;
             rowNode = new UnsafeList<int>(InitialCapacity, allocator);
             rowInNode = new UnsafeList<int>(InitialCapacity, allocator);
+            rowUnknown = new UnsafeList<int>(InitialCapacity, allocator);
             factor = new UnsafeList<double>(InitialCapacity, allocator);
             right = new UnsafeList<double>(InitialCapacity, allocator);
             solution = new UnsafeList<double>(InitialCapacity, allocator);
@@ -333,6 +337,7 @@ namespace Unity.Physics
             stageWorst.Dispose();
             rowNode.Dispose();
             rowInNode.Dispose();
+            rowUnknown.Dispose();
             factor.Dispose();
             right.Dispose();
             solution.Dispose();
@@ -941,6 +946,12 @@ namespace Unity.Physics
                 }
             }
 
+            rowUnknown.Resize(rowNode.Length);
+            for (int row = 0; row < rowNode.Length; row++)
+            {
+                rowUnknown[row] = rowNode[row] == NoNode ? NoNode : nodes[rowNode[row]].Start + rowInNode[row];
+            }
+
             right.Resize(start);
             solution.Resize(start);
             correction.Resize(start);
@@ -1365,13 +1376,12 @@ namespace Unity.Physics
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    int constraint = rowNode[row];
-                    if (constraint == NoNode)
+                    int own = rowUnknown[row];
+                    if (own == NoNode)
                     {
                         continue;
                     }
 
-                    int own = nodes[constraint].Start + rowInNode[row];
                     if (state[row] != Free)
                     {
                         residual[own] += x[own];
@@ -1397,32 +1407,27 @@ namespace Unity.Physics
             for (int body = firstBody; body < endBody; body++)
             {
                 int start = nodes[body].Start;
-                double* speed = x + start;
-                double* miss = residual + start;
+                double6 miss = double6.Load(residual + start);
                 for (int i = bodyRowStarts[body]; i < bodyRowStarts[body + 1]; i++)
                 {
                     int row = bodyRows[i] >> 1;
-                    if (rowNode[row] != NoNode && state[row] == Free)
+                    int own = rowUnknown[row];
+                    if (own != NoNode && state[row] == Free)
                     {
-                        float* columns = problem.Jacobian + row * ColumnsPerRow + (bodyRows[i] & 1) * SideColumns;
-                        double impulse = x[nodes[rowNode[row]].Start + rowInNode[row]];
-                        for (int column = 0; column < SideColumns; column++)
-                        {
-                            miss[column] -= columns[column] * impulse;
-                        }
+                        miss -= x[own] * Columns(problem.Jacobian + row * ColumnsPerRow + (bodyRows[i] & 1) * SideColumns);
                     }
                 }
 
                 Body source = problem.Bodies[body];
-                double3 momentum = math.mul(source.Inertia, new double3(speed[3], speed[4], speed[5]));
+                double6 speed = double6.Load(x + start);
+                double3 momentum = math.mul(source.Inertia, new double3(speed.Low.w, speed.High));
+                miss -= new double6(new double4(source.Mass * speed.Low.xyz, momentum.x), momentum.yz);
+                miss.Store(residual + start);
+
                 double2 scale = bodySpeedScale[body];
-                for (int i = 0; i < 3; i++)
-                {
-                    miss[i] -= source.Mass * speed[i];
-                    miss[i + 3] -= momentum[i];
-                    worst = math.max(worst, math.abs(miss[i]) * scale.x);
-                    worst = math.max(worst, math.abs(miss[i + 3]) * scale.y);
-                }
+                double4 low = math.abs(miss.Low) * new double4(scale.xxx, scale.y);
+                double2 high = math.abs(miss.High) * scale.y;
+                worst = math.max(worst, math.max(math.cmax(low), math.cmax(high)));
             }
 
             return worst;
@@ -2189,14 +2194,16 @@ namespace Unity.Physics
                 return 0.0;
             }
 
-            double* du = solution.Ptr + nodes[body].Start;
-            double sum = 0.0;
-            for (int column = 0; column < SideColumns; column++)
-            {
-                sum += columns[column] * du[column];
-            }
+            double6 speed = double6.Load(solution.Ptr + nodes[body].Start);
+            double6 jacobian = Columns(columns);
+            return math.csum(MathUtil.Fma(speed.Low, jacobian.Low, new double4(speed.High * jacobian.High, 0.0, 0.0)));
+        }
 
-            return sum;
+        /// <summary>One side of a Jacobian row: a body's six columns, linear then angular.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static double6 Columns(float* columns)
+        {
+            return new double6(new double4(*(float4*)columns), new double2(*(float2*)(columns + 4)));
         }
 
         /// <summary>A binary heap of priorities, smallest first.</summary>
