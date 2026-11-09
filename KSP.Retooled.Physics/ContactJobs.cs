@@ -830,6 +830,56 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// Drops the touching pairs of shapes taken off their bodies, which leave with no exit and whose addresses the next
+    /// shapes can reuse. What rested on such a shape has nothing holding it now, so PhysX wakes it. That decides what the
+    /// step's sleep and contact report see, so this runs before both.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct ForgetRemovedShapesJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        public NativeHashMap<ShapePairKey, ShapePairState> Touching;
+
+        public void Execute()
+        {
+            if (World->removedShapeCount == 0)
+            {
+                return;
+            }
+
+            NativeHashSet<IntPtr> removed = new NativeHashSet<IntPtr>((int)World->removedShapeCount, Allocator.Temp);
+            for (uint i = 0; i < World->removedShapeCount; i++)
+            {
+                removed.Add((IntPtr)World->removedShapes[i]);
+            }
+
+            World->removedShapeCount = 0;
+            NativeArray<ShapePairKey> keys = Touching.GetKeyArray(Allocator.Temp);
+            foreach (ShapePairKey key in keys)
+            {
+                bool firstGone = removed.Contains(key.First);
+                bool secondGone = removed.Contains(key.Second);
+                if (firstGone || secondGone)
+                {
+                    Touching.Remove(key);
+                    WakeOwner(firstGone ? key.Second : key.First, firstGone && secondGone);
+                }
+            }
+        }
+
+        private static void WakeOwner(IntPtr shape, bool gone)
+        {
+            NativeStore.Shape* left = (NativeStore.Shape*)shape;
+            if (!gone && left->body != null)
+            {
+                JointKernel.WakeRow(StoreOps.Hot(left->body));
+            }
+        }
+    }
+
+    /// <summary>
     /// Turns the step's manifolds into what Unity reads back from GetLastSimulationStepResults, which is PhysX's report: each
     /// pair of bodies with their velocities before the solve, each pair of shapes under it, and their contact points. Touches
     /// found and lost are worked out here against the pairs of the step before, and a pair of bodies at rest stays touching
@@ -868,7 +918,6 @@ namespace KSP.Retooled.Physics
             World->contactPointCount = 0;
             World->triggerCount = 0;
 
-            ForgetRemovedShapes();
             Records.AsArray().Sort(new ManifoldOrder());
             Reserve();
 
@@ -937,44 +986,6 @@ namespace KSP.Retooled.Physics
         private bool SameShapes(ref ManifoldRecord a, ref ManifoldRecord b)
         {
             return a.ShapeA == b.ShapeA && a.ShapeB == b.ShapeB;
-        }
-
-        /// <summary>A shape taken off its body leaves its pairs behind with no exit, and its address can be reused by the next one.</summary>
-        private void ForgetRemovedShapes()
-        {
-            if (World->removedShapeCount == 0)
-            {
-                return;
-            }
-
-            NativeHashSet<IntPtr> removed = new NativeHashSet<IntPtr>((int)World->removedShapeCount, Allocator.Temp);
-            for (uint i = 0; i < World->removedShapeCount; i++)
-            {
-                removed.Add((IntPtr)World->removedShapes[i]);
-            }
-
-            World->removedShapeCount = 0;
-            NativeArray<ShapePairKey> keys = Touching.GetKeyArray(Allocator.Temp);
-            foreach (ShapePairKey key in keys)
-            {
-                bool firstGone = removed.Contains(key.First);
-                bool secondGone = removed.Contains(key.Second);
-                if (firstGone || secondGone)
-                {
-                    Touching.Remove(key);
-                    WakeOwner(firstGone ? key.Second : key.First, firstGone && secondGone);
-                }
-            }
-        }
-
-        /// <summary>What rested on a shape that went away has nothing holding it now, so PhysX wakes it.</summary>
-        private void WakeOwner(IntPtr shape, bool gone)
-        {
-            NativeStore.Shape* left = (NativeStore.Shape*)shape;
-            if (!gone && left->body != null)
-            {
-                JointKernel.WakeRow(StoreOps.Hot(left->body));
-            }
         }
 
         /// <summary>Everything is sized up front, because a report's pairs point into these arrays.</summary>

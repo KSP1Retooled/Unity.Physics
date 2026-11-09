@@ -205,6 +205,37 @@ namespace KSP.Retooled.Physics
         }
     }
 
+    /// <summary>Sets where each built body's shapes start among the query's shapes, and sizes the shapes to hold them all.</summary>
+    [BurstCompile]
+    internal unsafe struct FindFirstShapesJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.BodyData* Store;
+
+        [ReadOnly]
+        public NativeArray<RigidBody> Bodies;
+
+        public NativeArray<int> FirstShapes;
+
+        public NativeList<QueryShape> QueryShapes;
+
+        public void Execute()
+        {
+            int count = 0;
+            for (int i = 0; i < Bodies.Length; i++)
+            {
+                FirstShapes[i] = count;
+                Entity entity = Bodies[i].Entity;
+                if (entity.Version != 0)
+                {
+                    count += (int)Store[entity.Index].shapeCount;
+                }
+            }
+
+            QueryShapes.ResizeUninitialized(count);
+        }
+    }
+
     /// <summary>
     /// Copies what a query reads about bodies and shapes out of the store, in the built world's body order, one body a
     /// work item. <see cref="FirstShapes"/> holds where each body's shapes start.

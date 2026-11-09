@@ -104,6 +104,9 @@ namespace KSP.Retooled.Physics
     /// energy stays under its threshold and is topped up when it doesn't, and bodies sleep island by island: a body only
     /// sleeps once every body connected to it by contacts and joints has run out. Statics and kinematics don't connect
     /// bodies into an island, because they don't pass motion from one body to another.
+    ///
+    /// This only lists the bodies that fall asleep, for <see cref="FallAsleepJob"/>, because the contact report after it still
+    /// has to see them awake.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SleepJob : IJob
@@ -113,13 +116,20 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        /// <summary>
+        /// Read beside <see cref="ReadImpulsesJob"/>, which writes only the impulses, a field this job doesn't read.
+        /// </summary>
         [ReadOnly]
+        [NativeDisableContainerSafetyRestriction]
         public NativeList<ManifoldRecord> Records;
+
+        public NativeList<int> Falling;
 
         public float DeltaTime;
 
         public void Execute()
         {
+            Falling.Clear();
             int count = (int)World->bodyCount;
             var parents = new NativeArray<int>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var contacts = new NativeArray<int>(count, Allocator.Temp);
@@ -175,12 +185,7 @@ namespace KSP.Retooled.Physics
                 NativeStore.BodyData* body = World->bodies + i;
                 if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0 && !islandAwake[Find(parents, i)])
                 {
-                    body->flags |= NativeStore.BodyFlags.Sleeping;
-                    body->sleep->WakeCounter = 0.0f;
-                    body->velocity->Linear = float3.zero;
-                    body->velocity->Angular = float3.zero;
-                    body->sleep->LinearSum = float3.zero;
-                    body->sleep->AngularSum = float3.zero;
+                    Falling.Add(i);
                 }
             }
         }
@@ -243,6 +248,31 @@ namespace KSP.Retooled.Physics
         private static void Union(NativeArray<int> parents, int a, int b)
         {
             parents[Find(parents, a)] = Find(parents, b);
+        }
+    }
+
+    /// <summary>Puts to sleep the bodies <see cref="SleepJob"/> listed, stopping them where they are.</summary>
+    [BurstCompile]
+    internal unsafe struct FallAsleepJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        [ReadOnly]
+        public NativeList<int> Falling;
+
+        public void Execute()
+        {
+            for (int i = 0; i < Falling.Length; i++)
+            {
+                NativeStore.BodyData* body = World->bodies + Falling[i];
+                body->flags |= NativeStore.BodyFlags.Sleeping;
+                body->sleep->WakeCounter = 0.0f;
+                body->velocity->Linear = float3.zero;
+                body->velocity->Angular = float3.zero;
+                body->sleep->LinearSum = float3.zero;
+                body->sleep->AngularSum = float3.zero;
+            }
         }
     }
 }

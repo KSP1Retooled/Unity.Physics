@@ -43,6 +43,7 @@ namespace KSP.Retooled.Physics
         private NativeList<ManifoldPoint> manifoldPoints;
         private NativeList<ContactBucket> contactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
+        private NativeList<int> fallingAsleep;
         private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
         private NativeHashMap<JacobianKey, float2> warmStarts;
         private NativeList<ColliderBuilder.Work> colliderWork;
@@ -83,6 +84,7 @@ namespace KSP.Retooled.Physics
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+            fallingAsleep = new NativeList<int>(Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
@@ -130,6 +132,7 @@ namespace KSP.Retooled.Physics
 
             contactBuckets.Dispose();
             touching.Dispose();
+            fallingAsleep.Dispose();
             lastImpulses.Dispose();
             warmStarts.Dispose();
             colliderWork.Dispose();
@@ -379,6 +382,14 @@ namespace KSP.Retooled.Physics
                 ReadJointForces(simulation, deltaTime);
             }
 
+            // What a removed shape held wakes after the joints read who sleeps, and before the sleep and the contact report
+            // do. The sleep and the query snapshot don't need the impulses, so they run on workers while this thread waits
+            // for the tree and reads the impulses.
+            new ForgetRemovedShapesJob { World = store, Touching = touching }.Run();
+            JobHandle sleep = new SleepJob { World = store, Records = manifolds, Falling = fallingAsleep, DeltaTime = deltaTime }.Schedule();
+            JobHandle snapshot = ScheduleQuerySnapshot(tree);
+            JobHandle.ScheduleBatchedJobs();
+
             using (BackendMarkers.StepWaitForTree.Auto())
             {
                 tree.Complete();
@@ -396,6 +407,8 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.StepPublishContacts.Auto())
             {
+                // The report sorts the manifolds the sleep reads.
+                sleep.Complete();
                 new PublishContactsJob
                 {
                     World = store,
@@ -407,17 +420,19 @@ namespace KSP.Retooled.Physics
                 }.Run();
             }
 
-            using (BackendMarkers.StepSleep.Auto())
-            {
-                new SleepJob { World = store, Records = manifolds, DeltaTime = deltaTime }.Run();
-            }
-
             // The step synchronized the built world to the motions it wrote back, which spares the queries after it a
             // rebuild. The store can't change during a step, so these bodies are the only way it can differ.
             using (BackendMarkers.StepPublishQueryWorld.Auto())
             {
+                snapshot.Complete();
                 store->queryDirty = motionsMatchStore ? 0u : 1u;
                 PublishQueryWorld();
+            }
+
+            // After the snapshot, which reads the flags this sets.
+            using (BackendMarkers.StepSleep.Auto())
+            {
+                new FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
             }
         }
 
@@ -428,7 +443,8 @@ namespace KSP.Retooled.Physics
             BodyEntities.PrepareForJobs(store);
             JobHandle colliders = RefreshColliders(default);
             JobHandle built = Build(0.0f, colliders, out _);
-            world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true).Complete();
+            JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true);
+            ScheduleQuerySnapshot(broadphase).Complete();
             PublishQueryWorld();
         }
 
@@ -453,48 +469,44 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Hands the built world to the query functions, with a copy of everything a query needs from the store. Workers keep
-        /// reading this until the next publish, so nothing here may point at memory the store can move or free. The colliders
-        /// are safe: they are only released by the next build, which holds the query lock exclusively.
+        /// Copies everything a query needs from the store, for <see cref="PublishQueryWorld"/>. Workers keep reading the copy
+        /// until the next publish, so nothing in it may point at memory the store can move or free.
         /// </summary>
-        private void PublishQueryWorld()
+        private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
         {
             queryBodies.ResizeUninitialized(world.NumBodies);
-            queryShapes.ResizeUninitialized(FindFirstShapes());
-            new SnapshotQueryDataJob
+            queryFirstShapes.ResizeUninitialized(world.NumBodies);
+            JobHandle found = new FindFirstShapesJob
+            {
+                Store = store->bodies,
+                Bodies = world.Bodies,
+                FirstShapes = queryFirstShapes.AsArray(),
+                QueryShapes = queryShapes,
+            }.Schedule(dependency);
+
+            return new SnapshotQueryDataJob
             {
                 Store = store->bodies,
                 Bodies = world.Bodies,
                 FirstShapes = queryFirstShapes.AsArray(),
                 QueryBodies = queryBodies.AsArray(),
-                QueryShapes = queryShapes.AsArray(),
+                QueryShapes = queryShapes.AsDeferredJobArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
-            }.Schedule(world.NumBodies, ParallelBatchSize).Complete();
+            }.Schedule(world.NumBodies, ParallelBatchSize, found);
+        }
 
+        /// <summary>
+        /// Hands the built world and the finished snapshot to the query functions. The colliders are safe to share: they are
+        /// only released by the next build, which holds the query lock exclusively.
+        /// </summary>
+        private void PublishQueryWorld()
+        {
             query->Collision = world.CollisionWorld;
             query->Bodies = queryBodies.GetUnsafeReadOnlyPtr();
             query->Shapes = queryShapes.GetUnsafePtr();
             query->ShapeCount = queryShapes.Length;
             store->queryWorld = query;
             builtWhole = true;
-        }
-
-        /// <summary>Sets where each built body's shapes start among the query's shapes, and returns how many there are.</summary>
-        private int FindFirstShapes()
-        {
-            queryFirstShapes.ResizeUninitialized(world.NumBodies);
-            int count = 0;
-            for (int i = 0; i < world.NumBodies; i++)
-            {
-                queryFirstShapes[i] = count;
-                Unity.Entities.Entity entity = world.Bodies[i].Entity;
-                if (entity.Version != 0)
-                {
-                    count += (int)store->bodies[entity.Index].shapeCount;
-                }
-            }
-
-            return count;
         }
 
         /// <summary>
