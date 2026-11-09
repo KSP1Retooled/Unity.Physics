@@ -27,7 +27,9 @@ namespace KSP.Retooled.Physics.Tests
         private const int Repeats = 5;
         private const double BurstWaitSeconds = 120.0;
 
-        [BurstCompile]
+        // Players build Burst code without safety checks, which the editor turns on by default, and the solver indexes its
+        // lists everywhere, so the checks would weigh on it here as they never do in a game.
+        [BurstCompile(DisableSafetyChecks = true)]
         private struct SolveJob : IJob
         {
             [NativeDisableUnsafePtrRestriction]
