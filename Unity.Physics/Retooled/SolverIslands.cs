@@ -311,8 +311,8 @@ namespace Unity.Physics
                 int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
                 if (!fits)
                 {
-                    // Only joints get the direct solver's Jacobians: its coupled solve doesn't cope with contacts on them, so
-                    // DirectIslandJob gives those to the iterative solver around it.
+                    // Only joints get the direct solver's Jacobians. The contacts keep the iterative solver's kind, which the
+                    // island's sparse solve builds its contact rows from and the event export reads afterwards.
                     island.FirstDirectPair = Reserve(NumIslandPhases, pairs.Length);
                     int nextPair = NumIslandPhases * bucketSize + island.FirstDirectPair;
                     for (int pass = 0; pass < 2; pass++)
