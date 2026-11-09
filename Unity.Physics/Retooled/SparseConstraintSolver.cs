@@ -433,18 +433,37 @@ namespace Unity.Physics
             int stalled = 0;
             bool flipAll = true;
             int couplings = 0;
+
+            // Whether correction holds what the last answer misses of this problem's matrix, as it does after a refinement
+            // that held, until a row changes sides.
+            bool residualHeld = false;
             for (int iteration = 1; iteration <= MaxPivotingIterations; iteration++)
             {
                 statistics.PivotingIterations = iteration;
                 started = ProfilerUnsafeUtility.Timestamp;
+
+                // Between rounds only the right-hand side moves, so the new miss is the old one plus how far it moved.
+                bool keepResidual = residualHeld && factored;
+                if (keepResidual)
+                {
+                    AddScaled(correction.Ptr, right.Ptr, -1.0, correction.Length);
+                }
+
                 AssembleRightHandSide(problem);
+                if (keepResidual)
+                {
+                    AddScaled(correction.Ptr, right.Ptr, 1.0, correction.Length);
+                }
+
                 statistics.AssembleTime += Lap(ref started);
 
                 // The last answer is only a step from this one, so refining it usually takes fewer substitutions than refining
                 // the factor's own answer. When it doesn't hold, the factor's answer still gets its chance before a new
                 // factorization.
                 bool solved = factored
-                    && (answered && SolveWithOldFactor(problem, true) || SolveWithOldFactor(problem, false));
+                    && (answered && SolveWithOldFactor(problem, true, keepResidual)
+                        || SolveWithOldFactor(problem, false, false));
+                residualHeld = solved;
                 statistics.SubstituteTime += Lap(ref started);
                 if (!solved)
                 {
@@ -1319,9 +1338,10 @@ namespace Unity.Physics
         /// Solves the assembled right-hand side with the factorization of an earlier problem, refining until the answer holds
         /// for this one. Starting from the last answer, each refinement only has to correct the step from it, while starting
         /// from the factor's own answer, it corrects the factor's error in the whole of it. Returns false if it won't hold
-        /// within the refinements allowed.
+        /// within the refinements allowed. With <paramref name="residualKnown"/>, correction already holds what the last
+        /// answer misses.
         /// </summary>
-        bool SolveWithOldFactor(in Problem problem, bool fromLastAnswer)
+        bool SolveWithOldFactor(in Problem problem, bool fromLastAnswer, bool residualKnown)
         {
             double* x = solution.Ptr;
             double* step = correction.Ptr;
@@ -1340,7 +1360,7 @@ namespace Unity.Physics
 
             for (int refinement = 0; ; refinement++)
             {
-                statistics.Residual = ComputeResidual(problem);
+                statistics.Residual = refinement == 0 && residualKnown ? LargestMiss(problem) : ComputeResidual(problem);
                 if (statistics.Residual < RefinementTolerance)
                 {
                     return true;
@@ -1382,6 +1402,32 @@ namespace Unity.Physics
             for (int i = 0; i < stageWorst.Length; i++)
             {
                 worst = math.max(worst, stageWorst[i]);
+            }
+
+            return worst;
+        }
+
+        /// <summary>The largest miss in <see cref="correction"/> as a speed, measured as <see cref="ComputeResidual"/> does.</summary>
+        double LargestMiss(in Problem problem)
+        {
+            double* residual = correction.Ptr;
+            double worst = 0.0;
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                int own = rowUnknown[row];
+                if (own != NoNode && state[row] == Free)
+                {
+                    worst = math.max(worst, math.abs(residual[own]));
+                }
+            }
+
+            for (int body = 0; body < problem.BodyCount; body++)
+            {
+                double6 miss = double6.Load(residual + nodes[body].Start);
+                double2 scale = bodySpeedScale[body];
+                double4 low = math.abs(miss.Low) * new double4(scale.xxx, scale.y);
+                double2 high = math.abs(miss.High) * scale.y;
+                worst = math.max(worst, math.max(math.cmax(low), math.cmax(high)));
             }
 
             return worst;
