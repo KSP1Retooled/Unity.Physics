@@ -158,15 +158,12 @@ namespace Unity.Physics
 
         // What a task of a team's stage does.
         const int FactorizeTask = 0;
-        const int ForwardTask = 1;
-        const int BackwardTask = 2;
-        const int TopFactorTask = 3;
-        const int TopForwardTask = 4;
-        const int TopBackwardTask = 5;
-        const int ClearTask = 6;
-        const int AssembleTask = 7;
-        const int RowResidualTask = 8;
-        const int BodyResidualTask = 9;
+        const int SubstituteTask = 1;
+        const int TopFactorTask = 2;
+        const int ClearTask = 3;
+        const int AssembleTask = 4;
+        const int RowResidualTask = 5;
+        const int BodyResidualTask = 6;
 
         /// <summary>How much of the factor one task clears, and how many blocks or bodies one task assembles or checks.</summary>
         const int ScalarsPerClearTask = 16384;
@@ -226,8 +223,8 @@ namespace Unity.Physics
         UnsafeList<int> topRowStarts;
         UnsafeList<int2> topRows;
 
-        // The pass through the top in which each node was last finished, so that lanes taking the top's nodes in order can
-        // wait on exactly the ones they read. Each pass takes a new stamp, so none needs clearing.
+        // The pass in which each node was last finished, so that lanes taking nodes in order can wait on exactly the ones they
+        // read. Each pass takes a new stamp, so none needs clearing.
         UnsafeList<int> nodeReady;
         int readyStamp;
 
@@ -1450,7 +1447,7 @@ namespace Unity.Physics
             for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
             {
                 int2 row = topRows[i];
-                WaitUntilReady(row.x);
+                WaitUntilReady(row.x, readyStamp);
                 UpdateLaterNodes(nodes[row.x], row.y, row.y + 1);
             }
 
@@ -1465,7 +1462,9 @@ namespace Unity.Physics
             SparseSolveTeam.RunAll(Team, UnsafeUtility.AddressOf(ref this), kind, tasks, x);
         }
 
-        /// <summary>One task of a stage, which touches nothing another task of it does.</summary>
+        /// <summary>
+        /// One task of a stage. It touches nothing another task of the stage does, or waits for the earlier tasks it reads.
+        /// </summary>
         internal void RunTask(int kind, int task, double* x)
         {
             if (kind == TopFactorTask)
@@ -1503,44 +1502,17 @@ namespace Unity.Physics
                 return;
             }
 
-            if (kind == TopForwardTask)
+            if (kind == SubstituteTask)
             {
-                TopForward(task, x);
+                SubstituteTaskAt(task, x);
                 return;
             }
 
-            // Later nodes first, so that the ones a node waits on are already taken.
-            if (kind == TopBackwardTask)
+            for (int i = taskStarts[task]; i < taskStarts[task + 1]; i++)
             {
-                TopBackward(topPositions.Length - 1 - task, x);
-                return;
-            }
-
-            int first = taskStarts[task];
-            int end = taskStarts[task + 1];
-            if (kind == FactorizeTask)
-            {
-                for (int i = first; i < end; i++)
-                {
-                    Node node = nodes[order[taskPositions[i]]];
-                    Eliminate(node);
-                    UpdateLaterNodes(node, 0, node.OwnNeighbours);
-                }
-            }
-            else if (kind == ForwardTask)
-            {
-                for (int i = first; i < end; i++)
-                {
-                    Node node = nodes[order[taskPositions[i]]];
-                    SubstituteForward(node, x, node.OwnNeighbours);
-                }
-            }
-            else
-            {
-                for (int i = end - 1; i >= first; i--)
-                {
-                    SubstituteBackward(nodes[order[taskPositions[i]]], x);
-                }
+                Node node = nodes[order[taskPositions[i]]];
+                Eliminate(node);
+                UpdateLaterNodes(node, 0, node.OwnNeighbours);
             }
         }
 
@@ -1740,30 +1712,82 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Solves in place: forward through L, across S, and back through L^t.</summary>
+        /// <summary>
+        /// Solves in place: forward through L, across S, and back through L^t. The whole solve is one stage, whose tasks are
+        /// the subtrees forward, the top forward, the top backward from the root, then the subtrees backward. Each task waits
+        /// only for the nodes it reads, all of them in earlier tasks, which lanes have already taken, so the top's chain
+        /// overlaps the subtrees on either side of it rather than waiting for the slowest.
+        /// </summary>
         void Substitute(double* x)
         {
             using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
 
-            RunTasks(ForwardTask, taskStarts.Length - 1, x);
+            // One stamp for nodes solved forward and the next for nodes solved backward.
+            readyStamp += 2;
+            RunTasks(SubstituteTask, 2 * (taskStarts.Length - 1 + topPositions.Length), x);
+        }
 
-            // The top's nodes go to the lanes in order, and each waits only for the nodes it reads, so lanes work down the
-            // top together rather than in a stage per node.
-            readyStamp++;
-            RunTasks(TopForwardTask, topPositions.Length, x);
-            readyStamp++;
-            RunTasks(TopBackwardTask, topPositions.Length, x);
+        void SubstituteTaskAt(int task, double* x)
+        {
+            int forwardStamp = readyStamp - 1;
+            int backwardStamp = readyStamp;
+            int subtrees = taskStarts.Length - 1;
+            int tops = topPositions.Length;
+            if (task < subtrees)
+            {
+                for (int i = taskStarts[task]; i < taskStarts[task + 1]; i++)
+                {
+                    int index = order[taskPositions[i]];
+                    Node node = nodes[index];
+                    SubstituteForward(node, x, node.OwnNeighbours);
+                    Volatile.Write(ref nodeReady.Ptr[index], forwardStamp);
+                }
 
-            RunTasks(BackwardTask, taskStarts.Length - 1, x);
+                return;
+            }
+
+            task -= subtrees;
+            if (task < tops)
+            {
+                TopForward(task, x, forwardStamp);
+                return;
+            }
+
+            task -= tops;
+            if (task < tops)
+            {
+                TopBackward(tops - 1 - task, x, forwardStamp, backwardStamp);
+                return;
+            }
+
+            task -= tops;
+            int first = taskStarts[task];
+            int end = taskStarts[task + 1];
+
+            // The subtree's root is solved last on its way forward, by the same lane as the rest of it.
+            WaitUntilReady(order[taskPositions[end - 1]], forwardStamp);
+            for (int i = end - 1; i >= first; i--)
+            {
+                Node node = nodes[order[taskPositions[i]]];
+
+                // The top's answers this node reads are final, and the top has read this node's forward answer before
+                // it is overwritten, since the top node that read it finished forward before it could go backward.
+                for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
+                {
+                    WaitUntilReady(neighbours[node.FirstNeighbour + n].Node, backwardStamp);
+                }
+
+                SubstituteBackward(node, x);
+            }
         }
 
         /// <summary>
         /// Solves for a top node through L and S, from what the subtrees and the earlier top nodes owe it, in the order a
         /// serial forward substitution would pass it.
         /// </summary>
-        void TopForward(int top, double* x)
+        void TopForward(int top, double* x, int forwardStamp)
         {
-            PushToTop(top, x);
+            PushToTop(top, x, forwardStamp);
 
             int index = order[topPositions[top]];
             Node node = nodes[index];
@@ -1771,7 +1795,7 @@ namespace Unity.Physics
             for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
             {
                 int2 row = topRows[i];
-                WaitUntilReady(row.x);
+                WaitUntilReady(row.x, forwardStamp);
 
                 // The source's answer already carries its sign, which the serial push would have applied to the sum.
                 Node source = nodes[row.x];
@@ -1781,27 +1805,31 @@ namespace Unity.Physics
             }
 
             SubstituteForward(node, x, 0);
-            Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
+            Volatile.Write(ref nodeReady.Ptr[index], forwardStamp);
         }
 
-        /// <summary>Solves for a top node through L^t, once its neighbours, which come later, have their answers.</summary>
-        void TopBackward(int top, double* x)
+        /// <summary>
+        /// Solves for a top node through L^t, once it is solved forward and its neighbours, which come later, have their
+        /// answers.
+        /// </summary>
+        void TopBackward(int top, double* x, int forwardStamp, int backwardStamp)
         {
             int index = order[topPositions[top]];
             Node node = nodes[index];
+            WaitUntilReady(index, forwardStamp);
             for (int i = 0; i < node.NeighbourCount; i++)
             {
-                WaitUntilReady(neighbours[node.FirstNeighbour + i].Node);
+                WaitUntilReady(neighbours[node.FirstNeighbour + i].Node, backwardStamp);
             }
 
             SubstituteBackward(node, x);
-            Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
+            Volatile.Write(ref nodeReady.Ptr[index], backwardStamp);
         }
 
-        /// <summary>Waits for another lane to finish a node in the current pass through the top.</summary>
-        void WaitUntilReady(int node)
+        /// <summary>Waits for another lane to finish a node in the pass that the stamp names.</summary>
+        void WaitUntilReady(int node, int stamp)
         {
-            while (Volatile.Read(ref nodeReady.Ptr[node]) != readyStamp)
+            while (Volatile.Read(ref nodeReady.Ptr[node]) != stamp)
             {
                 Common.Pause();
             }
@@ -1811,13 +1839,14 @@ namespace Unity.Physics
         /// Passes one top node what the subtrees owe it, from their boundary nodes' answers, which already carry each node's
         /// sign.
         /// </summary>
-        void PushToTop(int top, double* x)
+        void PushToTop(int top, double* x, int forwardStamp)
         {
             Node target = nodes[order[topPositions[top]]];
             double* into = x + target.Start;
             for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
             {
                 int2 update = topUpdates[i];
+                WaitUntilReady(order[update.x], forwardStamp);
                 Node node = nodes[order[update.x]];
                 double* own = x + node.Start;
                 double* block = factor.Ptr + neighbours[node.FirstNeighbour + update.y].Offset;
