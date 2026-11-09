@@ -284,9 +284,14 @@ namespace KSP.Retooled.Physics
             StoreOps.Release(globals, shape);
         }
 
+        /// <summary>
+        /// Answers in SetPose's terms: relative to the body, but in world space for a static body's shape. Unity's transform
+        /// sync reads this on its job workers and leaves out every collider whose new pose matches it, so an answer in
+        /// other terms sends every collider under a moved transform through the main thread's pose writes.
+        /// </summary>
         private static void GetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
-            if (shape->body == null)
+            if (shape->body == null || (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) == 0)
             {
                 a->position = shape->data.localPosition;
                 a->rotation = shape->data.localRotation;

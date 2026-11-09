@@ -82,6 +82,26 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(hit.collider, Is.SameAs(body.GetComponent<Collider>()));
         }
 
+        // A floating origin shift moves every vessel this way. The child keeps its pose in the body, so Unity leaves out its
+        // write, and the child must follow the body all the same.
+        [Test]
+        public void AChildColliderFollowsABodyMovedThroughItsTransform()
+        {
+            Rigidbody body = WeightlessBox(Vector3.zero);
+            GameObject child = Track(new GameObject("child"));
+            child.transform.SetParent(body.transform, false);
+            child.transform.localPosition = new Vector3(3.0f, 0.0f, 0.0f);
+            SphereCollider sphere = child.AddComponent<SphereCollider>();
+            Simulate(1);
+
+            body.transform.SetPositionAndRotation(new Vector3(10.0f, 0.0f, 0.0f), Quaternion.Euler(0.0f, 90.0f, 0.0f));
+            Simulate(1);
+
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(13.0f, 5.0f, 0.0f), Vector3.down, 10.0f), Is.False, "turned with the body");
+            Assert.That(UnityEngine.Physics.Raycast(new Vector3(10.0f, 5.0f, -3.0f), Vector3.down, out RaycastHit hit, 10.0f), Is.True);
+            Assert.That(hit.collider, Is.SameAs(sphere));
+        }
+
         [Test]
         public void AMeshAloneOnAMovedChildIsFoundWhereItWent()
         {
