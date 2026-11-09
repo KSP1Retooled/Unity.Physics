@@ -101,6 +101,48 @@ namespace KSP.Retooled.Physics.Tests
             File.WriteAllText(Path.Combine(root, "bench.csv"), csv.ToString());
         }
 
+        /// <summary>
+        /// Solves one run's captures in order, over and over on this thread for a while, as a steady target for a sampling
+        /// profiler, and logs the time per solve. The argument is the run under Library/SolverCapture and the seconds to run,
+        /// separated by a colon, as in "pegasus/004:30". Each pass starts with a fresh solver, so the run's first solve
+        /// analyzes and factors as a flight's would.
+        /// </summary>
+        public static void Loop(string argument)
+        {
+            string[] parts = argument.Split(':');
+            string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", SolverCapture.CaptureRoot,
+                Path.GetDirectoryName(parts[0])));
+            string[] files = Directory.GetFiles(folder, Path.GetFileName(parts[0]) + "-*.bin");
+            Array.Sort(files, StringComparer.Ordinal);
+            double seconds = double.Parse(parts[1], CultureInfo.InvariantCulture);
+            List<SolverCapture.Saved> run = files.Select(SolverCapture.Read).ToList();
+            WaitForBurst(run[0]);
+
+            float[] impulses = new float[run.Max(saved => saved.RowCount)];
+            var times = new List<double>();
+            long substituteTime = 0;
+            Stopwatch total = Stopwatch.StartNew();
+            while (total.Elapsed.TotalSeconds < seconds)
+            {
+                var solver = new SparseConstraintSolver(Allocator.Persistent);
+                foreach (SolverCapture.Saved saved in run)
+                {
+                    Stopwatch watch = Stopwatch.StartNew();
+                    Solve(ref solver, saved, impulses, out SparseConstraintSolver.Statistics statistics);
+                    times.Add(watch.Elapsed.TotalMilliseconds * 1000.0);
+                    substituteTime += statistics.SubstituteTime;
+                }
+
+                solver.Dispose();
+            }
+
+            times.Sort();
+            ProfilerUnsafeUtility.TimestampConversionRatio ratio = ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio;
+            double substituteMicroseconds = substituteTime * (double)ratio.Numerator / ratio.Denominator / 1e3 / times.Count;
+            Debug.Log($"[SolverCaptureBench] {parts[0]}: {times.Count} solves, median {times[times.Count / 2]:F1} us, "
+                + $"fastest {times[0]:F1} us, substitution {substituteMicroseconds:F1} us per solve");
+        }
+
         /// <summary>Files named run-solve.bin are consecutive solves of one run.</summary>
         private static string RunOf(string file)
         {
