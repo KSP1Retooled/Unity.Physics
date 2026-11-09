@@ -33,6 +33,10 @@ namespace Unity.Physics
         int leader;
         int finished;
 
+        // Keeps the flags written once per solve a cache line apart from the counters every task updates, wherever the team
+        // starts, so reading a flag doesn't pull in a line that the working lanes are writing.
+        fixed byte separation[64];
+
         // The current stage's generation in the high half and its next task in the low half, so that a lane can't take a
         // task from a stage that has ended.
         long next;
@@ -80,7 +84,9 @@ namespace Unity.Physics
             Interlocked.Exchange(ref done, 0);
             Interlocked.Exchange(ref next, generation << 32);
             Work(generation, stage);
-            while (Interlocked.CompareExchange(ref done, 0, 0) < taskCount)
+
+            // Waiting lanes poll with plain reads: a locked read takes the line from the lanes still finishing tasks.
+            while (Volatile.Read(ref done) < taskCount)
             {
                 Common.Pause();
             }
@@ -91,7 +97,7 @@ namespace Unity.Physics
         {
             long seen = 0;
             int spins = 0;
-            while (Interlocked.CompareExchange(ref finished, 0, 0) == 0)
+            while (Volatile.Read(ref finished) == 0)
             {
                 long generation = Interlocked.Read(ref next) >> 32;
                 if (generation != seen)

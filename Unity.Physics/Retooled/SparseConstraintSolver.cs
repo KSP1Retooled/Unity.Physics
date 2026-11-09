@@ -1550,16 +1550,13 @@ namespace Unity.Physics
             double* values = factor.Ptr;
             int size = node.Size;
             double* diagonal = values + node.Diagonal;
-            CholeskyInPlace(diagonal, size, node.Sign);
-            for (int row = 0; row < size; row++)
-            {
-                inverseDiagonal[node.Start + row] = 1.0 / diagonal[row * size + row];
-            }
+            double* inverse = inverseDiagonal.Ptr + node.Start;
+            CholeskyInPlace(diagonal, inverse, size, node.Sign);
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
             for (int i = 0; i < node.NeighbourCount; i++)
             {
-                SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, size);
+                SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
             }
         }
 
@@ -1595,52 +1592,49 @@ namespace Unity.Physics
             }
         }
 
-        static void CholeskyInPlace(double* a, int size, double sign)
+        /// <summary>
+        /// Factors the lower half of a block in place and writes each diagonal entry's reciprocal to
+        /// <paramref name="inverse"/>. Later columns multiply by it rather than dividing, since each division would stall the
+        /// next column's sum.
+        /// </summary>
+        static void CholeskyInPlace(double* a, double* inverse, int size, double sign)
         {
             for (int row = 0; row < size; row++)
             {
-                for (int column = 0; column <= row; column++)
+                double* r = a + row * size;
+                for (int column = 0; column < row; column++)
                 {
-                    double sum = sign * a[row * size + column];
-                    for (int k = 0; k < column; k++)
-                    {
-                        sum = MathUtil.Fma(-a[row * size + k], a[column * size + k], sum);
-                    }
-
-                    if (row == column)
-                    {
-                        a[row * size + row] = math.sqrt(math.max(sum, SmallestPivot));
-                    }
-                    else
-                    {
-                        a[row * size + column] = sum / a[column * size + column];
-                    }
+                    double sum = sign * r[column] - MathUtil.ArrayProductSum(r, a + column * size, column);
+                    r[column] = sum * inverse[column];
                 }
+
+                double pivot = sign * r[row] - MathUtil.ArrayProductSum(r, r, row);
+                r[row] = math.sqrt(math.max(pivot, SmallestPivot));
+                inverse[row] = 1.0 / r[row];
             }
         }
 
-        /// <summary>Replaces each row of the block with itself times C^-t.</summary>
-        static void SolveAgainstTranspose(double* block, int rows, double* c, int size)
+        /// <summary>
+        /// Replaces each row of the block with itself times C^-t, multiplying by C's inverted diagonal rather than dividing,
+        /// since each division would stall the next column's sum.
+        /// </summary>
+        static void SolveAgainstTranspose(double* block, int rows, double* c, double* inverse, int size)
         {
             for (int row = 0; row < rows; row++)
             {
                 double* x = block + row * size;
                 for (int column = 0; column < size; column++)
                 {
-                    double sum = x[column];
-                    for (int k = 0; k < column; k++)
-                    {
-                        sum = MathUtil.Fma(-x[k], c[column * size + k], sum);
-                    }
+                    double sum = x[column] - MathUtil.ArrayProductSum(x, c + column * size, column);
 
-                    x[column] = sum / c[column * size + column];
+                    x[column] = sum * inverse[column];
                 }
             }
         }
 
         /// <summary>
-        /// target -= sign * left * right^t. The diagonal block's factorization only reads its lower half. Each sum is short,
-        /// so four of a row's entries are summed side by side, which keeps the vector lanes busy where one sum couldn't.
+        /// target -= sign * left * right^t, four of a row's entries at a time. Every entry is the product of two rows, so
+        /// each is read along its length.
         /// </summary>
         static void Update(double* target, int rows, int columns, double* left, double* right, int inner, double sign, bool lowerOnly)
         {
@@ -1650,35 +1644,26 @@ namespace Unity.Physics
                 double* into = target + row * columns;
                 int last = lowerOnly ? row + 1 : columns;
                 int column = 0;
-                for (; column + 4 <= last; column += 4)
+
+                // A group may run past the diagonal into the upper half, which nothing reads, so short rows of a diagonal
+                // block still fill the vector lanes.
+                for (; column < last && column + 4 <= columns; column += 4)
                 {
                     double* r = right + column * inner;
-                    double4 sum = 0.0;
-                    for (int k = 0; k < inner; k++)
-                    {
-                        sum = MathUtil.Fma(l[k], new double4(r[k], r[inner + k], r[2 * inner + k], r[3 * inner + k]), sum);
-                    }
-
+                    double4 sum = ProductSums(l, r, r + inner, r + 2 * inner, r + 3 * inner, inner);
                     *(double4*)(into + column) -= sign * sum;
                 }
 
                 for (; column < last; column++)
                 {
-                    double* r = right + column * inner;
-                    double sum = 0.0;
-                    for (int k = 0; k < inner; k++)
-                    {
-                        sum = MathUtil.Fma(l[k], r[k], sum);
-                    }
-
-                    into[column] -= sign * sum;
+                    into[column] -= sign * MathUtil.ArrayProductSum(l, right + column * inner, inner);
                 }
             }
         }
 
         /// <summary>
-        /// target -= sign * block * x, for a block of the given rows with <paramref name="inner"/> columns, four rows side by
-        /// side for the same reason as <see cref="Update"/>.
+        /// target -= sign * block * x, for a row-major block of the given rows with <paramref name="inner"/> columns, four
+        /// rows at a time.
         /// </summary>
         static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
         {
@@ -1686,25 +1671,72 @@ namespace Unity.Physics
             for (; row + 4 <= rows; row += 4)
             {
                 double* b = block + row * inner;
-                double4 sum = 0.0;
-                for (int k = 0; k < inner; k++)
-                {
-                    sum = MathUtil.Fma(new double4(b[k], b[inner + k], b[2 * inner + k], b[3 * inner + k]), x[k], sum);
-                }
-
+                double4 sum = ProductSums(x, b, b + inner, b + 2 * inner, b + 3 * inner, inner);
                 *(double4*)(target + row) -= sign * sum;
             }
 
             for (; row < rows; row++)
             {
-                double* b = block + row * inner;
-                double sum = 0.0;
-                for (int k = 0; k < inner; k++)
-                {
-                    sum = MathUtil.Fma(b[k], x[k], sum);
-                }
+                target[row] -= sign * MathUtil.ArrayProductSum(block + row * inner, x, inner);
+            }
+        }
 
-                target[row] -= sign * sum;
+        /// <summary>
+        /// The products of <paramref name="shared"/> with four other vectors of the same length, one in each lane. Every
+        /// vector is read along its length, so each load is contiguous and each load of the shared vector serves all four.
+        /// </summary>
+        static double4 ProductSums(double* shared, double* b0, double* b1, double* b2, double* b3, int count)
+        {
+            double4 s0 = 0.0;
+            double4 s1 = 0.0;
+            double4 s2 = 0.0;
+            double4 s3 = 0.0;
+            int k = 0;
+            for (; k + 4 <= count; k += 4)
+            {
+                double4 a = *(double4*)(shared + k);
+                s0 = MathUtil.Fma(*(double4*)(b0 + k), a, s0);
+                s1 = MathUtil.Fma(*(double4*)(b1 + k), a, s1);
+                s2 = MathUtil.Fma(*(double4*)(b2 + k), a, s2);
+                s3 = MathUtil.Fma(*(double4*)(b3 + k), a, s3);
+            }
+
+            // Two left over, as a body's six columns leave, still go in a vector.
+            if (k + 2 <= count)
+            {
+                double2 a = *(double2*)(shared + k);
+                s0.xy = MathUtil.Fma(*(double2*)(b0 + k), a, s0.xy);
+                s1.xy = MathUtil.Fma(*(double2*)(b1 + k), a, s1.xy);
+                s2.xy = MathUtil.Fma(*(double2*)(b2 + k), a, s2.xy);
+                s3.xy = MathUtil.Fma(*(double2*)(b3 + k), a, s3.xy);
+                k += 2;
+            }
+
+            // Each accumulator holds one vector's partial sums across its lanes. Transposed, they become rows, and adding
+            // the columns gives each vector's total in its own lane.
+            double4x4 partial = math.transpose(new double4x4(s0, s1, s2, s3));
+            double4 sum = (partial.c0 + partial.c1) + (partial.c2 + partial.c3);
+
+            if (k < count)
+            {
+                sum = MathUtil.Fma(new double4(b0[k], b1[k], b2[k], b3[k]), shared[k], sum);
+            }
+
+            return sum;
+        }
+
+        /// <summary>into += scale * from, over <paramref name="count"/> entries.</summary>
+        static void AddScaled(double* into, double* from, double scale, int count)
+        {
+            int k = 0;
+            for (; k + 4 <= count; k += 4)
+            {
+                *(double4*)(into + k) = MathUtil.Fma(scale, *(double4*)(from + k), *(double4*)(into + k));
+            }
+
+            for (; k < count; k++)
+            {
+                into[k] = MathUtil.Fma(scale, from[k], into[k]);
             }
         }
 
@@ -1806,11 +1838,7 @@ namespace Unity.Physics
             double* inverse = inverseDiagonal.Ptr + node.Start;
             for (int row = 0; row < size; row++)
             {
-                double sum = own[row];
-                for (int k = 0; k < row; k++)
-                {
-                    sum = MathUtil.Fma(-c[row * size + k], own[k], sum);
-                }
+                double sum = own[row] - MathUtil.ArrayProductSum(&c[row * size], own, row);
 
                 own[row] = sum * inverse[row];
             }
@@ -1844,31 +1872,18 @@ namespace Unity.Physics
                 double* source = x + other.Start;
                 for (int row = 0; row < other.Size; row++)
                 {
-                    double scale = -node.Sign * source[row];
-                    double* b = block + row * size;
-                    int k = 0;
-                    for (; k + 4 <= size; k += 4)
-                    {
-                        *(double4*)(own + k) = MathUtil.Fma(scale, *(double4*)(b + k), *(double4*)(own + k));
-                    }
-
-                    for (; k < size; k++)
-                    {
-                        own[k] = MathUtil.Fma(scale, b[k], own[k]);
-                    }
+                    AddScaled(own, block + row * size, -node.Sign * source[row], size);
                 }
             }
 
+            // Column by column: once an answer is known, row `row` of C holds everything it owes the earlier rows, side by
+            // side, where a sum per row would walk down a column of C.
             double* inverse = inverseDiagonal.Ptr + node.Start;
             for (int row = size - 1; row >= 0; row--)
             {
-                double sum = own[row];
-                for (int k = row + 1; k < size; k++)
-                {
-                    sum = MathUtil.Fma(-c[k * size + row], own[k], sum);
-                }
-
-                own[row] = sum * inverse[row];
+                double answer = own[row] * inverse[row];
+                own[row] = answer;
+                AddScaled(own, c + row * size, -answer, row);
             }
         }
 

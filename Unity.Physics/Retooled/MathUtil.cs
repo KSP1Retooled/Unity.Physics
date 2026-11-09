@@ -96,5 +96,30 @@ namespace Unity.Numerics
 
             return a * b + c;
         }
+
+        /// <summary>
+        /// Computes <c>sum(a[i] * b[i])</c>.
+        /// </summary>
+        public static unsafe double ArrayProductSum(double* a, double* b, int count)
+        {
+            double4x4 sum4x4 = 0.0;
+
+            int i = 0;
+            for (; i + 16 <= count; i += 16)
+            {
+                for (int j = 0; j < 4; j++)
+                    sum4x4[j] = Fma(*(double4*)&a[i + 4 * j], *(double4*)&b[i + 4 * j], sum4x4[j]);
+            }
+
+            double4 sum4 = (sum4x4[0] + sum4x4[1]) + (sum4x4[2] + sum4x4[3]);
+            for (; i + 4 <= count; i += 4)
+                sum4 = Fma(*(double4*)&a[i], *(double4*)&b[i], sum4);
+
+            double sum = (sum4[0] + sum4[2]) + (sum4[1] + sum4[3]);
+            for (; i < count; ++i)
+                sum = Fma(a[i], b[i], sum);
+
+            return sum;
+        }
     }
 }
