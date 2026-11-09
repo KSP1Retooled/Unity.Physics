@@ -549,6 +549,8 @@ namespace Unity.Physics
                             contactJacobian.CoefficientOfRestitution = contactHeader.CoefficientOfRestitution;
                             contactJacobian.SumImpulsesOverSubsteps = 0.0f;
                             contactJacobian.SumImpulsesOverSolverIterations = 0.0f;
+                            contactJacobian.NormalImpulseOverSubsteps = 0.0f;
+                            contactJacobian.FrictionImpulseOverSubsteps = float3.zero;
 
                             // Write polygons from colliders if they are required for detailed static mesh collision detection.
                             WriteJacobianPolygonData(ref jacobianHeader, bodies, contactHeader, worldFromA, worldFromB, motionVelocities.Length);

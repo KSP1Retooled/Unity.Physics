@@ -177,6 +177,11 @@ namespace Unity.Physics
         public float SumImpulsesOverSubsteps;
         public float SumImpulsesOverSolverIterations;
 
+        // What a sparse solve's earlier substeps have pushed with in all this step: the normal impulse, warm start included,
+        // and each friction row's impulse. Updating a substep's Jacobians clears the impulses above but not these.
+        public float NormalImpulseOverSubsteps;
+        public float3 FrictionImpulseOverSubsteps;
+
         internal static void BuildIndividualContactJacobians(
             int contactPointIndex,
             float3 normal,

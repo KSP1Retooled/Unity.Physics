@@ -544,6 +544,69 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void FrictionCountsWhatTheContactPushedEarlierInTheStep([Range(1u, 4u)] uint seed)
+        {
+            const float friction = 0.5f;
+            Scenario scenario = Craft(seed, 12, 3);
+            Random contacts = new Random(seed + 70);
+            for (int i = 0; i < 4; i++)
+            {
+                scenario.AddContact(contacts.NextInt(scenario.Bodies.Count), contacts.NextInt(1, 4), friction);
+            }
+
+            // Each contact pushed earlier in the step, and its friction spent some of what that allowed.
+            for (int i = 0; i < scenario.Couplings.Count; i++)
+            {
+                SparseConstraintSolver.Coupling coupling = scenario.Couplings[i];
+                coupling.HeldSourceImpulse = contacts.NextFloat(1.0f, 4.0f);
+                scenario.Couplings[i] = coupling;
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    float spent = contacts.NextFloat(-0.5f, 0.5f) * friction * coupling.HeldSourceImpulse;
+                    scenario.Lower[row] = -spent;
+                    scenario.Upper[row] = -spent;
+                }
+            }
+
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            float[] impulses = new float[scenario.Rows];
+            bool converged = Solve(ref solver, scenario, true, impulses);
+
+            // The bounds sit around minus what each row spent, as far out as the share of everything the contact pushed.
+            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            {
+                float normal = coupling.HeldSourceImpulse;
+                for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                {
+                    normal += impulses[row];
+                }
+
+                float share = friction * math.max(normal, 0.0f);
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    float2 bounds = solver.Bounds(row);
+                    float tolerance = 1e-3f * share + 1e-4f;
+                    Assert.That(bounds.x, Is.EqualTo(scenario.Lower[row] - share).Within(tolerance), $"row {row} has the wrong lower bound");
+                    Assert.That(bounds.y, Is.EqualTo(scenario.Upper[row] + share).Within(tolerance), $"row {row} has the wrong upper bound");
+                }
+            }
+
+            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            {
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    float2 bounds = solver.Bounds(row);
+                    scenario.Lower[row] = bounds.x;
+                    scenario.Upper[row] = bounds.y;
+                }
+            }
+
+            solver.Dispose();
+            Assert.That(converged, Is.True);
+            AssertSolves(scenario, impulses, 2e-3);
+        }
+
+        [Test]
         public void LanesSharingASolveGetTheSameAnswer([Range(1u, 4u)] uint seed, [Values(2, 8)] int lanes)
         {
             Scenario scenario = Craft(seed, 600, 20, 0.5f);

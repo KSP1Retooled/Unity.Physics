@@ -996,13 +996,15 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Leaves each contact point holding the normal impulse it has pushed with so far this step, which bounds what a later
-        /// substep's solve may take back.
+        /// Leaves each contact point holding the normal impulse it has pushed with so far this substep, which bounds what the
+        /// solve may take back, and adds this substep's normal and friction impulses to the contact's totals for the step,
+        /// which bound the friction of the substeps after it.
         /// </summary>
         static unsafe void HandOverContactImpulses(ref JacobianHeader header, float* lambda, float collisionTolerance)
         {
             ref var contactJacobian = ref header.AccessBaseJacobian<ContactJacobian>();
             float sum = 0.0f;
+            float pushed = 0.0f;
             int normalRow = 0;
             for (int i = 0; i < contactJacobian.BaseJacobian.NumContacts; ++i)
             {
@@ -1014,9 +1016,17 @@ namespace Unity.Physics
                     point.Jac.Impulse = math.max(point.Jac.Impulse + solved, 0.0f);
                     sum += solved;
                 }
+
+                // A point without a row still pushed with its warm start.
+                pushed += point.Jac.Impulse;
             }
 
             contactJacobian.SumImpulsesOverSubsteps += sum;
+            contactJacobian.NormalImpulseOverSubsteps += pushed;
+            if (contactJacobian.CoefficientOfFriction > 0 && normalRow > 0)
+            {
+                contactJacobian.FrictionImpulseOverSubsteps += new float3(lambda[normalRow], lambda[normalRow + 1], lambda[normalRow + 2]);
+            }
         }
 
         /// <summary> How fast a row's constraint function is changing at the bodies' current velocities. </summary>
@@ -1402,6 +1412,14 @@ namespace Unity.Physics
                     : 0.0f;
                 if (friction > 0)
                 {
+                    // Earlier substeps' pushes are in the totals, and this one's warm start, if it has one, in its points.
+                    ref ContactJacobian contact = ref header.AccessBaseJacobian<ContactJacobian>();
+                    float held = contact.NormalImpulseOverSubsteps;
+                    for (int i = 0; i < contact.BaseJacobian.NumContacts; i++)
+                    {
+                        held += header.AccessAngularJacobian(i).Jac.Impulse;
+                    }
+
                     int normals = blockRows - 3;
                     Couplings.Add(new SparseConstraintSolver.Coupling
                     {
@@ -1410,6 +1428,7 @@ namespace Unity.Physics
                         FirstSourceRow = firstRow,
                         SourceRowCount = normals,
                         Factor = friction,
+                        HeldSourceImpulse = held,
                     });
                 }
 
@@ -2713,6 +2732,15 @@ namespace Unity.Physics
                                         u[frictionStartRow]     = 0;
                                         u[frictionStartRow + 1] = 0;
                                         u[frictionStartRow + 2] = 0;
+
+                                        // The friction cone bounds what the contact pushes over the whole step, so a
+                                        // sparse solve's rows start from minus what earlier substeps pushed.
+                                        if (sparseContacts)
+                                        {
+                                            float3 held = contactJacobian.FrictionImpulseOverSubsteps;
+                                            SetSubVector3(l, -held, frictionStartRow);
+                                            SetSubVector3(u, -held, frictionStartRow);
+                                        }
 
                                         // A sparse solve builds its Jacobians on several threads at once, so it
                                         // reads the same coupling from the contact when it solves.

@@ -97,8 +97,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Rows whose bounds are ±<see cref="Factor"/> times the sum of other rows' impulses: the friction of a contact, bounded
-        /// by its normal impulses. Their own bounds in the problem are ignored.
+        /// Rows whose bounds are their bounds in the problem widened by <see cref="Factor"/> times the sources' impulse: the
+        /// friction of a contact, bounded by its normal impulse. The sources' impulse is what the source rows solve for plus
+        /// <see cref="HeldSourceImpulse"/>. For a contact both count over a whole step, so a friction row's bounds in the
+        /// problem are minus what it pushed earlier in the step: with no normal impulse at all, the step's friction is zero.
         /// </summary>
         public struct Coupling
         {
@@ -107,6 +109,12 @@ namespace Unity.Physics
             public int FirstSourceRow;
             public int SourceRowCount;
             public float Factor;
+
+            /// <summary>
+            /// What the sources already pushed with before this solve, which bounds the coupled rows as much as what the
+            /// solve adds: an impulse warm started or spent in an earlier substep of the same step.
+            /// </summary>
+            public float HeldSourceImpulse;
         }
 
         /// <summary>
@@ -598,8 +606,8 @@ namespace Unity.Physics
                 }
                 else if (!kept)
                 {
-                    lower[row] = 0.0f;
-                    upper[row] = 0.0f;
+                    lower[row] = problem.Lower[row];
+                    upper[row] = problem.Upper[row];
                 }
             }
         }
@@ -614,23 +622,26 @@ namespace Unity.Physics
             for (int i = 0; i < problem.CouplingCount; i++)
             {
                 Coupling coupling = problem.Couplings[i];
-                float sum = 0.0f;
+                float sum = coupling.HeldSourceImpulse;
                 for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
                 {
                     sum += impulses[row];
                 }
 
                 float bound = math.max(sum, 0.0f) * coupling.Factor;
+                float tolerance = math.max(Tolerance, CouplingTolerance * bound);
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
-                    if (math.abs(upper[row] - bound) <= math.max(Tolerance, CouplingTolerance * bound))
+                    float newLower = problem.Lower[row] - bound;
+                    float newUpper = problem.Upper[row] + bound;
+                    if (math.abs(lower[row] - newLower) <= tolerance && math.abs(upper[row] - newUpper) <= tolerance)
                     {
                         continue;
                     }
 
                     bool wasFixed = lower[row] == upper[row];
-                    lower[row] = -bound;
-                    upper[row] = bound;
+                    lower[row] = newLower;
+                    upper[row] = newUpper;
                     moved = true;
                     if (bound == 0.0f && state[row] == Free)
                     {

@@ -24,7 +24,7 @@ namespace KSP.Retooled.Physics.Tests
         private const int RunLength = 12;
         private const int MaxRuns = 8;
         private const int SmallestRows = 64;
-        private const int Magic = 0x32505352;
+        private const int Magic = 0x33505352;
 
         private static string folder;
         private static int solves;
