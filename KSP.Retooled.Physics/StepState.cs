@@ -33,6 +33,8 @@ namespace KSP.Retooled.Physics
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
+        private NativeList<JointLoad> jointLoads;
+        private NativeList<JointLoad> groupLoads;
         private DirectSolverCache directSolverCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -71,6 +73,8 @@ namespace KSP.Retooled.Physics
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
+            jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
+            groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -111,6 +115,8 @@ namespace KSP.Retooled.Physics
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
+            jointLoads.Dispose();
+            groupLoads.Dispose();
             directSolverCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -287,6 +293,62 @@ namespace KSP.Retooled.Physics
             }.Schedule(singleton, ref world, dependency);
         }
 
+        /// <summary>
+        /// Reads what the joints carried from the step's impulse events and breaks the overloaded ones, see
+        /// <see cref="JointForceJobs"/>. Their bodies' poses have to be written back first.
+        /// </summary>
+        private void ReadJointForces(Simulation simulation, float deltaTime)
+        {
+            const int groupsPerBatch = 16;
+
+            int jointCount = (int)store->jointCount;
+            jointLoads.ResizeUninitialized(jointCount);
+            groupLoads.ResizeUninitialized(jointGroups.Length);
+            UnsafeUtility.MemClear(groupLoads.GetUnsafePtr(), (long)groupLoads.Length * sizeof(JointLoad));
+
+            JobHandle seeded = new SeedJointLoadsJob { World = store, Loads = jointLoads.AsArray() }.Schedule(jointCount, ParallelBatchSize);
+            NativeStream events = simulation.ImpulseEvents.EventDataStream;
+            if (events.IsCreated)
+            {
+                JobHandle.ScheduleBatchedJobs();
+                new RotateJointImpulsesJob
+                {
+                    Events = events.AsReader(),
+                    World = store,
+                    Groups = jointGroups.AsArray(),
+                    DeltaTime = deltaTime,
+                }.ScheduleUnsafe(events, 1, default).Complete();
+
+                seeded.Complete();
+                new SumJointImpulsesJob
+                {
+                    Events = events.AsReader(),
+                    JointLoads = jointLoads.AsArray(),
+                    GroupLoads = groupLoads.AsArray(),
+                }.Run();
+            }
+
+            JobHandle shared = new ShareGroupLoadsJob
+            {
+                World = store,
+                Groups = jointGroups.AsArray(),
+                Members = jointGroupMembers.AsArray(),
+                GroupLoads = groupLoads.AsArray(),
+                JointLoads = jointLoads.AsArray(),
+            }.Schedule(jointGroups.Length, groupsPerBatch, seeded);
+
+            new SettleJointLoadsJob { World = store, Loads = jointLoads.AsArray(), DeltaTime = deltaTime }
+                .Schedule(jointCount, ParallelBatchSize, shared).Complete();
+
+            new BreakJointsJob
+            {
+                World = store,
+                Globals = globals,
+                Loads = jointLoads.AsArray(),
+                EngineObjectIdOffset = globals->engineObjectIdOffset,
+            }.Run();
+        }
+
         /// <summary>The last stage of a step, which hands the solved world back to the store and to Unity.</summary>
         internal void FinishStep(Simulation simulation, float deltaTime)
         {
@@ -314,16 +376,7 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.StepReadJointForces.Auto())
             {
-                new ReadJointForcesJob
-                {
-                    World = store,
-                    Globals = globals,
-                    Events = simulation.ImpulseEvents,
-                    Groups = jointGroups.AsArray(),
-                    Members = jointGroupMembers.AsArray(),
-                    DeltaTime = deltaTime,
-                    EngineObjectIdOffset = globals->engineObjectIdOffset,
-                }.Run();
+                ReadJointForces(simulation, deltaTime);
             }
 
             using (BackendMarkers.StepWaitForTree.Auto())
