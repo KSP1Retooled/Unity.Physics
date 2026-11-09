@@ -1542,6 +1542,42 @@ namespace Unity.Physics
             {
                 SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
             }
+
+            if (size == double6x6.Size)
+            {
+                InvertTriangle(diagonal, inverse);
+            }
+        }
+
+        /// <summary>
+        /// Replaces a 6x6 factored diagonal block, whose diagonal is <paramref name="inverse"/>'s reciprocals, with its whole
+        /// inverse. Solving with the triangle finds each unknown only after the one before it, and substitution waits on that
+        /// chain at every node down a branch of the tree; a product with the inverse finds all six at once.
+        /// </summary>
+        static void InvertTriangle(double* c, double* inverse)
+        {
+            const int size = double6x6.Size;
+            double* result = stackalloc double[size * size];
+            for (int column = 0; column < size; column++)
+            {
+                for (int row = 0; row < column; row++)
+                {
+                    result[row * size + column] = 0.0;
+                }
+
+                for (int row = column; row < size; row++)
+                {
+                    double sum = row == column ? 1.0 : 0.0;
+                    for (int j = column; j < row; j++)
+                    {
+                        sum = MathUtil.Fma(-c[row * size + j], result[j * size + column], sum);
+                    }
+
+                    result[row * size + column] = sum * inverse[row];
+                }
+            }
+
+            UnsafeUtility.MemCpy(c, result, size * size * sizeof(double));
         }
 
         /// <summary>
@@ -1894,8 +1930,8 @@ namespace Unity.Physics
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
             if (size == double6x6.Size)
             {
-                SolveLower(c, own, inverse, double6x6.Size);
-                double6 answer = double6.Load(own);
+                double6 answer = ((double6x6*)c)->Mul(double6.Load(own));
+                answer.Store(own);
                 for (int i = 0; i < endNeighbour; i++)
                 {
                     Node other = nodes[column[i].Node];
@@ -1934,11 +1970,7 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>
-        /// Solves C y = own in place for a small diagonal block. Inlined with a constant size, its loops unroll, which is
-        /// where nearly every node of a craft ends up: a body, or a full joint, has six unknowns.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        /// <summary>Solves C y = own in place for a diagonal block that was not inverted.</summary>
         static void SolveLower(double* c, double* own, double* inverse, int size)
         {
             for (int row = 0; row < size; row++)
@@ -1953,8 +1985,7 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Solves C^t y = own in place for a small diagonal block, as <see cref="SolveLower"/> does C.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        /// <summary>Solves C^t y = own in place for a diagonal block that was not inverted.</summary>
         static void SolveUpper(double* c, double* own, double* inverse, int size)
         {
             for (int row = size - 1; row >= 0; row--)
@@ -2001,8 +2032,7 @@ namespace Unity.Physics
                     sum = double6.Load(own);
                 }
 
-                sum.Store(own);
-                SolveUpper(c, own, inverse, double6x6.Size);
+                ((double6x6*)c)->TransposeMul(sum).Store(own);
                 return;
             }
 
