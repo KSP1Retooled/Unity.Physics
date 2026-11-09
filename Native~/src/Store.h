@@ -5,7 +5,8 @@
 // attach refuses to run on a mismatch.
 //
 // Commands reach the store through the Burst kernels in BodyKernel.cs, ShapeKernel.cs and WorldKernel.cs. Native code keeps
-// only what comes before managed code exists: worlds, their settings and materials.
+// only what comes before managed code exists: worlds, their settings and materials. It answers a few hot reads itself, of
+// fields the cold records and the rows hold, because a kernel call costs more than such a read.
 //
 // SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, HeightField*, World*). Each
 // world keeps a dense swap-remove BodyData array, so jobs walk its bodies linearly. A BodyData moves when another body is

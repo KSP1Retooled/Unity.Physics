@@ -127,9 +127,6 @@ namespace KSP.Retooled.Physics
                 case BodyCommand.SetFlags:
                     SetFlags(body, hot, a);
                     break;
-                case BodyCommand.GetFlags:
-                    a->flags = (uint)(hot->flags & NativeStore.BodyFlags.PublicMask);
-                    break;
                 case BodyCommand.SetMass:
                     hot->bodyMass->Mass = a->scalar;
                     hot->mass->InverseMass = InverseOrZero(a->scalar);
@@ -284,9 +281,6 @@ namespace KSP.Retooled.Physics
                     bool hasTarget = (hot->flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
                     a->position = hasTarget ? hot->target->Position : hot->pose->Position;
                     a->rotation = hasTarget ? hot->target->Rotation : hot->pose->Rotation;
-                    break;
-                case BodyCommand.GetIsSleeping:
-                    a->enabled = (hot->flags & NativeStore.BodyFlags.Sleeping) != 0 ? 1u : 0u;
                     break;
                 case BodyCommand.Sleep:
                     // A sleeping body doesn't step, so a target kept here would land when it next wakes.

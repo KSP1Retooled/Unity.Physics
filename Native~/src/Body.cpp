@@ -1,4 +1,5 @@
-// Body commands. Each one is unpacked here and runs in BodyKernel.cs, which addresses the body through the object handle.
+// Body commands. Each one is unpacked here and runs in BodyKernel.cs, which addresses the body through the object handle,
+// except for the few that only read the row's own fields.
 
 #include "Commands.h"
 
@@ -35,14 +36,35 @@ namespace Retooled
     static constexpr auto DeltaTimeIn = [](CommandArgs& a, const auto& c) { a.scalar = c.deltaTime; };
     static constexpr auto ShapeIn = [](CommandArgs& a, const auto& c) { a.pointer = c.shape; };
 
+    // The flags live in the row itself, so these need nothing of managed. Unity asks both of every body in each step's
+    // transform read.
+    static uint32_t RowFlags(void* object)
+    {
+        const Body* body = static_cast<const Body*>(object);
+        return body != nullptr ? BodyRow(body->world->data, body->index)->flags : 0;
+    }
+
+    static void GetFlags(void* object, const Context&, Command& base)
+    {
+        constexpr uint32_t publicFlags = kBodyGravity | kBodyKinematic | kBodySimulated;
+        static_cast<BodyCmd::GetFlags&>(base).value = static_cast<Physics::BodyFlags>(RowFlags(object) & publicFlags);
+    }
+
+    static void GetIsSleeping(void* object, const Context&, Command& base)
+    {
+        static_cast<BodyCmd::GetIsSleeping&>(base).value = (RowFlags(object) & kBodySleeping) != 0;
+    }
+
     void BindBodyCommands(FunctionBinding* table)
     {
+        table[static_cast<size_t>(BodyCmd::GetFlags::command)] = &GetFlags;
+        table[static_cast<size_t>(BodyCmd::GetIsSleeping::command)] = &GetIsSleeping;
+
         Bind<BodyCmd::SetFlags, [](CommandArgs& a, const auto& c)
         {
             a.flags = static_cast<uint32_t>(c.value);
             a.enabled = c.enabled;
         }>(table);
-        Bind<BodyCmd::GetFlags, None, [](const CommandArgs& a, auto& c) { c.value = static_cast<Physics::BodyFlags>(a.flags); }>(table);
         Bind<BodyCmd::SetMass, ScalarIn>(table);
         Bind<BodyCmd::GetMass, None, ScalarOut>(table);
         Bind<BodyCmd::SetDamping, [](CommandArgs& a, const auto& c)
@@ -114,7 +136,6 @@ namespace Retooled
             }>(table);
         Bind<BodyCmd::SetKinematicTarget, PoseIn>(table);
         Bind<BodyCmd::GetKinematicTarget, None, PoseOut>(table);
-        Bind<BodyCmd::GetIsSleeping, None, [](const CommandArgs& a, auto& c) { c.value = a.enabled != 0; }>(table);
         Bind<BodyCmd::Sleep, None>(table);
         Bind<BodyCmd::WakeUp, None>(table);
         Bind<BodyCmd::SetWakeCounter, ScalarIn>(table);

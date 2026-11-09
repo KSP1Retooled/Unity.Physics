@@ -1,4 +1,5 @@
-// Shape commands. Each one is unpacked here and runs in ShapeKernel.cs. Mesh.cpp holds the mesh commands.
+// Shape commands. Each one is unpacked here and runs in ShapeKernel.cs, except for the few that only read what the plugin
+// holds itself. Mesh.cpp holds the mesh commands.
 
 #include <new>
 
@@ -132,6 +133,26 @@ namespace Retooled
     {
     }
 
+    // Answered here rather than in the kernel, because Unity asks it twice for every trigger pair that stays touching, each
+    // step, and from job workers while it fills in query hits. It reads only what a worker may: the cold records and the
+    // flags the row holds itself.
+    static void GetActorDescriptor(void* object, const Context&, Command& base)
+    {
+        Physics::ActorDescriptor& descriptor = static_cast<ShapeCmd::GetActorDescriptor&>(base).value;
+        descriptor = Physics::ActorDescriptor{};
+        const Shape* shape = static_cast<const Shape*>(object);
+        if (shape == nullptr || shape->body == nullptr)
+        {
+            return;
+        }
+
+        const Body* body = shape->body;
+        const bool isStatic = (BodyRow(body->world->data, body->index)->flags & kBodyStatic) != 0;
+        descriptor.actor = shape->body;
+        descriptor.userData = body->userData;
+        descriptor.type = isStatic ? Physics::ActorType::Static : Physics::ActorType::Dynamic;
+    }
+
     static void PackHeightField(CommandArgs& args, const Physics::HeightFieldDescriptor& descriptor)
     {
         args.pointer = const_cast<int16_t*>(descriptor.heights);
@@ -155,13 +176,7 @@ namespace Retooled
             a.flags = static_cast<uint32_t>(c.flags);
         }, CreatedOut, false>(table);
         Bind<ShapeCmd::DestroyShape, None>(table);
-        Bind<ShapeCmd::GetActorDescriptor, None, [](const CommandArgs& a, auto& c)
-        {
-            c.value = Physics::ActorDescriptor{};
-            c.value.actor = a.pointer;
-            c.value.userData = a.pointer2;
-            c.value.type = static_cast<Physics::ActorType>(a.mode);
-        }>(table);
+        table[static_cast<size_t>(ShapeCmd::GetActorDescriptor::command)] = &GetActorDescriptor;
         Bind<ShapeCmd::GetUserData, None, [](const CommandArgs& a, auto& c) { c.value = a.pointer; }>(table);
         Bind<ShapeCmd::GetFlags, None, [](const CommandArgs& a, auto& c) { c.flags = static_cast<Physics::ShapeFlags>(a.flags); }>(table);
         Bind<ShapeCmd::SetFlags, [](CommandArgs& a, const auto& c) { a.flags = static_cast<uint32_t>(c.flags); }>(table);

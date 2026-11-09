@@ -50,18 +50,14 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Everything a shape command does. Shape commands arrive outside a step, mostly on the main thread: Unity asks for actor
-    /// descriptors and sets poses from job workers too, which read rows as <see cref="BodyEntities"/> left them. As with
-    /// the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a stub
-    /// running the same code in Mono.
+    /// Everything a shape command does that the plugin doesn't answer itself. Shape commands arrive outside a step, mostly on
+    /// the main thread: Unity sets poses from job workers too, which read rows as <see cref="BodyEntities"/> left them. As
+    /// with the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a
+    /// stub running the same code in Mono.
     /// </summary>
     [BurstCompile]
     internal static unsafe class ShapeKernel
     {
-        // Physics::ActorType.
-        private const uint ActorStatic = 1;
-        private const uint ActorDynamic = 2;
-
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
@@ -101,16 +97,6 @@ namespace KSP.Retooled.Physics
                     break;
                 case ShapeCommand.DestroyShape:
                     Destroy(shape, globals);
-                    break;
-                case ShapeCommand.GetActorDescriptor:
-                    // Unity asks this from job workers while it fills in query hits.
-                    a->pointer = shape->body;
-                    if (shape->body != null)
-                    {
-                        a->pointer2 = shape->body->userData;
-                        a->mode = (StoreOps.Row(shape->body)->flags & NativeStore.BodyFlags.Static) != 0 ? ActorStatic : ActorDynamic;
-                    }
-
                     break;
                 case ShapeCommand.GetUserData:
                     a->pointer = shape->data.userData;
