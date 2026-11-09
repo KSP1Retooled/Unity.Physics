@@ -1709,96 +1709,6 @@ namespace Unity.Physics
             return sum;
         }
 
-        /// <summary>
-        /// Six values in two registers, the unknowns of a body or of a full joint. Nearly every block a craft's solve touches
-        /// is six by six, small enough that the loops and leftovers of the general kernels cost more than the arithmetic.
-        /// </summary>
-        internal struct Six
-        {
-            public const int Size = 6;
-
-            public double4 Low;
-            public double2 High;
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public static Six Load(double* from) => new Six { Low = *(double4*)from, High = *(double2*)(from + 4) };
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void Store(double* to)
-            {
-                *(double4*)to = Low;
-                *(double2*)(to + 4) = High;
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public Six Minus(Six other) => new Six { Low = Low - other.Low, High = High - other.High };
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public Six Scaled(double scale) => new Six { Low = scale * Low, High = scale * High };
-
-            /// <summary>
-            /// A row-major block times a vector. Each row's products land in one register, and the first four rows are
-            /// transposed so that adding columns sums them all at once.
-            /// </summary>
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public static Six Product(double* block, Six x)
-            {
-                double4 r0 = Row(block, x);
-                double4 r1 = Row(block + Size, x);
-                double4 r2 = Row(block + 2 * Size, x);
-                double4 r3 = Row(block + 3 * Size, x);
-                double4 r4 = Row(block + 4 * Size, x);
-                double4 r5 = Row(block + 5 * Size, x);
-
-                double4x4 partial = math.transpose(new double4x4(r0, r1, r2, r3));
-                double4 pairs = new double4(r4.xy + r4.zw, r5.xy + r5.zw);
-                return new Six
-                {
-                    Low = (partial.c0 + partial.c1) + (partial.c2 + partial.c3),
-                    High = pairs.xz + pairs.yw,
-                };
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            static double4 Row(double* row, Six x)
-            {
-                double4 products = *(double4*)row * x.Low;
-                products.xy = MathUtil.Fma(*(double2*)(row + 4), x.High, products.xy);
-                return products;
-            }
-
-            /// <summary>
-            /// A row-major block's transpose times a vector: its rows, each scaled by one value and added. The rows go in
-            /// three independent pairs, since six adds into one sum would each wait for the last.
-            /// </summary>
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public static Six TransposeProduct(double* block, Six x)
-            {
-                Six first = ScaledRow(block, x.Low.x).PlusScaledRow(block + Size, x.Low.y);
-                Six second = ScaledRow(block + 2 * Size, x.Low.z).PlusScaledRow(block + 3 * Size, x.Low.w);
-                Six third = ScaledRow(block + 4 * Size, x.High.x).PlusScaledRow(block + 5 * Size, x.High.y);
-                return new Six
-                {
-                    Low = (first.Low + second.Low) + third.Low,
-                    High = (first.High + second.High) + third.High,
-                };
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            static Six ScaledRow(double* row, double scale) => new Six
-            {
-                Low = *(double4*)row * scale,
-                High = *(double2*)(row + 4) * scale,
-            };
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            Six PlusScaledRow(double* row, double scale) => new Six
-            {
-                Low = MathUtil.Fma(*(double4*)row, scale, Low),
-                High = MathUtil.Fma(*(double2*)(row + 4), scale, High),
-            };
-        }
-
         /// <summary>into += scale * from, over <paramref name="count"/> entries.</summary>
         internal static void AddScaled(double* into, double* from, double scale, int count)
         {
@@ -1893,9 +1803,9 @@ namespace Unity.Physics
             Node node = nodes[index];
             double* into = x + node.Start;
 
-            // The top's chain runs through these sums, so a body-sized node keeps its own in registers for all of them.
-            bool six = node.Size == Six.Size;
-            Six owed = six ? Six.Load(into) : default;
+            // The top's chain runs through these sums, so a 6-wide node keeps them in registers and takes them once.
+            bool six = node.Size == double6x6.Size;
+            var owed = new double6();
 
             // First what the subtrees owe it, from their boundary nodes' answers.
             for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
@@ -1921,7 +1831,7 @@ namespace Unity.Physics
 
             if (six)
             {
-                owed.Store(into);
+                (double6.Load(into) - owed).Store(into);
             }
 
             SubstituteForward(node, x, 0);
@@ -1929,26 +1839,18 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// into -= block * source, held in <paramref name="owed"/> rather than in memory while the target is body-sized.
+        /// into -= block * source: added to <paramref name="owed"/>, for the caller to take from <paramref name="into"/> at
+        /// the end, when <paramref name="six"/> and the block are both 6x6, and taken from it at once otherwise.
         /// </summary>
-        static void Owe(ref Six owed, bool six, double* into, double* block, double* source, int rows, int inner)
+        static void Owe(ref double6 owed, bool six, double* into, double* block, double* source, int rows, int inner)
         {
-            if (six && inner == Six.Size)
+            if (six && inner == double6x6.Size)
             {
-                owed = owed.Minus(Six.Product(block, Six.Load(source)));
+                owed += ((double6x6*)block)->Mul(double6.Load(source));
                 return;
             }
 
-            if (six)
-            {
-                owed.Store(into);
-            }
-
             SubtractProduct(into, block, source, rows, inner, 1.0);
-            if (six)
-            {
-                owed = Six.Load(into);
-            }
         }
 
         /// <summary>
@@ -1990,17 +1892,18 @@ namespace Unity.Physics
             double* own = x + node.Start;
             double* inverse = inverseDiagonal.Ptr + node.Start;
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
-            if (size == Six.Size)
+            if (size == double6x6.Size)
             {
-                SolveLower(c, own, inverse, Six.Size);
-                Six answer = Six.Load(own);
+                SolveLower(c, own, inverse, double6x6.Size);
+                double6 answer = double6.Load(own);
                 for (int i = 0; i < endNeighbour; i++)
                 {
                     Node other = nodes[column[i].Node];
                     double* into = x + other.Start;
-                    if (other.Size == Six.Size)
+                    if (other.Size == double6x6.Size)
                     {
-                        Six.Load(into).Minus(Six.Product(values + column[i].Offset, answer).Scaled(node.Sign)).Store(into);
+                        ref double6x6 block = ref *(double6x6*)(values + column[i].Offset);
+                        (double6.Load(into) - node.Sign * block.Mul(answer)).Store(into);
                     }
                     else
                     {
@@ -2008,7 +1911,7 @@ namespace Unity.Physics
                     }
                 }
 
-                answer.Scaled(node.Sign).Store(own);
+                (node.Sign * answer).Store(own);
                 return;
             }
 
@@ -2075,17 +1978,17 @@ namespace Unity.Physics
             double* inverse = inverseDiagonal.Ptr + node.Start;
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
-            if (size == Six.Size)
+            if (size == double6x6.Size)
             {
-                Six sum = Six.Load(own);
+                double6 sum = double6.Load(own);
                 for (int i = 0; i < node.NeighbourCount; i++)
                 {
                     Node other = nodes[column[i].Node];
                     double* block = values + column[i].Offset;
                     double* source = x + other.Start;
-                    if (other.Size == Six.Size)
+                    if (other.Size == double6x6.Size)
                     {
-                        sum = sum.Minus(Six.TransposeProduct(block, Six.Load(source).Scaled(node.Sign)));
+                        sum -= ((double6x6*)block)->TransposeMul(node.Sign * double6.Load(source));
                         continue;
                     }
 
@@ -2095,11 +1998,11 @@ namespace Unity.Physics
                         AddScaled(own, block + row * size, -node.Sign * source[row], size);
                     }
 
-                    sum = Six.Load(own);
+                    sum = double6.Load(own);
                 }
 
                 sum.Store(own);
-                SolveUpper(c, own, inverse, Six.Size);
+                SolveUpper(c, own, inverse, double6x6.Size);
                 return;
             }
 
