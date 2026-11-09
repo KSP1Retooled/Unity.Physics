@@ -277,6 +277,9 @@ namespace Unity.Physics
         // Whether factor holds a factorization of a recent problem of this shape, for the current state.
         bool factored;
 
+        // Whether solution holds the answer to a recent problem of this shape, a close first guess at the next.
+        bool answered;
+
         Statistics statistics;
 
         public SparseConstraintSolver(Allocator allocator)
@@ -315,6 +318,7 @@ namespace Unity.Physics
             analyzedBodies = -1;
             analyzedBounded = false;
             factored = false;
+            answered = false;
             statistics = default;
         }
 
@@ -406,6 +410,7 @@ namespace Unity.Physics
             {
                 Analyze(problem, bounded);
                 factored = false;
+                answered = false;
             }
 
             LoadBounds(problem, sameShape);
@@ -435,7 +440,11 @@ namespace Unity.Physics
                 AssembleRightHandSide(problem);
                 statistics.AssembleTime += Lap(ref started);
 
-                bool solved = factored && SolveWithOldFactor(problem);
+                // The last answer is only a step from this one, so refining it usually takes fewer substitutions than refining
+                // the factor's own answer. When it doesn't hold, the factor's answer still gets its chance before a new
+                // factorization.
+                bool solved = factored
+                    && (answered && SolveWithOldFactor(problem, true) || SolveWithOldFactor(problem, false));
                 statistics.SubstituteTime += Lap(ref started);
                 if (!solved)
                 {
@@ -449,6 +458,7 @@ namespace Unity.Physics
                     Substitute(solution.Ptr);
                 }
 
+                answered = true;
                 ReadImpulses(problem, impulses);
                 statistics.SubstituteTime += Lap(ref started);
                 if (!bounded)
@@ -1307,14 +1317,26 @@ namespace Unity.Physics
 
         /// <summary>
         /// Solves the assembled right-hand side with the factorization of an earlier problem, refining until the answer holds
-        /// for this one. Returns false if it won't, and the factorization has grown too old.
+        /// for this one. Starting from the last answer, each refinement only has to correct the step from it, while starting
+        /// from the factor's own answer, it corrects the factor's error in the whole of it. Returns false if it won't hold
+        /// within the refinements allowed.
         /// </summary>
-        bool SolveWithOldFactor(in Problem problem)
+        bool SolveWithOldFactor(in Problem problem, bool fromLastAnswer)
         {
             double* x = solution.Ptr;
             double* step = correction.Ptr;
-            UnsafeUtility.MemCpy(x, right.Ptr, solution.Length * sizeof(double));
-            Substitute(x);
+            int maxRefinements = MaxRefinements;
+            if (fromLastAnswer)
+            {
+                // Starting from the factor's answer spends a substitution before the first check, which the last answer gets
+                // as a refinement instead.
+                maxRefinements++;
+            }
+            else
+            {
+                UnsafeUtility.MemCpy(x, right.Ptr, solution.Length * sizeof(double));
+                Substitute(x);
+            }
 
             for (int refinement = 0; ; refinement++)
             {
@@ -1324,7 +1346,7 @@ namespace Unity.Physics
                     return true;
                 }
 
-                if (refinement == MaxRefinements)
+                if (refinement == maxRefinements)
                 {
                     return false;
                 }
