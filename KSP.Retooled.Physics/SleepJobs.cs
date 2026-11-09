@@ -105,8 +105,10 @@ namespace KSP.Retooled.Physics
     /// sleeps once every body connected to it by contacts and joints has run out. Statics and kinematics don't connect
     /// bodies into an island, because they don't pass motion from one body to another.
     ///
-    /// This only lists the bodies that fall asleep, for <see cref="FallAsleepJob"/>, because the contact report after it still
-    /// has to see them awake.
+    /// <see cref="SleepContactsJob"/> joins the bodies through their contacts as soon as the solve ends, because the contact
+    /// report sorts the manifolds later. This joins them through their joints once the step has broken the ones it breaks,
+    /// and only lists the bodies that fall asleep, for <see cref="FallAsleepJob"/>, because the contact report still has to
+    /// see them awake.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SleepJob : IJob
@@ -116,12 +118,13 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
-        /// <summary>
-        /// Read beside <see cref="ReadImpulsesJob"/>, which writes only the impulses, a field this job doesn't read.
-        /// </summary>
+        public NativeList<int> Parents;
+
         [ReadOnly]
-        [NativeDisableContainerSafetyRestriction]
-        public NativeList<ManifoldRecord> Records;
+        public NativeList<int> Contacts;
+
+        [ReadOnly]
+        public NativeList<bool> TouchesStill;
 
         public NativeList<int> Falling;
 
@@ -131,34 +134,7 @@ namespace KSP.Retooled.Physics
         {
             Falling.Clear();
             int count = (int)World->bodyCount;
-            var parents = new NativeArray<int>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var contacts = new NativeArray<int>(count, Allocator.Temp);
-            var touchesStill = new NativeArray<bool>(count, Allocator.Temp);
-            for (int i = 0; i < count; i++)
-            {
-                parents[i] = i;
-            }
-
-            for (int i = 0; i < Records.Length; i++)
-            {
-                ManifoldRecord record = Records[i];
-                if (!record.Touching || record.Trigger)
-                {
-                    continue;
-                }
-
-                bool solvedA = Solved(World->bodies + record.RowA);
-                bool solvedB = Solved(World->bodies + record.RowB);
-                contacts[record.RowA] += record.PointCount;
-                contacts[record.RowB] += record.PointCount;
-                touchesStill[record.RowA] |= !solvedB;
-                touchesStill[record.RowB] |= !solvedA;
-                if (solvedA && solvedB)
-                {
-                    Union(parents, record.RowA, record.RowB);
-                }
-            }
-
+            NativeArray<int> parents = Parents.AsArray();
             for (uint i = 0; i < World->jointCount; i++)
             {
                 NativeStore.JointData* joint = World->joints[i];
@@ -175,7 +151,7 @@ namespace KSP.Retooled.Physics
                 NativeStore.BodyData* body = World->bodies + i;
                 if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
                 {
-                    UpdateWakeCounter(body, touchesStill[i] ? contacts[i] : 0);
+                    UpdateWakeCounter(body, TouchesStill[i] ? Contacts[i] : 0);
                     islandAwake[Find(parents, i)] |= body->sleep->WakeCounter > 0.0f;
                 }
             }
@@ -190,7 +166,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static bool Solved(NativeStore.BodyData* body)
+        internal static bool Solved(NativeStore.BodyData* body)
         {
             const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
             return (body->flags & immobile) == 0 && (body->flags & NativeStore.BodyFlags.Simulated) != 0;
@@ -234,7 +210,7 @@ namespace KSP.Retooled.Physics
             return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
         }
 
-        private static int Find(NativeArray<int> parents, int index)
+        internal static int Find(NativeArray<int> parents, int index)
         {
             while (parents[index] != index)
             {
@@ -245,9 +221,68 @@ namespace KSP.Retooled.Physics
             return index;
         }
 
-        private static void Union(NativeArray<int> parents, int a, int b)
+        internal static void Union(NativeArray<int> parents, int a, int b)
         {
             parents[Find(parents, a)] = Find(parents, b);
+        }
+    }
+
+    /// <summary>
+    /// The contacts' part of <see cref="SleepJob"/>: joins the solved bodies that touch, and counts each body's contact
+    /// points and whether it touches something that doesn't move.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct SleepContactsJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        /// <summary>
+        /// Read beside <see cref="ReadImpulsesJob"/>, which writes only the impulses, a field this job doesn't read.
+        /// </summary>
+        [ReadOnly]
+        [NativeDisableContainerSafetyRestriction]
+        public NativeList<ManifoldRecord> Records;
+
+        public NativeList<int> Parents;
+
+        public NativeList<int> Contacts;
+
+        public NativeList<bool> TouchesStill;
+
+        public void Execute()
+        {
+            int count = (int)World->bodyCount;
+            Parents.ResizeUninitialized(count);
+            Contacts.ResizeUninitialized(count);
+            TouchesStill.ResizeUninitialized(count);
+            UnsafeUtility.MemClear(Contacts.GetUnsafePtr(), (long)count * sizeof(int));
+            UnsafeUtility.MemClear(TouchesStill.GetUnsafePtr(), count);
+            NativeArray<int> parents = Parents.AsArray();
+            for (int i = 0; i < count; i++)
+            {
+                parents[i] = i;
+            }
+
+            for (int i = 0; i < Records.Length; i++)
+            {
+                ManifoldRecord record = Records[i];
+                if (!record.Touching || record.Trigger)
+                {
+                    continue;
+                }
+
+                bool solvedA = SleepJob.Solved(World->bodies + record.RowA);
+                bool solvedB = SleepJob.Solved(World->bodies + record.RowB);
+                Contacts[record.RowA] += record.PointCount;
+                Contacts[record.RowB] += record.PointCount;
+                TouchesStill[record.RowA] |= !solvedB;
+                TouchesStill[record.RowB] |= !solvedA;
+                if (solvedA && solvedB)
+                {
+                    SleepJob.Union(parents, record.RowA, record.RowB);
+                }
+            }
         }
     }
 

@@ -43,6 +43,9 @@ namespace KSP.Retooled.Physics
         private NativeList<ManifoldPoint> manifoldPoints;
         private NativeList<ContactBucket> contactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
+        private NativeList<int> sleepParents;
+        private NativeList<int> sleepContacts;
+        private NativeList<bool> sleepTouchesStill;
         private NativeList<int> fallingAsleep;
         private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
         private NativeHashMap<JacobianKey, float2> warmStarts;
@@ -84,6 +87,9 @@ namespace KSP.Retooled.Physics
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+            sleepParents = new NativeList<int>(Allocator.Persistent);
+            sleepContacts = new NativeList<int>(Allocator.Persistent);
+            sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
             fallingAsleep = new NativeList<int>(Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
@@ -132,6 +138,9 @@ namespace KSP.Retooled.Physics
 
             contactBuckets.Dispose();
             touching.Dispose();
+            sleepParents.Dispose();
+            sleepContacts.Dispose();
+            sleepTouchesStill.Dispose();
             fallingAsleep.Dispose();
             lastImpulses.Dispose();
             warmStarts.Dispose();
@@ -364,6 +373,16 @@ namespace KSP.Retooled.Physics
             // motions back and reads the joints. Reading the impulses has to wait for it: it holds the whole world, whose
             // bodies the rebuild writes.
             JobHandle tree = world.CollisionWorld.ScheduleUpdateDynamicTree(ref world, deltaTime, float3.zero, default);
+
+            // The sleep reads the manifolds before the contact report sorts them, so it starts on them now.
+            JobHandle contactsJoined = new SleepContactsJob
+            {
+                World = store,
+                Records = manifolds,
+                Parents = sleepParents,
+                Contacts = sleepContacts,
+                TouchesStill = sleepTouchesStill,
+            }.Schedule();
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWriteBack.Auto())
@@ -383,10 +402,18 @@ namespace KSP.Retooled.Physics
             }
 
             // What a removed shape held wakes after the joints read who sleeps, and before the sleep and the contact report
-            // do. The sleep and the query snapshot don't need the impulses, so they run on workers while this thread waits
-            // for the tree and reads the impulses.
+            // do. The rest of the sleep and the query snapshot don't need the impulses or the report, so they run on workers
+            // while this thread waits for the tree and publishes the contacts.
             new ForgetRemovedShapesJob { World = store, Touching = touching }.Run();
-            JobHandle sleep = new SleepJob { World = store, Records = manifolds, Falling = fallingAsleep, DeltaTime = deltaTime }.Schedule();
+            JobHandle sleep = new SleepJob
+            {
+                World = store,
+                Parents = sleepParents,
+                Contacts = sleepContacts,
+                TouchesStill = sleepTouchesStill,
+                Falling = fallingAsleep,
+                DeltaTime = deltaTime,
+            }.Schedule(contactsJoined);
             JobHandle snapshot = ScheduleQuerySnapshot(tree);
             JobHandle.ScheduleBatchedJobs();
 
@@ -408,7 +435,7 @@ namespace KSP.Retooled.Physics
             using (BackendMarkers.StepPublishContacts.Auto())
             {
                 // The report sorts the manifolds the sleep reads.
-                sleep.Complete();
+                contactsJoined.Complete();
                 new PublishContactsJob
                 {
                     World = store,
@@ -432,6 +459,7 @@ namespace KSP.Retooled.Physics
             // After the snapshot, which reads the flags this sets.
             using (BackendMarkers.StepSleep.Auto())
             {
+                sleep.Complete();
                 new FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
             }
         }
