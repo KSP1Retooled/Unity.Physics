@@ -704,6 +704,7 @@ namespace Unity.Physics
             Order();
             LayOut();
             Partition();
+            PlaceBlocks();
 
             analyzedBodies = problem.BodyCount;
             analyzedBounded = bounded;
@@ -914,18 +915,15 @@ namespace Unity.Physics
             return -1;
         }
 
-        /// <summary>Sorts each column's neighbours by when they are eliminated, then gives every block its place.</summary>
+        /// <summary>Sorts each column's neighbours by when they are eliminated, and gives every node its unknowns.</summary>
         void LayOut()
         {
-            int offset = 0;
             int start = 0;
             for (int position = 0; position < order.Length; position++)
             {
                 ref Node node = ref nodes.ElementAt(order[position]);
                 node.Start = start;
                 start += node.Size;
-                node.Diagonal = offset;
-                offset += node.Size * node.Size;
 
                 Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
                 for (int i = 1; i < node.NeighbourCount; i++)
@@ -941,15 +939,8 @@ namespace Unity.Physics
 
                     column[j + 1] = moving;
                 }
-
-                for (int i = 0; i < node.NeighbourCount; i++)
-                {
-                    column[i].Offset = offset;
-                    offset += nodes[column[i].Node].Size * node.Size;
-                }
             }
 
-            factor.Resize(offset);
             right.Resize(start);
             solution.Resize(start);
             correction.Resize(start);
@@ -1132,6 +1123,55 @@ namespace Unity.Physics
             filled.Dispose();
             parent.Dispose();
             subtree.Dispose();
+        }
+
+        /// <summary>
+        /// Gives every block its place in the factor, in the order the forward substitution reads them: each subtree's nodes
+        /// with their diagonal and the column they own, then each top node's diagonal after the blocks it gathers. The factor
+        /// is too big for L2, and scattered reads from L3 wait on misses that a sequential walk leaves to the hardware's
+        /// streaming prefetch. The backward pass walks the same way back.
+        /// </summary>
+        void PlaceBlocks()
+        {
+            int offset = 0;
+            for (int i = 0; i < taskPositions.Length; i++)
+            {
+                ref Node node = ref nodes.ElementAt(order[taskPositions[i]]);
+                node.Diagonal = offset;
+                offset += node.Size * node.Size;
+
+                Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+                for (int n = 0; n < node.OwnNeighbours; n++)
+                {
+                    column[n].Offset = offset;
+                    offset += nodes[column[n].Node].Size * node.Size;
+                }
+            }
+
+            for (int top = 0; top < topPositions.Length; top++)
+            {
+                ref Node node = ref nodes.ElementAt(order[topPositions[top]]);
+                for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
+                {
+                    int2 update = topUpdates[i];
+                    Node source = nodes[order[update.x]];
+                    neighbours.ElementAt(source.FirstNeighbour + update.y).Offset = offset;
+                    offset += node.Size * source.Size;
+                }
+
+                for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
+                {
+                    int2 row = topRows[i];
+                    Node source = nodes[row.x];
+                    neighbours.ElementAt(source.FirstNeighbour + row.y).Offset = offset;
+                    offset += node.Size * source.Size;
+                }
+
+                node.Diagonal = offset;
+                offset += node.Size * node.Size;
+            }
+
+            factor.Resize(offset);
         }
 
         /// <summary>Where the block between two nodes is, which only the earlier of them holds.</summary>
