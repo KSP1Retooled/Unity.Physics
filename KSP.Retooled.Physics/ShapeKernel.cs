@@ -289,6 +289,29 @@ namespace KSP.Retooled.Physics
             a->rotation = math.mul(hot->pose->Rotation, shape->data.localRotation);
         }
 
+        /// <summary>
+        /// Whether a dynamic body's shape kept its place. Unity works a collider's pose in its body out of world transforms
+        /// that move with the craft, so a collider that stays put comes back a little different every frame, and its
+        /// rotation sometimes as the other quaternion of the same rotation. Taking that for a move would rebuild colliders
+        /// every step: moving a compound's children, or baking a collider again.
+        /// </summary>
+        private static bool IsRounding(float3 position, quaternion rotation, float3 newPosition, quaternion newRotation)
+        {
+            const float PositionTolerance = 1e-5f;
+            const float RotationTolerance = 1e-5f;
+
+            float tolerance = PositionTolerance * (math.cmax(math.abs(newPosition)) + 1.0f);
+            if (math.any(math.abs(newPosition - position) > tolerance))
+            {
+                return false;
+            }
+
+            float4 change = math.dot(rotation.value, newRotation.value) >= 0.0f
+                ? newRotation.value - rotation.value
+                : newRotation.value + rotation.value;
+            return math.all(math.abs(change) <= RotationTolerance);
+        }
+
         private static void SetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
             float3 position = shape->data.localPosition;
@@ -307,7 +330,7 @@ namespace KSP.Retooled.Physics
                     shape->data.localRotation = rotation;
                 }
             }
-            else
+            else if (!IsRounding(position, rotation, a->position, a->rotation))
             {
                 shape->data.localPosition = a->position;
                 shape->data.localRotation = a->rotation;
