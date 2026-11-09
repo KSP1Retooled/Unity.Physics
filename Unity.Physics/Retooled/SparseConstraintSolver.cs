@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
@@ -1648,7 +1649,7 @@ namespace Unity.Physics
         /// target -= sign * block * x, for a row-major block of the given rows with <paramref name="inner"/> columns, four
         /// rows at a time.
         /// </summary>
-        static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
+        internal static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
         {
             int row = 0;
             for (; row + 4 <= rows; row += 4)
@@ -1708,8 +1709,98 @@ namespace Unity.Physics
             return sum;
         }
 
+        /// <summary>
+        /// Six values in two registers, the unknowns of a body or of a full joint. Nearly every block a craft's solve touches
+        /// is six by six, small enough that the loops and leftovers of the general kernels cost more than the arithmetic.
+        /// </summary>
+        internal struct Six
+        {
+            public const int Size = 6;
+
+            public double4 Low;
+            public double2 High;
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public static Six Load(double* from) => new Six { Low = *(double4*)from, High = *(double2*)(from + 4) };
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Store(double* to)
+            {
+                *(double4*)to = Low;
+                *(double2*)(to + 4) = High;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public Six Minus(Six other) => new Six { Low = Low - other.Low, High = High - other.High };
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public Six Scaled(double scale) => new Six { Low = scale * Low, High = scale * High };
+
+            /// <summary>
+            /// A row-major block times a vector. Each row's products land in one register, and the first four rows are
+            /// transposed so that adding columns sums them all at once.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public static Six Product(double* block, Six x)
+            {
+                double4 r0 = Row(block, x);
+                double4 r1 = Row(block + Size, x);
+                double4 r2 = Row(block + 2 * Size, x);
+                double4 r3 = Row(block + 3 * Size, x);
+                double4 r4 = Row(block + 4 * Size, x);
+                double4 r5 = Row(block + 5 * Size, x);
+
+                double4x4 partial = math.transpose(new double4x4(r0, r1, r2, r3));
+                double4 pairs = new double4(r4.xy + r4.zw, r5.xy + r5.zw);
+                return new Six
+                {
+                    Low = (partial.c0 + partial.c1) + (partial.c2 + partial.c3),
+                    High = pairs.xz + pairs.yw,
+                };
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            static double4 Row(double* row, Six x)
+            {
+                double4 products = *(double4*)row * x.Low;
+                products.xy = MathUtil.Fma(*(double2*)(row + 4), x.High, products.xy);
+                return products;
+            }
+
+            /// <summary>
+            /// A row-major block's transpose times a vector: its rows, each scaled by one value and added. The rows go in
+            /// three independent pairs, since six adds into one sum would each wait for the last.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public static Six TransposeProduct(double* block, Six x)
+            {
+                Six first = ScaledRow(block, x.Low.x).PlusScaledRow(block + Size, x.Low.y);
+                Six second = ScaledRow(block + 2 * Size, x.Low.z).PlusScaledRow(block + 3 * Size, x.Low.w);
+                Six third = ScaledRow(block + 4 * Size, x.High.x).PlusScaledRow(block + 5 * Size, x.High.y);
+                return new Six
+                {
+                    Low = (first.Low + second.Low) + third.Low,
+                    High = (first.High + second.High) + third.High,
+                };
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            static Six ScaledRow(double* row, double scale) => new Six
+            {
+                Low = *(double4*)row * scale,
+                High = *(double2*)(row + 4) * scale,
+            };
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            Six PlusScaledRow(double* row, double scale) => new Six
+            {
+                Low = MathUtil.Fma(*(double4*)row, scale, Low),
+                High = MathUtil.Fma(*(double2*)(row + 4), scale, High),
+            };
+        }
+
         /// <summary>into += scale * from, over <paramref name="count"/> entries.</summary>
-        static void AddScaled(double* into, double* from, double scale, int count)
+        internal static void AddScaled(double* into, double* from, double scale, int count)
         {
             int k = 0;
             for (; k + 4 <= count; k += 4)
@@ -1798,25 +1889,66 @@ namespace Unity.Physics
         /// </summary>
         void TopForward(int top, double* x, int forwardStamp)
         {
-            PushToTop(top, x, forwardStamp);
-
             int index = order[topPositions[top]];
             Node node = nodes[index];
             double* into = x + node.Start;
+
+            // The top's chain runs through these sums, so a body-sized node keeps its own in registers for all of them.
+            bool six = node.Size == Six.Size;
+            Six owed = six ? Six.Load(into) : default;
+
+            // First what the subtrees owe it, from their boundary nodes' answers.
+            for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
+            {
+                int2 update = topUpdates[i];
+                int sourceIndex = order[update.x];
+                WaitUntilReady(sourceIndex, forwardStamp);
+                Node source = nodes[sourceIndex];
+                double* block = factor.Ptr + neighbours[source.FirstNeighbour + update.y].Offset;
+                Owe(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+            }
+
+            // Then what the earlier top nodes owe it. Every answer already carries its node's sign, which the serial push
+            // would have applied to the sum.
             for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
             {
                 int2 row = topRows[i];
                 WaitUntilReady(row.x, forwardStamp);
-
-                // The source's answer already carries its sign, which the serial push would have applied to the sum.
                 Node source = nodes[row.x];
-                double* answer = x + source.Start;
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + row.y].Offset;
-                SubtractProduct(into, block, answer, node.Size, source.Size, 1.0);
+                Owe(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+            }
+
+            if (six)
+            {
+                owed.Store(into);
             }
 
             SubstituteForward(node, x, 0);
             Volatile.Write(ref nodeReady.Ptr[index], forwardStamp);
+        }
+
+        /// <summary>
+        /// into -= block * source, held in <paramref name="owed"/> rather than in memory while the target is body-sized.
+        /// </summary>
+        static void Owe(ref Six owed, bool six, double* into, double* block, double* source, int rows, int inner)
+        {
+            if (six && inner == Six.Size)
+            {
+                owed = owed.Minus(Six.Product(block, Six.Load(source)));
+                return;
+            }
+
+            if (six)
+            {
+                owed.Store(into);
+            }
+
+            SubtractProduct(into, block, source, rows, inner, 1.0);
+            if (six)
+            {
+                owed = Six.Load(into);
+            }
         }
 
         /// <summary>
@@ -1847,25 +1979,6 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Passes one top node what the subtrees owe it, from their boundary nodes' answers, which already carry each node's
-        /// sign.
-        /// </summary>
-        void PushToTop(int top, double* x, int forwardStamp)
-        {
-            Node target = nodes[order[topPositions[top]]];
-            double* into = x + target.Start;
-            for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
-            {
-                int2 update = topUpdates[i];
-                WaitUntilReady(order[update.x], forwardStamp);
-                Node node = nodes[order[update.x]];
-                double* own = x + node.Start;
-                double* block = factor.Ptr + neighbours[node.FirstNeighbour + update.y].Offset;
-                SubtractProduct(into, block, own, target.Size, node.Size, 1.0);
-            }
-        }
-
-        /// <summary>
         /// Solves for a node through L and S, once every earlier node has passed it its share, and passes its own share to its
         /// neighbours before <paramref name="endNeighbour"/>.
         /// </summary>
@@ -1876,6 +1989,29 @@ namespace Unity.Physics
             double* c = values + node.Diagonal;
             double* own = x + node.Start;
             double* inverse = inverseDiagonal.Ptr + node.Start;
+            Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            if (size == Six.Size)
+            {
+                SolveLower(c, own, inverse, Six.Size);
+                Six answer = Six.Load(own);
+                for (int i = 0; i < endNeighbour; i++)
+                {
+                    Node other = nodes[column[i].Node];
+                    double* into = x + other.Start;
+                    if (other.Size == Six.Size)
+                    {
+                        Six.Load(into).Minus(Six.Product(values + column[i].Offset, answer).Scaled(node.Sign)).Store(into);
+                    }
+                    else
+                    {
+                        SubtractProduct(into, values + column[i].Offset, own, other.Size, size, node.Sign);
+                    }
+                }
+
+                answer.Scaled(node.Sign).Store(own);
+                return;
+            }
+
             for (int row = 0; row < size; row++)
             {
                 double sum = own[row] - MathUtil.ArrayProductSum(&c[row * size], own, row);
@@ -1883,7 +2019,6 @@ namespace Unity.Physics
                 own[row] = sum * inverse[row];
             }
 
-            Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
             for (int i = 0; i < endNeighbour; i++)
             {
                 Node other = nodes[column[i].Node];
@@ -1896,6 +2031,40 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Solves C y = own in place for a small diagonal block. Inlined with a constant size, its loops unroll, which is
+        /// where nearly every node of a craft ends up: a body, or a full joint, has six unknowns.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveLower(double* c, double* own, double* inverse, int size)
+        {
+            for (int row = 0; row < size; row++)
+            {
+                double sum = own[row];
+                for (int j = 0; j < row; j++)
+                {
+                    sum = MathUtil.Fma(-c[row * size + j], own[j], sum);
+                }
+
+                own[row] = sum * inverse[row];
+            }
+        }
+
+        /// <summary>Solves C^t y = own in place for a small diagonal block, as <see cref="SolveLower"/> does C.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveUpper(double* c, double* own, double* inverse, int size)
+        {
+            for (int row = size - 1; row >= 0; row--)
+            {
+                double answer = own[row] * inverse[row];
+                own[row] = answer;
+                for (int j = 0; j < row; j++)
+                {
+                    own[j] = MathUtil.Fma(-c[row * size + j], answer, own[j]);
+                }
+            }
+        }
+
         /// <summary>Solves for a node through L^t, once all its neighbours, which come later, have their answers.</summary>
         void SubstituteBackward(in Node node, double* x)
         {
@@ -1903,8 +2072,37 @@ namespace Unity.Physics
             int size = node.Size;
             double* c = values + node.Diagonal;
             double* own = x + node.Start;
+            double* inverse = inverseDiagonal.Ptr + node.Start;
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            if (size == Six.Size)
+            {
+                Six sum = Six.Load(own);
+                for (int i = 0; i < node.NeighbourCount; i++)
+                {
+                    Node other = nodes[column[i].Node];
+                    double* block = values + column[i].Offset;
+                    double* source = x + other.Start;
+                    if (other.Size == Six.Size)
+                    {
+                        sum = sum.Minus(Six.TransposeProduct(block, Six.Load(source).Scaled(node.Sign)));
+                        continue;
+                    }
+
+                    sum.Store(own);
+                    for (int row = 0; row < other.Size; row++)
+                    {
+                        AddScaled(own, block + row * size, -node.Sign * source[row], size);
+                    }
+
+                    sum = Six.Load(own);
+                }
+
+                sum.Store(own);
+                SolveUpper(c, own, inverse, Six.Size);
+                return;
+            }
+
             for (int i = 0; i < node.NeighbourCount; i++)
             {
                 Node other = nodes[column[i].Node];
@@ -1918,7 +2116,6 @@ namespace Unity.Physics
 
             // Column by column: once an answer is known, row `row` of C holds everything it owes the earlier rows, side by
             // side, where a sum per row would walk down a column of C.
-            double* inverse = inverseDiagonal.Ptr + node.Start;
             for (int row = size - 1; row >= 0; row--)
             {
                 double answer = own[row] * inverse[row];
