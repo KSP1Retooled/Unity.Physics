@@ -193,9 +193,6 @@ namespace Unity.Physics
             /// <summary> The contacts the solve takes along with the joints, which it solves sparsely. </summary>
             public int ContactPairs;
 
-            /// <summary> Whether the island's contacts need the dense solve, which builds its own rows. </summary>
-            public bool Dense;
-
             public int FirstRow;
             public int Rows;
 
@@ -203,7 +200,7 @@ namespace Unity.Physics
             /// Whether the island's sparse solve is big enough to share among lanes. A smaller one finishes before helpers
             /// would gain anything, and runs beside the others.
             /// </summary>
-            public bool SolvesInTeam => !Dense && Rows >= SharedSolveRows;
+            public bool SolvesInTeam => Rows >= SharedSolveRows;
         }
 
         const int SharedSolveRows = 512;
@@ -430,30 +427,15 @@ namespace Unity.Physics
                 {
                     ref DirectIsland island = ref work.Islands.ElementAt(i);
                     int rows = 0;
-                    int contactCount = 0;
                     for (int h = island.FirstHeader; h < island.SolveEnd; h++)
                     {
-                        ref JacobianHeader header = ref *work.Headers[h].Header;
                         (*headerRows)[h] = rows;
-                        rows += GetConstraintRows(ref header);
-                        contactCount += header.Type == JacobianType.Contact ? 1 : 0;
+                        rows += GetConstraintRows(ref *work.Headers[h].Header);
                     }
 
                     for (int h = island.SolveEnd; h < island.HeaderEnd; h++)
                     {
                         (*headerRows)[h] = -1;
-                    }
-
-                    // Only contacts need the bound coupling of the dense solve. Everything else solves sparsely, with no matrix.
-                    island.Dense = contactCount > 0 && island.ContactPairs == 0;
-                    if (island.Dense)
-                    {
-                        for (int h = island.FirstHeader; h < island.SolveEnd; h++)
-                        {
-                            (*headerRows)[h] = -1;
-                        }
-
-                        rows = 0;
                     }
 
                     island.FirstRow = totalRows;
@@ -505,7 +487,7 @@ namespace Unity.Physics
                 int islandIndex = Headers[index].Island;
                 DirectIsland island = Islands[islandIndex];
 
-                // Every row starts free and unbounded, as a dense solve's do.
+                // Every row starts free and unbounded, and the builder bounds the rows that need it.
                 int firstRow = island.FirstRow + startRow;
                 for (int row = firstRow; row < firstRow + jacRows; row++)
                 {
@@ -543,8 +525,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves one direct island from the rows built for it and applies the impulses. A dense island builds and solves its
-        /// rows here. The direct solver takes the joints and the contacts, friction included, together: a heavy stack resting
+        /// Solves one direct island from the rows built for it and applies the impulses. The direct solver takes the joints and the contacts, friction included, together: a heavy stack resting
         /// on a light part can't press it into the ground, and the friction under a craft holds all of it through its joints
         /// in one solve.
         /// </summary>
@@ -650,11 +631,7 @@ namespace Unity.Physics
             DirectIsland island = islands[islandIndex];
             using (DirectSolveMarker.Auto())
             {
-                if (island.Dense)
-                {
-                    DirectSolver(info, islandIndex, jacobiansReader, ref motionVelocities, motionDatas, stepInput, island.ContactPairs);
-                }
-                else if (island.Rows > 0)
+                if (island.Rows > 0)
                 {
                     JacobianRows rows = work.Rows(island);
                     Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
