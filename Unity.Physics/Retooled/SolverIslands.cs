@@ -148,13 +148,16 @@ namespace Unity.Physics
                     parents[i] = i;
                 }
 
+                // Most overlaps in a craft are between parts that ignore each other, so the passes after this one only go over
+                // the pairs that are solved.
+                var solved = new NativeArray<DispatchPair>(DispatchPairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 int numPairs = 0;
                 for (int i = 0; i < DispatchPairs.Length; i++)
                 {
                     DispatchPair pair = DispatchPairs[i];
                     if (IsSolved(pair))
                     {
-                        numPairs++;
+                        solved[numPairs++] = pair;
                         if (pair.BodyIndexB < NumDynamicBodies)
                         {
                             parents[FindRoot(parents, pair.BodyIndexA)] = FindRoot(parents, pair.BodyIndexB);
@@ -162,15 +165,17 @@ namespace Unity.Physics
                     }
                 }
 
+                // Every body points straight at its root from here on.
+                for (int body = 0; body < NumDynamicBodies; body++)
+                {
+                    parents[body] = FindRoot(parents, body);
+                }
+
                 // Roots with pairs become islands, numbered in body order so that the numbers don't depend on the pairs' order.
                 var islandOfRoot = new NativeArray<int>(NumDynamicBodies, Allocator.Temp);
-                for (int i = 0; i < DispatchPairs.Length; i++)
+                for (int i = 0; i < numPairs; i++)
                 {
-                    DispatchPair pair = DispatchPairs[i];
-                    if (IsSolved(pair))
-                    {
-                        islandOfRoot[FindRoot(parents, pair.BodyIndexA)]++;
-                    }
+                    islandOfRoot[parents[solved[i].BodyIndexA]]++;
                 }
 
                 Islands.Clear();
@@ -191,7 +196,7 @@ namespace Unity.Physics
 
                 for (int body = 0; body < NumDynamicBodies; body++)
                 {
-                    int island = islandOfRoot[FindRoot(parents, body)];
+                    int island = islandOfRoot[parents[body]];
                     if (island >= 0)
                     {
                         Islands.ElementAt(island).BodyCount++;
@@ -216,19 +221,16 @@ namespace Unity.Physics
                     nextBody[i] = Islands[i].FirstBody;
                 }
 
-                for (int i = 0; i < DispatchPairs.Length; i++)
+                for (int i = 0; i < numPairs; i++)
                 {
-                    DispatchPair pair = DispatchPairs[i];
-                    if (IsSolved(pair))
-                    {
-                        int island = islandOfRoot[FindRoot(parents, pair.BodyIndexA)];
-                        IslandPairs[nextPair[island]++] = pair;
-                    }
+                    DispatchPair pair = solved[i];
+                    int island = islandOfRoot[parents[pair.BodyIndexA]];
+                    IslandPairs[nextPair[island]++] = pair;
                 }
 
                 for (int body = 0; body < NumDynamicBodies; body++)
                 {
-                    int island = islandOfRoot[FindRoot(parents, body)];
+                    int island = islandOfRoot[parents[body]];
                     if (island >= 0)
                     {
                         IslandBodies[nextBody[island]++] = body;
