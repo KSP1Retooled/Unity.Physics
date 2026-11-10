@@ -180,7 +180,7 @@ namespace KSP.Retooled.Physics
         internal void ApplyForces(float deltaTime)
         {
             store->queryWorld = null;
-            store->queryDirty = 1;
+            store->queryDirty = StoreOps.QueryStale;
             BodyEntities.PrepareForJobs(store);
 
             using (BackendMarkers.StepApplyForces.Auto())
@@ -473,7 +473,7 @@ namespace KSP.Retooled.Physics
             using (BackendMarkers.StepPublishQueryWorld.Auto())
             {
                 snapshot.Complete();
-                store->queryDirty = motionsMatchStore ? 0u : 1u;
+                store->queryDirty = motionsMatchStore ? 0u : StoreOps.QueryStale;
                 PublishQueryWorld();
             }
 
@@ -490,6 +490,15 @@ namespace KSP.Retooled.Physics
         {
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
+
+            // The last build stands but for the statics' poses. Nothing in the snapshot depends on a pose.
+            if (store->queryDirty == StoreOps.QueryStaticsMoved && builtWhole && globals->materialVersion == builtMaterialVersion)
+            {
+                PoseStatics();
+                PublishQueryWorld();
+                return;
+            }
+
             JobHandle colliders = RefreshColliders(default);
             JobHandle built = Build(0.0f, colliders, out _);
             JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true);
@@ -498,9 +507,28 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
+        /// Moves the built statics to where the store has them and builds the static tree again. Recording the version spares
+        /// the next step the same rebuild, unless more statics move first.
+        /// </summary>
+        private void PoseStatics()
+        {
+            builtStaticsVersion = store->staticsVersion;
+            staticsChanged.Value = 1;
+            JobHandle posed = new PoseStaticsJob
+            {
+                Store = store->bodies,
+                StaticIndices = staticIndices.AsArray(),
+                StaticBodies = world.StaticBodies,
+            }.Schedule(staticIndices.Length, ParallelBatchSize, default);
+
+            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, staticsChanged.AsReadOnly(), posed, true).Complete();
+        }
+
+        /// <summary>
         /// False while the main thread is running a query job it picked up inside a Complete, where the safety system refuses
         /// writes. Asking before the build starts leaves the published world readable for the rest of that job. Without
-        /// safety checks nothing refuses the build, and the job that asked simply sees it finished.
+        /// safety checks nothing refuses the build, and the job that asked simply sees it finished. Asking clears the
+        /// dynamic indices, so nothing between here and the next whole build may read them.
         /// </summary>
         internal bool CanWriteContainers()
         {

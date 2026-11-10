@@ -131,10 +131,27 @@ namespace KSP.Retooled.Physics
             new FunctionPointer<NativeStore.PointerFunction>(globals->releaseMaterial).Invoke(material);
         }
 
+        /// <summary>The query world's dirty mark when it needs building again from the store.</summary>
+        internal const uint QueryStale = 1;
+
+        /// <summary>
+        /// The query world's dirty mark when only static bodies moved since it was built, so a build need only pose them and
+        /// rebuild the static tree. Unity moves statics every frame: KSC's tracking dishes turn, and the planets' scaled
+        /// spheres orbit.
+        /// </summary>
+        internal const uint QueryStaticsMoved = 2;
+
         /// <summary>A worker thread reads this flag to learn its query world is stale, so the write is an atomic one.</summary>
         internal static void MarkQueryDirty(NativeStore.WorldData* world)
         {
-            Interlocked.Exchange(ref *(int*)&world->queryDirty, 1);
+            Interlocked.Exchange(ref *(int*)&world->queryDirty, (int)QueryStale);
+        }
+
+        /// <summary>For a static body that only moved. A world already marked stale stays so, and that build covers this.</summary>
+        internal static void MarkStaticMoved(NativeStore.Body* body)
+        {
+            Interlocked.CompareExchange(ref *(int*)&body->world->queryDirty, (int)QueryStaticsMoved, 0);
+            body->world->staticsVersion++;
         }
 
         internal static void MarkPoseChanged(NativeStore.Body* body, NativeStore.BodyFlags flags)

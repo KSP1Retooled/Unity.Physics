@@ -136,6 +136,17 @@ namespace KSP.Retooled.Physics
 
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
+            return new RigidBody
+            {
+                Collider = body.collider->Value,
+                WorldFromBody = WorldFromBody(ref body),
+                Entity = new Entity { Index = index, Version = 1 },
+                Scale = 1.0f,
+            };
+        }
+
+        internal static RigidTransform WorldFromBody(ref NativeStore.BodyData body)
+        {
             RigidTransform worldFromBody = new RigidTransform(body.pose->Rotation, body.pose->Position);
             NativeStore.ShapeData* posed = ColliderBuilder.PosedShape((NativeStore.BodyData*)UnsafeUtility.AddressOf(ref body));
             if (posed != null)
@@ -143,13 +154,7 @@ namespace KSP.Retooled.Physics
                 worldFromBody = math.mul(worldFromBody, new RigidTransform(posed->localRotation, posed->localPosition));
             }
 
-            return new RigidBody
-            {
-                Collider = body.collider->Value,
-                WorldFromBody = worldFromBody,
-                Entity = new Entity { Index = index, Version = 1 },
-                Scale = 1.0f,
-            };
+            return worldFromBody;
         }
 
         private void WriteMotion(int motionIndex, ref NativeStore.BodyData body)
@@ -202,6 +207,27 @@ namespace KSP.Retooled.Physics
                 AngularExpansionFactor = expansion,
                 GravityFactor = 0.0f,
             };
+        }
+    }
+
+    /// <summary>Moves the built statics to the store's poses, for a world in which nothing else changed.</summary>
+    [BurstCompile]
+    internal unsafe struct PoseStaticsJob : IJobParallelFor
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.BodyData* Store;
+
+        [ReadOnly]
+        public NativeArray<int> StaticIndices;
+
+        /// <summary>The built world's statics, in the order of <see cref="StaticIndices"/>.</summary>
+        public NativeArray<RigidBody> StaticBodies;
+
+        public void Execute(int i)
+        {
+            RigidBody body = StaticBodies[i];
+            body.WorldFromBody = BuildBodiesJob.WorldFromBody(ref Store[StaticIndices[i]]);
+            StaticBodies[i] = body;
         }
     }
 

@@ -343,9 +343,10 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // Only a static body has a posed shape, which the built body carries as its own pose.
             if (ColliderBuilder.PosedShape(StoreOps.Hot(shape->body)) != null)
             {
-                StoreOps.MarkPoseChanged(shape->body, StoreOps.Hot(shape->body)->flags);
+                StoreOps.MarkStaticMoved(shape->body);
             }
             else
             {

@@ -359,7 +359,14 @@ namespace KSP.Retooled.Physics
             WakeIfAsked(hot, a);
             if (math.any(hot->pose->Position != position) || math.any(hot->pose->Rotation.value != rotation.value))
             {
-                StoreOps.MarkPoseChanged(body, hot->flags);
+                if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
+                {
+                    StoreOps.MarkStaticMoved(body);
+                }
+                else
+                {
+                    StoreOps.MarkPoseChanged(body, hot->flags);
+                }
             }
         }
 
