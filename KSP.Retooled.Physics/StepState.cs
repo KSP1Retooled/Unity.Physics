@@ -564,17 +564,25 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// False while the main thread is running a query job it picked up inside a Complete, where the safety system refuses
-        /// writes. Asking before the build starts leaves the published world readable for the rest of that job. Without
-        /// safety checks nothing refuses the build, and the job that asked simply sees it finished. Asking clears the
-        /// dynamic indices, so nothing between here and the next whole build may read them.
+        /// False while the main thread is running a job that it picked up while waiting. There the safety system refuses
+        /// every container that the last build gave to a job, because it only releases a finished job's containers when the
+        /// main thread reaches for them outside a job. Asking before the build starts leaves the published world readable
+        /// for the rest of that job. Without safety checks nothing refuses the build, and the job that asked simply sees it
+        /// finished.
+        /// <para>
+        /// Asking outside a job releases the containers that it asks about, so they have to be ones that every build gives
+        /// to a job again. Both the whole build and <see cref="PoseStatics"/> do that with the static indices. The dynamic
+        /// indices cover a world with no statics, which only ever builds whole.
+        /// </para>
         /// </summary>
         internal bool CanWriteContainers()
         {
 #if ENABLE_UNITY_COLLECTIONS_CHECKS
             try
             {
-                dynamicIndices.Clear();
+                // These only check for write access.
+                staticIndices.GetUnsafePtr();
+                dynamicIndices.GetUnsafePtr();
             }
             catch (InvalidOperationException)
             {
