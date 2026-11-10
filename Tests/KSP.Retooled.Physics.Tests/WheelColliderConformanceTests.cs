@@ -88,6 +88,11 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(-40.0f)]
         public void ALeaningBodyLandingHardWhileRollingStopsAtFullCompression(float speed)
         {
+            // PhysX holds the stop along the suspension against the world, so here it throws the body off the ground rolling
+            // one way and lets it sink 7 cm past the stop rolling the other. Its iterative solver softens the throw enough that
+            // a landing aircraft survives it, but our exact solve applies all of it.
+            Assume.That(BackendInfo.IsRetooled);
+
             Box(new Vector3(0.0f, -0.5f, 0.0f), new Vector3(20.0f, 1.0f, 600.0f));
             (Rigidbody body, WheelCollider wheel) = Unicycle(1.2f);
             // Heavy enough to bottom the suspension out, and leaning like an aircraft touching down nose up.
