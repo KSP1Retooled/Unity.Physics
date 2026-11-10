@@ -406,6 +406,10 @@ namespace KSP.Retooled.Physics
             public float substepSpeed;
             public uint substepsBelow;
             public uint substepsAbove;
+
+            // The body's velocity in world space before this step's forces, which the suspension damps.
+            public float3 startLinear;
+            public float3 startAngular;
         }
 
         internal static WheelSlot* WheelsOf(VehicleData* vehicle)
@@ -445,8 +449,6 @@ namespace KSP.Retooled.Physics
             public float jounce;
             public uint enabled;
             public uint grounded;
-            public uint hasJounce;
-            private readonly uint reserved0;
         }
 
         /// <summary>Physics::PhysXExt::WheelQueryResult, whose layout Vehicle.cpp checks.</summary>

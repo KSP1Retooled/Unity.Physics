@@ -84,7 +84,7 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                DriveWheel(wheel, row, built, pose, centreOfMass, up, gravity, pushed);
+                DriveWheel(vehicle, wheel, row, built, pose, centreOfMass, up, gravity, pushed);
 
                 // A driven wheel keeps its body awake, as in PhysX, which the game relies on with a token motor torque.
                 if (wheel->motorTorque != 0.0f)
@@ -94,8 +94,8 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void DriveWheel(NativeStore.WheelSlot* wheel, int row, int built, RigidTransform pose, float3 centreOfMass, float3 up, float gravity,
-            bool pushed)
+        private void DriveWheel(NativeStore.VehicleData* vehicle, NativeStore.WheelSlot* wheel, int row, int built, RigidTransform pose,
+            float3 centreOfMass, float3 up, float gravity, bool pushed)
         {
             ref NativeStore.WheelSuspension suspension = ref wheel->suspension;
             float radius = wheel->wheel.radius;
@@ -110,11 +110,6 @@ namespace KSP.Retooled.Physics
                 Filter = new CollisionFilter { BelongsTo = uint.MaxValue, CollidesWith = wheel->collidesWith },
             }, ref collector);
 
-            // A wheel in the air hangs at full droop, so landing compresses it at the speed it meets the ground. A wheel new to
-            // the step has no speed yet, wherever it starts.
-            bool moved = wheel->hasJounce != 0;
-            float previous = wheel->jounce;
-            wheel->hasJounce = 1;
             Spin(wheel);
 
             if (collector.Shape == null)
@@ -128,18 +123,23 @@ namespace KSP.Retooled.Physics
 
             RaycastHit hit = collector.Closest;
             float jounce = math.clamp(suspension.maxCompression - (hit.Fraction * length - radius), -suspension.maxDroop, suspension.maxCompression);
-            float jounceSpeed = moved ? (jounce - previous) / DeltaTime : 0.0f;
+            // The damper works on how fast the body closes on the ground at the start of the step, along the ground's normal,
+            // so that rolling across it counts for nothing however the body leans. A rate taken from the jounce two steps apart
+            // also counts the solver pulling joints back into place as suspension travel, which on a light wheel part hanging
+            // off a heavy body sets the suspension bouncing.
+            float3 normal = hit.SurfaceNormal;
+            float3 own = vehicle->startLinear + math.cross(vehicle->startAngular, hit.Position - centreOfMass);
+            float3 contactVelocity = own - VelocityAt(hit.RigidBodyIndex, hit.Position);
+            float jounceSpeed = -math.dot(contactVelocity, normal) / math.max(math.dot(up, normal), 0.1f);
             float force = math.max(suspension.sprungMass * gravity + suspension.springStrength * jounce + suspension.springDamperRate * jounceSpeed, 0.0f);
             wheel->jounce = jounce;
             wheel->grounded = 1;
             wheel->hitShape = collector.Shape->owner;
 
-            float3 normal = hit.SurfaceNormal;
             float3 heading = math.rotate(pose.rot, math.rotate(quaternion.RotateY(wheel->steerAngle), new float3(0.0f, 0.0f, 1.0f)));
             float3 forward = math.normalizesafe(heading - normal * math.dot(heading, normal), heading);
             float3 sideways = math.cross(normal, forward);
 
-            float3 contactVelocity = VelocityAt(built, hit.Position, centreOfMass);
             float along = math.dot(contactVelocity, forward);
             float across = math.dot(contactVelocity, sideways);
             float roll = wheel->rotationSpeed * radius;
@@ -185,7 +185,8 @@ namespace KSP.Retooled.Physics
             wheel->rotationAngle = math.fmod(wheel->rotationAngle + speed * DeltaTime, 2.0f * math.PI);
         }
 
-        private float3 VelocityAt(int built, float3 point, float3 centreOfMass)
+        /// <summary>How fast a point of a built body moves. Static bodies, which come after the moving ones, stand still.</summary>
+        private float3 VelocityAt(int built, float3 point)
         {
             if (built >= MotionVelocities.Length)
             {
@@ -193,8 +194,9 @@ namespace KSP.Retooled.Physics
             }
 
             MotionVelocity motion = MotionVelocities[built];
-            float3 angular = math.rotate(MotionDatas[built].WorldFromMotion.rot, motion.AngularVelocity);
-            return motion.LinearVelocity + math.cross(angular, point - centreOfMass);
+            RigidTransform worldFromMotion = MotionDatas[built].WorldFromMotion;
+            float3 angular = math.rotate(worldFromMotion.rot, motion.AngularVelocity);
+            return motion.LinearVelocity + math.cross(angular, point - worldFromMotion.pos);
         }
 
         private void Push(int built, float3 point, float3 impulse)

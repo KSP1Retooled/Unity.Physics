@@ -293,13 +293,12 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>A wheel switched on starts out hanging, with no hit and no jounce from its last life.</summary>
+        /// <summary>A wheel switched on starts out hanging, with no hit from its last life.</summary>
         private static void Enable(NativeStore.VehicleData* vehicle, NativeStore.WheelSlot* wheel, NativeStore.CommandArgs* a)
         {
             wheel->enabled = a->enabled;
             wheel->userData = a->enabled != 0 ? a->pointer2 : null;
             wheel->grounded = 0;
-            wheel->hasJounce = 0;
             wheel->hit = default;
             wheel->hitShape = null;
             wheel->rotationSpeed = 0.0f;
@@ -378,6 +377,25 @@ namespace KSP.Retooled.Physics
             words[1] = wheel->belongsTo;
             words[2] = wheel->filterFlags;
             words[3] = wheel->filterIds;
+        }
+
+        /// <summary>
+        /// Keeps each vehicle body's velocity from before the step applies its forces. The suspension damps the speed at which
+        /// the body closes on the ground, and a step's gravity, already in the velocity the wheels see, would read as a
+        /// constant compression and hold the body up off its rest position.
+        /// </summary>
+        internal static void RecordStartVelocities(NativeStore.WorldData* world)
+        {
+            for (uint v = 0; v < world->vehicleCount; v++)
+            {
+                NativeStore.VehicleData* vehicle = world->vehicles[v];
+                if (vehicle != null && vehicle->body != null)
+                {
+                    NativeStore.BodyData* hot = world->bodies + vehicle->body->index;
+                    vehicle->startLinear = hot->velocity->Linear;
+                    vehicle->startAngular = StoreOps.WorldAngularVelocity(*hot);
+                }
+            }
         }
 
         /// <summary>

@@ -191,6 +191,7 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             store->queryDirty = StoreOps.QueryStale;
             BodyEntities.PrepareForJobs(store);
+            VehicleKernel.RecordStartVelocities(store);
 
             using (BackendMarkers.StepApplyForces.Auto())
             {

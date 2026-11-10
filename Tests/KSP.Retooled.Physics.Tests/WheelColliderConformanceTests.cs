@@ -113,6 +113,9 @@ namespace KSP.Retooled.Physics.Tests
             ground.layer = 30;
             (_, WheelCollider wheel) = Unicycle();
             wheel.gameObject.layer = 26;
+
+            // The layer matrix is a project setting, which the editor saves, so the test leaves it as it found it.
+            bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(26, 30);
             UnityEngine.Physics.IgnoreLayerCollision(26, 30, true);
             try
             {
@@ -121,7 +124,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
-                UnityEngine.Physics.IgnoreLayerCollision(26, 30, false);
+                UnityEngine.Physics.IgnoreLayerCollision(26, 30, ignored);
             }
         }
 
