@@ -294,6 +294,11 @@ namespace KSP.Retooled.Physics
     /// of a compound can be told apart. So do friction and restitution, which need both shapes' materials and the points that
     /// touched. The manifolds it keeps are what the step's events and sleeping work from.
     ///
+    /// Unity Physics also gives a body contacts with a static mesh well ahead of it, a step's travel ahead, where PhysX only
+    /// has them within the shapes' contact offsets. Against the edge of a polygon such a contact's normal leans back along the
+    /// body's travel, and taken as a plane it stops a body that slides along the mesh. A point beyond the contact offsets
+    /// stays only if its path through the step passes through its polygon.
+    ///
     /// Each of the narrow phase's buckets is read on its own, into lists of its own, and
     /// <see cref="MergeContactBucketsJob"/> joins them in bucket order, so the records come out in the order a single pass
     /// over the stream would give them.
@@ -304,6 +309,25 @@ namespace KSP.Retooled.Physics
         // Measured against PhysX: a 0.015 m box slides on one anchor and a 0.02 m box on two, and their diagonals are 0.021 m
         // and 0.028 m. Points nearer each other than this share an anchor.
         private const float FrictionOffsetThreshold = 0.025f;
+
+        // How far apart the solver is told a point is that can't reach its polygon this step. Unity Physics then lets the
+        // bodies close by more than they can move, and the direct solver gives the point no row.
+        private const float OutOfReach = 1.0e6f;
+
+        /// <summary>A static mesh's polygon in world space, and the motion of the body against it.</summary>
+        private struct MeshFace
+        {
+            public bool Valid;
+            public bool MovingIsA;
+            public bool Quad;
+            public float3 V0;
+            public float3 V1;
+            public float3 V2;
+            public float3 V3;
+            public float3 Linear;
+            public float3 Angular;
+            public float3 CentreOfMass;
+        }
 
         public NativeStream.Reader Contacts;
 
@@ -338,14 +362,26 @@ namespace KSP.Retooled.Physics
             while (reader.RemainingItemCount > 0)
             {
                 ContactHeader* header = (ContactHeader*)reader.ReadUnsafePtr(sizeof(ContactHeader));
-                bool kept = Begin(ref *header, ref output.Records, output.Points.Length, out float touchDistance);
+                bool kept = Begin(ref *header, ref output.Records, output.Points.Length, out float touchDistance,
+                    out MeshFace face);
                 for (int i = 0; i < header->NumContacts; i++)
                 {
                     ContactPoint* point = (ContactPoint*)reader.ReadUnsafePtr(sizeof(ContactPoint));
-                    if (kept)
+                    if (!kept)
                     {
-                        Add(ref output, point->Position, point->Distance, touchDistance);
+                        continue;
                     }
+
+                    // The report keeps the point where it is, and only the solver is told it is out of reach.
+                    float distance = point->Distance;
+                    float3 moving = face.MovingIsA ? point->Position + header->Normal * distance : point->Position;
+                    bool reachable = !face.Valid || distance <= touchDistance || Reaches(face, moving, distance);
+                    if (!reachable)
+                    {
+                        point->Distance = OutOfReach;
+                    }
+
+                    Add(ref output, point->Position, distance, touchDistance, reachable);
                 }
 
                 if (kept)
@@ -361,9 +397,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Starts a manifold's record, or disables or passes over the manifold and returns false.</summary>
-        private bool Begin(ref ContactHeader header, ref UnsafeList<ManifoldRecord> records, int firstPoint, out float touchDistance)
+        private bool Begin(ref ContactHeader header, ref UnsafeList<ManifoldRecord> records, int firstPoint,
+            out float touchDistance, out MeshFace face)
         {
             touchDistance = 0.0f;
+            face = default;
             RigidBody bodyA = Bodies[header.BodyPair.BodyIndexA];
             RigidBody bodyB = Bodies[header.BodyPair.BodyIndexB];
             ColliderKey keyA = header.ColliderKeys.ColliderKeyA;
@@ -392,6 +430,11 @@ namespace KSP.Retooled.Physics
 
             bool staticA = (Store[rowA].flags & NativeStore.BodyFlags.Static) != 0;
             bool staticB = (Store[rowB].flags & NativeStore.BodyFlags.Static) != 0;
+            if (!trigger && staticA != staticB)
+            {
+                face = staticB ? FaceOf(bodyB, keyB, Store[rowA], true) : FaceOf(bodyA, keyA, Store[rowB], false);
+            }
+
             bool swapped = staticA != staticB ? staticA : rowA > rowB;
             float3 normal = swapped ? -header.Normal : header.Normal;
             ref NativeStore.BodyData first = ref Store[swapped ? rowB : rowA];
@@ -420,7 +463,7 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
-        private void Add(ref ContactBucket output, float3 position, float distance, float touchDistance)
+        private void Add(ref ContactBucket output, float3 position, float distance, float touchDistance, bool reachable)
         {
             ref ManifoldRecord record = ref output.Records.ElementAt(output.Records.Length - 1);
             output.Points.Add(new ManifoldPoint { Position = position, Distance = distance });
@@ -429,7 +472,65 @@ namespace KSP.Retooled.Physics
             // Unity Physics stops a fast body at the surface with a contact that looks well apart, where PhysX lets it in and
             // reports next step. The pair touches in the step that spends the impact, so that its event carries the impulse.
             float closing = record.Trigger ? 0.0f : math.max(ClosingSpeed(ref record, position), 0.0f);
-            record.Touching |= distance - closing * DeltaTime <= touchDistance;
+            record.Touching |= reachable && distance - closing * DeltaTime <= touchDistance;
+        }
+
+        /// <summary>
+        /// The polygon of a static mesh that a manifold lies against, in world space, and how the body against it moves. Any
+        /// other leaf gives an invalid face.
+        /// </summary>
+        private MeshFace FaceOf(RigidBody mesh, ColliderKey key, in NativeStore.BodyData moving, bool movingIsA)
+        {
+            var root = (Collider*)mesh.Collider.GetUnsafePtr();
+            if (!Collider.GetLeafCollider(out ChildCollider leaf, root, key, mesh.WorldFromBody))
+            {
+                return default;
+            }
+
+            Collider* collider = leaf.Collider;
+            if (collider->Type != ColliderType.Triangle && collider->Type != ColliderType.Quad)
+            {
+                return default;
+            }
+
+            BlobArray.Accessor<float3> vertices = ((PolygonCollider*)collider)->Vertices;
+            bool quad = collider->Type == ColliderType.Quad;
+            return new MeshFace
+            {
+                Valid = true,
+                MovingIsA = movingIsA,
+                Quad = quad,
+                V0 = math.transform(leaf.TransformFromChild, vertices[0]),
+                V1 = math.transform(leaf.TransformFromChild, vertices[1]),
+                V2 = math.transform(leaf.TransformFromChild, vertices[2]),
+                V3 = quad ? math.transform(leaf.TransformFromChild, vertices[3]) : float3.zero,
+                Linear = moving.velocity->Linear,
+                Angular = StoreOps.WorldAngularVelocity(moving),
+                CentreOfMass = moving.pose->Position + math.rotate(moving.pose->Rotation, moving.mass->Transform.pos),
+            };
+        }
+
+        /// <summary>
+        /// Whether a point of the moving body may meet the face this step: whether its path through the step passes through
+        /// the polygon. A point that moves less than its distance can't close on the face whatever way its normal leans, and
+        /// stays as Unity Physics has it.
+        /// </summary>
+        private bool Reaches(in MeshFace face, float3 point, float distance)
+        {
+            float3 path = (face.Linear + math.cross(face.Angular, point - face.CentreOfMass)) * DeltaTime;
+            if (math.length(path) <= distance)
+            {
+                return true;
+            }
+
+            float fraction = 1.0f;
+            if (RaycastQueries.RayTriangle(point, path, face.V0, face.V1, face.V2, ref fraction, out _))
+            {
+                return true;
+            }
+
+            fraction = 1.0f;
+            return face.Quad && RaycastQueries.RayTriangle(point, path, face.V0, face.V2, face.V3, ref fraction, out _);
         }
 
         /// <summary>

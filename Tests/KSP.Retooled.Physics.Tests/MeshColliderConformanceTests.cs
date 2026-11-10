@@ -85,6 +85,33 @@ namespace KSP.Retooled.Physics.Tests
                 new[] { 0, 1, 2, 0, 2, 3 });
         }
 
+        /// <summary>A flat floor facing +y, centred on the origin, of one metre squares of two triangles each.</summary>
+        private Mesh GridFloor(int cells)
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            float h = cells * 0.5f;
+            for (int z = 0; z <= cells; z++)
+            {
+                for (int x = 0; x <= cells; x++)
+                {
+                    vertices.Add(new Vector3(x - h, 0.0f, z - h));
+                }
+            }
+
+            for (int z = 0; z < cells; z++)
+            {
+                for (int x = 0; x < cells; x++)
+                {
+                    int corner = z * (cells + 1) + x;
+                    int above = corner + cells + 1;
+                    triangles.AddRange(new[] { corner, above, above + 1, corner, above + 1, corner + 1 });
+                }
+            }
+
+            return MeshOf(vertices.ToArray(), triangles.ToArray());
+        }
+
         private MeshCollider Collider(Mesh mesh, bool convex, Vector3 position = default)
         {
             GameObject gameObject = Track(new GameObject("mesh"));
@@ -636,6 +663,18 @@ namespace KSP.Retooled.Physics.Tests
             Rigidbody body = DynamicBox(new Vector3(0.0f, 1.0f, 0.0f));
 
             Simulate(150);
+
+            Assert.That(body.position.y, Is.EqualTo(0.5f).Within(0.05f));
+        }
+
+        [Test]
+        public void AFallingBoxStopsOnATriangleMesh()
+        {
+            Collider(GridFloor(20), false);
+            Rigidbody body = DynamicBox(new Vector3(0.3f, 3.0f, 0.3f));
+            body.linearVelocity = new Vector3(0.0f, -20.0f, 0.0f);
+
+            Simulate(100);
 
             Assert.That(body.position.y, Is.EqualTo(0.5f).Within(0.05f));
         }
