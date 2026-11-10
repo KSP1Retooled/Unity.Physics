@@ -218,6 +218,7 @@ namespace KSP.Retooled.Physics
 
             StoreOps.DetachAllShapes(body, globals);
             JointKernel.ForgetBody(world, body);
+            VehicleKernel.ForgetBody(world, body);
 
             NativeStore.BodyData* hot = world->bodies + body->index;
             BodyEntities.Release(hot);

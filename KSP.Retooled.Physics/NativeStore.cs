@@ -391,6 +391,102 @@ namespace KSP.Retooled.Physics
             private readonly uint reserved1;
         }
 
+        /// <summary>
+        /// The vehicle of a body with WheelColliders, followed in the same block by its wheel slots, which
+        /// <see cref="WheelsOf"/> finds. Defined here alone, like a joint, and kept on the plugin's heap so that it outlives a
+        /// domain reload; the world frees it with itself.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct VehicleData
+        {
+            public Body* body;
+            public uint wheelCount;
+            public uint implicitSprungMasses;
+            public uint expansionLimit;
+            public float substepSpeed;
+            public uint substepsBelow;
+            public uint substepsAbove;
+        }
+
+        internal static WheelSlot* WheelsOf(VehicleData* vehicle)
+        {
+            return (WheelSlot*)(vehicle + 1);
+        }
+
+        /// <summary>One wheel of a vehicle: what Unity set, and what the last step found under it.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct WheelSlot
+        {
+            public void* userData;
+
+            // What the last hit landed on, so that a shape going away can take the hit with it.
+            public Shape* hitShape;
+            public WheelQueryResult hit;
+            public WheelSuspension suspension;
+            public WheelBody wheel;
+
+            // From the body's centre of mass, along the body's axes: the wheel's centre at rest and where its force acts.
+            public float3 centreOffset;
+            public float3 forceOffset;
+
+            // The plugin API's FilterData as four words. The last holds the ignore id in its upper half.
+            public uint collidesWith;
+            public uint belongsTo;
+            public uint filterFlags;
+            public uint filterIds;
+
+            public float rotationSpeed;
+            public float motorTorque;
+            public float brakeTorque;
+            public float steerAngle;
+            public float rotationAngle;
+
+            // How far the wheel sits above its rest position, at most its maximum compression and at least minus its droop.
+            public float jounce;
+            public uint enabled;
+            public uint grounded;
+            public uint hasJounce;
+            private readonly uint reserved0;
+        }
+
+        /// <summary>Physics::PhysXExt::WheelQueryResult, whose layout Vehicle.cpp checks.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct WheelQueryResult
+        {
+            public float3 point;
+            public float3 normal;
+            public float3 forwardDir;
+            public float3 sidewaysDir;
+            public float force;
+            public float forwardSlip;
+            public float sidewaysSlip;
+            public float suspensionCompression;
+            public float steerAngle;
+            private readonly uint reserved0;
+            public void* userData;
+        }
+
+        /// <summary>Physics::PhysXExt::WheelSuspensionData.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct WheelSuspension
+        {
+            public float springStrength;
+            public float springDamperRate;
+            public float maxCompression;
+            public float maxDroop;
+            public float sprungMass;
+        }
+
+        /// <summary>Physics::PhysXExt::WheelData.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct WheelBody
+        {
+            public float radius;
+            public float mass;
+            public float momentOfInertia;
+            public float dampingRate;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         internal struct ContactPoint
         {
@@ -491,6 +587,10 @@ namespace KSP.Retooled.Physics
 
             public IntPtr owner;
             public QueryWorld* queryWorld;
+
+            public VehicleData** vehicles;
+            public uint vehicleCount;
+            public uint vehicleCapacity;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -645,6 +745,7 @@ namespace KSP.Retooled.Physics
             public IntPtr shapeCommand;
             public IntPtr worldCommand;
             public IntPtr jointCommand;
+            public IntPtr vehicleCommand;
         }
 
         [DllImport(Library)]
@@ -700,6 +801,7 @@ namespace KSP.Retooled.Physics
                 sizeof(JointBreak),
                 (int)JointCommand.Count,
                 sizeof(HeightField),
+                (int)VehicleCommand.Count,
             };
 
             string[] names =
@@ -724,6 +826,7 @@ namespace KSP.Retooled.Physics
                 nameof(JointBreak),
                 nameof(JointCommand),
                 nameof(HeightField),
+                nameof(VehicleCommand),
             };
 
             for (int i = 0; i < sizes.Length; i++)

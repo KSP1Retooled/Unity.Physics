@@ -66,6 +66,13 @@ namespace Retooled
         }
 
         std::free(world->data.joints);
+
+        // A vehicle is one block, its wheels included.
+        for (uint32_t i = 0; i < world->data.vehicleCount; i++)
+        {
+            std::free(world->data.vehicles[i]);
+        }
+
         std::free(world->data.jointBreaks);
         std::free(world->data.contactBodies);
         std::free(world->data.contactShapes);
@@ -74,6 +81,7 @@ namespace Retooled
         std::free(world->data.removedShapes);
         std::free(world->data.bodies);
         std::free(world->data.deadColliders);
+        std::free(world->data.vehicles);
         delete world;
     }
 

@@ -317,9 +317,15 @@ namespace Retooled
         World* owner;
         // What managed hands the query function, null while no built world can be read. Guarded by queryLock.
         void* queryWorld;
+
+        // The WheelColliders' vehicles, indexed by the id Unity holds, with null for a free id. VehicleKernel.cs writes the
+        // records, each one block on the store's heap, and the world frees them with itself.
+        void** vehicles;
+        uint32_t vehicleCount;
+        uint32_t vehicleCapacity;
     };
 
-    static_assert(sizeof(WorldData) == 184, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 200, "NativeStore.WorldData mirrors this layout");
 
     // Mirrored. What every world shares, and what a kernel needs from the plugin, which reaches it as function pointers
     // because a Burst function gets everything through its arguments.
@@ -485,9 +491,11 @@ namespace Retooled
         CommandKernel shapeCommand;
         CommandKernel worldCommand;
         CommandKernel jointCommand;
+        // Gets the world's data as the handle, because a vehicle command addresses its vehicle by id.
+        CommandKernel vehicleCommand;
     };
 
-    static_assert(sizeof(ManagedCallbacks) == 80, "NativeStore.ManagedCallbacks mirrors this layout");
+    static_assert(sizeof(ManagedCallbacks) == 88, "NativeStore.ManagedCallbacks mirrors this layout");
 
     // Mirrored up to references. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
     // code (see Mesh.cpp) or if finishing it failed. Managed works out a convex mesh's moments on first use and keeps them

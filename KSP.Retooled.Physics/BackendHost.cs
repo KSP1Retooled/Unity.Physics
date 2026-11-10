@@ -39,6 +39,7 @@ namespace KSP.Retooled.Physics
         private static IntPtr shapeCommandFunction;
         private static IntPtr worldCommandFunction;
         private static IntPtr jointCommandFunction;
+        private static IntPtr vehicleCommandFunction;
         private static bool attached;
         private static World entityWorld;
         private static long managedJobRuns;
@@ -127,6 +128,7 @@ namespace KSP.Retooled.Physics
                 shapeCommand = ShapeCommandFunction(),
                 worldCommand = WorldCommandFunction(),
                 jointCommand = JointCommandFunction(),
+                vehicleCommand = VehicleCommandFunction(),
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
@@ -289,6 +291,16 @@ namespace KSP.Retooled.Physics
             }
 
             return jointCommandFunction;
+        }
+
+        private static IntPtr VehicleCommandFunction()
+        {
+            if (vehicleCommandFunction == IntPtr.Zero)
+            {
+                vehicleCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(VehicleKernel.Run).Value;
+            }
+
+            return vehicleCommandFunction;
         }
 
         /// <summary>

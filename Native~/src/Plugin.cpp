@@ -238,6 +238,8 @@ namespace Retooled
                 return static_cast<int32_t>(PhysicsCommands::Joint::Count);
             case 19:
                 return sizeof(HeightField);
+            case 20:
+                return VehicleCommandCount();
             default:
                 return -1;
         }

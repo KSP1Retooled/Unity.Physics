@@ -218,8 +218,32 @@ namespace KSP.Retooled.Physics
                 // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside
                 // the trees and the overlaps, and only the dispatch pairs wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
-                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, BuildStaticTree, built, true);
+                JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, BuildStaticTree, built, true);
+                return ScheduleWheels(deltaTime, broadphase);
             }
+        }
+
+        /// <summary>
+        /// Drives the WheelColliders once their rays have a broadphase to hit, and before anything reads the velocities they
+        /// change. Everything after the build waits for it, so it only runs when there are wheels.
+        /// </summary>
+        private JobHandle ScheduleWheels(float deltaTime, JobHandle dependency)
+        {
+            if (store->vehicleCount == 0)
+            {
+                return dependency;
+            }
+
+            return new WheelJob
+            {
+                Store = store,
+                Globals = globals,
+                Collision = world.CollisionWorld,
+                MotionDatas = world.MotionDatas,
+                MotionVelocities = world.MotionVelocities,
+                BuiltIndices = builtIndices.AsArray(),
+                DeltaTime = deltaTime,
+            }.Schedule(dependency);
         }
 
         /// <summary>Drops the overlaps nothing will solve, then sorts what's left into islands.</summary>
