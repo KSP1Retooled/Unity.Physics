@@ -1,9 +1,12 @@
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using static Unity.Physics.Math;
+using PhysicsJoint = Unity.Physics.Joint;
 
 namespace KSP.Retooled.Physics
 {
@@ -18,6 +21,10 @@ namespace KSP.Retooled.Physics
     /// measured up from the rest position Unity sets through the target position. That is the force KSP's VehiclePhysics
     /// assumes when it picks a target position to cancel the sprung weight and reads its damping back out of the hit's
     /// force. Tyre friction is left to the game, which sets every curve's stiffness to zero.
+    ///
+    /// A suspension pressed past its full compression stops there, and what more the body asks of it is held by a limit the
+    /// solver keeps, between the body and the world, as PhysX holds it. The hit's force leaves that out, so a wheel that
+    /// bottoms out reports no more than the spring gives, which is what the game's tyres grip with.
     /// </remarks>
     [BurstCompile]
     internal unsafe struct WheelJob : IJob
@@ -44,6 +51,12 @@ namespace KSP.Retooled.Physics
 
         [ReadOnly]
         public NativeArray<int> BuiltIndices;
+
+        /// <summary>The step's joints, which the limits of bottomed out suspensions join for this step only.</summary>
+        public NativeList<PhysicsJoint> Joints;
+
+        /// <summary>The built world's static body at the origin that stands for the world in a joint.</summary>
+        public int AnchorIndex;
 
         public float DeltaTime;
 
@@ -122,7 +135,8 @@ namespace KSP.Retooled.Physics
             }
 
             RaycastHit hit = collector.Closest;
-            float jounce = math.clamp(suspension.maxCompression - (hit.Fraction * length - radius), -suspension.maxDroop, suspension.maxCompression);
+            float reach = suspension.maxCompression - (hit.Fraction * length - radius);
+            float jounce = math.clamp(reach, -suspension.maxDroop, suspension.maxCompression);
             // The damper works on how fast the body closes on the ground at the start of the step, along the ground's normal,
             // so that rolling across it counts for nothing however the body leans. A rate taken from the jounce two steps apart
             // also counts the solver pulling joints back into place as suspension travel, which on a light wheel part hanging
@@ -131,6 +145,13 @@ namespace KSP.Retooled.Physics
             float3 own = vehicle->startLinear + math.cross(vehicle->startAngular, hit.Position - centreOfMass);
             float3 contactVelocity = own - VelocityAt(hit.RigidBodyIndex, hit.Position);
             float jounceSpeed = -math.dot(contactVelocity, normal) / math.max(math.dot(up, normal), 0.1f);
+            bool bottomedOut = reach > suspension.maxCompression;
+            if (bottomedOut)
+            {
+                // Past the stop the spring travels no further, so the damper only sees what travel was left of it.
+                jounceSpeed = math.min(jounceSpeed, (suspension.maxCompression - wheel->jounce) / DeltaTime);
+            }
+
             float force = math.max(suspension.sprungMass * gravity + suspension.springStrength * jounce + suspension.springDamperRate * jounceSpeed, 0.0f);
             wheel->jounce = jounce;
             wheel->grounded = 1;
@@ -163,12 +184,38 @@ namespace KSP.Retooled.Physics
             {
                 float3 point = centreOfMass + math.rotate(pose.rot, wheel->forceOffset);
                 Push(built, point, impulse);
+                if (bottomedOut)
+                {
+                    HoldAtFullCompression(built, pose, top, up, reach - suspension.maxCompression);
+                }
             }
 
             if (hit.RigidBodyIndex < MotionVelocities.Length && MotionVelocities[hit.RigidBodyIndex].InverseMass > 0.0f)
             {
                 Push(hit.RigidBodyIndex, hit.Position, -impulse);
             }
+        }
+
+        /// <summary>
+        /// Keeps the top of the suspension at least a wheel's radius above the ground along the suspension, which is where
+        /// it sits at full compression, with a one-sided limit against the world. <paramref name="excess"/> is how far past
+        /// that the body already is.
+        /// </summary>
+        private void HoldAtFullCompression(int built, RigidTransform pose, float3 top, float3 up, float excess)
+        {
+            float3 side = math.normalize(math.cross(up, math.abs(up.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
+            var alongUp = new float3x3(up, side, math.cross(up, side));
+
+            var joint = new PhysicsJoint
+            {
+                BodyPair = new BodyIndexPair { BodyIndexA = built, BodyIndexB = AnchorIndex },
+                AFromJoint = new MTransform(float3x3.identity, math.transform(math.inverse(pose), top)),
+                BFromJoint = new MTransform(alongUp, top + up * excess),
+                Entity = Entity.Null,
+            };
+            ((Constraint*)UnsafeUtility.AddressOf(ref joint.Constraints))[0] = Constraint.Planar(0, new FloatRange(0.0f, float.MaxValue));
+            joint.Constraints.Length = 1;
+            Joints.Add(joint);
         }
 
         /// <summary>

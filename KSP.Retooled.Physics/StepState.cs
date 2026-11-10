@@ -220,22 +220,23 @@ namespace KSP.Retooled.Physics
                 // the trees and the overlaps, and only the dispatch pairs wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
                 JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, BuildStaticTree, built, true);
-                return ScheduleWheels(deltaTime, broadphase);
+                return ScheduleWheels(deltaTime, broadphase, joints);
             }
         }
 
         /// <summary>
         /// Drives the WheelColliders once their rays have a broadphase to hit, and before anything reads the velocities they
-        /// change. Everything after the build waits for it, so it only runs when there are wheels.
+        /// change. Everything after the build waits for it, so it only runs when there are wheels. The wheels add the limits
+        /// of their suspensions to the joints, so whatever waited on the joints waits on the wheels too.
         /// </summary>
-        private JobHandle ScheduleWheels(float deltaTime, JobHandle dependency)
+        private JobHandle ScheduleWheels(float deltaTime, JobHandle broadphase, JobHandle joints)
         {
-            if (store->vehicleCount == 0)
+            if (store->vehicleCount == 0 || deltaTime <= 0.0f)
             {
-                return dependency;
+                return broadphase;
             }
 
-            return new WheelJob
+            JobHandle wheels = new WheelJob
             {
                 Store = store,
                 Globals = globals,
@@ -243,8 +244,12 @@ namespace KSP.Retooled.Physics
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
                 BuiltIndices = builtIndices.AsArray(),
+                Joints = world.DynamicsWorld.InternalJointsList,
+                AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                 DeltaTime = deltaTime,
-            }.Schedule(dependency);
+            }.Schedule(JobHandle.CombineDependencies(broadphase, joints));
+            world.DynamicsWorld.JointsBuilt = wheels;
+            return wheels;
         }
 
         /// <summary>Drops the overlaps nothing will solve, then sorts what's left into islands.</summary>

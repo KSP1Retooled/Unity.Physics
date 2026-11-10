@@ -66,6 +66,25 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void ABottomedOutSuspensionHoldsItsBodyButReportsOnlyTheSpring()
+        {
+            Ground();
+            (Rigidbody body, WheelCollider wheel) = Unicycle();
+
+            // Far more than the spring can hold at full compression, which is the sprung weight plus the spring there.
+            for (int i = 0; i < 200; i++)
+            {
+                body.AddForce(Vector3.down * 10000.0f);
+                Simulate();
+            }
+
+            // The body stops with the wheel at the top of its travel, well short of its box touching the ground.
+            Assert.That(body.position.y, Is.EqualTo(0.2f + Radius).Within(0.01f));
+            Assert.IsTrue(wheel.GetGroundHit(out WheelHit hit));
+            Assert.That(hit.force, Is.EqualTo(100.0f * 9.81f + 35000.0f * Travel * 0.5f).Within(50.0f));
+        }
+
+        [Test]
         public void AWheelReportsTheGroundUnderIt()
         {
             GameObject ground = Ground();
