@@ -17,14 +17,17 @@ namespace KSP.Retooled.Physics
     /// before anything solves. One job for all of them, because a wheel can push a body another wheel pushes too.
     /// </summary>
     /// <remarks>
-    /// The suspension force is <c>sprungMass * g + spring * jounce + damper * jounceSpeed</c>, never pulling, with the jounce
+    /// The suspension force is <c>max(sprungMass * g + spring * jounce, 0) + damper * jounceSpeed</c>, with the jounce
     /// measured up from the rest position Unity sets through the target position. That is the force KSP's VehiclePhysics
     /// assumes when it picks a target position to cancel the sprung weight and reads its damping back out of the hit's
-    /// force. Tyre friction is left to the game, which sets every curve's stiffness to zero.
+    /// force. As in PhysX only the spring stops at zero: an extending damper pulls the body down, which keeps a landing
+    /// aircraft on its wheels. Tyre friction is left to the game, which sets every curve's stiffness to zero.
     ///
-    /// A suspension pressed past its full compression stops there, and what more the body asks of it is held by a limit the
-    /// solver keeps, between the body and the world, as PhysX holds it. The hit's force leaves that out, so a wheel that
-    /// bottoms out reports no more than the spring gives, which is what the game's tyres grip with.
+    /// A suspension stops at its full compression, and what more the body asks of it is held by a limit the solver keeps,
+    /// between the body and the world, as PhysX holds it. The limit joins the step the suspension would bottom out in, at
+    /// the stop itself, so the solver stops the body there; a limit that only pushes the body back out once it is past
+    /// leaves it rising at the speed it was pushed with. The hit's force leaves the limit out, so a wheel that bottoms out
+    /// reports no more than the spring gives, which is what the game's tyres grip with.
     /// </remarks>
     [BurstCompile]
     internal unsafe struct WheelJob : IJob
@@ -145,14 +148,15 @@ namespace KSP.Retooled.Physics
             float3 own = vehicle->startLinear + math.cross(vehicle->startAngular, hit.Position - centreOfMass);
             float3 contactVelocity = own - VelocityAt(hit.RigidBodyIndex, hit.Position);
             float jounceSpeed = -math.dot(contactVelocity, normal) / math.max(math.dot(up, normal), 0.1f);
-            bool bottomedOut = reach > suspension.maxCompression;
-            if (bottomedOut)
+            bool bottomingOut = reach + math.max(jounceSpeed, 0.0f) * DeltaTime > suspension.maxCompression;
+            if (reach > suspension.maxCompression)
             {
                 // Past the stop the spring travels no further, so the damper only sees what travel was left of it.
                 jounceSpeed = math.min(jounceSpeed, (suspension.maxCompression - wheel->jounce) / DeltaTime);
             }
 
-            float force = math.max(suspension.sprungMass * gravity + suspension.springStrength * jounce + suspension.springDamperRate * jounceSpeed, 0.0f);
+            float force = math.max(suspension.sprungMass * gravity + suspension.springStrength * jounce, 0.0f)
+                + suspension.springDamperRate * jounceSpeed;
             wheel->jounce = jounce;
             wheel->grounded = 1;
             wheel->hitShape = collector.Shape->owner;
@@ -184,9 +188,9 @@ namespace KSP.Retooled.Physics
             {
                 float3 point = centreOfMass + math.rotate(pose.rot, wheel->forceOffset);
                 Push(built, point, impulse);
-                if (bottomedOut)
+                if (bottomingOut)
                 {
-                    HoldAtFullCompression(built, pose, top, up, reach - suspension.maxCompression);
+                    HoldAtFullCompression(built, pose, top, up, normal, reach - suspension.maxCompression);
                 }
             }
 
@@ -199,18 +203,24 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Keeps the top of the suspension at least a wheel's radius above the ground along the suspension, which is where
         /// it sits at full compression, with a one-sided limit against the world. <paramref name="excess"/> is how far past
-        /// that the body already is.
+        /// that the body already is, and less than zero while it still has that much travel left.
         /// </summary>
-        private void HoldAtFullCompression(int built, RigidTransform pose, float3 top, float3 up, float excess)
+        /// <remarks>
+        /// The limit works along the ground's normal. A bottomed-out wheel bears on the ground like any contact, and along a
+        /// leaning suspension a body rolling over the ground would close on the world anchor or leave it at a share of its
+        /// speed: an aircraft touching down nose up at 100 m/s would be thrown off the runway, and one nose down would sink
+        /// through the stop.
+        /// </remarks>
+        private void HoldAtFullCompression(int built, RigidTransform pose, float3 top, float3 up, float3 normal, float excess)
         {
-            float3 side = math.normalize(math.cross(up, math.abs(up.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
-            var alongUp = new float3x3(up, side, math.cross(up, side));
+            float3 side = math.normalize(math.cross(normal, math.abs(normal.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
+            var alongNormal = new float3x3(normal, side, math.cross(normal, side));
 
             var joint = new PhysicsJoint
             {
                 BodyPair = new BodyIndexPair { BodyIndexA = built, BodyIndexB = AnchorIndex },
                 AFromJoint = new MTransform(float3x3.identity, math.transform(math.inverse(pose), top)),
-                BFromJoint = new MTransform(alongUp, top + up * excess),
+                BFromJoint = new MTransform(alongNormal, top + up * excess),
                 Entity = Entity.Null,
             };
             ((Constraint*)UnsafeUtility.AddressOf(ref joint.Constraints))[0] = Constraint.Planar(0, new FloatRange(0.0f, float.MaxValue));

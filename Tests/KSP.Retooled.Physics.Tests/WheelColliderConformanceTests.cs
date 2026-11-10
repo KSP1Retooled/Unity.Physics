@@ -84,6 +84,32 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(hit.force, Is.EqualTo(100.0f * 9.81f + 35000.0f * Travel * 0.5f).Within(50.0f));
         }
 
+        [TestCase(40.0f)]
+        [TestCase(-40.0f)]
+        public void ALeaningBodyLandingHardWhileRollingStopsAtFullCompression(float speed)
+        {
+            Box(new Vector3(0.0f, -0.5f, 0.0f), new Vector3(20.0f, 1.0f, 600.0f));
+            (Rigidbody body, WheelCollider wheel) = Unicycle(1.2f);
+            // Heavy enough to bottom the suspension out, and leaning like an aircraft touching down nose up.
+            body.mass = 5000.0f;
+            body.transform.rotation = Quaternion.Euler(-5.0f, 0.0f, 0.0f);
+            body.linearVelocity = new Vector3(0.0f, -4.0f, speed);
+
+            float lowest = float.MaxValue;
+            float fastestUp = 0.0f;
+            for (int i = 0; i < 30; i++)
+            {
+                Simulate();
+                lowest = Mathf.Min(lowest, body.position.y);
+                fastestUp = Mathf.Max(fastestUp, body.linearVelocity.y);
+            }
+
+            // Rolling either way, the stop holds the body where the wheel bottoms out, without throwing it back up.
+            Assert.IsTrue(wheel.isGrounded);
+            Assert.That(lowest, Is.EqualTo(0.2f + Radius).Within(0.02f));
+            Assert.That(fastestUp, Is.LessThan(1.0f));
+        }
+
         [Test]
         public void AWheelReportsTheGroundUnderIt()
         {
