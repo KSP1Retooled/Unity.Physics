@@ -26,7 +26,12 @@ namespace KSP.Retooled.Physics
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
-        private NativeReference<int> staticsChanged;
+
+        // The static tree's jobs read whether to rebuild from one of these, and neither is ever written again, so a build never
+        // writes to a container that those jobs may still hold.
+        private NativeReference<int> rebuildStatics;
+        private NativeReference<int> keepStatics;
+        private bool staticsChanged;
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
@@ -72,7 +77,8 @@ namespace KSP.Retooled.Physics
             this.globals = globals;
             this.query = query;
             world = new PhysicsWorld(0, 0, 0);
-            staticsChanged = new NativeReference<int>(1, Allocator.Persistent);
+            rebuildStatics = new NativeReference<int>(1, Allocator.Persistent);
+            keepStatics = new NativeReference<int>(0, Allocator.Persistent);
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
@@ -119,7 +125,8 @@ namespace KSP.Retooled.Physics
 
             store->queryDirty = 1;
             world.Dispose();
-            staticsChanged.Dispose();
+            rebuildStatics.Dispose();
+            keepStatics.Dispose();
             dynamicIndices.Dispose();
             staticIndices.Dispose();
             builtIndices.Dispose();
@@ -158,7 +165,9 @@ namespace KSP.Retooled.Physics
         /// <summary>The built world, which the simulation's systems step.</summary>
         internal readonly PhysicsWorld World => world;
 
-        internal readonly int StaticsChanged => staticsChanged.Value;
+        internal readonly int StaticsChanged => staticsChanged ? 1 : 0;
+
+        private readonly NativeReference<int>.ReadOnly BuildStaticTree => (staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
 
         /// <summary>The settings the simulation's systems build their step input from.</summary>
         internal readonly PhysicsStep Settings
@@ -209,7 +218,7 @@ namespace KSP.Retooled.Physics
                 // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside
                 // the trees and the overlaps, and only the dispatch pairs wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
-                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, staticsChanged.AsReadOnly(), built, true);
+                return world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, BuildStaticTree, built, true);
             }
         }
 
@@ -501,7 +510,7 @@ namespace KSP.Retooled.Physics
 
             JobHandle colliders = RefreshColliders(default);
             JobHandle built = Build(0.0f, colliders, out _);
-            JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, staticsChanged.AsReadOnly(), built, true);
+            JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, BuildStaticTree, built, true);
             ScheduleQuerySnapshot(broadphase).Complete();
             PublishQueryWorld();
         }
@@ -513,7 +522,7 @@ namespace KSP.Retooled.Physics
         private void PoseStatics()
         {
             builtStaticsVersion = store->staticsVersion;
-            staticsChanged.Value = 1;
+            staticsChanged = true;
             JobHandle posed = new PoseStaticsJob
             {
                 Store = store->bodies,
@@ -521,7 +530,7 @@ namespace KSP.Retooled.Physics
                 StaticBodies = world.StaticBodies,
             }.Schedule(staticIndices.Length, ParallelBatchSize, default);
 
-            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, staticsChanged.AsReadOnly(), posed, true).Complete();
+            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, BuildStaticTree, posed, true).Complete();
         }
 
         /// <summary>
@@ -654,8 +663,7 @@ namespace KSP.Retooled.Physics
 
                 // The static tree numbers the statics among themselves, and queries and pair finding add the dynamic count,
                 // so only the statics decide whether it is built again.
-                bool changed = !builtWhole || store->staticsVersion != builtStaticsVersion;
-                staticsChanged.Value = changed ? 1 : 0;
+                staticsChanged = !builtWhole || store->staticsVersion != builtStaticsVersion;
                 builtStaticsVersion = store->staticsVersion;
                 builtWhole = false;
 
