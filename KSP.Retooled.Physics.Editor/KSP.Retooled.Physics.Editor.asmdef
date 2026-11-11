@@ -1,0 +1,23 @@
+{
+    "name": "KSP.Retooled.Physics.Editor",
+    "rootNamespace": "KSP.Retooled.Physics.Editor",
+    "references": [
+        "KSP.Retooled.Physics",
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Entities",
+        "Unity.Mathematics",
+        "Unity.Physics"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
