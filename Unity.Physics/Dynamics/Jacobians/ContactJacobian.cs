@@ -456,6 +456,13 @@ namespace Unity.Physics
                 float dv = CalculateRelativeVelocityAlongNormal(tempVelocityA, tempVelocityB, ref jacAngular, BaseJacobian.Normal,
                     out float relativeVelocity);
 
+                // A relaxing contact only stops the bodies closing: its push has already moved them apart. A bounce is real
+                // velocity, so a contact with restitution keeps its target.
+                if (stepInput.Relaxing && CoefficientOfRestitution == 0.0f)
+                {
+                    dv = math.min(jacAngular.VelToReachCp, 0.0f) - relativeVelocity;
+                }
+
                 // Required check for substepping because having a contact is not guaranteed. Need to check if the
                 // contact point has been reached this step (when ContactDistance<=0), otherwise, need to ensure that
                 // no impulse will be applied
@@ -494,8 +501,8 @@ namespace Unity.Physics
                 ExportCollisionEvent(SumImpulsesOverSubsteps, ref jacHeader, ref collisionEventsWriter);
             }
 
-            // Solve friction
-            if (sumImpulses > 0.0f)
+            // Solve friction. Each iteration spends a share of it, so a relaxing one, which only takes back a push, spends none.
+            if (sumImpulses > 0.0f && !stepInput.Relaxing)
             {
                 // Choose friction axes
                 Math.CalculatePerpendicularNormalized(BaseJacobian.Normal, out float3 frictionDir0, out float3 frictionDir1);

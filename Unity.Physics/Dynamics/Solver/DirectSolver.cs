@@ -976,6 +976,13 @@ namespace Unity.Physics
         const float ContactRecovery = 0.2f;
 
         /// <summary>
+        /// How deep a contact may sit and still be pushed out by velocity alone. Resting contacts sit a little way in under
+        /// their load, and pushing them out with velocity keeps the set of touching contacts steady from one substep to the
+        /// next. Deeper than this, the rest of the push moves the bodies without speeding them up, see <see cref="SolvePushOut"/>.
+        /// </summary>
+        const float ContactSlop = 0.01f;
+
+        /// <summary>
         /// A contact's compliance against the inverse mass that its row moves. A stack resting on a light part presses that
         /// part's contact with the weight of the stack, so this has to stay small next to the part's own inverse mass, but
         /// some is needed to make the forces of several contacts on one face unique.
@@ -1232,6 +1239,7 @@ namespace Unity.Physics
         static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Setup");
         static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.BuildRows");
         static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.ApplyImpulses");
+        static readonly ProfilerMarker PushOutMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.PushOut");
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
@@ -1242,7 +1250,7 @@ namespace Unity.Physics
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
             int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
-            int* headerRows = null, int headerCount = 0)
+            int* headerRows = null, int headerCount = 0, float* recovery = null)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1406,6 +1414,11 @@ namespace Unity.Physics
             {
                 ApplySparseImpulses(problem, kept, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
                     contactPairs > 0, team);
+                if (recovery != null)
+                {
+                    SolvePushOut(problem, setup.WorldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
+                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
+                }
             }
 
             kept->Team = null;
@@ -1840,6 +1853,107 @@ namespace Unity.Physics
             worldBodies.Dispose();
         }
 
+        /// <summary>
+        /// Moves the bodies of a solve by the push-out of its deep contacts, without speeding them up. PhysX moves
+        /// penetrating bodies apart in its position iterations and takes that speed back in its velocity iterations, so a
+        /// part driven into the ground comes out without being thrown: as velocity, the push of a deep contact would throw a
+        /// wreck tens of metres a second. The push is a problem of its own, solved by a solver of its own so that the kept
+        /// one goes on into the next substep as it was: contacts push and don't pull, friction holds nothing, and joints
+        /// carry the push to the bodies jointed to the ones pushed. Only a substep with a deep contact pays for it.
+        /// </summary>
+        static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, in NativeList<int> worldBodies,
+            float* recovery, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
+            float timestep, float fastest)
+        {
+            int rows = problem.RowCount;
+            bool pushing = false;
+            for (int row = 0; row < rows && !pushing; row++)
+            {
+                pushing = recovery[row] > 0.0f;
+            }
+
+            if (!pushing)
+            {
+                return;
+            }
+
+            using ProfilerMarker.AutoScope span = PushOutMarker.Auto();
+
+            var values = new NativeArray<float>(rows * 4, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            float* rightHandSide = (float*)values.GetUnsafePtr();
+            float* lower = rightHandSide + rows;
+            float* upper = lower + rows;
+            float* push = upper + rows;
+            for (int row = 0; row < rows; row++)
+            {
+                bool contact = recovery[row] >= 0.0f;
+                rightHandSide[row] = contact ? recovery[row] : 0.0f;
+                lower[row] = contact ? 0.0f : problem.Lower[row];
+                upper[row] = problem.Upper[row];
+            }
+
+            for (int coupling = 0; coupling < problem.CouplingCount; coupling++)
+            {
+                SparseConstraintSolver.Coupling friction = problem.Couplings[coupling];
+                for (int row = friction.FirstRow; row < friction.FirstRow + friction.RowCount; row++)
+                {
+                    lower[row] = 0.0f;
+                    upper[row] = 0.0f;
+                }
+            }
+
+            SparseConstraintSolver.Problem pushOut = problem;
+            pushOut.RightHandSide = rightHandSide;
+            pushOut.Lower = lower;
+            pushOut.Upper = upper;
+            pushOut.InitialStates = null;
+            pushOut.CouplingCount = 0;
+            pushOut.Couplings = null;
+
+            // A push that pivoting couldn't settle is left for the next substep, which finds the penetration again: its impulses,
+            // clamped to their bounds, would move bodies metres at once.
+            var solver = new SparseConstraintSolver(Allocator.Temp);
+            bool solved = solver.Solve(pushOut, push, true);
+            if (!solved)
+            {
+                solver.Dispose();
+                values.Dispose();
+                return;
+            }
+
+            // Contacts that wedge a body push it hard along whatever way out they leave, faster than any one of them asks.
+            // Scaling the whole push, not each body's, keeps jointed bodies where their joints hold them.
+            var datas = (MotionData*)motionDatas.GetUnsafePtr();
+            var linears = new NativeArray<float3>(worldBodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var spins = new NativeArray<float3>(worldBodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            float fastestPoint = 0.0f;
+            for (int compact = 0; compact < worldBodies.Length; compact++)
+            {
+                int body = worldBodies[compact];
+                MotionVelocity velocity = motionVelocities[body];
+                solver.BodyImpulse(pushOut, push, compact, out float3 linear, out float3 angular);
+
+                // An angular impulse acts in motion space, the body's own frame.
+                linears[compact] = linear * velocity.InverseMass;
+                spins[compact] = math.rotate(math.conjugate(datas[body].WorldFromMotion.rot), angular) * velocity.InverseInertia;
+                float speed = math.length(linears[compact]) + math.length(spins[compact]) * velocity.AngularExpansionFactor;
+                fastestPoint = math.max(fastestPoint, speed);
+            }
+
+            float scale = fastestPoint > fastest ? fastest / fastestPoint : 1.0f;
+            for (int compact = 0; compact < worldBodies.Length; compact++)
+            {
+                ref RigidTransform pose = ref datas[worldBodies[compact]].WorldFromMotion;
+                pose.pos += linears[compact] * (scale * timestep);
+                Integrator.IntegrateOrientation(ref pose.rot, spins[compact] * scale, timestep);
+            }
+
+            linears.Dispose();
+            spins.Dispose();
+            solver.Dispose();
+            values.Dispose();
+        }
+
         const int BodiesPerApplyTask = 64;
 
         /// <summary>What applying a sparse solve's impulses reads and writes, shared by the lanes that split it.</summary>
@@ -1918,6 +2032,11 @@ namespace Unity.Physics
             public Vector L;
             public Vector U;
             public Vector RightHandSide;
+
+            // Where a sparse solve keeps the push-out of each contact row that it moves bodies by rather than speeding them up,
+            // and -1 on rows that aren't contacts. Null where every push-out is velocity.
+            public float* Recovery;
+
             public NativeArray<LCP.MLCPIndexFlag> IndexSetArray;
             public NativeList<LCP.CouplingData> CouplingDataArray;
             public bool IsLCP;
@@ -2818,6 +2937,24 @@ namespace Unity.Physics
                                                 bodyAIsStatic || bodyAIsKinematic, bodyBIsStatic || bodyBIsKinematic,
                                                 stepInput.Timestep, out epsilon);
                                             eps[normalRow] = epsilon;
+                                            if (context.Recovery != null)
+                                            {
+                                                bool againstFixed = bodyAIsStatic || bodyAIsKinematic || bodyBIsStatic || bodyBIsKinematic;
+                                                float fastest = againstFixed
+                                                    ? stepInput.MaxStaticDepenetrationVelocity
+                                                    : stepInput.MaxDynamicDepenetrationVelocity;
+                                                // Below the slop the velocity solve recovers only the slop's worth, however deep
+                                                // the contact: the depth the capped push-out leaves comes out in later substeps.
+                                                float pushOut = 0.0f;
+                                                if (phi_0 < -ContactSlop)
+                                                {
+                                                    float held = (ContactRecovery / stepInput.Timestep) * ContactSlop;
+                                                    pushOut = math.min(gamma_phi_0 - held, fastest);
+                                                    gamma_phi_0 = held;
+                                                }
+
+                                                context.Recovery[normalRow] = pushOut;
+                                            }
                                         }
 
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)

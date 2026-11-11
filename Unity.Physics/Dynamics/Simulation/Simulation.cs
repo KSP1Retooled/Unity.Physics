@@ -378,7 +378,11 @@ namespace Unity.Physics
                 DirectSolverSettings = input.DirectSolverSettings,
                 DirectSolverCache = input.DirectSolverCache,
                 CurrentSubstep = -1,
-                CurrentSolverIteration = -1
+                CurrentSolverIteration = -1,
+                MaxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity > 0
+                    ? input.MaxStaticDepenetrationVelocity : SimulationStepInput.DefaultMaxStaticDepenetrationVelocity,
+                MaxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity > 0
+                    ? input.MaxDynamicDepenetrationVelocity : SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
             };
 
             // Event streams are sized by SimulationContext.Reset and must not be reallocated here,
@@ -648,7 +652,11 @@ namespace Unity.Physics
                 DirectSolverSettings = input.DirectSolverSettings,
                 DirectSolverCache = input.DirectSolverCache,
                 CurrentSubstep = -1,
-                CurrentSolverIteration = -1
+                CurrentSolverIteration = -1,
+                MaxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity > 0
+                    ? input.MaxStaticDepenetrationVelocity : SimulationStepInput.DefaultMaxStaticDepenetrationVelocity,
+                MaxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity > 0
+                    ? input.MaxDynamicDepenetrationVelocity : SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
             };
 
             if (solvesByIsland)

@@ -13,6 +13,12 @@ namespace Unity.Physics
     public static partial class Solver
     {
         /// <summary>
+        /// How many iterations take the push back out of the iteratively solved pairs' velocities. Those pairs are loose bodies,
+        /// which a few iterations settle.
+        /// </summary>
+        const int RelaxIterations = 4;
+
+        /// <summary>
         /// One step of every island, in a fixed set of jobs that find out how much work they have when they start, which leaves
         /// nothing for the main thread to wait for. The islands that fit in phases run their iterations phase by phase, and the
         /// bodies they hold integrate after them. The direct islands run each substep as a chain of jobs, with the Jacobians
@@ -58,6 +64,31 @@ namespace Unity.Physics
 
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
+
+            // With the positions moved by the contacts' push, a few more iterations take the push back out of the velocities,
+            // as PhysX's velocity iterations do after its position iterations. Events were exported with the step's impulses.
+            StepInput relaxing = stepInput;
+            relaxing.Relaxing = true;
+            relaxing.DisableExportEvents = true;
+            for (int iteration = 0; iteration < RelaxIterations; iteration++)
+            {
+                // Past the step's own iterations, so that none of them counts as its first or last.
+                relaxing.CurrentSolverIteration = stepInput.NumSolverIterations + iteration;
+                for (int phase = 0; phase < DispatchPairSequencer.NumIslandPhases; phase++)
+                {
+                    var job = new ParallelIterativeSolverJob
+                    {
+                        JacobiansReader = jacobians.AsReader(),
+                        PhaseIndex = phase,
+                        IterativeSolverSchedulerInfo = iterativePairs,
+                        MotionVelocities = motionVelocities,
+                        SolverStabilizationData = solverStabilizationData,
+                        stepInput = relaxing
+                    };
+
+                    iterativeHandle = SchedulePhase(job, iterativePairs, phase, workItemsPerBatch, iterativeHandle);
+                }
+            }
 
             JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
                 solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps);
@@ -225,6 +256,13 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Lower;
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Upper;
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* RightHandSide;
+
+            /// <summary>
+            /// The push-out of each contact row that moves bodies rather than speeding them up, and -1 on rows that aren't
+            /// contacts.
+            /// </summary>
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Recovery;
+
             [NativeDisableUnsafePtrRestriction] public UnsafeList<LCP.MLCPIndexFlag>* IndexFlags;
 
             /// <summary> Per island, 1 once any of its rows has a bound, which makes its solve a bounded one. </summary>
@@ -243,6 +281,7 @@ namespace Unity.Physics
                 Lower = UnsafeList<float>.Create(0, allocator);
                 Upper = UnsafeList<float>.Create(0, allocator);
                 RightHandSide = UnsafeList<float>.Create(0, allocator);
+                Recovery = UnsafeList<float>.Create(0, allocator);
                 IndexFlags = UnsafeList<LCP.MLCPIndexFlag>.Create(0, allocator);
                 Bounded = UnsafeList<int>.Create(0, allocator);
             }
@@ -254,6 +293,7 @@ namespace Unity.Physics
                 Lower->Resize(rows);
                 Upper->Resize(rows);
                 RightHandSide->Resize(rows);
+                Recovery->Resize(rows);
                 IndexFlags->Resize(rows);
             }
 
@@ -286,6 +326,7 @@ namespace Unity.Physics
                 UnsafeList<float>.Destroy(Lower);
                 UnsafeList<float>.Destroy(Upper);
                 UnsafeList<float>.Destroy(RightHandSide);
+                UnsafeList<float>.Destroy(Recovery);
                 UnsafeList<LCP.MLCPIndexFlag>.Destroy(IndexFlags);
                 UnsafeList<int>.Destroy(Bounded);
                 UnsafeList<SparseSolveTeam>.Destroy(Teams);
@@ -494,6 +535,7 @@ namespace Unity.Physics
                     (*Work.Lower)[row] = float.MinValue;
                     (*Work.Upper)[row] = float.MaxValue;
                     (*Work.IndexFlags)[row] = LCP.MLCPIndexFlag.Free;
+                    (*Work.Recovery)[row] = -1.0f;
                 }
 
                 var context = new RowBuildContext
@@ -506,6 +548,7 @@ namespace Unity.Physics
                     L = DirectIslandBuffers.View(Work.Lower, island),
                     U = DirectIslandBuffers.View(Work.Upper, island),
                     RightHandSide = DirectIslandBuffers.View(Work.RightHandSide, island),
+                    Recovery = Work.Recovery->Ptr + island.FirstRow,
                     IndexSetArray = Work.Flags(island),
                     SparseContacts = island.ContactPairs > 0,
                     SolveSparsely = true,
@@ -640,7 +683,7 @@ namespace Unity.Physics
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
                         (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,
                         (IslandHeader*)headers.GetUnsafeReadOnlyPtr() + island.FirstHeader, work.HeaderRows->Ptr + island.FirstHeader,
-                        island.SolveEnd - island.FirstHeader);
+                        island.SolveEnd - island.FirstHeader, work.Recovery->Ptr + island.FirstRow);
                 }
             }
         }

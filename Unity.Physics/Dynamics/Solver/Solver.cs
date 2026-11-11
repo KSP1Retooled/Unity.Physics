@@ -201,6 +201,16 @@ namespace Unity.Physics
             /// <summary> Disable exporting events (TriggerEvents, CollisionEvents or ImpulseEvents). Default is false. </summary>
             public bool DisableExportEvents;
 
+            /// <summary> The fastest contacts push apart penetrating bodies when one of them is static, and when both move. </summary>
+            public float MaxStaticDepenetrationVelocity;
+            public float MaxDynamicDepenetrationVelocity;
+
+            /// <summary>
+            /// Set for the iterations after positions are integrated, which take penetrating contacts' push back out of the
+            /// velocities: the push has moved the bodies, and kept as velocity it would throw them.
+            /// </summary>
+            public bool Relaxing;
+
             public bool IsLastSubstep => CurrentSubstep == NumSubsteps - 1;
             public bool IsFirstSolverIteration => CurrentSolverIteration == 0;
             public bool IsLastSolverIteration => CurrentSolverIteration == NumSolverIterations - 1;
@@ -1618,6 +1628,12 @@ namespace Unity.Physics
                     motionVelocities[header.BodyPair.BodyIndexA] : MotionVelocity.Zero;
                 MotionVelocity velocityB = header.BodyPair.BodyIndexB < motionVelocities.Length ?
                     motionVelocities[header.BodyPair.BodyIndexB] : MotionVelocity.Zero;
+
+                // Relaxing takes back contacts' push and leaves every other constraint as the step's iterations solved it.
+                if (stepInput.Relaxing && header.Type != JacobianType.Contact)
+                {
+                    continue;
+                }
 
                 // For Contacts Only: Populate the Solver stabilization data
                 if (solverStabilizationData.StabilizationHeuristicSettings.EnableSolverStabilization
