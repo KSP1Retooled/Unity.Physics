@@ -812,8 +812,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Starts each contact from most of the normal impulse it ended the last step on, spread evenly over its points, as the
-    /// events only give a manifold's total. Unity Physics solves friction in every iteration from the first, and a cold start
+    /// Starts each contact from most of the normal impulse it ended the last step on, spread evenly over its points near
+    /// enough to touch, as the events only give a manifold's total. Unity Physics solves friction in every iteration from the first, and a cold start
     /// has the points of a manifold pulling the bodies about for most of the iterations, which friction takes for slipping
     /// and spends itself on. A body on another dynamic body then keeps whatever slip that leaves, step after step.
     /// </summary>
@@ -822,6 +822,11 @@ namespace KSP.Retooled.Physics
     {
         // Less than all of it, because a manifold with nothing left to add raises no event and would start cold next step.
         internal const float Fraction = 0.95f;
+
+        // The direct solver gives a point a row only within its collision tolerance, in metres, and a row is what takes back
+        // a warm start the contact doesn't need. A farther point's warm start would push the bodies apart with nothing to
+        // take it back, and the push would feed the next step's warm start, so a crash throws its wreckage ever faster.
+        private const float FarthestPoint = 0.1f;
 
         [ReadOnly]
         public NativeHashMap<JacobianKey, float2> WarmStarts;
@@ -843,6 +848,11 @@ namespace KSP.Retooled.Physics
             for (int i = 0; i < jacobian.NumContacts; i++)
             {
                 ContactJacAngAndVelToReachCp point = header.GetAngularJacobian(i);
+                if (point.ContactDistance > FarthestPoint)
+                {
+                    continue;
+                }
+
                 point.Jac.Impulse = impulse;
                 header.SetAngularJacobian(i, point);
 
