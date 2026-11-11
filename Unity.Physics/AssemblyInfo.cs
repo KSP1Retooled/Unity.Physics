@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("Assembly-CSharp")]
 [assembly: InternalsVisibleTo("KSP.Retooled.Physics")]
 [assembly: InternalsVisibleTo("Unity.Physics.Editor")]
 [assembly: InternalsVisibleTo("Unity.Physics.Hybrid")]
