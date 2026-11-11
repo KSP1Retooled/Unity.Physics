@@ -1416,7 +1416,8 @@ namespace Unity.Physics
                     contactPairs > 0, team);
                 if (recovery != null)
                 {
-                    SolvePushOut(problem, setup.WorldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
+                    SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                        motionVelocities, motionDatas, stepInput.Timestep,
                         math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
                 }
             }
@@ -1861,9 +1862,9 @@ namespace Unity.Physics
         /// one goes on into the next substep as it was: contacts push and don't pull, friction holds nothing, and joints
         /// carry the push to the bodies jointed to the ones pushed. Only a substep with a deep contact pays for it.
         /// </summary>
-        static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, in NativeList<int> worldBodies,
-            float* recovery, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
-            float timestep, float fastest)
+        static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+            in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, float timestep, float fastest)
         {
             int rows = problem.RowCount;
             bool pushing = false;
@@ -1941,6 +1942,7 @@ namespace Unity.Physics
             }
 
             float scale = fastestPoint > fastest ? fastest / fastestPoint : 1.0f;
+            MovePushedContacts(problem, headers, worldBodies, datas, linears, spins, scale * timestep);
             for (int compact = 0; compact < worldBodies.Length; compact++)
             {
                 ref RigidTransform pose = ref datas[worldBodies[compact]].WorldFromMotion;
@@ -1952,6 +1954,61 @@ namespace Unity.Physics
             spins.Dispose();
             solver.Dispose();
             values.Dispose();
+        }
+
+        /// <summary>
+        /// Adds to each contact row's distance how far the push-out is about to move its bodies along it: the world velocities
+        /// and motion-space spins <see cref="SolvePushOut"/> found, for <paramref name="duration"/> seconds. The next substep
+        /// finds a contact's distance from velocity alone, which the push-out leaves alone, so without this it would push the
+        /// same depth out again. A point without a row is farther away than one push can close, and keeps its distance.
+        /// </summary>
+        static unsafe void MovePushedContacts(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+            in NativeList<int> worldBodies, MotionData* datas, in NativeArray<float3> linears, in NativeArray<float3> spins,
+            float duration)
+        {
+            // Rows are built for the points within this, in order; see the contact rows of BuildJacobianRows.
+            const float kCollisionTolerance = 0.1f;
+
+            for (int block = 0; block < problem.BlockCount; block++)
+            {
+                ref JacobianHeader header = ref *headers[block];
+                if (header.Type != JacobianType.Contact)
+                {
+                    continue;
+                }
+
+                SparseConstraintSolver.ConstraintBlock rows = problem.Blocks[block];
+                int row = rows.FirstRow;
+                int points = header.AccessBaseJacobian<ContactJacobian>().BaseJacobian.NumContacts;
+                for (int i = 0; i < points; i++)
+                {
+                    ref ContactJacAngAndVelToReachCp point = ref header.AccessAngularJacobian(i);
+                    if (point.ContactDistance > kCollisionTolerance)
+                    {
+                        continue;
+                    }
+
+                    float* columns = problem.Jacobian + row * SparseConstraintSolver.ColumnsPerRow;
+                    float rate = SideRate(columns, rows.BodyA, worldBodies, datas, linears, spins)
+                        + SideRate(columns + SparseConstraintSolver.ColumnsPerRow / 2, rows.BodyB, worldBodies, datas, linears, spins);
+                    point.ContactDistance += rate * duration;
+                    row++;
+                }
+            }
+        }
+
+        /// <summary>How fast one side's body moves a row along, the Jacobian's angular columns being in world space.</summary>
+        static unsafe float SideRate(float* columns, int compact, in NativeList<int> worldBodies, MotionData* datas,
+            in NativeArray<float3> linears, in NativeArray<float3> spins)
+        {
+            if (compact < 0)
+            {
+                return 0.0f;
+            }
+
+            float3 spin = math.rotate(datas[worldBodies[compact]].WorldFromMotion.rot, spins[compact]);
+            return math.dot(new float3(columns[0], columns[1], columns[2]), linears[compact])
+                + math.dot(new float3(columns[3], columns[4], columns[5]), spin);
         }
 
         const int BodiesPerApplyTask = 64;
