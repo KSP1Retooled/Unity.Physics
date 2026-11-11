@@ -178,6 +178,8 @@ namespace KSP.Retooled.Physics
                 settings.Gravity = float3.zero;
                 settings.DirectIslandSubsteps = WorldState.DirectIslandSubsteps;
                 settings.SolverIterationCount = WorldState.SolverIterations;
+                settings.MaxDynamicDepenetrationVelocity = WorldState.MaxDepenetrationVelocity;
+                settings.MaxStaticDepenetrationVelocity = WorldState.MaxDepenetrationVelocity;
 
                 // FinishStep synchronizes the collision world itself, while it reads the step's results.
                 settings.SynchronizeCollisionWorld = 0;

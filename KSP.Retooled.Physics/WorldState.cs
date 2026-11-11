@@ -14,6 +14,10 @@ namespace KSP.Retooled.Physics
         internal const int SolverIterations = 12;
         internal const int DirectIslandSubsteps = 2;
 
+        // The fastest, in m/s, that contacts push penetrating bodies apart: Rigidbody.maxDepenetrationVelocity's default.
+        // PhysX applies it to each body, and stock never changes it.
+        internal const float MaxDepenetrationVelocity = 10.0f;
+
         private readonly StepState* state;
         private readonly QueryWorld* query;
 
