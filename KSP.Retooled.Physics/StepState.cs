@@ -2,6 +2,7 @@ using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Physics;
 
@@ -27,11 +28,13 @@ namespace KSP.Retooled.Physics
 
         private PhysicsWorld world;
 
-        // The static tree's jobs read whether to rebuild from one of these, and neither is ever written again, so a build never
-        // writes to a container that those jobs may still hold.
+        // The static tree's jobs read whether to rebuild from one of these. Nothing writes keepStatics again, and only
+        // ShiftStaticTreeJob writes rebuildStatics, which every build schedules ahead of those jobs.
         private NativeReference<int> rebuildStatics;
         private NativeReference<int> keepStatics;
+        private ShiftStaticTreeJob.ShiftState treeShift;
         private bool staticsChanged;
+        private bool treeMatchesHeld;
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
@@ -79,6 +82,7 @@ namespace KSP.Retooled.Physics
             world = new PhysicsWorld(0, 0, 0);
             rebuildStatics = new NativeReference<int>(1, Allocator.Persistent);
             keepStatics = new NativeReference<int>(0, Allocator.Persistent);
+            treeShift = ShiftStaticTreeJob.ShiftState.Create();
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
@@ -127,6 +131,7 @@ namespace KSP.Retooled.Physics
             world.Dispose();
             rebuildStatics.Dispose();
             keepStatics.Dispose();
+            treeShift.Dispose();
             dynamicIndices.Dispose();
             staticIndices.Dispose();
             builtIndices.Dispose();
@@ -221,7 +226,7 @@ namespace KSP.Retooled.Physics
                 // Nothing reads the joints until the dispatch pairs are made after the overlaps, so they build alongside
                 // the trees and the overlaps, and only the dispatch pairs wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
-                JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, deltaTime, float3.zero, BuildStaticTree, built, true);
+                JobHandle broadphase = ScheduleTrees(deltaTime, built);
                 return ScheduleWheels(deltaTime, broadphase, joints);
             }
         }
@@ -542,19 +547,20 @@ namespace KSP.Retooled.Physics
 
             JobHandle colliders = RefreshColliders(default);
             JobHandle built = Build(0.0f, colliders, out _);
-            JobHandle broadphase = world.CollisionWorld.ScheduleBuildBroadphaseJobs(ref world, 0.0f, float3.zero, BuildStaticTree, built, true);
+            JobHandle broadphase = ScheduleTrees(0.0f, built);
             ScheduleQuerySnapshot(broadphase).Complete();
             PublishQueryWorld();
         }
 
         /// <summary>
-        /// Moves the built statics to where the store has them and builds the static tree again. Recording the version spares
-        /// the next step the same rebuild, unless more statics move first.
+        /// Moves the built statics to where the store has them and brings the static tree up to them. Recording the version
+        /// spares the next step the same work, unless more statics move first.
         /// </summary>
         private void PoseStatics()
         {
             builtStaticsVersion = store->staticsVersion;
             staticsChanged = true;
+            treeMatchesHeld = true;
             JobHandle posed = new PoseStaticsJob
             {
                 Store = store->bodies,
@@ -562,7 +568,47 @@ namespace KSP.Retooled.Physics
                 StaticBodies = world.StaticBodies,
             }.Schedule(staticIndices.Length, ParallelBatchSize, default);
 
-            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, BuildStaticTree, posed, true).Complete();
+            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, BuildStaticTree, ScheduleShiftStaticTree(posed), true).Complete();
+        }
+
+        /// <summary>
+        /// Schedules the broadphase's trees. Only the static tree waits for the decision whether to build it again, so the
+        /// dynamic tree's build runs beside that.
+        /// </summary>
+        private JobHandle ScheduleTrees(float deltaTime, JobHandle built)
+        {
+            int threads = JobsUtility.JobWorkerCount + 1;
+            Broadphase broadphase = world.CollisionWorld.Broadphase;
+            JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
+            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built);
+            return JobHandle.CombineDependencies(statics, dynamics);
+        }
+
+        /// <summary>
+        /// Decides, once the statics are built, whether their tree is built again or moved, unless no static changed, in which
+        /// case the tree stays as it is.
+        /// </summary>
+        private JobHandle ScheduleShiftStaticTree(JobHandle built)
+        {
+            if (!staticsChanged)
+            {
+                return built;
+            }
+
+            using var span = BackendMarkers.ShiftStaticTree.Auto();
+            Broadphase.Tree tree = world.CollisionWorld.Broadphase.StaticTree;
+            return new ShiftStaticTreeJob
+            {
+                StaticBodies = world.StaticBodies,
+                Nodes = tree.Nodes.GetUnsafeList(),
+                MeshSubAabbs = tree.MeshSubAabbs.GetUnsafeList(),
+                State = treeShift,
+                Store = store->bodies,
+                Refreshed = colliderWork,
+                TreeMatchesHeld = treeMatchesHeld,
+                Margin = world.CollisionWorld.CollisionTolerance * 0.5f,
+                Rebuild = rebuildStatics,
+            }.Schedule(built);
         }
 
         /// <summary>
@@ -705,6 +751,7 @@ namespace KSP.Retooled.Physics
                 // so only the statics decide whether it is built again.
                 staticsChanged = !builtWhole || store->staticsVersion != builtStaticsVersion;
                 builtStaticsVersion = store->staticsVersion;
+                treeMatchesHeld = builtWhole;
                 builtWhole = false;
 
                 for (int i = 0; i < builtIndices.Length; i++)
