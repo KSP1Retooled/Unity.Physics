@@ -67,18 +67,27 @@ namespace Unity.Physics
         /// </summary>
         public int MinimumHoldSteps;
 
+        /// <summary>
+        /// Steps over which a pair's deflection is averaged (an exponential mean with this time constant) before the lock
+        /// and yield tests read it; 0 or 1 reads each step's mean alone. The test for twice the yield angle always reads
+        /// the last step's mean, so a real load still yields at once.
+        /// </summary>
+        public int DeflectionSmoothingSteps;
+
         public const float DefaultLockAngle = 0.5e-3f;
         public const float DefaultYieldAngle = 2e-3f;
         public const int DefaultMinimumHoldSteps = 10;
+        public const int DefaultDeflectionSmoothingSteps = 20;
 
         public static ForestSettings Default => new ForestSettings
         {
             Enabled = false,
-            BoundaryRowCap = 256,
+            BoundaryRowCap = 512,
             Locking = false,
             LockAngle = DefaultLockAngle,
             YieldAngle = DefaultYieldAngle,
             MinimumHoldSteps = DefaultMinimumHoldSteps,
+            DeflectionSmoothingSteps = DefaultDeflectionSmoothingSteps,
         };
     }
 
@@ -136,6 +145,12 @@ namespace Unity.Physics
         /// mean over the step is the deflection of the load the step applied.
         /// </summary>
         public UnsafeList<float> PairDeflectionSum;
+
+        /// <summary>Each pair's deflection over the last whole step alone, which <see cref="PairDeflection"/> smooths.</summary>
+        public UnsafeList<float> PairDeflectionStep;
+
+        /// <summary>Whether either body of each pair had a contact row in the last solve, for diagnostics.</summary>
+        public UnsafeList<byte> PairContact;
 
         /// <summary>Steps each pair has kept its lock state.</summary>
         public UnsafeList<int> PairHeld;
@@ -198,6 +213,8 @@ namespace Unity.Physics
                 PairLocked = new UnsafeList<byte>(16, Allocator.Persistent),
                 PairDeflection = new UnsafeList<float>(16, Allocator.Persistent),
                 PairDeflectionSum = new UnsafeList<float>(16, Allocator.Persistent),
+                PairDeflectionStep = new UnsafeList<float>(16, Allocator.Persistent),
+                PairContact = new UnsafeList<byte>(16, Allocator.Persistent),
                 PairHeld = new UnsafeList<int>(16, Allocator.Persistent),
                 PairBlockStart = new UnsafeList<int>(16, Allocator.Persistent),
                 PairInverse = new UnsafeList<double>(16, Allocator.Persistent),
@@ -244,6 +261,8 @@ namespace Unity.Physics
             forest->PairLocked.Dispose();
             forest->PairDeflection.Dispose();
             forest->PairDeflectionSum.Dispose();
+            forest->PairDeflectionStep.Dispose();
+            forest->PairContact.Dispose();
             forest->PairHeld.Dispose();
             forest->PairBlockStart.Dispose();
             forest->PairInverse.Dispose();
@@ -476,6 +495,13 @@ namespace Unity.Physics
             PairLocked.Resize(pairCount);
             PairDeflection.Resize(pairCount);
             PairDeflectionSum.Resize(pairCount);
+            PairDeflectionStep.Resize(pairCount);
+            PairContact.Resize(pairCount);
+            for (int p = 0; p < pairCount; p++)
+            {
+                PairDeflectionStep[p] = float.PositiveInfinity;
+                PairContact[p] = 0;
+            }
             PairHeld.Resize(pairCount);
             UnsafeUtility.MemClear(PairDeflectionSum.Ptr, pairCount * (long)sizeof(float));
             DeflectionCount = 0;

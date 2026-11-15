@@ -393,6 +393,7 @@ namespace KSP.Retooled.Physics
                 LockAngle = VesselForest.LockAngle,
                 YieldAngle = VesselForest.YieldAngle,
                 MinimumHoldSteps = VesselForest.MinimumHoldSteps,
+                DeflectionSmoothingSteps = VesselForest.DeflectionSmoothingSteps,
             };
             input.DirectSolverCache = directSolverCache;
             return new WarmStartJob

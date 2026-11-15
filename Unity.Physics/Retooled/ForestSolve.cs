@@ -32,6 +32,9 @@ namespace Unity.Physics
             public SparseConstraintSolver.Problem Problem;
             public bool Bounded;
 
+            /// <summary>Each block's Jacobian, for its regularization.</summary>
+            public JacobianHeader** Headers;
+
             /// <summary>
             /// The rows as the sections see them: a row on a body of a section of several acts on the section's velocity at
             /// the body's offset from its centre. The problem's own rows when every section is one body.
@@ -99,6 +102,17 @@ namespace Unity.Physics
             /// <summary>Whether the structure was rebuilt for this solve, and how many pairs changed lock state.</summary>
             public bool Rebuilt;
             public int LockChanges;
+            public int ContactLockChanges;
+
+            /// <summary>
+            /// Ticks in the parts that run on one lane: classifying rows, the lock decisions, the sections' sums, the body
+            /// impulse sums and the subtree sums, for the bench.
+            /// </summary>
+            public long ClassifyTicks;
+            public long DecideTicks;
+            public long SumsTicks;
+            public long BodyImpulseTicks;
+            public long SubtreeTicks;
 
             /// <summary>The largest momentum left over at a section's first body by its inverse dynamics, in N s.</summary>
             public double Residual;
@@ -147,9 +161,11 @@ namespace Unity.Physics
         static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
             ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep, int substep,
-            out ForestRun run)
+            out ForestRun run, out int fallbackBoundaryRows)
         {
             run = default;
+            fallbackBoundaryRows = 0;
+            long classifyStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             int rows = problem.RowCount;
             var coupled = new NativeArray<bool>(rows, Allocator.Temp);
             for (int c = 0; bounded && c < problem.CouplingCount; c++)
@@ -168,11 +184,25 @@ namespace Unity.Physics
 
             // What each forest block allows its pair: bit 0 lockable, bit 1 holdable, bit 2 every row a forest row or idle.
             var blockAllows = new NativeList<byte>(problem.BlockCount, Allocator.Temp);
+            var bodyContact = new NativeArray<byte>(problem.BodyCount, Allocator.Temp);
             int forestRows = 0, boundaryRows = 0;
             for (int b = 0; b < problem.BlockCount; b++)
             {
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
                 JacobianFlags flags = headers[b]->Flags;
+                if (headers[b]->Type == JacobianType.Contact)
+                {
+                    if (block.BodyA >= 0)
+                    {
+                        bodyContact[block.BodyA] = 1;
+                    }
+
+                    if (block.BodyB >= 0)
+                    {
+                        bodyContact[block.BodyB] = 1;
+                    }
+                }
+
                 bool forestBlock = headers[b]->Type != JacobianType.Contact && (flags & JacobianFlags.ForestRow) != 0
                     && (block.BodyA >= 0 || block.BodyB >= 0);
                 bool allForest = true;
@@ -225,8 +255,10 @@ namespace Unity.Physics
                 }
             }
 
+            fallbackBoundaryRows = boundaryRows;
             if (forestRows == 0 || boundaryRows > settings.BoundaryRowCap || !couplingsInBoundary)
             {
+                bodyContact.Dispose();
                 coupled.Dispose();
                 rowClass.Dispose();
                 rowBlock.Dispose();
@@ -235,6 +267,8 @@ namespace Unity.Physics
                 blockAllows.Dispose();
                 return false;
             }
+
+            long classified = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
             // The pairs, kept while the island's bodies and forest blocks stay the same.
             ref UnsafeList<ulong> signature = ref forest->Signature;
@@ -259,13 +293,18 @@ namespace Unity.Physics
                     forestBlocks.Length, worldBodies);
             }
 
+            long decideStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+
             // Which pairs are locked this solve: a tree edge whose joints all allow it, with nothing but forest rows, locks
             // when its springs would deflect less than the lock angle under its last load, and stays locked until its load
             // would deflect them past the yield angle.
-            int lockChanges = 0;
+            int lockChanges = 0, contactChanges = 0;
             int pairCount = forest->PairCount;
             for (int p = 0; p < pairCount; p++)
             {
+                int2 bodies = forest->PairBodies[p];
+                byte touches = (byte)(bodyContact[bodies.x] | bodyContact[bodies.y]);
+                forest->PairContact[p] = touches;
                 bool locked = forest->PairLocked[p] != 0;
                 int held = forest->PairHeld[p];
                 if (substep <= 0 && held < int.MaxValue / 2)
@@ -284,8 +323,9 @@ namespace Unity.Physics
                     }
 
                     float deflection = forest->PairDeflection[p];
+                    float last = forest->PairDeflectionStep[p];
                     next = locked
-                        ? (allows & 6) == 6 && (deflection <= settings.YieldAngle || (!settled && deflection <= 2.0f * settings.YieldAngle))
+                        ? (allows & 6) == 6 && last <= 2.0f * settings.YieldAngle && (deflection <= settings.YieldAngle || !settled)
                         : (allows & 5) == 5 && deflection < settings.LockAngle && settled;
                 }
 
@@ -294,9 +334,13 @@ namespace Unity.Physics
                     forest->PairLocked[p] = (byte)(next ? 1 : 0);
                     forest->PairHeld[p] = 0;
                     lockChanges++;
+                    contactChanges += touches;
                 }
             }
 
+            bodyContact.Dispose();
+
+            long decided = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             rebuild |= lockChanges > 0;
             if (rebuild)
             {
@@ -343,6 +387,7 @@ namespace Unity.Physics
                 Forest = forest,
                 Problem = problem,
                 Bounded = bounded,
+                Headers = headers,
                 Jacobian = problem.Jacobian,
                 RowClass = rowClass,
                 BlockSections = blockSections,
@@ -359,6 +404,9 @@ namespace Unity.Physics
                 StructureTicks = structureTicks,
                 Rebuilt = rebuild,
                 LockChanges = lockChanges,
+                ContactLockChanges = contactChanges,
+                ClassifyTicks = classified - classifyStarted,
+                DecideTicks = decided - decideStarted,
             };
 
             for (int i = 0; i < problem.BodyCount; i++)
@@ -595,6 +643,7 @@ namespace Unity.Physics
         /// </summary>
         static unsafe void PrepareSections(ref ForestRun run)
         {
+            long sumsStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             ForestIsland* forest = run.Forest;
             int sections = forest->SectionCount;
@@ -657,6 +706,8 @@ namespace Unity.Physics
                 run.SectionAngular[s] = math.mul(math.inverse(inertia), angularMomentum);
                 run.Forest->Sections[s] = new VesselSection { Mass = mass, Center = center, Inertia = inertia };
             }
+
+            run.SumsTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - sumsStarted;
 
             // The rows on a body of a section of several act on the section at the body's offset: j_angular + r x j_linear.
             // Each block's rows are copied and turned by one task, on the team's lanes.
@@ -927,7 +978,9 @@ namespace Unity.Physics
         static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
         {
+            long summing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             SumBodyImpulses(problem, impulses, linear, angular);
+            run.BodyImpulseTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - summing;
             if (!run.MultiPart)
             {
                 return;
@@ -988,6 +1041,8 @@ namespace Unity.Physics
                 return;
             }
 
+            long subtreeStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+
             // Leaves inward: each locked edge carries what its child's subtree still needs, moved to the parent's centre.
             // Short work on one lane; the split of each edge's load over its rows goes back to the team.
             run.Residual = 0.0;
@@ -1015,6 +1070,7 @@ namespace Unity.Physics
                 run.Residual = math.max(run.Residual, math.length(new double3(left.Low.x, left.Low.y, left.Low.z)));
             }
 
+            run.SubtreeTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - subtreeStarted;
             tasks.Phase = SectionTasks.SplitLoads;
             SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestSectionsKind, partTasks, null);
         }
@@ -1119,7 +1175,7 @@ namespace Unity.Physics
                 {
                     if (run.RowClass[row] == SectionRowClass)
                     {
-                        key += problem.Epsilon[row];
+                        key += problem.Epsilon[row] / PairBlockGamma(run, k);
                         count++;
                     }
                 }
@@ -1150,10 +1206,26 @@ namespace Unity.Physics
                     if (run.RowClass[row] == SectionRowClass)
                     {
                         double6 j = VesselContext.LoadRow(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
-                        impulses[row] = Flushed(double6.Dot(j, x) / problem.Epsilon[row]);
+                        impulses[row] = Flushed(double6.Dot(j, x) * RowStiffness(ref run, problem, pair, k, row));
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// A locked row's weight in its pair's split: its spring alone, gamma / epsilon (h^2 k), so that the rows share a load
+        /// as their springs would at rest; their compliance alone, which counts the dampers too, would give the damped rows
+        /// more than their share, and the pair would read a deflection locked that it doesn't have unlocked.
+        /// </summary>
+        static unsafe double RowStiffness(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int k, int row) =>
+            PairBlockGamma(run, k) / (double)problem.Epsilon[row];
+
+        /// <summary>The gamma of the k-th of the pairs' forest blocks, h k / (h k + c), or 1 for a row without one.</summary>
+        static unsafe float PairBlockGamma(in ForestRun run, int k)
+        {
+            int b = run.ForestBlocks[run.Forest->PairBlocks[k]];
+            float gamma = run.Headers[b]->AccessDirectSolverRegularizationData().Gamma;
+            return gamma > 1e-6f && gamma <= 1.0f ? gamma : 1.0f;
         }
 
         /// <summary>
@@ -1178,7 +1250,7 @@ namespace Unity.Physics
                         double3 l = math.mul(back, new double3(c[0], c[1], c[2]));
                         double3 a = math.mul(back, new double3(c[3], c[4], c[5]));
                         double6 j = new double6(new double4(l, a.x), new double2(a.y, a.z));
-                        VesselContext.AddOuter(m, 1.0 / problem.Epsilon[row], j, j);
+                        VesselContext.AddOuter(m, RowStiffness(ref run, problem, pair, k, row), j, j);
                     }
                 }
             }
@@ -1200,7 +1272,8 @@ namespace Unity.Physics
         /// next step's first substep turns the sum into their mean, the deflection the lock tests read from then on (see
         /// <see cref="ForestIsland.PairDeflectionSum"/>). Returns the largest deflection the lock tests now read.
         /// </summary>
-        static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep)
+        static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep,
+            int smoothingSteps)
         {
             float largest = 0.0f;
             ForestIsland* forest = run.Forest;
@@ -1247,7 +1320,11 @@ namespace Unity.Physics
                 {
                     if (forest->DeflectionCount > 0)
                     {
-                        forest->PairDeflection[p] = sum / forest->DeflectionCount;
+                        float mean = sum / forest->DeflectionCount;
+                        float before = forest->PairDeflection[p];
+                        forest->PairDeflectionStep[p] = mean;
+                        forest->PairDeflection[p] = smoothingSteps > 1 && math.isfinite(before)
+                            ? before + (mean - before) / smoothingSteps : mean;
                     }
 
                     sum = 0.0f;

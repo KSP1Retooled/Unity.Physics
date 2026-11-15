@@ -1400,9 +1400,10 @@ namespace Unity.Physics
                 ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
                 int builds = forest != null ? forest->Builds : 0;
                 ForestRun run = default;
+                int fallbackBoundaryRows = 0;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
                     forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), motionVelocities, motionDatas,
-                    stepInput.Timestep, stepInput.CurrentSubstep, out run);
+                    stepInput.Timestep, stepInput.CurrentSubstep, out run, out fallbackBoundaryRows);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {
@@ -1411,9 +1412,14 @@ namespace Unity.Physics
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
                     stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
                         run.LockChanges, run.StructureTicks);
+                    stepInput.DirectSolverCache.AddCount(DirectSolverCache.ForestContactLockChanges, run.ContactLockChanges);
                 }
 
                 stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
+                if (!started && forest != null)
+                {
+                    stepInput.DirectSolverCache.NoteMax(DirectSolverCache.ForestFallbackBoundaryMax, fallbackBoundaryRows);
+                }
                 if (forest != null && forest->Builds != builds)
                 {
                     stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestBuilds);
@@ -1467,10 +1473,15 @@ namespace Unity.Physics
                     }
 
                     float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
-                        stepInput.CurrentSubstep);
+                        stepInput.CurrentSubstep, forestSettings.DeflectionSmoothingSteps);
                     stepInput.DirectSolverCache.NoteDeflection(deflection);
 
                     stepInput.DirectSolverCache.NoteResidual(run.Residual);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestClassifyTime, run.ClassifyTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDecideTime, run.DecideTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSumsTime, run.SumsTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBodyImpulseTime, run.BodyImpulseTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSubtreeTime, run.SubtreeTicks);
                     run.Dispose();
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();

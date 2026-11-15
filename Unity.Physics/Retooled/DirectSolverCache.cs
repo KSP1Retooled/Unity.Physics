@@ -84,7 +84,18 @@ namespace Unity.Physics
 
         /// <summary>Time the forest path spent turning sections' answers into bodies' and locked pairs' loads, once per solve.</summary>
         internal const int ForestSettleTime = 19;
-        const int CounterCount = 20;
+
+        /// <summary>Lock changes of pairs with a contact on either body, and the most boundary rows a fallback had.</summary>
+        internal const int ForestContactLockChanges = 20;
+        internal const int ForestFallbackBoundaryMax = 21;
+
+        /// <summary>Ticks in the forest path's one-lane parts, see ForestRun.ClassifyTicks.</summary>
+        internal const int ForestClassifyTime = 22;
+        internal const int ForestDecideTime = 23;
+        internal const int ForestSumsTime = 24;
+        internal const int ForestBodyImpulseTime = 25;
+        internal const int ForestSubtreeTime = 26;
+        const int CounterCount = 27;
 
         public static DirectSolverCache Create()
         {
@@ -198,6 +209,79 @@ namespace Unity.Physics
             {
                 System.Threading.Interlocked.Increment(ref forestCounters[ForestStructureBuilds]);
                 System.Threading.Interlocked.Add(ref forestCounters[ForestStructureTime], structureTicks);
+            }
+        }
+
+        internal void AddCount(int counter, long value)
+        {
+            if (forestCounters != null)
+            {
+                System.Threading.Interlocked.Add(ref forestCounters[counter], value);
+            }
+        }
+
+        internal void NoteMax(int counter, long value)
+        {
+            if (forestCounters == null)
+            {
+                return;
+            }
+
+            long seen = forestCounters[counter];
+            while (value > seen)
+            {
+                long was = System.Threading.Interlocked.CompareExchange(ref forestCounters[counter], value, seen);
+                if (was == seen)
+                {
+                    break;
+                }
+
+                seen = was;
+            }
+        }
+
+        /// <summary>A forest counter by its index, for tests and benches.</summary>
+        internal long ForestCounter(int counter) => forestCounters != null ? forestCounters[counter] : 0;
+
+        /// <summary>A forest time counter in milliseconds.</summary>
+        internal double ForestMilliseconds(int counter) => ForestCounter(counter)
+            * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6);
+
+        /// <summary>
+        /// For diagnostics, every kept forest's tree pairs by their deflection against the lock and yield angles: bins
+        /// below half the lock angle, below it, below the yield angle, below twice it, and past it; each split by whether
+        /// a contact touches the pair (index + 5) and counted again in <paramref name="locked"/> if the pair is locked.
+        /// </summary>
+        internal void DeflectionHistogram(float lockAngle, float yieldAngle, long* all, long* locked)
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                all[i] = 0;
+                locked[i] = 0;
+            }
+
+            for (int slot = 0; slots != null && slot < Capacity; slot++)
+            {
+                ForestIsland* forest = slots[slot].Forest;
+                if (forest == null || slots[slot].LastUsed != *step)
+                {
+                    continue;
+                }
+
+                for (int p = 0; p < forest->PairCount; p++)
+                {
+                    if (forest->PairEdge[p] == 0 || forest->PairTree[p] == 0)
+                    {
+                        continue;
+                    }
+
+                    float d = forest->PairDeflection[p];
+                    int bin = d < 0.5f * lockAngle ? 0 : d < lockAngle ? 1 : d < yieldAngle ? 2 : d < 2.0f * yieldAngle ? 3 : 4;
+                    bin += forest->PairContact[p] != 0 ? 5 : 0;
+                    all[bin]++;
+                    locked[bin] += forest->PairLocked[p];
+                }
             }
         }
 
