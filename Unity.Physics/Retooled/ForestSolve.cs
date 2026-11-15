@@ -694,6 +694,18 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// A value for single precision with anything below float's normal range made zero. A locked section at rest leaves
+        /// differences of order 1e-40 that would otherwise turn into denormal velocities and impulses, which every job
+        /// reading them afterwards (row and Jacobian builds, integration) takes tens of times longer to compute with.
+        /// </summary>
+        /// <summary>Radians per second below which a section's spin is taken as none.</summary>
+        const double MinimumSpin = 1e-9;
+
+        static float Flushed(double value) => math.abs(value) < 1e-30 ? 0.0f : (float)value;
+
+        static float3 Flushed(double3 value) => new float3(Flushed(value.x), Flushed(value.y), Flushed(value.z));
+
         /// <summary>Whether section s has more than one body.</summary>
         static unsafe bool Multi(ForestIsland* forest, int s) =>
             forest->Structure.SectionPartStart[s + 1] - forest->Structure.SectionPartStart[s] > 1;
@@ -876,6 +888,14 @@ namespace Unity.Physics
                 double3 sectionLinear = pushOut ? dLinear : run.SectionLinear[s] + dLinear;
                 double3 sectionAngular = pushOut ? dAngular : run.SectionAngular[s] + dAngular;
 
+                // A locked section at rest keeps a spin of order 1e-19 rad/s from rounding, whose squares the next step's
+                // row and Jacobian builds and the integration carry into denormal floats, several times slower to compute
+                // with. Nothing that small is a real turn.
+                if (math.lengthsq(sectionAngular) < MinimumSpin * MinimumSpin)
+                {
+                    sectionAngular = 0.0;
+                }
+
                 // Each body lands where the section's rotation takes it, not along the tangent, so that a turning section
                 // stays rigid however long it stays locked.
                 double angle = math.length(sectionAngular) * h;
@@ -906,8 +926,8 @@ namespace Unity.Physics
                             new double2(angularImpulse.y - angular[i].y, angularImpulse.z - angular[i].z));
                     }
 
-                    linear[i] = (float3)linearImpulse;
-                    angular[i] = (float3)angularImpulse;
+                    linear[i] = Flushed(linearImpulse);
+                    angular[i] = Flushed(angularImpulse);
                 }
 
                 if (pushOut)
@@ -967,7 +987,7 @@ namespace Unity.Physics
                     if (run.RowClass[row] == SectionRowClass)
                     {
                         double6 j = VesselContext.LoadRow(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
-                        impulses[row] = (float)(double6.Dot(j, x) / problem.Epsilon[row]);
+                        impulses[row] = Flushed(double6.Dot(j, x) / problem.Epsilon[row]);
                     }
                 }
             }
