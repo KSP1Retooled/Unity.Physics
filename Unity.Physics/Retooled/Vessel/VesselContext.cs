@@ -76,6 +76,9 @@ namespace Unity.Physics
         public VesselRows* LinkRows;
         public double3* PartForce;
         public double3* PartTorque;
+
+        /// <summary>Each part's joint point toward its parent, from the finish pass's own rotation of the part.</summary>
+        public double3* ChildPoint;
         public double* SectionResidual;
         public VesselEdgeLoad* EdgeLoads;
         public VesselEdgeLoad* ClosureLoads;
@@ -297,39 +300,35 @@ namespace Unity.Physics
             double3x3 childLinear = math.mul(childCross, linear);
             double3x3 parentLinear = math.mul(parentCross, linear);
 
-            double* childBlock = stackalloc double[VesselBlocks.Size];
-            double* parentBlock = stackalloc double[VesselBlocks.Size];
-            double* coupling = stackalloc double[VesselBlocks.Size];
-            VesselBlocks.SetQuarter(childBlock, 0, 0, linear);
-            VesselBlocks.SetQuarter(childBlock, 0, 1, -linearChild);
-            VesselBlocks.SetQuarter(childBlock, 1, 0, childLinear);
-            VesselBlocks.SetQuarter(childBlock, 1, 1, angular - math.mul(childLinear, childCross));
-            VesselBlocks.SetQuarter(parentBlock, 0, 0, linear);
-            VesselBlocks.SetQuarter(parentBlock, 0, 1, -linearParent);
-            VesselBlocks.SetQuarter(parentBlock, 1, 0, parentLinear);
-            VesselBlocks.SetQuarter(parentBlock, 1, 1, angular - math.mul(parentLinear, parentCross));
-
-            // Child rows by parent columns.
+            // Straight into the targets: the child's and parent's diagonal shares, and the coupling (child rows by parent
+            // columns, or its transpose when the parent's section is the lower one).
             bool childLower = link->ChildSection == link->Lower;
+            double* childBlock = Blocks + VesselBlocks.Size * (childLower ? link->Lower : link->UpperDiagonal);
+            double* parentBlock = Blocks + VesselBlocks.Size * (childLower ? link->UpperDiagonal : link->Lower);
+            double* coupling = Blocks + VesselBlocks.Size * link->Coupling;
+            VesselBlocks.AddQuarter(childBlock, 0, 0, linear);
+            VesselBlocks.AddQuarter(childBlock, 0, 1, -linearChild);
+            VesselBlocks.AddQuarter(childBlock, 1, 0, childLinear);
+            VesselBlocks.AddQuarter(childBlock, 1, 1, angular - math.mul(childLinear, childCross));
+            VesselBlocks.AddQuarter(parentBlock, 0, 0, linear);
+            VesselBlocks.AddQuarter(parentBlock, 0, 1, -linearParent);
+            VesselBlocks.AddQuarter(parentBlock, 1, 0, parentLinear);
+            VesselBlocks.AddQuarter(parentBlock, 1, 1, angular - math.mul(parentLinear, parentCross));
+            double3x3 cross = math.mul(childLinear, parentCross) - angular;
             if (childLower)
             {
-                VesselBlocks.SetQuarter(coupling, 0, 0, -linear);
-                VesselBlocks.SetQuarter(coupling, 0, 1, linearParent);
-                VesselBlocks.SetQuarter(coupling, 1, 0, -childLinear);
-                VesselBlocks.SetQuarter(coupling, 1, 1, math.mul(childLinear, parentCross) - angular);
+                VesselBlocks.AddQuarter(coupling, 0, 0, -linear);
+                VesselBlocks.AddQuarter(coupling, 0, 1, linearParent);
+                VesselBlocks.AddQuarter(coupling, 1, 0, -childLinear);
+                VesselBlocks.AddQuarter(coupling, 1, 1, cross);
             }
             else
             {
-                // The transpose: parent rows by child columns.
-                VesselBlocks.SetQuarter(coupling, 0, 0, -linear);
-                VesselBlocks.SetQuarter(coupling, 1, 0, math.transpose(linearParent));
-                VesselBlocks.SetQuarter(coupling, 0, 1, -math.transpose(childLinear));
-                VesselBlocks.SetQuarter(coupling, 1, 1, math.transpose(math.mul(childLinear, parentCross)) - angular);
+                VesselBlocks.AddQuarter(coupling, 0, 0, -linear);
+                VesselBlocks.AddQuarter(coupling, 1, 0, math.transpose(linearParent));
+                VesselBlocks.AddQuarter(coupling, 0, 1, -math.transpose(childLinear));
+                VesselBlocks.AddQuarter(coupling, 1, 1, math.transpose(cross));
             }
-
-            VesselBlocks.Add(Blocks + VesselBlocks.Size * link->Lower, childLower ? childBlock : parentBlock);
-            VesselBlocks.Add(Blocks + VesselBlocks.Size * link->UpperDiagonal, childLower ? parentBlock : childBlock);
-            VesselBlocks.Add(Blocks + VesselBlocks.Size * link->Coupling, coupling);
 
             // -J^T times the position term: the child loses [f; arm x f + t], the parent gains its own.
             double3 force = math.mul(axes, rows.LinearBias);
@@ -358,29 +357,25 @@ namespace Unity.Physics
 
             int start = ColumnStart[s], count = ColumnStart[s + 1] - start;
             double* column = Blocks + VesselBlocks.Size * (SectionCount + start);
-            for (int p = 0; p < count; p++)
-            {
-                VesselBlocks.Mul(scratch + VesselBlocks.Size * p, inverse, column + VesselBlocks.Size * p);
-            }
+            double6 y = double6.Load(Rhs + 6 * s);
 
-            // A(r_p, r_q) -= U_p^T inv(D) U_q for every pair, the diagonal included.
-            int* target = UpdateTarget + UpdateStart[s];
-            for (int p = 0; p < count; p++)
+            // A(r_p, r_q) -= U_p^T inv(D) U_q for every pair, the diagonal included. Going from the last entry back,
+            // every later entry already holds V_q = inv(D) U_q when entry p pairs with it, and U_p is last needed here.
+            for (int p = count - 1; p >= 0; p--)
             {
                 double* up = column + VesselBlocks.Size * p;
-                for (int q = p; q < count; q++)
+                double* vp = scratch;
+                VesselBlocks.Mul(vp, inverse, up);
+                int* target = UpdateTarget + UpdateStart[s] + p * count - p * (p - 1) / 2;
+                VesselBlocks.SubtractTransposeMul(Blocks + VesselBlocks.Size * target[0], up, vp);
+                for (int q = p + 1; q < count; q++)
                 {
-                    VesselBlocks.SubtractTransposeMul(Blocks + VesselBlocks.Size * *target++, up, scratch + VesselBlocks.Size * q);
+                    VesselBlocks.SubtractTransposeMul(Blocks + VesselBlocks.Size * target[q - p], up, column + VesselBlocks.Size * q);
                 }
-            }
 
-            double6 y = double6.Load(Rhs + 6 * s);
-            for (int p = 0; p < count; p++)
-            {
-                double* scaled = scratch + VesselBlocks.Size * p;
                 double* rhs = Rhs + 6 * RhsTarget[start + p];
-                (double6.Load(rhs) - ((double6x6*)scaled)->TransposeMul(y)).Store(rhs);
-                VesselBlocks.Copy(column + VesselBlocks.Size * p, scaled);
+                (double6.Load(rhs) - ((double6x6*)vp)->TransposeMul(y)).Store(rhs);
+                VesselBlocks.Copy(up, vp);
             }
         }
 
@@ -583,7 +578,9 @@ namespace Unity.Physics
                 }
 
                 double3 force = part->Mass * acceleration - inverseStep * part->LinearImpulse;
-                double3x3 world = WorldInertia(part->Orientation, part->Inertia);
+                double3x3 rotation = Rotation(part->Orientation);
+                double3x3 world = WorldInertia(rotation, part->Inertia);
+                ChildPoint[i] = part->Position + math.mul(rotation, Edges[i].ChildAnchor);
                 PartForce[i] = force;
                 PartTorque[i] = math.cross(r, force) + inverseStep * (math.mul(world, angular - part->AngularVelocity)
                     - part->AngularImpulse);
@@ -611,8 +608,7 @@ namespace Unity.Physics
                 int i = SectionParts[k];
                 int parent = Edges[i].Parent;
                 double3 force = PartForce[i], torque = PartTorque[i];
-                VesselPart* part = Parts + i;
-                double3 point = part->Position + math.mul(Rotation(part->Orientation), Edges[i].ChildAnchor);
+                double3 point = ChildPoint[i];
                 EdgeLoads[i] = new VesselEdgeLoad
                 {
                     Force = force,
@@ -731,9 +727,11 @@ namespace Unity.Physics
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double3x3 WorldInertia(double4 orientation, double3 inertia)
+        public static double3x3 WorldInertia(double4 orientation, double3 inertia) => WorldInertia(Rotation(orientation), inertia);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double3x3 WorldInertia(in double3x3 r, double3 inertia)
         {
-            double3x3 r = Rotation(orientation);
             double3x3 scaled = new double3x3(r.c0 * inertia.x, r.c1 * inertia.y, r.c2 * inertia.z);
             return math.mul(scaled, math.transpose(r));
         }

@@ -164,6 +164,17 @@ namespace Unity.Physics
             return ok;
         }
 
+        /// <summary>The quarter of a block at the given block row and column (0 or 1).</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double3x3 Quarter(double* block, int row, int column)
+        {
+            double* at = block + 18 * row + 3 * column;
+            return new double3x3(
+                at[0], at[1], at[2],
+                at[6], at[7], at[8],
+                at[12], at[13], at[14]);
+        }
+
         /// <summary>Writes a 3x3 matrix into the quarter of a block at the given block row and column (0 or 1).</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void SetQuarter(double* block, int row, int column, in double3x3 m)

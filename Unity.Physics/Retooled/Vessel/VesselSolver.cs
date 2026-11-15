@@ -40,6 +40,7 @@ namespace Unity.Physics
         internal NativeList<double> SectionResidual;
         NativeArray<double3> m_PartForce;
         NativeArray<double3> m_PartTorque;
+        NativeArray<double3> m_ChildPoint;
         NativeArray<int> m_Counters;
 
         /// <summary>Each tree edge's load over the last step, indexed by its child part.</summary>
@@ -78,6 +79,7 @@ namespace Unity.Physics
             SectionResidual = new NativeList<double>(Allocator.Persistent);
             m_PartForce = new NativeArray<double3>(parts.Length, Allocator.Persistent);
             m_PartTorque = new NativeArray<double3>(parts.Length, Allocator.Persistent);
+            m_ChildPoint = new NativeArray<double3>(parts.Length, Allocator.Persistent);
             m_Counters = new NativeArray<int>(VesselContext.CounterCount, Allocator.Persistent);
             EdgeLoads = new NativeArray<VesselEdgeLoad>(parts.Length, Allocator.Persistent);
             ClosureLoads = new NativeArray<VesselEdgeLoad>(math.max(1, closures.Length), Allocator.Persistent);
@@ -98,6 +100,7 @@ namespace Unity.Physics
             SectionResidual.Dispose();
             m_PartForce.Dispose();
             m_PartTorque.Dispose();
+            m_ChildPoint.Dispose();
             m_Counters.Dispose();
             EdgeLoads.Dispose();
             ClosureLoads.Dispose();
@@ -185,6 +188,7 @@ namespace Unity.Physics
                 LinkRows = LinkRows.GetUnsafePtr(),
                 PartForce = (double3*)m_PartForce.GetUnsafePtr(),
                 PartTorque = (double3*)m_PartTorque.GetUnsafePtr(),
+                ChildPoint = (double3*)m_ChildPoint.GetUnsafePtr(),
                 SectionResidual = SectionResidual.GetUnsafePtr(),
                 EdgeLoads = (VesselEdgeLoad*)EdgeLoads.GetUnsafePtr(),
                 ClosureLoads = (VesselEdgeLoad*)ClosureLoads.GetUnsafePtr(),
