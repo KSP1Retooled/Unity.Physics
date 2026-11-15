@@ -464,6 +464,11 @@ namespace Unity.Physics
 
                 Work.Islands.ResizeUninitialized(islandCount);
                 Work.Buffers.Bounded->Resize(islandCount);
+
+                // Each header's rows are counted while the walk has it at hand, and turned into where its rows start once
+                // the islands are known. A second pass over the headers would miss the cache on most of them.
+                UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
+                headerRows->Clear();
                 for (int island = 0; island < islandCount; island++)
                 {
                     int numContacts = Info.IslandContactCounts[island];
@@ -484,6 +489,7 @@ namespace Unity.Physics
                             Header = (JacobianHeader*)UnsafeUtility.AddressOf(ref header),
                             Island = island,
                         });
+                        headerRows->Add(GetConstraintRows(ref header));
                     }
 
                     Work.Islands[island] = new DirectIsland
@@ -496,7 +502,6 @@ namespace Unity.Physics
                     };
                 }
 
-                Work.Buffers.HeaderRows->Resize(Work.Headers.Length);
                 CountIslandRowsJob.CountRows(Work, true);
             }
         }
@@ -528,7 +533,8 @@ namespace Unity.Physics
         /// <summary>
         /// Counts the rows each Jacobian has this substep, which a contact's points change as they come and go, and lays the
         /// islands' rows out one after another. A joint's rows follow from how it was built, so after the first substep only
-        /// the contacts are counted again.
+        /// the contacts are counted again. In the first, <see cref="IndexDirectIslandsJob"/> has left each header's count in
+        /// its place among the header rows.
         /// </summary>
         [BurstCompile]
         unsafe struct CountIslandRowsJob : IJob
@@ -550,13 +556,14 @@ namespace Unity.Physics
                     int rows = 0;
                     if (first)
                     {
-                        for (int h = island.FirstHeader; h < island.JointEnd; h++)
+                        for (int h = island.FirstHeader; h < island.SolveEnd; h++)
                         {
+                            int count = (*headerRows)[h];
                             (*headerRows)[h] = rows;
-                            rows += GetConstraintRows(ref *work.Headers[h].Header);
+                            rows += count;
+                            island.JointRows = h < island.JointEnd ? rows : island.JointRows;
                         }
 
-                        island.JointRows = rows;
                         for (int h = island.SolveEnd; h < island.HeaderEnd; h++)
                         {
                             (*headerRows)[h] = -1;
@@ -565,12 +572,11 @@ namespace Unity.Physics
                     else
                     {
                         rows = island.JointRows;
-                    }
-
-                    for (int h = island.JointEnd; h < island.SolveEnd; h++)
-                    {
-                        (*headerRows)[h] = rows;
-                        rows += GetConstraintRows(ref *work.Headers[h].Header);
+                        for (int h = island.JointEnd; h < island.SolveEnd; h++)
+                        {
+                            (*headerRows)[h] = rows;
+                            rows += GetConstraintRows(ref *work.Headers[h].Header);
+                        }
                     }
 
                     island.FirstRow = totalRows;
