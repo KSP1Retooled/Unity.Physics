@@ -6,7 +6,8 @@ namespace Unity.Physics
 {
     public static partial class Integrator
     {
-        // Schedule a job to integrate the bodies no island integrates for itself, leaving those to their islands' substeps.
+        // Schedule integration for bodies outside islands. Bodies within islands are integrated during their islands'
+        // substeps.
         internal static JobHandle ScheduleIntegrateBodiesOutsideIslandsJob(in DynamicsWorld world, NativeArray<bool> bodiesInIslands,
             float timeStep, JobHandle inputDeps)
         {

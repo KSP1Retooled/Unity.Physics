@@ -3,21 +3,22 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// The stiffest joint a direct solve builds: one that would swing the mass it moves through <see cref="Period"/>. A
-    /// constraint can raise it with <see cref="Constraint.DirectStiffnessScale"/>.
+    /// Defines the maximum joint stiffness for a direct solve. At this stiffness, the effective mass would oscillate
+    /// with <see cref="Period"/> as its period. A constraint can raise the maximum using
+    /// <see cref="Constraint.DirectStiffnessScale"/> .
     /// </summary>
     public static class DirectStiffness
     {
         /// <summary>
-        /// The period, in seconds. It is fixed rather than the substep, because a joint's static sag under a load is the
-        /// load over its stiffness: a cap that followed the substep would make a craft sag with the square of the substep
-        /// and tie its stiffness to how many substeps run.
+        /// The oscillation period in seconds. This is fixed independently of the substep duration. A joint's static sag
+        /// is the load divided by its stiffness. If the stiffness cap depended on substep duration, the sag would vary
+        /// with the square of that duration, making the craft's stiffness depend on the number of substeps.
         /// </summary>
         public const float Period = 0.005f;
 
         /// <summary>
-        /// The cap for an inverse mass, or for a rotation the mean of each body's inverse inertia over its three axes, summed
-        /// over the bodies that move.
+        /// Returns the stiffness cap for the given inverse mass. For rotation, use the sum over moving bodies of each
+        /// body's mean inverse inertia across its three axes.
         /// </summary>
         public static float Maximum(float inverseMass)
         {
