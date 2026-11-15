@@ -1,6 +1,7 @@
 using System;
 using AOT;
 using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -43,6 +44,27 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// A count bumped by everything that can change how the step groups the joints into units and places them in the
+    /// vessel forest (<see cref="GroupJointsJob"/>): a joint created, destroyed, broken or set up again, a body created or
+    /// destroyed, or a body made kinematic or simulated or the opposite. While it holds, a world keeps last step's groups.
+    /// The store's records are mirrored by the plugin, which leaves no room for it there, so one count serves every world:
+    /// a change in any of them makes all of them group again.
+    /// </summary>
+    internal static class JointTopology
+    {
+        private readonly struct Key { }
+
+        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
+
+        internal static uint Version => (uint)Shared.Data;
+
+        internal static unsafe void Changed()
+        {
+            System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+        }
+    }
+
+    /// <summary>
     /// Everything a joint command does: keeping what Unity sends in the store. The step turns that into constraints in
     /// <see cref="BuildJointsJob"/>. Commands arrive on the main thread outside a step.
     /// </summary>
@@ -82,6 +104,11 @@ namespace KSP.Retooled.Physics
         private static void Execute(JointCommand command, NativeStore.JointData* joint, NativeStore.CommandArgs* a)
         {
             NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, (int)math.min(a->value, NativeStore.JointAxisCount - 1));
+            if (Changes(command))
+            {
+                JointTopology.Changed();
+            }
+
             switch (command)
             {
                 case JointCommand.SetFlags:
@@ -216,6 +243,25 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>Whether a command writes the joint, which every one does but those that only read it or wake its bodies.</summary>
+        private static bool Changes(JointCommand command)
+        {
+            switch (command)
+            {
+                case JointCommand.GetFlags:
+                case JointCommand.GetUserData:
+                case JointCommand.GetActorLocalPose:
+                case JointCommand.GetIsConstraintValid:
+                case JointCommand.GetForces:
+                case JointCommand.GetActors:
+                case JointCommand.WakeUpActors:
+                case JointCommand.Get6DofLimit:
+                    return false;
+                default:
+                    return true;
+            }
+        }
+
         /// <summary>
         /// Unity sends the swing limit as one pair, (angle about y, angle about z), under any of the three swing axes, each
         /// repeating the whole pair, so they share a slot. A linear limit arrives as Distance.
@@ -296,6 +342,7 @@ namespace KSP.Retooled.Physics
 
             joint->index = world->jointCount;
             world->joints[world->jointCount++] = joint;
+            JointTopology.Changed();
             return joint;
         }
 
@@ -308,6 +355,7 @@ namespace KSP.Retooled.Physics
 
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyJoint.Auto();
 
+            JointTopology.Changed();
             CountEnd(joint->body0, -1);
             CountEnd(joint->body1, -1);
             uint last = --world->jointCount;
@@ -326,6 +374,11 @@ namespace KSP.Retooled.Physics
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
 
             NativeStore.BodyData* hot = world->bodies + body->index;
+            if (hot->jointEnds > 0)
+            {
+                JointTopology.Changed();
+            }
+
             for (uint i = 0; i < world->jointCount && hot->jointEnds > 0; i++)
             {
                 NativeStore.JointData* joint = world->joints[i];

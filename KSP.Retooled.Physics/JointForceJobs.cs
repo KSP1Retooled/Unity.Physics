@@ -256,6 +256,7 @@ namespace KSP.Retooled.Physics
         private void Break(NativeStore.JointData* joint)
         {
             joint->state |= NativeStore.JointState.Broken;
+            JointTopology.Changed();
             if (World->jointBreakCount == World->jointBreakCapacity)
             {
                 World->jointBreakCapacity = StoreOps.Grown(World->jointBreakCapacity);

@@ -65,7 +65,8 @@ namespace KSP.Retooled.Physics
     /// <summary>
     /// Turns each store joint, or group of them that <see cref="GroupJointsJob"/> found, into the Unity Physics joints that
     /// express it. One of ours can take several: a Unity Physics joint holds three constraints, and all of them share one
-    /// pair of frames. Each unit writes its own run of the stream, which <see cref="GatherJointsJob"/> lays out in order.
+    /// pair of frames. Each unit writes its own run of the stream and counts it, and <see cref="LayOutJointsJob"/> and
+    /// <see cref="CopyJointsJob"/> lay the runs out in order.
     /// </summary>
     /// <remarks>
     /// Body A of a built joint is the store's body1, the connected body, and body B is body0, the joint's owner, because the
@@ -91,6 +92,9 @@ namespace KSP.Retooled.Physics
 
         public NativeStream.Writer Output;
 
+        /// <summary>How many joints each unit wrote.</summary>
+        public NativeArray<int> Written;
+
         // A unit writes only its own group and that group's members.
         [NativeDisableParallelForRestriction]
         public NativeArray<JointGroup> Groups;
@@ -110,10 +114,12 @@ namespace KSP.Retooled.Physics
         private JointForestRole role;
         private int pendingCount;
         private bool emitted;
+        private int written;
 
         public void Execute(int index)
         {
             Output.BeginForEachIndex(index);
+            written = 0;
             JointUnit unit = Units[index];
             role = Roles[index];
             if (unit.Group < 0)
@@ -126,6 +132,13 @@ namespace KSP.Retooled.Physics
             }
 
             Output.EndForEachIndex();
+            Written[index] = written;
+        }
+
+        private void Write(in PhysicsJoint joint)
+        {
+            Output.Write(joint);
+            written++;
         }
 
         internal static int BodyKey(NativeStore.Body* body)
@@ -359,7 +372,7 @@ namespace KSP.Retooled.Physics
             if (!emitted && pendingCount == 0)
             {
                 pending.Constraints.Length = 0;
-                Output.Write(pending);
+                Write(pending);
             }
 
             Flush();
@@ -391,7 +404,7 @@ namespace KSP.Retooled.Physics
             if (HeldInPlace(joint->body0) && HeldInPlace(joint->body1))
             {
                 pending.Constraints.Length = 0;
-                Output.Write(pending);
+                Write(pending);
                 return false;
             }
 
@@ -424,7 +437,7 @@ namespace KSP.Retooled.Physics
             if (pendingCount > 0)
             {
                 pending.Constraints.Length = (byte)pendingCount;
-                Output.Write(pending);
+                Write(pending);
                 pendingCount = 0;
                 emitted = true;
             }
@@ -734,6 +747,9 @@ namespace KSP.Retooled.Physics
         /// <summary>Each unit's place in the vessel forest, or None for every unit when the forest is off.</summary>
         public NativeList<JointForestRole> Roles;
 
+        /// <summary>Only sized here, for <see cref="BuildJointsJob.Written"/>.</summary>
+        public NativeList<int> Written;
+
         public bool Forest;
 
         public void Execute()
@@ -750,6 +766,7 @@ namespace KSP.Retooled.Physics
             }
 
             FindForest();
+            Written.ResizeUninitialized(Units.Length);
         }
 
         /// <summary>
@@ -891,27 +908,54 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Copies what <see cref="BuildJointsJob"/> wrote into the world's joints, unit by unit.</summary>
+    /// <summary>
+    /// Turns how many joints each unit of <see cref="BuildJointsJob"/> wrote into where its run starts among the world's
+    /// joints, which it sizes for them all.
+    /// </summary>
     [BurstCompile]
-    internal struct GatherJointsJob : IJob
+    internal struct LayOutJointsJob : IJob
     {
-        public NativeStream.Reader Input;
+        public NativeList<int> Written;
         public NativeList<PhysicsJoint> Output;
 
         public void Execute()
         {
-            Output.ResizeUninitialized(Input.Count());
             int next = 0;
-            for (int i = 0; i < Input.ForEachCount; i++)
+            for (int i = 0; i < Written.Length; i++)
             {
-                int count = Input.BeginForEachIndex(i);
-                for (int j = 0; j < count; j++)
-                {
-                    Output[next++] = Input.Read<PhysicsJoint>();
-                }
-
-                Input.EndForEachIndex();
+                int count = Written[i];
+                Written[i] = next;
+                next += count;
             }
+
+            Output.ResizeUninitialized(next);
+        }
+    }
+
+    /// <summary>Copies each unit's run of what <see cref="BuildJointsJob"/> wrote to where <see cref="LayOutJointsJob"/> put it.</summary>
+    [BurstCompile]
+    internal unsafe struct CopyJointsJob : IJobParallelForDefer
+    {
+        [ReadOnly]
+        public NativeStream.Reader Input;
+
+        [ReadOnly]
+        public NativeArray<int> FirstJoints;
+
+        [NativeDisableParallelForRestriction]
+        public NativeArray<PhysicsJoint> Output;
+
+        public void Execute(int index)
+        {
+            NativeStream.Reader input = Input;
+            int count = input.BeginForEachIndex(index);
+            PhysicsJoint* output = (PhysicsJoint*)Output.GetUnsafePtr() + FirstJoints[index];
+            for (int j = 0; j < count; j++)
+            {
+                output[j] = input.Read<PhysicsJoint>();
+            }
+
+            input.EndForEachIndex();
         }
     }
 

@@ -196,6 +196,7 @@ namespace KSP.Retooled.Physics
             hot->target->Rotation = a->rotation;
             hot->target->Position = a->position;
             BodyEntities.Adopt(hot);
+            JointTopology.Changed();
 
             // A new body goes last, so the statics keep their order unless it is one of them.
             if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
@@ -244,6 +245,7 @@ namespace KSP.Retooled.Physics
             }
 
             StoreOps.Release(globals, body);
+            JointTopology.Changed();
             if (staticsMove)
             {
                 world->staticsVersion++;

@@ -396,6 +396,13 @@ namespace KSP.Retooled.Physics
             {
                 StoreOps.MarkPoseChanged(body, before | hot->flags);
             }
+
+            // Whether a body moves decides where its joints sit in the vessel forest, and whether it is simulated where its
+            // joints' bodies are built.
+            if (((hot->flags ^ before) & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Simulated)) != 0)
+            {
+                JointTopology.Changed();
+            }
         }
 
         /// <summary>

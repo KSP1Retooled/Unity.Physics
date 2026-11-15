@@ -19,6 +19,9 @@ namespace KSP.Retooled.Physics
         // Building a joint costs much more than building a body, so a batch takes fewer of them.
         private const int JointBatchSize = 8;
 
+        // Copying a unit's joints is a few hundred bytes.
+        private const int CopyBatchSize = 64;
+
         // The write-back gives these bodies a pose other than their solved motion.
         private const NativeStore.BodyFlags PosedByWriteBack = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.HasKinematicTarget;
 
@@ -42,9 +45,16 @@ namespace KSP.Retooled.Physics
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
         private NativeList<JointForestRole> jointRoles;
+        private NativeList<int> jointsWritten;
+
+        // What the groups were found for, which keeps them while it holds. See JointTopology.
+        private uint groupedTopology;
+        private bool groupedForest;
+        private bool grouped;
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
         private DirectSolverCache directSolverCache;
+        private SolverIslandCache solverIslandCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
         private NativeList<int> queryFirstShapes;
@@ -91,9 +101,11 @@ namespace KSP.Retooled.Physics
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
             jointRoles = new NativeList<JointForestRole>(Allocator.Persistent);
+            jointsWritten = new NativeList<int>(Allocator.Persistent);
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
+            solverIslandCache = SolverIslandCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
             queryFirstShapes = new NativeList<int>(Allocator.Persistent);
@@ -141,9 +153,11 @@ namespace KSP.Retooled.Physics
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
             jointRoles.Dispose();
+            jointsWritten.Dispose();
             jointLoads.Dispose();
             groupLoads.Dispose();
             directSolverCache.Dispose();
+            solverIslandCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
             queryFirstShapes.Dispose();
@@ -296,7 +310,9 @@ namespace KSP.Retooled.Physics
                 Bodies = (int)store->bodyCount,
             }.Schedule(filtered);
 
-            return JobHandle.CombineDependencies(simulation->ScheduleIslandJobs(input, filtered), remembered);
+            SimulationStepInput keeping = input;
+            keeping.SolverIslandCache = solverIslandCache;
+            return JobHandle.CombineDependencies(simulation->ScheduleIslandJobs(keeping, filtered), remembered);
         }
 
         /// <summary>What the narrow phase decided, read before the Jacobians are built from it.</summary>
@@ -789,24 +805,37 @@ namespace KSP.Retooled.Physics
             {
                 using var jointsSpan = BackendMarkers.BuildJoints.Auto();
 
-                JobHandle grouped = new GroupJointsJob
+                // Nothing the groups are found from changed since the last step found them, so they stand. The build
+                // rewrites what it reads from them that depends on more than that.
+                bool forest = VesselForest.Enabled;
+                uint topology = JointTopology.Version;
+                JobHandle groupsFound = dependency;
+                if (!grouped || topology != groupedTopology || forest != groupedForest)
                 {
-                    World = store,
-                    Groups = jointGroups,
-                    Members = jointGroupMembers,
-                    Units = jointUnits,
-                    Roles = jointRoles,
-                    Forest = VesselForest.Enabled,
-                }.Schedule(dependency);
+                    groupsFound = new GroupJointsJob
+                    {
+                        World = store,
+                        Groups = jointGroups,
+                        Members = jointGroupMembers,
+                        Units = jointUnits,
+                        Roles = jointRoles,
+                        Written = jointsWritten,
+                        Forest = forest,
+                    }.Schedule(dependency);
+                    grouped = true;
+                    groupedTopology = topology;
+                    groupedForest = forest;
+                }
 
                 // Each unit builds a number of joints only it knows, so each writes its own run of a stream.
-                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, jointUnits, grouped, Allocator.TempJob);
+                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, jointUnits, groupsFound, Allocator.TempJob);
                 JobHandle emitted = new BuildJointsJob
                 {
                     World = store,
                     BuiltIndices = builtIndices.AsArray(),
                     Units = jointUnits.AsDeferredJobArray(),
                     Output = stream.AsWriter(),
+                    Written = jointsWritten.AsDeferredJobArray(),
                     Groups = jointGroups.AsDeferredJobArray(),
                     Members = jointGroupMembers.AsDeferredJobArray(),
                     DynamicCount = dynamicIndices.Length,
@@ -815,13 +844,20 @@ namespace KSP.Retooled.Physics
                     Roles = jointRoles.AsDeferredJobArray(),
                 }.Schedule(jointUnits, JointBatchSize, allocated);
 
-                JobHandle gathered = new GatherJointsJob
+                JobHandle laidOut = new LayOutJointsJob
                 {
-                    Input = stream.AsReader(),
+                    Written = jointsWritten,
                     Output = world.DynamicsWorld.InternalJointsList,
                 }.Schedule(emitted);
 
-                joints = stream.Dispose(gathered);
+                JobHandle copied = new CopyJointsJob
+                {
+                    Input = stream.AsReader(),
+                    FirstJoints = jointsWritten.AsDeferredJobArray(),
+                    Output = world.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
+                }.Schedule(jointsWritten, CopyBatchSize, laidOut);
+
+                joints = stream.Dispose(copied);
             }
 
             using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();
