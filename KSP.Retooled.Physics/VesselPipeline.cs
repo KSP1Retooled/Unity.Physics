@@ -9,11 +9,12 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The switch for persistent vessels. When it is on, the backend compiles the part joints between moving bodies into
-    /// vessels and hands them to the step in <see cref="SimulationStepInput.VesselSet"/>. The solver then solves those
-    /// joints with the vessel kernel's own rows, and the backend builds no Unity Physics joints for them. The switch also
-    /// turns on the forest path. The step reads the switch from Burst, so it lives in a SharedStatic. The environment
-    /// variable RETOOLED_VESSEL=1 turns it on when the first world attaches.
+    /// Controls persistent vessels. When enabled, the backend compiles part joints between moving bodies into vessels
+    /// and passes them to the step through <see cref="SimulationStepInput.VesselSet"/> . The solver uses the vessel
+    /// kernel's rows for those joints. The backend omits their Unity Physics constraints, but may still build joints
+    /// without constraints to disable collisions. Enabling vessels also enables the forest path. The flag is stored in
+    /// a SharedStatic so that Burst code can read it. Setting RETOOLED_VESSEL to 1 or true enables it when the first
+    /// world attaches; true is case-insensitive.
     /// </summary>
     public static class VesselPipeline
     {
@@ -23,8 +24,8 @@ namespace KSP.Retooled.Physics
 
         private static readonly SharedStatic<bool> Shared = SharedStatic<bool>.GetOrCreate<Key>();
 
-        // The last vessel Id that was handed out. Ids are counted for the whole process, so no two vessels in any world
-        // ever have the same one.
+        // The last vessel Id allocated. The counter is shared across the process, so vessels in different worlds also
+        // receive distinct Ids.
         private static readonly SharedStatic<long> LastId = SharedStatic<long>.GetOrCreate<IdKey>();
 
         private static bool initialized;
@@ -35,7 +36,7 @@ namespace KSP.Retooled.Physics
             set => Shared.Data = value;
         }
 
-        /// <summary>A vessel Id that no vessel has had before.</summary>
+        /// <summary>Allocates a vessel Id that has not been used before.</summary>
         internal static unsafe ulong NewId()
         {
             return (ulong)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<long>(LastId.UnsafeDataPointer));
@@ -60,36 +61,43 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The vessels that the backend compiled from the store's joints, and the set that it hands to each step.
+    /// Stores the vessels compiled from the store's joints and prepares the set passed to each step.
     /// <para>
-    /// A vessel is a group of moving bodies that part joints connect. The compile runs only when the joint topology
-    /// changes (<see cref="JointTopology"/>). It lists each vessel's parts in parent-first order, with the edge that joins
-    /// each part to its parent, and it lists the joints that close loops as closures. Every step, the backend works out the
-    /// edges' parameters again from the store's joints and bodies, so that a changed drive, anchor or mass reaches the
-    /// solver in the same step.
+    /// A vessel is a group of moving bodies connected by part joints. Vessels are compiled only when the joint topology
+    /// changes ( <see cref="JointTopology"/> ). Parts are listed with parents before children. Each part has an edge
+    /// connecting it to its parent, and joints that close loops are listed as closures. For every step, the backend
+    /// recalculates the edge parameters from the stored joints and bodies. Changes to a drive, anchor or mass therefore
+    /// affect the solver in that same step.
     /// </para>
     /// </summary>
     internal unsafe struct VesselBuild : IDisposable
     {
-        /// <summary>Every compiled vessel, in the order of their root bodies' store indices.</summary>
+        /// <summary>The compiled vessels, ordered by the store indices of their root bodies.</summary>
         public NativeList<VesselRecord> Vessels;
 
         /// <summary>For each part, the store index of its body.</summary>
         public NativeList<int> PartStoreBodies;
 
-        /// <summary>For each part, the joint unit of the edge to its parent, or -1 for a vessel's root.</summary>
+        /// <summary>
+        /// For each part, the joint unit connecting it to its parent, or -1 for the root of a vessel.
+        /// </summary>
         public NativeList<int> PartUnits;
 
-        /// <summary>For each part, its parent counted from the vessel's first part, or -1 for the root.</summary>
+        /// <summary>
+        /// For each part, the index of its parent relative to the vessel's first part, or -1 for the root.
+        /// </summary>
         public NativeList<int> PartParents;
 
         /// <summary>For each part, 1 when the part's body is the edge joint's body0, and 0 when it is body1.</summary>
         public NativeList<byte> PartIsBody0;
 
-        /// <summary>For each part, the first part of its vessel.</summary>
+        /// <summary>For each part, the index of the first part in its vessel.</summary>
         public NativeList<int> PartVesselFirst;
 
-        /// <summary>For each closure, its joint unit and its two parts, counted from the vessel's first part.</summary>
+        /// <summary>
+        /// For each closure, these lists contain its joint unit and the indices of its two parts. Only the part indices
+        /// are relative to the vessel's first part.
+        /// </summary>
         public NativeList<int> ClosureUnits;
 
         public NativeList<int> ClosurePartA;
@@ -98,8 +106,8 @@ namespace KSP.Retooled.Physics
         /// <summary>For each joint unit, the vessel that it belongs to, or -1.</summary>
         public NativeList<int> UnitVessels;
 
-        // What the last compile found, as record addresses that don't move, so that the next compile can tell which
-        // vessels are still the same and keep their Ids.
+        // Stable addresses of the body and joint records from the previous compilation. Compare them during the next
+        // compilation to identify unchanged vessels and retain their Ids.
         public NativeList<IntPtr> PartBodyRecords;
         public NativeList<IntPtr> PartJointRecords;
         public NativeList<IntPtr> ClosureJointRecords;
@@ -107,10 +115,11 @@ namespace KSP.Retooled.Physics
         /// <summary>For each compiled vessel, 1 when the vessel takes part in this step.</summary>
         public NativeList<byte> Active;
 
-        /// <summary>The vessels that take part in this step, which are the ones that the step's set lists.</summary>
+        /// <summary>The vessels participating in this step, included in the set passed to the solver.</summary>
         public NativeList<VesselRecord> StepVessels;
 
-        // The step's set points at these. They have one entry for each compiled part or closure.
+        // The set passed to the step contains pointers to these lists. Each list has one entry per compiled part or
+        // closure, as appropriate.
         public NativeList<int> PartBodies;
         public NativeList<VesselEdge> Edges;
         public NativeList<VesselClosure> Closures;
@@ -171,7 +180,7 @@ namespace KSP.Retooled.Physics
             EdgeLocked.Dispose();
         }
 
-        /// <summary>Forgets every vessel, as when the switch is off.</summary>
+        /// <summary>Clears all compiled vessels, as required when vessels are disabled.</summary>
         public void Clear(int unitCount)
         {
             Vessels.Clear();
@@ -195,7 +204,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>The set for this step, which points at this build's lists.</summary>
+        /// <summary>Returns the vessel set for this step, with pointers to the lists in this build.</summary>
         public VesselSet Set()
         {
             if (StepVessels.Length == 0)
@@ -217,10 +226,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Chooses the vessels that take part in this step and sizes the step's lists. A vessel takes part when all of its
-        /// bodies are built as moving bodies this step. The joints spread waking along themselves before the build, so a
-        /// vessel's bodies are either all awake or all asleep. A vessel that is asleep stays out of the set, and its joints
-        /// are built as Unity Physics joints with nothing to solve, as they would be without vessels. Main thread.
+        /// Selects the vessels that participate in this step and resizes the lists for the step. A vessel participates
+        /// only if all of its bodies are built as moving bodies for this step. Before the build, connected sleeping
+        /// bodies are woken through the joints, so a vessel's bodies are either all awake or all asleep. A sleeping
+        /// vessel is excluded from the set. Its joints are built as Unity Physics joints without constraints, as they
+        /// would be with vessels disabled. Runs on the main thread.
         /// </summary>
         public void ChooseStepVessels(NativeStore.WorldData* store, NativeArray<int> builtIndices, int dynamicCount)
         {
@@ -253,7 +263,8 @@ namespace KSP.Retooled.Physics
             Closures.ResizeUninitialized(ClosureUnits.Length);
             ClosureLoads.ResizeUninitialized(ClosureUnits.Length);
 
-            // The solver writes the loads of the vessels that it solves. The rest read as nothing.
+            // The solver writes loads for the vessels that it solves. Clear the arrays so that loads for all other
+            // vessels are zero.
             UnsafeUtility.MemClear(EdgeLoads.GetUnsafePtr(), (long)parts * sizeof(VesselEdgeLoad));
             UnsafeUtility.MemClear(ClosureLoads.GetUnsafePtr(), (long)ClosureLoads.Length * sizeof(VesselEdgeLoad));
             UnsafeUtility.MemClear(EdgeLocked.GetUnsafePtr(), parts);
@@ -261,14 +272,14 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Compiles the vessels from the joint units that <see cref="GroupJointsJob"/> found. A vessel is a connected group of
-    /// forest units between two moving bodies. The forest's tree units become the vessel's edges, and its closure units
-    /// become the vessel's closures. Units that touch the world, a static body or a kinematic body stay Unity Physics
-    /// joints, and so do joints that aren't mergeable, such as hinges, servos with targets and wheels.
+    /// Compiles vessels from the joint units found by <see cref="GroupJointsJob"/> . Each vessel is a connected group
+    /// of forest units between moving bodies. Tree units become edges, and units that close loops become closures.
+    /// Units connected to the world, a static body or a kinematic body remain Unity Physics joints. Joints that cannot
+    /// be merged also remain Unity Physics joints; examples include hinges, servos with targets and wheels.
     /// <para>
-    /// A vessel's root is the body with the lowest store index, and its parts follow in breadth-first order from there, so
-    /// every parent comes before its children. A vessel keeps its Id when the compile finds the same parts, in the same
-    /// order and joined by the same joints, as the compile before it. Any other vessel gets a new Id.
+    /// The root of a vessel is the body with the lowest store index. Parts are listed in breadth-first order from the
+    /// root, so every parent precedes its children. A vessel retains its Id if compilation finds the same root, parts,
+    /// connecting joints and closures in the same order as before. Otherwise, it receives a new Id.
     /// </para>
     /// </summary>
     [BurstCompile]
@@ -290,16 +301,18 @@ namespace KSP.Retooled.Physics
             int bodyCount = (int)World->bodyCount;
             int unitCount = Units.Length;
 
-            // What the last compile found, kept until the new vessels are compared with it.
+            // Keep the results of the previous compilation until they have been compared with the newly compiled
+            // vessels.
             var oldVessels = new NativeArray<VesselRecord>(Build.Vessels.AsArray(), Allocator.Temp);
             var oldBodies = new NativeArray<IntPtr>(Build.PartBodyRecords.AsArray(), Allocator.Temp);
             var oldJoints = new NativeArray<IntPtr>(Build.PartJointRecords.AsArray(), Allocator.Temp);
             var oldClosures = new NativeArray<IntPtr>(Build.ClosureJointRecords.AsArray(), Allocator.Temp);
             Build.Clear(unitCount);
 
-            // Kruskal over the forest units between two moving bodies, in the store's order, as the forest does it: a
-            // unit that joins two trees is an edge, and a unit whose bodies are already in one tree closes a loop. The
-            // forest's own roles count a body that isn't simulated as moving, so the units are sorted again here.
+            // Use Kruskal's algorithm on forest units between two moving bodies, processing them in store order as in
+            // the forest. A unit connecting two trees becomes an edge; one between bodies already in the same tree
+            // becomes a closure. The forest classifies bodies as moving even when they are not simulated. Reclassify
+            // the units here to exclude those bodies.
             var kindList = new NativeArray<JointForestRole>(unitCount, Allocator.Temp);
             kinds = (JointForestRole*)kindList.GetUnsafePtr();
             var root = new NativeArray<int>(bodyCount, Allocator.Temp);
@@ -337,7 +350,8 @@ namespace KSP.Retooled.Physics
                 degree[(int)joint->body1->index]++;
             }
 
-            // Each body's neighbours along tree units, as one list with a start for each body.
+            // Store the neighbours connected to each body by tree units in a single list. Record the start index for
+            // each body.
             var firstNeighbour = new NativeArray<int>(bodyCount + 1, Allocator.Temp);
             for (int i = 0; i < bodyCount; i++)
             {
@@ -360,7 +374,8 @@ namespace KSP.Retooled.Physics
                 neighbourBody[degree[b]++] = a;
             }
 
-            // Walk each component from its lowest body, breadth first. A body with no tree units is no vessel.
+            // Traverse each connected component in breadth-first order, starting with the body that has the lowest
+            // store index. A body with no tree units does not form a vessel.
             var partOf = new NativeArray<int>(bodyCount, Allocator.Temp);
             var vesselOfRoot = new NativeArray<int>(bodyCount, Allocator.Temp);
             for (int i = 0; i < bodyCount; i++)
@@ -403,7 +418,7 @@ namespace KSP.Retooled.Physics
                 });
             }
 
-            // The closures, grouped by vessel: count them, then place them.
+            // Count the closures for each vessel, then place them in consecutive ranges grouped by vessel.
             int vesselCount = Build.Vessels.Length;
             var closureCount = new NativeArray<int>(vesselCount + 1, Allocator.Temp);
             for (int u = 0; u < unitCount; u++)
@@ -448,13 +463,13 @@ namespace KSP.Retooled.Physics
             KeepOrRenewIds(oldVessels, oldBodies, oldJoints, oldClosures);
         }
 
-        // What this compile found each unit to be: a vessel's edge, a vessel's closure, or neither.
+        // The role assigned to each unit during this compilation: a vessel edge, a vessel closure, or neither.
         [NativeDisableUnsafePtrRestriction]
         private JointForestRole* kinds;
 
         /// <summary>
-        /// Whether this compile found a unit to be of the given kind, and its bodies' store indices: a is the leading
-        /// joint's body0, and b is its body1.
+        /// Returns whether this compilation assigned the requested kind to the unit. Also returns the store indices of
+        /// its bodies: a is the leading joint's body0, and b is its body1.
         /// </summary>
         private bool IsVesselUnit(int unit, JointForestRole kind, out int a, out int b)
         {
@@ -470,7 +485,10 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
-        /// <summary>Whether a body is built as a moving body: simulated, and neither static nor kinematic.</summary>
+        /// <summary>
+        /// Returns whether a body is simulated and is neither static nor kinematic, so it can be built as a moving
+        /// body.
+        /// </summary>
         private static bool Moving(NativeStore.Body* body)
         {
             if (body == null)
@@ -507,8 +525,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives each new vessel the Id of the vessel from the last compile that had the same root body, if the two have the
-        /// same parts in the same order, joined by the same joints, and the same closures. Every other vessel gets a new Id.
+        /// Reuses the Id of a previously compiled vessel when it has the same root body, the same parts in the same
+        /// order, the same connecting joints, and the same closures. Assigns a new Id to every other vessel.
         /// </summary>
         private void KeepOrRenewIds(NativeArray<VesselRecord> oldVessels, NativeArray<IntPtr> oldBodies, NativeArray<IntPtr> oldJoints,
             NativeArray<IntPtr> oldClosures)
@@ -568,9 +586,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// What a joint unit asks of a vessel edge or closure, worked out from its joints: the joint point in each body's own
-    /// frame, the joint frame in each body's own frame, each rotation axis's spring and damper, and the break limits. A
-    /// group of joints between the same two bodies counts as one, at the mean of its members' anchors.
+    /// Parameters for a vessel edge or closure, calculated from the joints in its unit: anchors and joint frames in
+    /// each body's local frame, spring stiffness and damping for each angular axis, and break limits. A group of joints
+    /// between the same two bodies is represented as one joint at the mean of its members' anchors.
     /// </summary>
     internal unsafe struct UnitParameters
     {
@@ -579,7 +597,10 @@ namespace KSP.Retooled.Physics
         public quaternion Rotation0;
         public quaternion Rotation1;
 
-        /// <summary>Per rotation axis of the joint frame (twist, then the two swings): the spring and the damper.</summary>
+        /// <summary>
+        /// Spring stiffness and damping for each angular axis of the joint frame: twist, followed by the two swing
+        /// axes.
+        /// </summary>
         public double3 Stiffness;
 
         public double3 Damping;
@@ -587,8 +608,9 @@ namespace KSP.Retooled.Physics
         public double BreakTorque;
 
         /// <summary>
-        /// Below this, in square metres, the members of a group are counted as sitting at one point. Above it, the members'
-        /// linear rows hold a turn about any axis that their offsets don't lie along, and those rows are always hard.
+        /// The threshold for the sum of squared perpendicular offsets from an angular axis, in square metres. If that
+        /// sum exceeds this value, the members' linear constraints prevent rotation about that axis. Otherwise, their
+        /// anchors are treated as coincident for that axis. These linear constraints are always rigid.
         /// </summary>
         private const float SpreadSquared = 1e-8f;
 
@@ -613,7 +635,8 @@ namespace KSP.Retooled.Physics
             parameters.Anchor0 /= count;
             parameters.Anchor1 /= count;
 
-            // A locked axis is hard, and a driven axis gets the sum of its members' drives.
+            // Treat locked axes as rigid. For a driven axis, sum the spring stiffness and damping from the members'
+            // drives.
             bool3 hard = false;
             for (int i = 0; i < count; i++)
             {
@@ -634,8 +657,9 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            // The members of a group sit at different points around the joint, and each member's linear rows are hard. So
-            // the group can't turn about an axis that their offsets from the mean point don't all lie along.
+            // Members may have anchors at different points, and their linear constraints are rigid. The group therefore
+            // cannot rotate about an axis unless all anchor offsets from the mean lie along that axis, within the
+            // spread threshold.
             if (count > 1)
             {
                 quaternion toJoint = math.conjugate(leader->rotation0);
@@ -660,23 +684,26 @@ namespace KSP.Retooled.Physics
             return parameters;
         }
 
-        /// <summary>A point in a body's own frame, as a point in its motion frame: from the centre of mass, along the principal axes.</summary>
+        /// <summary>
+        /// Converts a point from the body's local frame to its motion frame, whose origin is the centre of mass and
+        /// whose axes are the principal inertia axes.
+        /// </summary>
         public static double3 InMotionFrame(NativeStore.BodyData* body, float3 point)
         {
             RigidTransform bodyFromMotion = body->mass->Transform;
             return math.rotate(math.conjugate(bodyFromMotion.rot), point - bodyFromMotion.pos);
         }
 
-        /// <summary>A rotation in a body's own frame, as a rotation in its motion frame.</summary>
+        /// <summary>Converts a rotation from the body's local frame to its motion frame.</summary>
         public static quaternion InMotionFrame(NativeStore.BodyData* body, quaternion rotation)
         {
             return math.mul(math.conjugate(body->mass->Transform.rot), rotation);
         }
 
         /// <summary>
-        /// The rotation from part A's motion frame to part B's, when the joint between them is at rest. At rest the two
-        /// joint frames line up in the world: A's orientation times A's joint frame equals B's orientation times B's joint
-        /// frame.
+        /// The rotation that transforms coordinates from part B's motion frame into part A's motion frame when the
+        /// joint is at rest. At rest, the joint frames align in world space: A's orientation multiplied by A's joint
+        /// frame equals B's orientation multiplied by B's joint frame.
         /// </summary>
         public static double4 Rest(NativeStore.BodyData* bodyA, quaternion frameA, NativeStore.BodyData* bodyB, quaternion frameB)
         {
@@ -691,8 +718,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Fills each part's body index and edge for this step. The edge's anchors, frame and rest orientation come from the
-    /// store's joints and are turned into the parts' motion frames. Its springs and break limits come from the joints too.
+    /// Fills the body index and edge for each part in this step. Converts the anchors, frame and rest orientation from
+    /// the stored joints into the parts' motion frames. The springs and break limits also come from the stored joints.
     /// </summary>
     [BurstCompile]
     internal unsafe struct FillVesselEdgesJob : IJobParallelFor
@@ -727,7 +754,10 @@ namespace KSP.Retooled.Physics
         public NativeArray<int> PartBodies;
         public NativeArray<VesselEdge> Edges;
 
-        /// <summary>The first part of the vessel of each part, so that a parent's index can be found from its relative one.</summary>
+        /// <summary>
+        /// For each part, the index of its vessel's first part. Add this to a parent's relative index to find its index
+        /// in the full list.
+        /// </summary>
         [ReadOnly]
         public NativeArray<int> PartVesselFirst;
 
@@ -751,7 +781,8 @@ namespace KSP.Retooled.Physics
             quaternion childFrame = childIsBody0 ? parameters.Rotation0 : parameters.Rotation1;
             quaternion parentFrame = childIsBody0 ? parameters.Rotation1 : parameters.Rotation0;
 
-            // The edge has one spring for both swing axes, so it takes the softer of the two.
+            // Use the softer swing axis because the edge uses one spring for both swing axes. Use the damping from that
+            // same axis.
             int swing = parameters.Stiffness.y <= parameters.Stiffness.z ? 1 : 2;
             Edges[part] = new VesselEdge
             {
@@ -773,8 +804,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Fills each closure for this step. Part A is the leading joint's body0 and part B its body1. A closure's linear rows
-    /// are hard, and its angular rows take the softest of the joint's rotation axes.
+    /// Fills each closure for this step. Part A is the leading joint's body0, and part B is its body1. Linear
+    /// constraints are rigid. For all angular constraints, use the stiffness and damping of the joint's softest angular
+    /// axis.
     /// </summary>
     [BurstCompile]
     internal unsafe struct FillVesselClosuresJob : IJobParallelFor
@@ -831,10 +863,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Turns the loads that the solve wrote for the vessels into the loads of their joint units, the same way that the
-    /// impulse events of a Unity Physics joint become a load: the force and torque that act on the leading joint's body0.
-    /// An edge's load is what the parent applied to the child, and a closure's load is what part A applied to part B.
-    /// A group's load goes to the group, and <see cref="ShareGroupLoadsJob"/> shares it among the members afterwards.
+    /// Converts the vessel loads from the solver into loads for their joint units. As with Unity Physics impulse
+    /// events, the result is the force and torque acting on the leading joint's body0. Edge loads describe what the
+    /// parent applied to the child. Closure loads describe what part A applied to part B. Store loads for groups in the
+    /// group array; <see cref="ShareGroupLoadsJob"/> distributes them among the members afterwards.
     /// </summary>
     [BurstCompile]
     internal unsafe struct VesselLoadsJob : IJobParallelFor
@@ -842,7 +874,10 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointUnit> Units;
 
-        /// <summary>For each part, the unit of its edge, and for each closure after the parts, the closure's unit.</summary>
+        /// <summary>
+        /// For each part, the joint unit for its edge, or -1 for a vessel root. Closure units are stored separately in
+        /// <see cref="ClosureUnits"/> .
+        /// </summary>
         [ReadOnly]
         public NativeArray<int> PartUnits;
 
@@ -870,7 +905,7 @@ namespace KSP.Retooled.Physics
         [NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> GroupLoads;
 
-        /// <summary>Indexes run over the parts first and then over the closures.</summary>
+        /// <summary>Processes part indices first, followed by closure indices.</summary>
         public void Execute(int index)
         {
             int parts = PartUnits.Length;
@@ -885,7 +920,7 @@ namespace KSP.Retooled.Physics
                     return;
                 }
 
-                // The load acts on the child. When the child is body1, what acts on body0 is the opposite.
+                // The load acts on the child. If the child is body1, reverse the sign to obtain the load on body0.
                 load = EdgeLoads[index];
                 sign = PartIsBody0[index] != 0 ? 1.0f : -1.0f;
             }
@@ -893,7 +928,7 @@ namespace KSP.Retooled.Physics
             {
                 unit = ClosureUnits[index - parts];
 
-                // The load acts on part B, which is body1, so what acts on body0 is the opposite.
+                // The load acts on part B, which is body1. Reverse the sign to obtain the load on body0.
                 load = ClosureLoads[index - parts];
                 sign = -1.0f;
             }

@@ -8,28 +8,32 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// What a store joint, or a group the step built as one joint, carried this step, gathered before it is written back.
+    /// The force and torque on a joint during this step, collected before they are written back to the store. The load
+    /// may be for a single store joint or for a group that was built as one joint.
     /// </summary>
     internal struct JointLoad
     {
         public float3 Force;
         public float3 Torque;
 
-        /// <summary>Whether the joint's smoothed load passed its break limits, for <see cref="BreakJointsJob"/>.</summary>
+        /// <summary>
+        /// Whether the smoothed load exceeded the joint's break limits, for <see cref="BreakJointsJob"/> .
+        /// </summary>
         public bool Overloaded;
     }
 
     /// <summary>
-    /// The jobs that read what the joints' constraints applied from the step's impulse events, which arrive once per
-    /// constraint with the impulse of the whole step, then break the joints over their limits. A constraint's impulse acts
-    /// on body A, the connected body, and Unity reports what acts on the joint's owner. Drives count for neither, as under
-    /// PhysX, so they raise no events. A joint whose bodies sleep isn't solved, and it keeps reporting the last forces it
-    /// had, as under PhysX. A broken joint stops constraining from the next step and waits in the world's break list for
-    /// whatever publishes the step's results.
+    /// Jobs that calculate joint loads from the impulse events for this step, then break joints whose loads exceed
+    /// their limits. Each constraint produces one event containing its impulse for the whole step. That impulse acts on
+    /// body A, the connected body. Unity reports the load on the joint's owner instead. As in PhysX, drives contribute
+    /// neither to reported loads nor to breaking, so they produce no events. Joints whose bodies are asleep are not
+    /// solved and continue to report their previous forces, as in PhysX. A broken joint stops constraining its bodies
+    /// from the next step. Its break record remains in the world's break list until the results of the step are
+    /// published.
     ///
-    /// Most of the work is turning each event into the world, which reads the joint's bodies and runs in parallel. A joint's
-    /// events are still summed one after another in the order the solve wrote them, so the forces come out the same however
-    /// the work is spread.
+    /// Most of the work involves converting each event into world space using the joint's bodies. That conversion runs
+    /// in parallel. The converted events for a joint are then summed in the order that the solver wrote them. This
+    /// gives the same forces regardless of how the parallel work is scheduled.
     /// </summary>
     internal static unsafe class JointForceJobs
     {
@@ -45,7 +49,10 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Starts each joint's load from nothing, or from what it last carried if it isn't solved.</summary>
+    /// <summary>
+    /// Initializes each joint's load to zero, or to its previous load if both bodies are held in place and the joint is
+    /// not solved.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct SeedJointLoadsJob : IJobParallelFor
     {
@@ -67,8 +74,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Turns each impulse event, one bucket of the event stream per index, into the force or torque it means in the world,
-    /// written over the event's impulse. Nothing reads the events after <see cref="SumJointImpulsesJob"/>.
+    /// Converts each impulse event into a force or torque in world space, processing one bucket of the event stream per
+    /// work item. The result replaces the impulse in the event. No code reads the events after
+    /// <see cref="SumJointImpulsesJob"/> .
     /// </summary>
     [BurstCompile]
     internal unsafe struct RotateJointImpulsesJob : IJobParallelForDefer
@@ -102,8 +110,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Adds the turned events into the loads of their joints and groups, in the order the solve wrote them. What acts on
-    /// the joint's owner is the opposite of what acts on body A.
+    /// Adds the converted events to the loads for their joints and groups, in the order that the solver wrote them. The
+    /// load on the joint's owner has the opposite sign to the load on body A.
     /// </summary>
     [BurstCompile]
     internal struct SumJointImpulsesJob : IJob
@@ -143,10 +151,11 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Splits what a group's joint carried among its members as their own joints would have carried it at rest. The group
-    /// turns by its torque over its stiffness; each member holds its own share of that turn as torque, and its linear rows
-    /// hold the turn at their offset as force. Every member takes an equal share of the force. A joint is a member of one
-    /// group at most, so the groups split their loads in parallel.
+    /// Distributes a group's load among its members according to their resistance to displacement at rest. Dividing the
+    /// group's torque by its stiffness gives an equivalent rotation. Each member contributes torque according to its
+    /// angular stiffness. Its linear constraints also contribute force because its anchor is offset from the group's
+    /// mean anchor. The group's net force is divided equally among the members. Each joint belongs to at most one
+    /// group, so the loads for different groups can be distributed in parallel.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ShareGroupLoadsJob : IJobParallelFor
@@ -186,16 +195,18 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Gives each joint its load and follows it with the load that counts against the joint's break limits, marking the
-    /// joints that pass them.
+    /// Writes each joint's load to the store, then smooths the force and torque magnitudes used for breaking. Marks
+    /// active joints whose smoothed loads exceed their break limits.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SettleJointLoadsJob : IJobParallelFor
     {
         /// <summary>
-        /// How long, in seconds, a load must last before it counts in full against a joint's break force. The direct solve
-        /// holds a craft rigidly, so a part landing on the ground stops everything above it within one step, and the
-        /// joints carry that whole stop at once. PhysX spreads the same stop over several steps, so it never breaks them.
+        /// The time constant, in seconds, for smoothing both force and torque before comparing them with the break
+        /// limits. A constant load approaches its full contribution over successive steps. The direct solver holds a
+        /// craft rigidly, so one part landing can stop all of the parts above it within a single step. Their joints
+        /// carry the force of that stop at once. PhysX spreads the stop over several steps, which reduces the peak load
+        /// and makes breakage less likely.
         /// </summary>
         private const float BreakingTimeConstant = 0.1f;
 
@@ -226,7 +237,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Breaks the overloaded joints, listing them in the world's break list in store order.</summary>
+    /// <summary>
+    /// Breaks overloaded joints and adds their break records to the world's break list in store order.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct BreakJointsJob : IJob
     {

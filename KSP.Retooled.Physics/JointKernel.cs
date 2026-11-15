@@ -7,7 +7,10 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>The plugin API's joint commands, by the id Joint.cpp passes. Attach checks the count against the plugin's.</summary>
+    /// <summary>
+    /// The plugin API's joint commands, identified by the IDs that Joint.cpp passes. Attach checks that the command
+    /// count matches the plugin's count.
+    /// </summary>
     internal enum JointCommand : uint
     {
         Invalid = 0,
@@ -44,11 +47,12 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// A count bumped by everything that can change how the step groups the joints into units and places them in the
-    /// vessel forest (<see cref="GroupJointsJob"/>): a joint created, destroyed, broken or set up again, a body created or
-    /// destroyed, or a body made kinematic or simulated or the opposite. While it holds, a world keeps last step's groups.
-    /// The store's records are mirrored by the plugin, which leaves no room for it there, so one count serves every world:
-    /// a change in any of them makes all of them group again.
+    /// A version counter for changes that can affect how the step groups joints into units and assigns their roles in
+    /// the vessel forest ( <see cref="GroupJointsJob"/> ). These changes include creating, destroying, breaking or
+    /// reconfiguring a joint; creating or destroying a body; and changing whether a body is kinematic or simulated. If
+    /// the version stays the same, a world reuses the groups from the previous step. The plugin mirrors the records in
+    /// the store, so there is no space to add this counter to those records. Instead, all worlds share one counter. A
+    /// change in any world causes every world to rebuild its groups.
     /// </summary>
     internal static class JointTopology
     {
@@ -65,8 +69,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Everything a joint command does: keeping what Unity sends in the store. The step turns that into constraints in
-    /// <see cref="BuildJointsJob"/>. Commands arrive on the main thread outside a step.
+    /// Handles joint commands by storing the values that Unity sends. <see cref="BuildJointsJob"/> uses those values to
+    /// build constraints for the step. Commands arrive on the main thread, outside a step.
     /// </summary>
     [BurstCompile]
     internal static unsafe class JointKernel
@@ -85,7 +89,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst omits this method. It runs only in Mono, where exceptions must be caught and logged before returning
+        /// to native code.
+        /// </summary>
         [BurstDiscard]
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, ref bool ranInMono)
         {
@@ -110,9 +117,10 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            // The step's groups and forest roles follow from which joints are mergeable, and for those from their bodies and
-            // frames. A command that leaves all of that alone, as a servo's new target or a drive tuned on a joint that
-            // isn't mergeable does, keeps them.
+            // The groups and forest roles depend on which joints are mergeable. For mergeable joints, they also depend
+            // on the bodies, frame orientations and flags. The existing groups and roles can be reused if a command
+            // changes none of these. Examples include changing a servo target without changing mergeability, or tuning
+            // a drive on a joint that remains unmergeable.
             bool wasMergeable = BuildJointsJob.Mergeable(joint);
             NativeStore.Body* body0 = joint->body0, body1 = joint->body1;
             quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
@@ -263,7 +271,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Whether a command writes the joint, which every one does but those that only read it or wake its bodies.</summary>
+        /// <summary>
+        /// Returns whether a command may modify the joint. Commands that only read the joint or wake its bodies return
+        /// false.
+        /// </summary>
         private static bool Changes(JointCommand command)
         {
             switch (command)
@@ -283,8 +294,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity sends the swing limit as one pair, (angle about y, angle about z), under any of the three swing axes, each
-        /// repeating the whole pair, so they share a slot. A linear limit arrives as Distance.
+        /// Unity sends the swing limits as a pair: the angle about y and the angle about z. Commands for any of the
+        /// three swing axes repeat the entire pair, so the limits share one storage slot. A linear limit uses the
+        /// Distance slot.
         /// </summary>
         private static NativeStore.JointAxis* LimitAxis(NativeStore.JointData* joint, uint axis)
         {
@@ -388,7 +400,9 @@ namespace KSP.Retooled.Physics
             StoreOps.Release(globals, joint);
         }
 
-        /// <summary>A joint can outlive a body it connects, and must not keep a pointer to the freed record.</summary>
+        /// <summary>
+        /// A joint can outlive a body that it connects. Clear the pointer to that body before its record is freed.
+        /// </summary>
         internal static void ForgetBody(NativeStore.WorldData* world, NativeStore.Body* body)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
