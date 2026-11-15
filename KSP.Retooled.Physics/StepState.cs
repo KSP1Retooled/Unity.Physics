@@ -67,6 +67,7 @@ namespace KSP.Retooled.Physics
         private NativeList<int> sleepContacts;
         private NativeList<bool> sleepTouchesStill;
         private NativeList<int> fallingAsleep;
+        private NativeArray<int> sleepRunOut;
         private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
         private NativeHashMap<JacobianKey, float2> warmStarts;
         private NativeList<ColliderBuilder.Work> colliderWork;
@@ -118,6 +119,7 @@ namespace KSP.Retooled.Physics
             sleepContacts = new NativeList<int>(Allocator.Persistent);
             sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
             fallingAsleep = new NativeList<int>(Allocator.Persistent);
+            sleepRunOut = new NativeArray<int>(1, Allocator.Persistent);
             lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
             warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
@@ -175,6 +177,7 @@ namespace KSP.Retooled.Physics
             sleepContacts.Dispose();
             sleepTouchesStill.Dispose();
             fallingAsleep.Dispose();
+            sleepRunOut.Dispose();
             lastImpulses.Dispose();
             warmStarts.Dispose();
             colliderWork.Dispose();
@@ -400,7 +403,11 @@ namespace KSP.Retooled.Physics
         /// Reads what the joints carried from the step's impulse events and breaks the overloaded ones, see
         /// <see cref="JointForceJobs"/>. Their bodies' poses have to be written back first.
         /// </summary>
-        private void ReadJointForces(Simulation simulation, float deltaTime)
+        /// <remarks>
+        /// One chain of jobs, which runs beside the tree's update and the query snapshot: the events are turned beside the
+        /// seeding, and summed into the loads once both are done.
+        /// </remarks>
+        private JobHandle ReadJointForces(Simulation simulation, float deltaTime)
         {
             const int groupsPerBatch = 16;
 
@@ -409,26 +416,24 @@ namespace KSP.Retooled.Physics
             groupLoads.ResizeUninitialized(jointGroups.Length);
             UnsafeUtility.MemClear(groupLoads.GetUnsafePtr(), (long)groupLoads.Length * sizeof(JointLoad));
 
-            JobHandle seeded = new SeedJointLoadsJob { World = store, Loads = jointLoads.AsArray() }.Schedule(jointCount, ParallelBatchSize);
+            JobHandle loaded = new SeedJointLoadsJob { World = store, Loads = jointLoads.AsArray() }.Schedule(jointCount, ParallelBatchSize);
             NativeStream events = simulation.ImpulseEvents.EventDataStream;
             if (events.IsCreated)
             {
-                JobHandle.ScheduleBatchedJobs();
-                new RotateJointImpulsesJob
+                JobHandle rotated = new RotateJointImpulsesJob
                 {
                     Events = events.AsReader(),
                     World = store,
                     Groups = jointGroups.AsArray(),
                     DeltaTime = deltaTime,
-                }.ScheduleUnsafe(events, 1, default).Complete();
+                }.ScheduleUnsafe(events, 1, default);
 
-                seeded.Complete();
-                new SumJointImpulsesJob
+                loaded = new SumJointImpulsesJob
                 {
                     Events = events.AsReader(),
                     JointLoads = jointLoads.AsArray(),
                     GroupLoads = groupLoads.AsArray(),
-                }.Run();
+                }.Schedule(JobHandle.CombineDependencies(loaded, rotated));
             }
 
             JobHandle shared = new ShareGroupLoadsJob
@@ -438,18 +443,18 @@ namespace KSP.Retooled.Physics
                 Members = jointGroupMembers.AsArray(),
                 GroupLoads = groupLoads.AsArray(),
                 JointLoads = jointLoads.AsArray(),
-            }.Schedule(jointGroups.Length, groupsPerBatch, seeded);
+            }.Schedule(jointGroups.Length, groupsPerBatch, loaded);
 
-            new SettleJointLoadsJob { World = store, Loads = jointLoads.AsArray(), DeltaTime = deltaTime }
-                .Schedule(jointCount, ParallelBatchSize, shared).Complete();
+            JobHandle settled = new SettleJointLoadsJob { World = store, Loads = jointLoads.AsArray(), DeltaTime = deltaTime }
+                .Schedule(jointCount, ParallelBatchSize, shared);
 
-            new BreakJointsJob
+            return new BreakJointsJob
             {
                 World = store,
                 Globals = globals,
                 Loads = jointLoads.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
-            }.Run();
+            }.Schedule(settled);
         }
 
         /// <summary>The last stage of a step, which hands the solved world back to the store and to Unity.</summary>
@@ -490,24 +495,37 @@ namespace KSP.Retooled.Physics
                 }.Schedule(dynamicIndices.Length, ParallelBatchSize).Complete();
             }
 
+            JobHandle forces;
             using (BackendMarkers.StepReadJointForces.Auto())
             {
-                ReadJointForces(simulation, deltaTime);
+                forces = ReadJointForces(simulation, deltaTime);
             }
 
             // What a removed shape held wakes after the joints read who sleeps, and before the sleep and the contact report
-            // do. The rest of the sleep and the query snapshot don't need the impulses or the report, so they run on workers
-            // while this thread waits for the tree and publishes the contacts.
-            new ForgetRemovedShapesJob { World = store, Touching = touching }.Run();
+            // do. Only then do the joints have to be read first, and it is rare. The rest of the sleep and the query snapshot
+            // don't need the impulses or the report, so they run on workers while this thread waits for the tree and
+            // publishes the contacts. The sleep joins bodies through the joints that held, so it waits for the breaking.
+            if (store->removedShapeCount != 0)
+            {
+                forces.Complete();
+                new ForgetRemovedShapesJob { World = store, Touching = touching }.Run();
+            }
+
+            JobHandle counted = new UpdateWakeCountersJob
+            {
+                World = store,
+                Contacts = sleepContacts,
+                TouchesStill = sleepTouchesStill,
+                RunOut = (int*)sleepRunOut.GetUnsafePtr(),
+                DeltaTime = deltaTime,
+            }.Schedule((int)store->bodyCount, ParallelBatchSize, contactsJoined);
             JobHandle sleep = new SleepJob
             {
                 World = store,
                 Parents = sleepParents,
-                Contacts = sleepContacts,
-                TouchesStill = sleepTouchesStill,
                 Falling = fallingAsleep,
-                DeltaTime = deltaTime,
-            }.Schedule(contactsJoined);
+                RunOut = (int*)sleepRunOut.GetUnsafePtr(),
+            }.Schedule(JobHandle.CombineDependencies(counted, forces));
             JobHandle snapshot = ScheduleQuerySnapshot(tree);
             JobHandle.ScheduleBatchedJobs();
 

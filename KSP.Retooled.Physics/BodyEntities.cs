@@ -245,8 +245,14 @@ namespace KSP.Retooled.Physics
         /// <summary>Makes a row's pointers current, if its body has an entity. Only the main thread can, as the remarks say.</summary>
         internal static void Refresh(NativeStore.BodyData* hot)
         {
+            // A row without an entity is always current, and the jobs ask about rows very often.
+            if (hot->entity == Entity.Null)
+            {
+                return;
+            }
+
             int version = Version();
-            if (hot->entity == Entity.Null || hot->orderVersion == version || Current.Data.CleanVersion == version)
+            if (hot->orderVersion == version || Current.Data.CleanVersion == version)
             {
                 return;
             }
@@ -280,9 +286,22 @@ namespace KSP.Retooled.Physics
             manager.CompleteDependencyBeforeRW<BodySleep>();
             manager.CompleteDependencyBeforeRW<BodyForces>();
             manager.CompleteDependencyBeforeRW<BodyTarget>();
+
+            // Nothing in this loop moves an entity, so the version holds throughout it, and while the bodies' archetype is
+            // clean no row needs anything.
+            int version = Version();
+            if (binding.CleanVersion == version)
+            {
+                return;
+            }
+
             for (uint i = 0; i < world->bodyCount; i++)
             {
-                Refresh(world->bodies + i);
+                NativeStore.BodyData* hot = world->bodies + i;
+                if (hot->entity != Entity.Null && hot->orderVersion != version)
+                {
+                    Refresh(hot);
+                }
             }
         }
 

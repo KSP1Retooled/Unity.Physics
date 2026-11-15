@@ -139,31 +139,32 @@ namespace KSP.Retooled.Physics
     /// <see cref="SleepContactsJob"/> joins the bodies through their contacts as soon as the solve ends, because the contact
     /// report sorts the manifolds later. This joins them through their joints once the step has broken the ones it breaks,
     /// and only lists the bodies that fall asleep, for <see cref="FallAsleepJob"/>, because the contact report still has to
-    /// see them awake.
+    /// see them awake. A body only sleeps once its counter has run out, so while every counter <see cref="UpdateWakeCountersJob"/>
+    /// left is above zero, every island stays awake and nothing needs joining.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SleepJob : IJob
     {
-        private const int MaximumCountedContacts = 10;
-
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
         public NativeList<int> Parents;
 
-        [ReadOnly]
-        public NativeList<int> Contacts;
-
-        [ReadOnly]
-        public NativeList<bool> TouchesStill;
-
         public NativeList<int> Falling;
 
-        public float DeltaTime;
+        /// <summary>Non-zero once a solved body's counter has run out this step, cleared here for the next.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        public int* RunOut;
 
         public void Execute()
         {
             Falling.Clear();
+            if (*RunOut == 0)
+            {
+                return;
+            }
+
+            *RunOut = 0;
             int count = (int)World->bodyCount;
             NativeArray<int> parents = Parents.AsArray();
             for (uint i = 0; i < World->jointCount; i++)
@@ -182,7 +183,6 @@ namespace KSP.Retooled.Physics
                 NativeStore.BodyData* body = World->bodies + i;
                 if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
                 {
-                    UpdateWakeCounter(body, TouchesStill[i] ? Contacts[i] : 0);
                     islandAwake[Find(parents, i)] |= body->sleep->WakeCounter > 0.0f;
                 }
             }
@@ -201,6 +201,59 @@ namespace KSP.Retooled.Physics
         {
             const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
             return (body->flags & immobile) == 0 && (body->flags & NativeStore.BodyFlags.Simulated) != 0;
+        }
+
+        internal static int Find(NativeArray<int> parents, int index)
+        {
+            while (parents[index] != index)
+            {
+                parents[index] = parents[parents[index]];
+                index = parents[index];
+            }
+
+            return index;
+        }
+
+        internal static void Union(NativeArray<int> parents, int a, int b)
+        {
+            parents[Find(parents, a)] = Find(parents, b);
+        }
+    }
+
+    /// <summary>
+    /// The part of <see cref="SleepJob"/> that is each body's own: running its wake counter down or topping it up, and
+    /// noting when one runs out, which is the only way an island can fall asleep.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct UpdateWakeCountersJob : IJobParallelFor
+    {
+        private const int MaximumCountedContacts = 10;
+
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        [ReadOnly]
+        public NativeList<int> Contacts;
+
+        [ReadOnly]
+        public NativeList<bool> TouchesStill;
+
+        [NativeDisableUnsafePtrRestriction]
+        public int* RunOut;
+
+        public float DeltaTime;
+
+        public void Execute(int i)
+        {
+            NativeStore.BodyData* body = World->bodies + i;
+            if (SleepJob.Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
+            {
+                UpdateWakeCounter(body, TouchesStill[i] ? Contacts[i] : 0);
+                if (!(body->sleep->WakeCounter > 0.0f))
+                {
+                    *RunOut = 1;
+                }
+            }
         }
 
         /// <summary>
@@ -239,22 +292,6 @@ namespace KSP.Retooled.Physics
             float inverseMass = body->mass->InverseMass != 0.0f ? body->mass->InverseMass : 1.0f;
             float rotational = math.dot(angular * angular, body->bodyMass->Inertia) * inverseMass;
             return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
-        }
-
-        internal static int Find(NativeArray<int> parents, int index)
-        {
-            while (parents[index] != index)
-            {
-                parents[index] = parents[parents[index]];
-                index = parents[index];
-            }
-
-            return index;
-        }
-
-        internal static void Union(NativeArray<int> parents, int a, int b)
-        {
-            parents[Find(parents, a)] = Find(parents, b);
         }
     }
 

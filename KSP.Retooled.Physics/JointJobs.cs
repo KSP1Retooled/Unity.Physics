@@ -22,7 +22,14 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
-            while (WakeThroughJoints(World))
+            // Only a sleeping body can be woken.
+            bool anyAsleep = false;
+            for (uint i = 0; i < World->bodyCount && !anyAsleep; i++)
+            {
+                anyAsleep = (World->bodies[i].flags & NativeStore.BodyFlags.Sleeping) != 0;
+            }
+
+            while (anyAsleep && WakeThroughJoints(World))
             {
             }
         }
