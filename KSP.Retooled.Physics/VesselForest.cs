@@ -10,17 +10,37 @@ namespace KSP.Retooled.Physics
     /// structurally, and every other row of the island is a boundary block solved against it (see
     /// <see cref="ForestSettings"/>). The step reads it from Burst, so it lives in a SharedStatic. The environment variable
     /// RETOOLED_FOREST=1 turns it on at attach, which is how a whole test run takes the forest path.
+    ///
+    /// <see cref="Locking"/> (off by default; RETOOLED_LOCK=1 at attach) lets the forest lock a tree edge whose joints
+    /// carry little: the pair moves as one rigid section until its load would deflect its springs past
+    /// <see cref="YieldAngle"/> or pass <see cref="YieldFraction"/> of its break limits. See <see cref="ForestSettings"/>.
     /// </summary>
     public static class VesselForest
     {
         private readonly struct Key { }
 
+        private readonly struct LockKey { }
+
         private static readonly SharedStatic<ForestSettings> Shared = SharedStatic<ForestSettings>.GetOrCreate<Key>();
+
+        private static readonly SharedStatic<LockFractions> Fractions = SharedStatic<LockFractions>.GetOrCreate<LockKey>();
+
+        private struct LockFractions
+        {
+            public float Lock;
+            public float Yield;
+        }
 
         private static bool initialized;
 
         /// <summary>The boundary rows above which an island solves the old way.</summary>
         public const int DefaultBoundaryRowCap = 256;
+
+        /// <summary>A joint whose smoothed load is under this fraction of its break limits lets its pair lock.</summary>
+        public const float DefaultLockFraction = 0.25f;
+
+        /// <summary>A locked pair yields once a joint's smoothed load passes this fraction of its break limits.</summary>
+        public const float DefaultYieldFraction = 0.5f;
 
         public static bool Enabled
         {
@@ -32,6 +52,39 @@ namespace KSP.Retooled.Physics
         {
             get => Shared.Data.BoundaryRowCap > 0 ? Shared.Data.BoundaryRowCap : DefaultBoundaryRowCap;
             set => Shared.Data.BoundaryRowCap = value;
+        }
+
+        /// <summary>Whether the forest locks tree edges that carry little, see <see cref="ForestSettings.Locking"/>.</summary>
+        public static bool Locking
+        {
+            get => Shared.Data.Locking;
+            set => Shared.Data.Locking = value;
+        }
+
+        /// <summary>Radians; see <see cref="ForestSettings.LockAngle"/>.</summary>
+        public static float LockAngle
+        {
+            get => Shared.Data.LockAngle > 0.0f ? Shared.Data.LockAngle : ForestSettings.DefaultLockAngle;
+            set => Shared.Data.LockAngle = value;
+        }
+
+        /// <summary>Radians; see <see cref="ForestSettings.YieldAngle"/>.</summary>
+        public static float YieldAngle
+        {
+            get => Shared.Data.YieldAngle > 0.0f ? Shared.Data.YieldAngle : ForestSettings.DefaultYieldAngle;
+            set => Shared.Data.YieldAngle = value;
+        }
+
+        public static float LockFraction
+        {
+            get => Fractions.Data.Lock > 0.0f ? Fractions.Data.Lock : DefaultLockFraction;
+            set => Fractions.Data.Lock = value;
+        }
+
+        public static float YieldFraction
+        {
+            get => Fractions.Data.Yield > 0.0f ? Fractions.Data.Yield : DefaultYieldFraction;
+            set => Fractions.Data.Yield = value;
         }
 
         /// <summary>
@@ -46,6 +99,25 @@ namespace KSP.Retooled.Physics
                 StepKernel.Current->DirectSolverCache.GetForestCounts(out solves, out fallbacks, out builds);
             }
         }
+
+        /// <summary>The last stepped world's section counts, see DirectSolverCache.GetSectionCounts.</summary>
+        internal static unsafe void GetSectionCounts(out long sectionSum, out long lockedSum, out long structureBuilds,
+            out long lockChanges, out double structureMilliseconds, out double residual, out long lastSections, out long lastLocked)
+        {
+            sectionSum = lockedSum = structureBuilds = lockChanges = lastSections = lastLocked = 0;
+            structureMilliseconds = residual = 0;
+            if (StepKernel.Current != null)
+            {
+                StepKernel.Current->DirectSolverCache.GetSectionCounts(out sectionSum, out lockedSum, out structureBuilds,
+                    out lockChanges, out structureMilliseconds, out residual, out lastSections, out lastLocked);
+            }
+        }
+
+        /// <summary>The last stepped world's milliseconds settling sections after the first solve, since it was built.</summary>
+        internal static unsafe double SettleMilliseconds => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.ForestSettleMilliseconds : 0.0;
+
+        /// <summary>The largest deflection, in radians, a tree pair's springs would take under the last forest solve's load.</summary>
+        internal static unsafe double LastDeflection => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.LastDeflection : 0.0;
 
         /// <summary>The last stepped world's solve times in ms since it was built, see DirectSolverCache.GetSolveTimes.</summary>
         internal static unsafe void GetTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
@@ -74,6 +146,13 @@ namespace KSP.Retooled.Physics
             {
                 Enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
                 UnityEngine.Debug.Log($"[VesselForest] RETOOLED_FOREST={value}: forest path {(Enabled ? "on" : "off")}");
+            }
+
+            string locking = Environment.GetEnvironmentVariable("RETOOLED_LOCK");
+            if (!string.IsNullOrEmpty(locking))
+            {
+                Locking = locking == "1" || locking.Equals("true", StringComparison.OrdinalIgnoreCase);
+                UnityEngine.Debug.Log($"[VesselForest] RETOOLED_LOCK={locking}: locking {(Locking ? "on" : "off")}");
             }
         }
     }

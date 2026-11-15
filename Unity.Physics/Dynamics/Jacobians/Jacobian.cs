@@ -76,6 +76,12 @@ namespace Unity.Physics
         /// <summary> With <see cref="ForestRow"/>, the joint is an edge of the forest's spanning tree rather than a closure. </summary>
         ForestTree = 1 << 4,
 
+        /// <summary> With <see cref="ForestRow"/>, the joint's owner lets its pair lock (see <see cref="JointForestLock"/>). </summary>
+        ForestLockable = 1 << 6,
+
+        /// <summary> With <see cref="ForestRow"/>, the joint's owner lets its locked pair stay locked. </summary>
+        ForestHoldable = 1 << 7,
+
         /// <summary>   A binary constant representing the user flag. Applies to all jacobians. </summary>
         UserFlag0 = 1 << 2,
     }

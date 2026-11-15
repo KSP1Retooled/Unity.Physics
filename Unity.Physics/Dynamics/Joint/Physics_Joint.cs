@@ -655,6 +655,12 @@ namespace Unity.Physics
         public JointForestRole ForestRole;
 
         /// <summary>
+        /// What the joint's owner lets the forest do with a forest joint's pair, from the loads that count against the
+        /// joint's break limits; see <see cref="ForestSettings.Locking"/>. None keeps the pair yielding.
+        /// </summary>
+        public JointForestLock ForestLock;
+
+        /// <summary>
         /// The entity that contained the component which created this joint Note, this isn't necessarily
         /// an entity with a rigid body, as a pair of bodies can have an arbitrary number of constraints,
         /// but only one instance of a particular component type per entity.

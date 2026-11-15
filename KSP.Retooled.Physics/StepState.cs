@@ -389,6 +389,9 @@ namespace KSP.Retooled.Physics
             {
                 Enabled = VesselForest.Enabled,
                 BoundaryRowCap = VesselForest.BoundaryRowCap,
+                Locking = VesselForest.Locking,
+                LockAngle = VesselForest.LockAngle,
+                YieldAngle = VesselForest.YieldAngle,
             };
             input.DirectSolverCache = directSolverCache;
             return new WarmStartJob
@@ -860,6 +863,9 @@ namespace KSP.Retooled.Physics
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
                     Roles = jointRoles.AsDeferredJobArray(),
+                    Locking = forest && VesselForest.Locking,
+                    LockFraction = VesselForest.LockFraction,
+                    YieldFraction = VesselForest.YieldFraction,
                 }.Schedule(jointUnits, JointBatchSize, allocated);
 
                 JobHandle laidOut = new LayOutJointsJob

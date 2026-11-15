@@ -20,24 +20,66 @@ namespace Unity.Physics
     }
 
     /// <summary>
+    /// What the joint's owner allows the forest to do with a forest joint's body pair, see <see cref="Joint.ForestLock"/>.
+    /// The owner reads the loads that count against the joint's break limits; the forest adds its own test of how far the
+    /// joint's springs would deflect.
+    /// </summary>
+    [Flags]
+    public enum JointForestLock : byte
+    {
+        None = 0,
+
+        /// <summary>The joint's load is low enough for its pair to lock.</summary>
+        Lockable = 1 << 0,
+
+        /// <summary>The joint's load is low enough for a locked pair to stay locked.</summary>
+        Holdable = 1 << 1,
+    }
+
+    /// <summary>
     /// Settings for solving direct islands as a forest plus a boundary: the unbounded rows of forest joints (see
     /// <see cref="Joint.ForestRole"/>) are eliminated structurally by the vessel section solver, and every other row of the
     /// island (contacts, limits, motors with a force limit, other joints) forms a dense boundary block solved against that
     /// factor. An island with no forest rows, or with more boundary rows than <see cref="BoundaryRowCap"/>, is solved by
     /// <see cref="SparseConstraintSolver"/> as before.
+    ///
+    /// With <see cref="Locking"/>, a tree edge whose joints allow it (<see cref="JointForestLock"/>) and whose springs
+    /// would deflect less than <see cref="LockAngle"/> under its last load locks: its rows leave the solve and its two
+    /// bodies move as one rigid section, its load coming from inverse dynamics. It yields again past
+    /// <see cref="YieldAngle"/>.
     /// </summary>
     public struct ForestSettings
     {
         public bool Enabled;
         public int BoundaryRowCap;
+        public bool Locking;
 
-        public static ForestSettings Default => new ForestSettings { Enabled = false, BoundaryRowCap = 256 };
+        /// <summary>Radians: an edge whose springs would deflect less than this under its last load may lock.</summary>
+        public float LockAngle;
+
+        /// <summary>Radians: a locked edge whose load would deflect its springs more than this yields.</summary>
+        public float YieldAngle;
+
+        public const float DefaultLockAngle = 0.5e-3f;
+        public const float DefaultYieldAngle = 2e-3f;
+
+        public static ForestSettings Default => new ForestSettings
+        {
+            Enabled = false,
+            BoundaryRowCap = 256,
+            Locking = false,
+            LockAngle = DefaultLockAngle,
+            YieldAngle = DefaultYieldAngle,
+        };
     }
 
     /// <summary>
-    /// What one direct island keeps of its forest from one solve to the next: the structure, rebuilt only when the island's
-    /// forest joints or bodies change, and the arrays the factor works in. Lives in unmanaged memory owned by
-    /// <see cref="DirectSolverCache"/>, so that the jobs can build and use it.
+    /// What one direct island keeps of its forest from one solve to the next: its body pairs and their lock states, the
+    /// structure, rebuilt only when the island's forest joints, bodies or lock set change, and the arrays the factor works
+    /// in. Lives in unmanaged memory owned by <see cref="DirectSolverCache"/>, so that the jobs can build and use it.
+    ///
+    /// Parts are the island's moving bodies, numbered parents first along the spanning trees (the structure needs that
+    /// order); <see cref="BodyPart"/> and <see cref="PartBody"/> translate.
     /// </summary>
     internal unsafe struct ForestIsland
     {
@@ -50,8 +92,46 @@ namespace Unity.Physics
         public UnsafeList<VesselEdge> Edges;
         public UnsafeList<VesselClosure> Closures;
 
-        /// <summary>Each forest block's link as link * 2 + 1 when its body A is the link's parent side, or -1 for none.</summary>
+        /// <summary>Each forest block's link as link * 2 + 1 when its body A is the link's parent side, or one of the kinds below.</summary>
         public UnsafeList<int> BlockLink;
+
+        /// <summary>A forest block with one moving side, whose rows go to its section's diagonal.</summary>
+        public const int OneSided = -1;
+
+        /// <summary>A forest block between two bodies of one section: a locked pair's, or an inert closure's.</summary>
+        public const int InSection = -2;
+
+        public UnsafeList<int> PartBody;
+        public UnsafeList<int> BodyPart;
+
+        /// <summary>Each moving body's section.</summary>
+        public UnsafeList<int> BodySection;
+
+        /// <summary>Each part's pair with its parent, or -1 for a root.</summary>
+        public UnsafeList<int> PartPair;
+
+        // The island's distinct body pairs among its forest blocks, kept while the signature holds: their bodies, whether
+        // a tree joint joins them, whether they are an edge of the spanning forest (else a closure), the forest blocks of
+        // each, their lock state and the deflection their springs would take under their last load.
+        public UnsafeList<int> BlockPair;
+        public UnsafeList<int2> PairBodies;
+        public UnsafeList<ulong> PairWorldKey;
+        public UnsafeList<byte> PairTree;
+        public UnsafeList<byte> PairEdge;
+        public UnsafeList<byte> PairLocked;
+        public UnsafeList<float> PairDeflection;
+
+        /// <summary>
+        /// Each pair's deflections summed over the substeps of the step so far. A step's external forces reach the
+        /// velocities once, before its first substep, so a locked pair carries them all in that substep and none after; the
+        /// mean over the step is the deflection of the load the step applied.
+        /// </summary>
+        public UnsafeList<float> PairDeflectionSum;
+
+        /// <summary>The solves summed in <see cref="PairDeflectionSum"/>.</summary>
+        public int DeflectionCount;
+        public UnsafeList<int> PairBlockStart;
+        public UnsafeList<int> PairBlocks;
 
         public UnsafeList<VesselSection> Sections;
         public UnsafeList<double> Blocks;
@@ -65,8 +145,15 @@ namespace Unity.Physics
 
         public VesselContext Context;
 
-        /// <summary>How many times the structure was built, for tests.</summary>
+        /// <summary>How many times the pairs, and how many times the structure, were built, for tests.</summary>
         public int Builds;
+
+        public int StructureBuilds;
+
+        /// <summary>The locked pairs and the sections with more than one body, as of the last structure.</summary>
+        public int LockedPairs;
+
+        public int MultiPartSections;
 
         public static ForestIsland* Create()
         {
@@ -79,6 +166,20 @@ namespace Unity.Physics
                 Edges = new UnsafeList<VesselEdge>(16, Allocator.Persistent),
                 Closures = new UnsafeList<VesselClosure>(16, Allocator.Persistent),
                 BlockLink = new UnsafeList<int>(16, Allocator.Persistent),
+                PartBody = new UnsafeList<int>(16, Allocator.Persistent),
+                BodyPart = new UnsafeList<int>(16, Allocator.Persistent),
+                BodySection = new UnsafeList<int>(16, Allocator.Persistent),
+                PartPair = new UnsafeList<int>(16, Allocator.Persistent),
+                BlockPair = new UnsafeList<int>(16, Allocator.Persistent),
+                PairBodies = new UnsafeList<int2>(16, Allocator.Persistent),
+                PairWorldKey = new UnsafeList<ulong>(16, Allocator.Persistent),
+                PairTree = new UnsafeList<byte>(16, Allocator.Persistent),
+                PairEdge = new UnsafeList<byte>(16, Allocator.Persistent),
+                PairLocked = new UnsafeList<byte>(16, Allocator.Persistent),
+                PairDeflection = new UnsafeList<float>(16, Allocator.Persistent),
+                PairDeflectionSum = new UnsafeList<float>(16, Allocator.Persistent),
+                PairBlockStart = new UnsafeList<int>(16, Allocator.Persistent),
+                PairBlocks = new UnsafeList<int>(16, Allocator.Persistent),
                 Sections = new UnsafeList<VesselSection>(16, Allocator.Persistent),
                 Blocks = new UnsafeList<double>(16, Allocator.Persistent),
                 Inverse = new UnsafeList<double>(16, Allocator.Persistent),
@@ -107,6 +208,20 @@ namespace Unity.Physics
             forest->Edges.Dispose();
             forest->Closures.Dispose();
             forest->BlockLink.Dispose();
+            forest->PartBody.Dispose();
+            forest->BodyPart.Dispose();
+            forest->BodySection.Dispose();
+            forest->PartPair.Dispose();
+            forest->BlockPair.Dispose();
+            forest->PairBodies.Dispose();
+            forest->PairWorldKey.Dispose();
+            forest->PairTree.Dispose();
+            forest->PairEdge.Dispose();
+            forest->PairLocked.Dispose();
+            forest->PairDeflection.Dispose();
+            forest->PairDeflectionSum.Dispose();
+            forest->PairBlockStart.Dispose();
+            forest->PairBlocks.Dispose();
             forest->Sections.Dispose();
             forest->Blocks.Dispose();
             forest->Inverse.Dispose();
@@ -121,36 +236,45 @@ namespace Unity.Physics
 
         public int SectionCount => Structure.Header[VesselStructure.SectionCount];
         public int LinkCount => Structure.Header[VesselStructure.LinkCount];
+        public int PairCount => PairBodies.Length;
 
         /// <summary>
-        /// Rebuilds the structure for an island whose forest blocks are <paramref name="forestBlocks"/>: one part per moving
-        /// body, a tree edge for each body pair that a tree joint joins first without closing a loop, and a closure for every
-        /// other pair. Pairs are counted once however many joints and rows they have.
+        /// Finds the island's body pairs among its forest blocks <paramref name="forestBlocks"/> and the spanning forest over
+        /// them: a tree edge for each pair that a tree joint joins first without closing a loop, and a closure for every
+        /// other pair. Pairs are counted once however many joints and rows they have. Numbers the parts parents first. A
+        /// pair that was here before keeps its lock state, found by its bodies' numbers in the world.
         /// </summary>
-        public void Build(in SparseConstraintSolver.Problem problem, int* forestBlocks, bool* treeBlocks, int forestBlockCount)
+        public void BuildPairs(in SparseConstraintSolver.Problem problem, int* forestBlocks, bool* treeBlocks, int forestBlockCount,
+            int* worldBodies)
         {
             Builds++;
             int bodies = problem.BodyCount;
-            Parts.Resize(bodies);
-            Edges.Resize(bodies);
-            for (int i = 0; i < bodies; i++)
+
+            var previous = new NativeHashMap<ulong, int>(PairWorldKey.Length, Allocator.Temp);
+            for (int p = 0; p < PairWorldKey.Length; p++)
             {
-                Parts[i] = new VesselPart { Mass = problem.Bodies[i].Mass, Inertia = 1.0 };
-                Edges[i] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding };
+                previous.TryAdd(PairWorldKey[p], p);
+            }
+
+            var oldLocked = new NativeArray<byte>(PairLocked.Length, Allocator.Temp);
+            var oldDeflection = new NativeArray<float>(PairDeflection.Length, Allocator.Temp);
+            for (int p = 0; p < PairLocked.Length; p++)
+            {
+                oldLocked[p] = PairLocked[p];
+                oldDeflection[p] = PairDeflection[p];
             }
 
             // Distinct pairs, in block order; tree joints first take part in the spanning forest.
             var pairOf = new NativeHashMap<long, int>(forestBlockCount, Allocator.Temp);
-            var pairA = new NativeList<int>(forestBlockCount, Allocator.Temp);
-            var pairB = new NativeList<int>(forestBlockCount, Allocator.Temp);
-            var pairTree = new NativeList<bool>(forestBlockCount, Allocator.Temp);
-            var blockPair = new NativeArray<int>(forestBlockCount, Allocator.Temp);
+            PairBodies.Clear();
+            PairTree.Clear();
+            BlockPair.Resize(forestBlockCount);
             for (int f = 0; f < forestBlockCount; f++)
             {
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[forestBlocks[f]];
                 if (block.BodyA < 0 || block.BodyB < 0 || block.BodyA == block.BodyB)
                 {
-                    blockPair[f] = -1;
+                    BlockPair[f] = -1;
                     continue;
                 }
 
@@ -158,15 +282,41 @@ namespace Unity.Physics
                 long key = ((long)low << 32) | (uint)high;
                 if (!pairOf.TryGetValue(key, out int pair))
                 {
-                    pair = pairA.Length;
+                    pair = PairBodies.Length;
                     pairOf.Add(key, pair);
-                    pairA.Add(low);
-                    pairB.Add(high);
-                    pairTree.Add(false);
+                    PairBodies.Add(new int2(low, high));
+                    PairTree.Add(0);
                 }
 
-                pairTree[pair] |= treeBlocks[f];
-                blockPair[f] = pair;
+                PairTree[pair] |= (byte)(treeBlocks[f] ? 1 : 0);
+                BlockPair[f] = pair;
+            }
+
+            int pairCount = PairBodies.Length;
+            PairBlockStart.Resize(pairCount + 1);
+            UnsafeUtility.MemClear(PairBlockStart.Ptr, (pairCount + 1) * (long)sizeof(int));
+            for (int f = 0; f < forestBlockCount; f++)
+            {
+                if (BlockPair[f] >= 0)
+                {
+                    PairBlockStart[BlockPair[f] + 1]++;
+                }
+            }
+
+            for (int p = 0; p < pairCount; p++)
+            {
+                PairBlockStart[p + 1] += PairBlockStart[p];
+            }
+
+            PairBlocks.Resize(math.max(1, PairBlockStart[pairCount]));
+            var pairFill = new NativeArray<int>(math.max(1, pairCount), Allocator.Temp);
+            for (int f = 0; f < forestBlockCount; f++)
+            {
+                int pair = BlockPair[f];
+                if (pair >= 0)
+                {
+                    PairBlocks[PairBlockStart[pair] + pairFill[pair]++] = f;
+                }
             }
 
             // Kruskal over the tree pairs in order, then over the rest, so that a loop of tree joints still gives a tree.
@@ -176,34 +326,39 @@ namespace Unity.Physics
                 root[i] = i;
             }
 
-            int pairCount = pairA.Length;
-            var isEdge = new NativeArray<bool>(pairCount, Allocator.Temp);
+            PairEdge.Resize(pairCount);
             for (int pass = 0; pass < 2; pass++)
             {
                 for (int p = 0; p < pairCount; p++)
                 {
-                    if (pairTree[p] != (pass == 0))
+                    if (pass == 0)
+                    {
+                        PairEdge[p] = 0;
+                    }
+
+                    if ((PairTree[p] != 0) != (pass == 0))
                     {
                         continue;
                     }
 
-                    int a = Find(root, pairA[p]), b = Find(root, pairB[p]);
+                    int a = Find(root, PairBodies[p].x), b = Find(root, PairBodies[p].y);
                     if (a != b)
                     {
                         root[a] = b;
-                        isEdge[p] = true;
+                        PairEdge[p] = 1;
                     }
                 }
             }
 
-            // Orient the trees: each body's parent is its neighbour toward the first body reached.
+            // Orient the trees and number the parts parents first: each body's parent is its neighbour toward the first
+            // body reached.
             var adjacencyStart = new NativeArray<int>(bodies + 1, Allocator.Temp);
             for (int p = 0; p < pairCount; p++)
             {
-                if (isEdge[p])
+                if (PairEdge[p] != 0)
                 {
-                    adjacencyStart[pairA[p] + 1]++;
-                    adjacencyStart[pairB[p] + 1]++;
+                    adjacencyStart[PairBodies[p].x + 1]++;
+                    adjacencyStart[PairBodies[p].y + 1]++;
                 }
             }
 
@@ -216,15 +371,21 @@ namespace Unity.Physics
             var fill = new NativeArray<int>(bodies, Allocator.Temp);
             for (int p = 0; p < pairCount; p++)
             {
-                if (isEdge[p])
+                if (PairEdge[p] != 0)
                 {
-                    adjacency[adjacencyStart[pairA[p]] + fill[pairA[p]]++] = pairB[p];
-                    adjacency[adjacencyStart[pairB[p]] + fill[pairB[p]]++] = pairA[p];
+                    int2 pb = PairBodies[p];
+                    adjacency[adjacencyStart[pb.x] + fill[pb.x]++] = pb.y;
+                    adjacency[adjacencyStart[pb.y] + fill[pb.y]++] = pb.x;
                 }
             }
 
+            PartBody.Resize(bodies);
+            BodyPart.Resize(bodies);
+            Parts.Resize(bodies);
+            Edges.Resize(bodies);
+            var parentBody = new NativeArray<int>(bodies, Allocator.Temp);
             var seen = new NativeArray<bool>(bodies, Allocator.Temp);
-            var queue = new NativeList<int>(bodies, Allocator.Temp);
+            int parts = 0;
             for (int start = 0; start < bodies; start++)
             {
                 if (seen[start])
@@ -233,35 +394,129 @@ namespace Unity.Physics
                 }
 
                 seen[start] = true;
-                queue.Clear();
-                queue.Add(start);
-                for (int k = 0; k < queue.Length; k++)
+                parentBody[start] = -1;
+                int first = parts;
+                PartBody[parts] = start;
+                BodyPart[start] = parts++;
+                for (int k = first; k < parts; k++)
                 {
-                    int v = queue[k];
+                    int v = PartBody[k];
                     for (int e = adjacencyStart[v]; e < adjacencyStart[v + 1]; e++)
                     {
                         int w = adjacency[e];
                         if (!seen[w])
                         {
                             seen[w] = true;
-                            VesselEdge edge = Edges[w];
-                            edge.Parent = v;
-                            Edges[w] = edge;
-                            queue.Add(w);
+                            parentBody[w] = v;
+                            PartBody[parts] = w;
+                            BodyPart[w] = parts++;
                         }
                     }
                 }
             }
 
+            for (int k = 0; k < bodies; k++)
+            {
+                int body = PartBody[k];
+                Parts[k] = new VesselPart { Mass = problem.Bodies[body].Mass, Inertia = 1.0 };
+                Edges[k] = new VesselEdge
+                {
+                    Parent = parentBody[body] >= 0 ? BodyPart[parentBody[body]] : -1,
+                    State = VesselEdgeState.Yielding,
+                };
+            }
+
+            PartPair.Resize(bodies);
+            for (int k = 0; k < bodies; k++)
+            {
+                PartPair[k] = -1;
+            }
+
+            for (int p = 0; p < pairCount; p++)
+            {
+                if (PairEdge[p] != 0)
+                {
+                    int2 pb = PairBodies[p];
+                    PartPair[parentBody[pb.x] == pb.y ? BodyPart[pb.x] : BodyPart[pb.y]] = p;
+                }
+            }
+
+            // Lock states carried over by the pairs' bodies in the world.
+            PairWorldKey.Resize(pairCount);
+            PairLocked.Resize(pairCount);
+            PairDeflection.Resize(pairCount);
+            PairDeflectionSum.Resize(pairCount);
+            UnsafeUtility.MemClear(PairDeflectionSum.Ptr, pairCount * (long)sizeof(float));
+            DeflectionCount = 0;
+            for (int p = 0; p < pairCount; p++)
+            {
+                int2 pb = PairBodies[p];
+                uint wa = (uint)worldBodies[pb.x], wb = (uint)worldBodies[pb.y];
+                ulong key = ((ulong)math.min(wa, wb) << 32) | math.max(wa, wb);
+                PairWorldKey[p] = key;
+                if (previous.TryGetValue(key, out int old))
+                {
+                    PairLocked[p] = oldLocked[old];
+                    PairDeflection[p] = oldDeflection[old];
+                }
+                else
+                {
+                    PairLocked[p] = 0;
+                    PairDeflection[p] = float.PositiveInfinity;
+                }
+            }
+
+            previous.Dispose();
+            oldLocked.Dispose();
+            oldDeflection.Dispose();
+            pairOf.Dispose();
+            pairFill.Dispose();
+            root.Dispose();
+            adjacencyStart.Dispose();
+            adjacency.Dispose();
+            fill.Dispose();
+            parentBody.Dispose();
+            seen.Dispose();
+        }
+
+        /// <summary>
+        /// Rebuilds the structure for the pairs and their lock states: a locked pair's edge folds its child into its
+        /// parent's section, and a closure whose ends share a section drops out.
+        /// </summary>
+        public void BuildStructure(in SparseConstraintSolver.Problem problem, int* forestBlocks, int forestBlockCount)
+        {
+            StructureBuilds++;
+            int bodies = problem.BodyCount;
+            int pairCount = PairCount;
+            for (int k = 0; k < bodies; k++)
+            {
+                VesselEdge edge = Edges[k];
+                edge.State = VesselEdgeState.Yielding;
+                Edges[k] = edge;
+            }
+
+            LockedPairs = 0;
             Closures.Clear();
-            var pairClosure = new NativeArray<int>(pairCount, Allocator.Temp);
+            var pairClosure = new NativeArray<int>(math.max(1, pairCount), Allocator.Temp);
             for (int p = 0; p < pairCount; p++)
             {
                 pairClosure[p] = -1;
-                if (!isEdge[p])
+                int2 pb = PairBodies[p];
+                if (PairEdge[p] != 0)
+                {
+                    if (PairLocked[p] != 0)
+                    {
+                        int child = Edges[BodyPart[pb.x]].Parent == BodyPart[pb.y] ? BodyPart[pb.x] : BodyPart[pb.y];
+                        VesselEdge edge = Edges[child];
+                        edge.State = VesselEdgeState.Locked;
+                        Edges[child] = edge;
+                        LockedPairs++;
+                    }
+                }
+                else
                 {
                     pairClosure[p] = Closures.Length;
-                    Closures.Add(new VesselClosure { PartA = pairA[p], PartB = pairB[p] });
+                    Closures.Add(new VesselClosure { PartA = BodyPart[pb.x], PartB = BodyPart[pb.y] });
                 }
             }
 
@@ -279,21 +534,28 @@ namespace Unity.Physics
                 }.Execute();
             }
 
+            BodySection.Resize(bodies);
+            for (int i = 0; i < bodies; i++)
+            {
+                BodySection[i] = Structure.PartSection[BodyPart[i]];
+            }
+
             // Each forest block's link, and which of its bodies is the link's parent side.
             BlockLink.Resize(forestBlockCount);
             for (int f = 0; f < forestBlockCount; f++)
             {
-                int pair = blockPair[f];
+                int pair = BlockPair[f];
                 if (pair < 0)
                 {
-                    BlockLink[f] = -1;
+                    BlockLink[f] = OneSided;
                     continue;
                 }
 
+                int2 pb = PairBodies[pair];
                 int link;
-                if (isEdge[pair])
+                if (PairEdge[pair] != 0)
                 {
-                    int child = Edges[pairA[pair]].Parent == pairB[pair] ? pairA[pair] : pairB[pair];
+                    int child = Edges[BodyPart[pb.x]].Parent == BodyPart[pb.y] ? BodyPart[pb.x] : BodyPart[pb.y];
                     link = Structure.PartLink[child];
                 }
                 else
@@ -301,11 +563,25 @@ namespace Unity.Physics
                     link = Structure.ClosureLink[pairClosure[pair]];
                 }
 
+                if (link < 0)
+                {
+                    BlockLink[f] = InSection;
+                    continue;
+                }
+
                 VesselLink linked = Structure.Links[link];
-                BlockLink[f] = link * 2 + (problem.Blocks[forestBlocks[f]].BodyA == linked.ParentPart ? 1 : 0);
+                BlockLink[f] = link * 2 + (BodyPart[problem.Blocks[forestBlocks[f]].BodyA] == linked.ParentPart ? 1 : 0);
             }
 
+            pairClosure.Dispose();
+
             int sections = SectionCount;
+            MultiPartSections = 0;
+            for (int s = 0; s < sections; s++)
+            {
+                MultiPartSections += Structure.SectionPartStart[s + 1] - Structure.SectionPartStart[s] > 1 ? 1 : 0;
+            }
+
             int blocks = sections + Structure.Header[VesselStructure.OffDiagonalCount]
                 + Structure.Header[VesselStructure.BufferBlockCount];
             int rhs = sections + Structure.Header[VesselStructure.BufferRhsCount];

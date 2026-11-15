@@ -206,6 +206,9 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(true)]
         public void KeptJointsMoveAsJointsWorkedOutAfresh(bool forest)
         {
+            // The direct solver keeps each island's forest, and with locking its pairs' lock states, under the island's first
+            // body, which a new scene of the same shape takes over. A run first gives both compared runs the same start.
+            RunChanges(forest, true);
             AssertSame(RunChanges(forest, false), RunChanges(forest, true));
         }
 
@@ -213,8 +216,7 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(true)]
         public void AContactOnAKeptIslandLandsAsOnAFreshOne(bool forest)
         {
-            // The first scene an editor steps with the forest switched on from the start lands a few ulps away from every
-            // later one, kept or afresh, so a run first leaves both compared runs on equal footing.
+            // As above: the first scene of this shape lands a few ulps from every later one, kept or afresh.
             RunLanding(forest, true);
             AssertSame(RunLanding(forest, false), RunLanding(forest, true));
         }

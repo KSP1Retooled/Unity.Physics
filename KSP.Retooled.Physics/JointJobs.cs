@@ -117,8 +117,19 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointForestRole> Roles;
 
+        /// <summary>
+        /// Whether the forest locks pairs. Then each forest unit between two moving bodies says what it lets its pair do:
+        /// lock while the load that counts against its break limits is under <see cref="LockFraction"/> of them, and stay
+        /// locked while it is under <see cref="YieldFraction"/>. A joint with every axis locked may do both whatever its
+        /// load, until it breaks. The loads change every step, so this is worked out here rather than with the groups.
+        /// </summary>
+        public bool Locking;
+        public float LockFraction;
+        public float YieldFraction;
+
         private PhysicsJoint pending;
         private JointForestRole role;
+        private JointForestLock forestLock;
         private int pendingCount;
         private bool emitted;
         private int written;
@@ -129,6 +140,15 @@ namespace KSP.Retooled.Physics
             written = 0;
             JointUnit unit = Units[index];
             role = Roles[index];
+            forestLock = JointForestLock.None;
+            if (Locking && role != JointForestRole.None)
+            {
+                NativeStore.JointData* lead = World->joints[unit.Joint];
+                if (!GroupJointsJob.Immobile(lead->body0) && !GroupJointsJob.Immobile(lead->body1))
+                {
+                    forestLock = UnitLock(unit);
+                }
+            }
             if (unit.Group < 0)
             {
                 Append(World->joints[unit.Joint]);
@@ -146,6 +166,44 @@ namespace KSP.Retooled.Physics
         {
             Output.Write(joint);
             written++;
+        }
+
+        /// <summary>What a unit lets its pair do: what all its joints let it.</summary>
+        private JointForestLock UnitLock(JointUnit unit)
+        {
+            if (unit.Group < 0)
+            {
+                return JointLock(World->joints[unit.Joint]);
+            }
+
+            JointGroup group = Groups[unit.Group];
+            JointForestLock allowed = JointForestLock.Lockable | JointForestLock.Holdable;
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                allowed &= JointLock(World->joints[Members[group.FirstMember + i].Joint]);
+            }
+
+            return allowed;
+        }
+
+        private JointForestLock JointLock(NativeStore.JointData* joint)
+        {
+            int lockedAngles = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                lockedAngles += NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked ? 1 : 0;
+            }
+
+            if (lockedAngles == 3)
+            {
+                return JointForestLock.Lockable | JointForestLock.Holdable;
+            }
+
+            float fraction = math.max(
+                joint->breakForce > 0.0f ? joint->breakingForce / joint->breakForce : 0.0f,
+                joint->breakTorque > 0.0f ? joint->breakingTorque / joint->breakTorque : 0.0f);
+            return (fraction < LockFraction ? JointForestLock.Lockable : JointForestLock.None)
+                | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
         }
 
         internal static int BodyKey(NativeStore.Body* body)
@@ -403,6 +461,7 @@ namespace KSP.Retooled.Physics
                 Entity = entity,
                 EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
                 ForestRole = role,
+                ForestLock = forestLock,
             };
             pendingCount = 0;
             emitted = false;
@@ -830,7 +889,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static bool Immobile(NativeStore.Body* body)
+        internal static bool Immobile(NativeStore.Body* body)
         {
             const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
             return body == null || (StoreOps.Hot(body)->flags & immobile) != 0;

@@ -15,6 +15,7 @@ namespace KSP.Retooled.Physics.Tests
         private const float PartMass = 4.0f;
 
         private bool wasEnabled;
+        private bool wasLocking;
         private int wasCap;
 
         [SetUp]
@@ -25,14 +26,22 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
             }
 
+            // The environment's switches apply when the first world attaches; read them now, so they can't land on top
+            // of what this fixture sets.
+            VesselForest.Initialize();
             wasEnabled = VesselForest.Enabled;
+            wasLocking = VesselForest.Locking;
             wasCap = VesselForest.BoundaryRowCap;
+
+            // These compare the forest's solve with the sparse one, so nothing locks (VesselSectionTests covers locking).
+            VesselForest.Locking = false;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
             VesselForest.Enabled = wasEnabled;
+            VesselForest.Locking = wasLocking;
             VesselForest.BoundaryRowCap = wasCap;
         }
 
@@ -61,10 +70,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>A column of parts, the top one hung from the world or the bottom one standing on the ground.</summary>
-        private List<Rigidbody> Column(bool standing)
+        private List<Rigidbody> Column(bool standing, float sunk = 0.0f)
         {
             var bodies = new List<Rigidbody>();
-            float bottom = standing ? 0.5f : 5.0f;
+            float bottom = standing ? 0.5f - sunk : 5.0f;
             for (int i = 0; i < Parts; i++)
             {
                 Rigidbody body = Box(new Vector3(0.0f, bottom + PartHeight * (i + 0.5f), 0.0f), new Vector3(1.0f, PartHeight, 1.0f))
@@ -86,7 +95,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>Builds the scene, swings it, and returns every part's position after a few seconds.</summary>
-        private Vector3[] Run(bool forest, bool standing, int steps)
+        private Vector3[] Run(bool forest, bool standing, int steps, float sunk = 0.0f)
         {
             TearDownScene();
             SetUpScene();
@@ -96,7 +105,7 @@ namespace KSP.Retooled.Physics.Tests
                 Ground();
             }
 
-            List<Rigidbody> bodies = Column(standing);
+            List<Rigidbody> bodies = Column(standing, sunk);
             bodies[standing ? Parts - 1 : 0].linearVelocity = new Vector3(1.0f, 0.0f, 0.5f);
             Simulate(steps);
             var positions = new Vector3[Parts];
@@ -144,6 +153,21 @@ namespace KSP.Retooled.Physics.Tests
             Debug.Log($"[VesselForestTests] standing: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
                 $"largest difference {difference:E2} m, top at {sparse[Parts - 1]:F3}");
             Assert.Greater(solves, solvesBefore, "the forest path never ran");
+            Assert.Less(difference, 1e-2f);
+        }
+
+        /// <summary>
+        /// The bottom part starts 20 cm into the ground, deep enough that the push-out moves the column, which the forest
+        /// path solves against its own factor.
+        /// </summary>
+        [Test]
+        public void AColumnSunkIntoTheGroundComesOutAsOnTheSparsePath()
+        {
+            Vector3[] sparse = Run(false, true, 10, 0.7f);
+            Vector3[] forest = Run(true, true, 10, 0.7f);
+            float difference = Largest(sparse, forest);
+            Debug.Log($"[VesselForestTests] sunk: largest difference {difference:E2} m, bottom at {sparse[0]:F3} / {forest[0]:F3}");
+            Assert.Greater(forest[0].y, 0.95f, "the bottom part came out of the ground");
             Assert.Less(difference, 1e-2f);
         }
 

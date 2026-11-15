@@ -852,7 +852,9 @@ namespace Unity.Physics
                     JacobianFlags jacFlags = constraint.ShouldRaiseImpulseEvents ? JacobianFlags.EnableImpulseEvents : 0;
                     if (joint.ForestRole != JointForestRole.None)
                     {
-                        jacFlags |= JacobianFlags.ForestRow | (joint.ForestRole == JointForestRole.Tree ? JacobianFlags.ForestTree : 0);
+                        jacFlags |= JacobianFlags.ForestRow | (joint.ForestRole == JointForestRole.Tree ? JacobianFlags.ForestTree : 0)
+                            | ((joint.ForestLock & JointForestLock.Lockable) != 0 ? JacobianFlags.ForestLockable : 0)
+                            | ((joint.ForestLock & JointForestLock.Holdable) != 0 ? JacobianFlags.ForestHoldable : 0);
                     }
                     int jacobianSize = JacobianHeader.CalculateJointSize(jacType, jacFlags, solverTypeOverride);
                     jacobianWriter.Write(jacobianSize);

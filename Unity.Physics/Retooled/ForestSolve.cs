@@ -11,15 +11,20 @@ namespace Unity.Physics
         static readonly ProfilerMarker ForestFactorMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Factor");
         static readonly ProfilerMarker ForestBoundaryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Boundary");
         static readonly ProfilerMarker ForestSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Solve");
+        static readonly ProfilerMarker ForestStructureMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Structure");
 
         const byte ForestRowClass = 0;
         const byte BoundaryRowClass = 1;
         const byte FixedRowClass = 2;
 
+        /// <summary>A forest row between two bodies of one section: a locked pair's, whose load comes from inverse dynamics, or an inert closure's.</summary>
+        const byte SectionRowClass = 3;
+
         /// <summary>
         /// One island's solve as a forest plus a boundary, see <see cref="ForestSettings"/>. Holds what a second solve with
         /// a changed right-hand side reuses: the factor (in the island's <see cref="ForestIsland"/>), the classes of the
-        /// rows and the boundary block W = J_b A^-1 J_b^T + E_b.
+        /// rows and the boundary block W = J_b A^-1 J_b^T + E_b; and, for sections of more than one body, what turns the
+        /// sections' answer back into each body's.
         /// </summary>
         unsafe struct ForestRun
         {
@@ -27,10 +32,21 @@ namespace Unity.Physics
             public SparseConstraintSolver.Problem Problem;
             public bool Bounded;
 
+            /// <summary>
+            /// The rows as the sections see them: a row on a body of a section of several acts on the section's velocity at
+            /// the body's offset from its centre. The problem's own rows when every section is one body.
+            /// </summary>
+            public float* Jacobian;
+
+            public NativeArray<float> SectionJacobian;
+
             /// <summary>Each row's class, and each block's two sections, or -1 for a side that doesn't move.</summary>
             public NativeArray<byte> RowClass;
             public NativeArray<int2> BlockSections;
             public NativeArray<int> RowBlock;
+
+            /// <summary>The problem's forest blocks, in order, as the island's pairs number them.</summary>
+            public NativeList<int> ForestBlocks;
 
             /// <summary>The boundary rows, the dense block over them, and the bounds and couplings they take.</summary>
             public NativeArray<int> Boundary;
@@ -42,23 +58,79 @@ namespace Unity.Physics
             public NativeArray<double> Velocity;
             public NativeArray<double> Work;
 
+            /// <summary>
+            /// For sections of several bodies: each section's centre and the velocity its bodies had together before the
+            /// solve (momentum-conserving), each body's offset from its section's centre, and the bodies' own velocities.
+            /// Empty when every section is one body.
+            /// </summary>
+            public NativeArray<double3> SectionCenter;
+            public NativeArray<double3> SectionLinear;
+            public NativeArray<double3> SectionAngular;
+            public NativeArray<double3> Arm;
+            public NativeArray<double3> OwnLinear;
+            public NativeArray<double3> OwnAngular;
+            public bool MultiPart;
+
+            /// <summary>
+            /// Each locked pair's (J^T W J)^-1 for its least-squares split, 36 doubles each, found by the first solve that
+            /// needs it and kept for the drift's second; a pair's first entry is NaN until then.
+            /// </summary>
+            public NativeArray<double> PairInverse;
+
+            /// <summary>Each block whose bodies share a section, whose rows have no drift to aim at; empty without such.</summary>
+            public NativeArray<byte> BlockInSection;
+
+            public int* WorldBodies;
+            public MotionVelocity* MotionVelocities;
+            public MotionData* MotionDatas;
+            public float Timestep;
+
             /// <summary>The lanes that share the island's solve, or null.</summary>
             public SparseSolveTeam* Team;
 
-            /// <summary>How long the factor and the boundary block took, in profiler timestamp units.</summary>
+            /// <summary>How long the factor, the boundary block and any structure rebuild took, in profiler timestamp units.</summary>
             public long FactorTicks;
             public long BoundaryTicks;
+            public long StructureTicks;
+
+            /// <summary>Whether the structure was rebuilt for this solve, and how many pairs changed lock state.</summary>
+            public bool Rebuilt;
+            public int LockChanges;
+
+            /// <summary>The largest momentum left over at a section's first body by its inverse dynamics, in N s.</summary>
+            public double Residual;
 
             public void Dispose()
             {
                 RowClass.Dispose();
                 BlockSections.Dispose();
                 RowBlock.Dispose();
+                ForestBlocks.Dispose();
                 Boundary.Dispose();
                 BoundaryOf.Dispose();
                 W.Dispose();
                 Velocity.Dispose();
                 Work.Dispose();
+                if (SectionJacobian.IsCreated)
+                {
+                    SectionJacobian.Dispose();
+                }
+
+                if (SectionCenter.IsCreated)
+                {
+                    SectionCenter.Dispose();
+                    SectionLinear.Dispose();
+                    SectionAngular.Dispose();
+                    Arm.Dispose();
+                    OwnLinear.Dispose();
+                    OwnAngular.Dispose();
+                }
+
+                if (BlockInSection.IsCreated)
+                {
+                    BlockInSection.Dispose();
+                    PairInverse.Dispose();
+                }
             }
         }
 
@@ -67,7 +139,9 @@ namespace Unity.Physics
         /// nothing, when the island isn't one for it: no forest rows, or more boundary rows than the cap.
         /// </summary>
         static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
-            ForestIsland* forest, int boundaryCap, SparseSolveTeam* team, out ForestRun run)
+            ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
+            out ForestRun run)
         {
             run = default;
             int rows = problem.RowCount;
@@ -85,6 +159,9 @@ namespace Unity.Physics
             var rowBlock = new NativeArray<int>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var forestBlocks = new NativeList<int>(problem.BlockCount, Allocator.Temp);
             var treeBlocks = new NativeList<bool>(problem.BlockCount, Allocator.Temp);
+
+            // What each forest block allows its pair: bit 0 lockable, bit 1 holdable, bit 2 every row a forest row or idle.
+            var blockAllows = new NativeList<byte>(problem.BlockCount, Allocator.Temp);
             int forestRows = 0, boundaryRows = 0;
             for (int b = 0; b < problem.BlockCount; b++)
             {
@@ -92,12 +169,7 @@ namespace Unity.Physics
                 JacobianFlags flags = headers[b]->Flags;
                 bool forestBlock = headers[b]->Type != JacobianType.Contact && (flags & JacobianFlags.ForestRow) != 0
                     && (block.BodyA >= 0 || block.BodyB >= 0);
-                if (forestBlock)
-                {
-                    forestBlocks.Add(b);
-                    treeBlocks.Add((flags & JacobianFlags.ForestTree) != 0);
-                }
-
+                bool allForest = true;
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
                     rowBlock[row] = b;
@@ -105,7 +177,9 @@ namespace Unity.Physics
                     bool free = !bounded || (lower <= -float.MaxValue && upper >= float.MaxValue);
                     if (bounded && lower == upper && !coupled[row])
                     {
+                        // A limit out of reach is a fixed row with no impulse, which doesn't keep its pair from locking.
                         rowClass[row] = FixedRowClass;
+                        allForest &= lower == 0.0f;
                     }
                     else if (forestBlock && free && problem.Epsilon[row] > 0.0f)
                     {
@@ -116,7 +190,16 @@ namespace Unity.Physics
                     {
                         rowClass[row] = BoundaryRowClass;
                         boundaryRows++;
+                        allForest = false;
                     }
+                }
+
+                if (forestBlock)
+                {
+                    forestBlocks.Add(b);
+                    treeBlocks.Add((flags & JacobianFlags.ForestTree) != 0);
+                    blockAllows.Add((byte)(((flags & JacobianFlags.ForestLockable) != 0 ? 1 : 0)
+                        | ((flags & JacobianFlags.ForestHoldable) != 0 ? 2 : 0) | (allForest ? 4 : 0)));
                 }
             }
 
@@ -136,17 +219,18 @@ namespace Unity.Physics
                 }
             }
 
-            if (forestRows == 0 || boundaryRows > boundaryCap || !couplingsInBoundary)
+            if (forestRows == 0 || boundaryRows > settings.BoundaryRowCap || !couplingsInBoundary)
             {
                 coupled.Dispose();
                 rowClass.Dispose();
                 rowBlock.Dispose();
                 forestBlocks.Dispose();
                 treeBlocks.Dispose();
+                blockAllows.Dispose();
                 return false;
             }
 
-            // The structure, kept while the island's bodies and forest blocks stay the same.
+            // The pairs, kept while the island's bodies and forest blocks stay the same.
             ref UnsafeList<ulong> signature = ref forest->Signature;
             bool same = signature.Length == forestBlocks.Length + 1 && signature[0] == (ulong)problem.BodyCount;
             for (int f = 0; same && f < forestBlocks.Length; f++)
@@ -154,6 +238,8 @@ namespace Unity.Physics
                 same = signature[f + 1] == BlockKey(problem.Blocks[forestBlocks[f]], treeBlocks[f]);
             }
 
+            long structureStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            bool rebuild = !same || forest->StructureBuilds == 0;
             if (!same)
             {
                 signature.Clear();
@@ -163,20 +249,119 @@ namespace Unity.Physics
                     signature.Add(BlockKey(problem.Blocks[forestBlocks[f]], treeBlocks[f]));
                 }
 
-                forest->Build(problem, (int*)forestBlocks.GetUnsafeReadOnlyPtr(), (bool*)treeBlocks.GetUnsafeReadOnlyPtr(),
-                    forestBlocks.Length);
+                forest->BuildPairs(problem, (int*)forestBlocks.GetUnsafeReadOnlyPtr(), (bool*)treeBlocks.GetUnsafeReadOnlyPtr(),
+                    forestBlocks.Length, worldBodies);
             }
+
+            // Which pairs are locked this solve: a tree edge whose joints all allow it, with nothing but forest rows, locks
+            // when its springs would deflect less than the lock angle under its last load, and stays locked until its load
+            // would deflect them past the yield angle.
+            int lockChanges = 0;
+            int pairCount = forest->PairCount;
+            for (int p = 0; p < pairCount; p++)
+            {
+                bool locked = forest->PairLocked[p] != 0;
+                bool next = false;
+                if (settings.Locking && forest->PairEdge[p] != 0 && forest->PairTree[p] != 0)
+                {
+                    int allows = 7;
+                    for (int k = forest->PairBlockStart[p]; k < forest->PairBlockStart[p + 1]; k++)
+                    {
+                        allows &= blockAllows[forest->PairBlocks[k]];
+                    }
+
+                    float deflection = forest->PairDeflection[p];
+                    next = locked
+                        ? (allows & 6) == 6 && deflection <= settings.YieldAngle
+                        : (allows & 5) == 5 && deflection < settings.LockAngle;
+                }
+
+                if (next != locked)
+                {
+                    forest->PairLocked[p] = (byte)(next ? 1 : 0);
+                    lockChanges++;
+                }
+            }
+
+            rebuild |= lockChanges > 0;
+            if (rebuild)
+            {
+                using (ForestStructureMarker.Auto())
+                {
+                    forest->BuildStructure(problem, (int*)forestBlocks.GetUnsafeReadOnlyPtr(), forestBlocks.Length);
+                }
+            }
+
+            long structureTicks = rebuild ? Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - structureStarted : 0;
+            treeBlocks.Dispose();
+            blockAllows.Dispose();
 
             int sections = forest->SectionCount;
             ref VesselContext context = ref forest->Context;
-            int* partSection = forest->Structure.PartSection.Ptr;
+            int* bodySection = forest->BodySection.Ptr;
             var blockSections = new NativeArray<int2>(problem.BlockCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int b = 0; b < problem.BlockCount; b++)
             {
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
-                blockSections[b] = new int2(block.BodyA >= 0 ? partSection[block.BodyA] : -1, block.BodyB >= 0 ? partSection[block.BodyB] : -1);
+                blockSections[b] = new int2(block.BodyA >= 0 ? bodySection[block.BodyA] : -1, block.BodyB >= 0 ? bodySection[block.BodyB] : -1);
             }
 
+            // A forest row between two bodies of one section leaves the solve.
+            for (int f = 0; f < forestBlocks.Length; f++)
+            {
+                if (forest->BlockLink[f] != ForestIsland.InSection)
+                {
+                    continue;
+                }
+
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[forestBlocks[f]];
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    if (rowClass[row] == ForestRowClass)
+                    {
+                        rowClass[row] = SectionRowClass;
+                    }
+                }
+            }
+
+            run = new ForestRun
+            {
+                Forest = forest,
+                Problem = problem,
+                Bounded = bounded,
+                Jacobian = problem.Jacobian,
+                RowClass = rowClass,
+                BlockSections = blockSections,
+                RowBlock = rowBlock,
+                ForestBlocks = forestBlocks,
+                Velocity = new NativeArray<double>(6 * sections, Allocator.Temp),
+                Work = new NativeArray<double>(6 * sections, Allocator.Temp),
+                MultiPart = forest->MultiPartSections > 0,
+                WorldBodies = worldBodies,
+                MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                Timestep = timestep,
+                Team = team,
+                StructureTicks = structureTicks,
+                Rebuilt = rebuild,
+                LockChanges = lockChanges,
+            };
+
+            for (int i = 0; i < problem.BodyCount; i++)
+            {
+                forest->Sections[bodySection[i]] = new VesselSection
+                {
+                    Mass = problem.Bodies[i].Mass,
+                    Inertia = problem.Bodies[i].Inertia,
+                };
+            }
+
+            if (run.MultiPart)
+            {
+                PrepareSections(ref run);
+            }
+
+            float* jacobian = run.Jacobian;
             long factorStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             using (ForestFactorMarker.Auto())
             {
@@ -207,7 +392,7 @@ namespace Unity.Physics
                         else
                         {
                             // One moving side: w j j^T on its section's diagonal.
-                            float* columns = problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                            float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
                             int2 sides = blockSections[b];
                             int s = sides.x >= 0 ? sides.x : sides.y;
                             double6 j = VesselContext.LoadRow(sides.x >= 0 ? columns : columns + 6);
@@ -246,16 +431,7 @@ namespace Unity.Physics
                 linkFill.Dispose();
                 rowEntry.Dispose();
 
-                for (int i = 0; i < problem.BodyCount; i++)
-                {
-                    forest->Sections[partSection[i]] = new VesselSection
-                    {
-                        Mass = problem.Bodies[i].Mass,
-                        Inertia = problem.Bodies[i].Inertia,
-                    };
-                }
-
-                context.RowJacobian = problem.Jacobian;
+                context.RowJacobian = jacobian;
                 context.RowEpsilon = problem.Epsilon;
                 context.RowRhs = problem.RightHandSide;
                 context.LinkRowStart = linkRowStart;
@@ -307,7 +483,7 @@ namespace Unity.Physics
                 {
                     int row = boundary[i];
                     int2 sides = blockSections[rowBlock[row]];
-                    float* columns = problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                    float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
                     int seedCount = 0;
                     if (sides.x >= 0)
                     {
@@ -317,7 +493,11 @@ namespace Unity.Physics
 
                     if (sides.y >= 0)
                     {
-                        seeds[seedCount++] = sides.y;
+                        if (sides.y != sides.x)
+                        {
+                            seeds[seedCount++] = sides.y;
+                        }
+
                         (double6.Load(yPtr + 6 * sides.y) + VesselContext.LoadRow(columns + 6)).Store(yPtr + 6 * sides.y);
                     }
 
@@ -379,26 +559,12 @@ namespace Unity.Physics
             }
 
             coupled.Dispose();
-            forestBlocks.Dispose();
-            treeBlocks.Dispose();
-            run = new ForestRun
-            {
-                Forest = forest,
-                Problem = problem,
-                Bounded = bounded,
-                RowClass = rowClass,
-                BlockSections = blockSections,
-                RowBlock = rowBlock,
-                Boundary = boundary,
-                BoundaryOf = boundaryOf,
-                W = w,
-                BoundaryCount = nb,
-                Velocity = new NativeArray<double>(6 * sections, Allocator.Temp),
-                Work = new NativeArray<double>(6 * sections, Allocator.Temp),
-                Team = team,
-                FactorTicks = boundaryStarted - factorStarted,
-                BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted,
-            };
+            run.Boundary = boundary;
+            run.BoundaryOf = boundaryOf;
+            run.W = w;
+            run.BoundaryCount = nb;
+            run.FactorTicks = boundaryStarted - factorStarted;
+            run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
             return true;
         }
 
@@ -408,16 +574,162 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// For sections of several bodies: each section's mass, centre and inertia from its bodies, the momentum-conserving
+        /// velocity its bodies have together, the rows as the sections see them, and each row's right-hand side moved from
+        /// the bodies' own velocities to the section's. A section's bodies need not move rigidly when it starts, after a
+        /// lock or a force on one of them; the solve takes them as one, and each body's answer is the section's.
+        /// </summary>
+        static unsafe void PrepareSections(ref ForestRun run)
+        {
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            ForestIsland* forest = run.Forest;
+            int sections = forest->SectionCount;
+            int bodies = problem.BodyCount;
+            int* sectionPartStart = forest->Structure.SectionPartStart.Ptr;
+            int* sectionParts = forest->Structure.SectionParts.Ptr;
+            int* partBody = forest->PartBody.Ptr;
+            int* bodySection = forest->BodySection.Ptr;
+            run.SectionCenter = new NativeArray<double3>(sections, Allocator.Temp);
+            run.SectionLinear = new NativeArray<double3>(sections, Allocator.Temp);
+            run.SectionAngular = new NativeArray<double3>(sections, Allocator.Temp);
+            run.Arm = new NativeArray<double3>(bodies, Allocator.Temp);
+            run.OwnLinear = new NativeArray<double3>(bodies, Allocator.Temp);
+            run.OwnAngular = new NativeArray<double3>(bodies, Allocator.Temp);
+            run.BlockInSection = new NativeArray<byte>(problem.BlockCount, Allocator.Temp);
+            run.PairInverse = new NativeArray<double>(36 * math.max(1, forest->PairCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int p = 0; p < forest->PairCount; p++)
+            {
+                run.PairInverse[36 * p] = double.NaN;
+            }
+
+            for (int s = 0; s < sections; s++)
+            {
+                int start = sectionPartStart[s], end = sectionPartStart[s + 1];
+                if (end - start < 2)
+                {
+                    continue;
+                }
+
+                double mass = 0.0;
+                double3 moment = 0.0, momentum = 0.0;
+                for (int k = start; k < end; k++)
+                {
+                    int i = partBody[sectionParts[k]];
+                    int world = run.WorldBodies[i];
+                    double m = problem.Bodies[i].Mass;
+                    mass += m;
+                    moment += m * (double3)run.MotionDatas[world].WorldFromMotion.pos;
+                    momentum += m * (double3)run.MotionVelocities[world].LinearVelocity;
+                }
+
+                double3 center = moment / mass;
+                double3x3 inertia = double3x3.zero;
+                double3 angularMomentum = 0.0;
+                for (int k = start; k < end; k++)
+                {
+                    int i = partBody[sectionParts[k]];
+                    int world = run.WorldBodies[i];
+                    double m = problem.Bodies[i].Mass;
+                    double3 r = (double3)run.MotionDatas[world].WorldFromMotion.pos - center;
+                    run.Arm[i] = r;
+                    run.OwnLinear[i] = run.MotionVelocities[world].LinearVelocity;
+                    run.OwnAngular[i] = BodyAngular(run, world);
+                    double3x3 own = problem.Bodies[i].Inertia;
+                    inertia += own + m * (math.dot(r, r) * double3x3.identity - new double3x3(r * r.x, r * r.y, r * r.z));
+                    angularMomentum += math.mul(own, run.OwnAngular[i]) + m * math.cross(r, run.OwnLinear[i]);
+                }
+
+                run.SectionCenter[s] = center;
+                run.SectionLinear[s] = momentum / mass;
+                run.SectionAngular[s] = math.mul(math.inverse(inertia), angularMomentum);
+                run.Forest->Sections[s] = new VesselSection { Mass = mass, Center = center, Inertia = inertia };
+            }
+
+            // The rows on a body of a section of several act on the section at the body's offset: j_angular + r x j_linear.
+            int rows = problem.RowCount;
+            long floats = SparseConstraintSolver.ColumnsPerRow * (long)rows;
+            run.SectionJacobian = new NativeArray<float>((int)floats, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            float* jacobian = (float*)run.SectionJacobian.GetUnsafePtr();
+            UnsafeUtility.MemCpy(jacobian, problem.Jacobian, floats * sizeof(float));
+            run.Jacobian = jacobian;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                bool multiA = block.BodyA >= 0 && Multi(forest, bodySection[block.BodyA]);
+                bool multiB = block.BodyB >= 0 && Multi(forest, bodySection[block.BodyB]);
+                if (!multiA && !multiB)
+                {
+                    continue;
+                }
+
+                run.BlockInSection[b] = (byte)(block.BodyA >= 0 && block.BodyB >= 0 && bodySection[block.BodyA] == bodySection[block.BodyB] ? 1 : 0);
+
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    // A row inside a section isn't solved, and an idle fixed row adds nothing: neither needs turning.
+                    byte rowClass = run.RowClass[row];
+                    if (rowClass == SectionRowClass || (rowClass == FixedRowClass && problem.Lower[row] == 0.0f))
+                    {
+                        continue;
+                    }
+
+                    float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                    bool moved = rowClass != FixedRowClass;
+                    double change = 0.0;
+                    if (multiA)
+                    {
+                        change += ToSection(ref run, columns, block.BodyA);
+                    }
+
+                    if (multiB)
+                    {
+                        change += ToSection(ref run, columns + 6, block.BodyB);
+                    }
+
+                    if (moved)
+                    {
+                        problem.RightHandSide[row] += (float)change;
+                    }
+                }
+            }
+        }
+
+        /// <summary>Whether section s has more than one body.</summary>
+        static unsafe bool Multi(ForestIsland* forest, int s) =>
+            forest->Structure.SectionPartStart[s + 1] - forest->Structure.SectionPartStart[s] > 1;
+
+        /// <summary>A body's angular velocity in world space.</summary>
+        static unsafe double3 BodyAngular(in ForestRun run, int world) =>
+            math.rotate(run.MotionDatas[world].WorldFromMotion.rot, run.MotionVelocities[world].AngularVelocity);
+
+        /// <summary>
+        /// Turns one side of a row from a body's columns to its section's, and returns how much the row's right-hand side
+        /// moves when the body's velocity is taken as the section's: j . u_body - j_section . u_section.
+        /// </summary>
+        static unsafe double ToSection(ref ForestRun run, float* columns, int body)
+        {
+            int s = run.Forest->BodySection[body];
+            double3 linear = new double3(columns[0], columns[1], columns[2]);
+            double3 angular = new double3(columns[3], columns[4], columns[5]);
+            double own = math.dot(linear, run.OwnLinear[body]) + math.dot(angular, run.OwnAngular[body]);
+            double3 moved = angular + math.cross(run.Arm[body], linear);
+            columns[3] = (float)moved.x;
+            columns[4] = (float)moved.y;
+            columns[5] = (float)moved.z;
+            return own - (math.dot(linear, run.SectionLinear[s]) + math.dot(moved, run.SectionAngular[s]));
+        }
+
+        /// <summary>
         /// Solves the run's island for the right-hand side <paramref name="rhs"/> against the factor and boundary block it
-        /// holds, and writes every row's impulse. Returns false if the boundary's pivoting ran out of iterations, leaving
-        /// its impulses clamped to their bounds.
+        /// holds, and writes every row's impulse; a row inside a section gets none here. Returns false if the boundary's
+        /// pivoting ran out of iterations, leaving its impulses clamped to their bounds.
         /// </summary>
         static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
         {
             using ProfilerMarker.AutoScope span = ForestSolveMarker.Auto();
 
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
-            ref VesselContext context = ref run.Forest->Context;
+            float* jacobian = run.Jacobian;
             int rows = problem.RowCount;
             double* v = (double*)run.Velocity.GetUnsafePtr();
             double* work = (double*)run.Work.GetUnsafePtr();
@@ -441,7 +753,7 @@ namespace Unity.Physics
                     continue;
                 }
 
-                AddRow(v, run.BlockSections[run.RowBlock[row]], problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, scale);
+                AddRow(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, scale);
             }
 
             SolveAgainstFactor(ref run, v);
@@ -459,7 +771,7 @@ namespace Unity.Physics
                 for (int i = 0; i < nb; i++)
                 {
                     int row = run.Boundary[i];
-                    q[i] = rhs[row] - RowSpeed(v, run.BlockSections[run.RowBlock[row]], problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    q[i] = rhs[row] - RowSpeed(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     lower[i] = run.Bounded ? problem.Lower[row] : double.NegativeInfinity;
                     upper[i] = run.Bounded ? problem.Upper[row] : double.PositiveInfinity;
                     if (run.Bounded && problem.InitialStates != null)
@@ -486,7 +798,7 @@ namespace Unity.Physics
                 for (int i = 0; i < nb; i++)
                 {
                     int row = run.Boundary[i];
-                    AddRow(work, run.BlockSections[run.RowBlock[row]], problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, z[i]);
+                    AddRow(work, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, z[i]);
                     impulses[row] = (float)z[i];
                 }
 
@@ -510,16 +822,248 @@ namespace Unity.Physics
                 byte rowClass = run.RowClass[row];
                 if (rowClass == ForestRowClass)
                 {
-                    double speed = RowSpeed(v, run.BlockSections[run.RowBlock[row]], problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    double speed = RowSpeed(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     impulses[row] = (float)((rhs[row] - speed) / problem.Epsilon[row]);
                 }
                 else if (rowClass == FixedRowClass)
                 {
                     impulses[row] = problem.Lower[row];
                 }
+                else if (rowClass == SectionRowClass)
+                {
+                    impulses[row] = 0.0f;
+                }
             }
 
             return solved;
+        }
+
+        /// <summary>
+        /// Each body's impulse once the run's sections have their change of velocity, as <see cref="SumBodyImpulses"/>
+        /// gives it, written to <paramref name="linear"/> and <paramref name="angular"/>. A body of a section of several
+        /// takes the impulse that gives it its section's motion, rigid about the section's centre; for a solve, the
+        /// locked pairs' rows then get the impulses that carry those bodies' share, by inverse dynamics. For a push-out,
+        /// the sections start from rest and nothing else is written.
+        /// </summary>
+        static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
+            float3* linear, float3* angular, bool pushOut)
+        {
+            SumBodyImpulses(problem, impulses, linear, angular);
+            if (!run.MultiPart)
+            {
+                return;
+            }
+
+            ForestIsland* forest = run.Forest;
+            int sections = forest->SectionCount;
+            int* sectionPartStart = forest->Structure.SectionPartStart.Ptr;
+            int* sectionParts = forest->Structure.SectionParts.Ptr;
+            int* partBody = forest->PartBody.Ptr;
+            double h = run.Timestep;
+            double* v = (double*)run.Velocity.GetUnsafePtr();
+            var residual = new NativeArray<double6>(pushOut ? 0 : problem.BodyCount, Allocator.Temp);
+            run.Residual = 0.0;
+            for (int s = 0; s < sections; s++)
+            {
+                int start = sectionPartStart[s], end = sectionPartStart[s + 1];
+                if (end - start < 2)
+                {
+                    continue;
+                }
+
+                double3 dLinear = new double3(v[6 * s], v[6 * s + 1], v[6 * s + 2]);
+                double3 dAngular = new double3(v[6 * s + 3], v[6 * s + 4], v[6 * s + 5]);
+                double3 sectionLinear = pushOut ? dLinear : run.SectionLinear[s] + dLinear;
+                double3 sectionAngular = pushOut ? dAngular : run.SectionAngular[s] + dAngular;
+
+                // Each body lands where the section's rotation takes it, not along the tangent, so that a turning section
+                // stays rigid however long it stays locked.
+                double angle = math.length(sectionAngular) * h;
+                double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
+                    : new double4(0.0, 0.0, 0.0, 1.0);
+                double3x3 turnRotation = VesselContext.Rotation(turn);
+                for (int k = start; k < end; k++)
+                {
+                    int i = partBody[sectionParts[k]];
+                    int world = run.WorldBodies[i];
+                    MotionVelocity motion = run.MotionVelocities[world];
+                    quaternion rotation = run.MotionDatas[world].WorldFromMotion.rot;
+                    double3 r = run.Arm[i];
+                    double3 targetLinear = pushOut ? sectionLinear + math.cross(sectionAngular, r)
+                        : sectionLinear + (math.mul(turnRotation, r) - r) / h;
+                    double3 changeLinear = pushOut ? targetLinear : targetLinear - run.OwnLinear[i];
+                    double3 changeAngular = pushOut ? sectionAngular : sectionAngular - run.OwnAngular[i];
+
+                    // The impulses that give exactly these changes as the bodies take impulses: by their own mass, and by
+                    // their principal inertia in their own frame.
+                    double3 inverseInertia = math.max((double3)motion.InverseInertia, 1e-12);
+                    double3 local = math.rotate(math.conjugate(rotation), (float3)changeAngular);
+                    double3 linearImpulse = changeLinear / math.max((double)motion.InverseMass, 1e-12);
+                    double3 angularImpulse = math.rotate(rotation, (float3)(local / inverseInertia));
+                    if (!pushOut)
+                    {
+                        residual[i] = new double6(new double4(linearImpulse - (double3)linear[i], angularImpulse.x - angular[i].x),
+                            new double2(angularImpulse.y - angular[i].y, angularImpulse.z - angular[i].z));
+                    }
+
+                    linear[i] = (float3)linearImpulse;
+                    angular[i] = (float3)angularImpulse;
+                }
+
+                if (pushOut)
+                {
+                    continue;
+                }
+
+                // Leaves inward: each locked edge carries what its child's subtree still needs, moved to the parent's centre.
+                for (int k = end - 1; k > start; k--)
+                {
+                    int part = sectionParts[k];
+                    int child = partBody[part];
+                    int parent = partBody[forest->Edges[part].Parent];
+                    double6 need = residual[child];
+                    LockedPairImpulses(ref run, problem, forest->PartPair[part], child, need, impulses);
+                    double3 force = new double3(need.Low.x, need.Low.y, need.Low.z);
+                    double3 torque = new double3(need.Low.w, need.High.x, need.High.y);
+                    double3 offset = run.Arm[child] - run.Arm[parent];
+                    torque += math.cross(offset, force);
+                    residual[parent] = residual[parent] + new double6(new double4(force, torque.x), new double2(torque.y, torque.z));
+                }
+
+                double6 left = residual[partBody[sectionParts[start]]];
+                run.Residual = math.max(run.Residual, math.length(new double3(left.Low.x, left.Low.y, left.Low.z)));
+            }
+
+            residual.Dispose();
+        }
+
+        /// <summary>
+        /// The impulses of a locked pair's rows that carry <paramref name="need"/> (an impulse and its moment about the
+        /// child's centre) into the child: the least-squares split weighted by each row's stiffness, z = W J (J^T W J)^-1
+        /// need, which is how the rows would share it if the pair were a very stiff spring.
+        /// </summary>
+        static unsafe void LockedPairImpulses(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int child,
+            double6 need, float* impulses)
+        {
+            if (pair < 0)
+            {
+                return;
+            }
+
+            ForestIsland* forest = run.Forest;
+            double* inverse = (double*)run.PairInverse.GetUnsafePtr() + 36 * pair;
+            if (double.IsNaN(inverse[0]))
+            {
+                PairLeastSquares(ref run, problem, pair, child, inverse);
+            }
+
+            double6 x = ((double6x6*)inverse)->Mul(need);
+            for (int k = forest->PairBlockStart[pair]; k < forest->PairBlockStart[pair + 1]; k++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[run.ForestBlocks[forest->PairBlocks[k]]];
+                int side = block.BodyA == child ? 0 : 6;
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    if (run.RowClass[row] == SectionRowClass)
+                    {
+                        double6 j = VesselContext.LoadRow(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
+                        impulses[row] = (float)(double6.Dot(j, x) / problem.Epsilon[row]);
+                    }
+                }
+            }
+        }
+
+        /// <summary>(J^T W J)^-1 over a locked pair's rows on the child's side, W the rows' stiffness 1 / epsilon.</summary>
+        static unsafe void PairLeastSquares(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int child,
+            double* inverse)
+        {
+            ForestIsland* forest = run.Forest;
+            double* m = stackalloc double[36];
+            UnsafeUtility.MemClear(m, 36 * sizeof(double));
+            for (int k = forest->PairBlockStart[pair]; k < forest->PairBlockStart[pair + 1]; k++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[run.ForestBlocks[forest->PairBlocks[k]]];
+                int side = block.BodyA == child ? 0 : 6;
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    if (run.RowClass[row] == SectionRowClass)
+                    {
+                        double6 j = VesselContext.LoadRow(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
+                        VesselContext.AddOuter(m, 1.0 / problem.Epsilon[row], j, j);
+                    }
+                }
+            }
+
+            // Rows that don't reach every direction leave the rest of the load to rounding, not to a singular matrix.
+            double trace = m[0] + m[7] + m[14] + m[21] + m[28] + m[35];
+            for (int d = 0; d < 6; d++)
+            {
+                m[7 * d] += 1e-12 * trace + 1e-300;
+            }
+
+            VesselBlocks.InvertSymmetric(inverse, m);
+        }
+
+        /// <summary>
+        /// Each tree pair's deflection under this solve's load: the largest over its rotation rows of how far the row's
+        /// spring would turn to carry its impulse, z / (h k) with h^2 k = 1 / epsilon. Summed over a step's substeps; the
+        /// next step's first substep turns the sum into their mean, the deflection the lock tests read from then on (see
+        /// <see cref="ForestIsland.PairDeflectionSum"/>). Returns this solve's largest.
+        /// </summary>
+        static unsafe float RecordDeflections(ref ForestRun run, float* impulses, int substep)
+        {
+            float largest = 0.0f;
+            ForestIsland* forest = run.Forest;
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            float h = run.Timestep;
+            for (int p = 0; p < forest->PairCount; p++)
+            {
+                if (forest->PairEdge[p] == 0 || forest->PairTree[p] == 0)
+                {
+                    continue;
+                }
+
+                float deflection = 0.0f;
+                for (int k = forest->PairBlockStart[p]; k < forest->PairBlockStart[p + 1]; k++)
+                {
+                    SparseConstraintSolver.ConstraintBlock block = problem.Blocks[run.ForestBlocks[forest->PairBlocks[k]]];
+                    for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                    {
+                        byte rowClass = run.RowClass[row];
+                        if (rowClass != ForestRowClass && rowClass != SectionRowClass)
+                        {
+                            continue;
+                        }
+
+                        float* columns = problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                        float linear = columns[0] * columns[0] + columns[1] * columns[1] + columns[2] * columns[2];
+                        float angular = columns[3] * columns[3] + columns[4] * columns[4] + columns[5] * columns[5];
+                        if (linear <= 1e-8f * angular)
+                        {
+                            deflection = math.max(deflection, math.abs(impulses[row]) * problem.Epsilon[row] * h);
+                        }
+                    }
+                }
+
+                // A step's first substep closes the step before it: its mean becomes the deflection the lock tests read.
+                float sum = forest->PairDeflectionSum[p];
+                if (substep <= 0)
+                {
+                    if (forest->DeflectionCount > 0)
+                    {
+                        forest->PairDeflection[p] = sum / forest->DeflectionCount;
+                    }
+
+                    sum = 0.0f;
+                }
+
+                forest->PairDeflectionSum[p] = sum + deflection;
+
+                largest = math.max(largest, deflection);
+            }
+
+            forest->DeflectionCount = substep <= 0 ? 1 : forest->DeflectionCount + 1;
+            return largest;
         }
 
         /// <summary>x = A^-1 x against the forest's factor, by chunks on the team's lanes.</summary>
