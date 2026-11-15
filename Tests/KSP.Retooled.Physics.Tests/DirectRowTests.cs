@@ -19,6 +19,7 @@ namespace KSP.Retooled.Physics.Tests
         private static List<string> problems;
 
         private bool wasEnabled;
+        private bool wasLocking;
         private bool wasLegacy;
 
         [SetUp]
@@ -29,8 +30,16 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("The direct rows are part of the Unity Physics backend.");
             }
 
+            // The environment's switches apply when the first world attaches; read them now, so they can't land on top of
+            // what this fixture sets.
+            VesselForest.Initialize();
             wasEnabled = VesselForest.Enabled;
+            wasLocking = VesselForest.Locking;
             wasLegacy = Solver.LegacyRowBuild;
+
+            // A locked section depends on what the steps before it carried, so the second of two runs would start from what
+            // the first left. Locking only reads the rows, which are the same either way.
+            VesselForest.Locking = false;
         }
 
         [TearDown]
@@ -38,6 +47,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             SparseProblemObserver.Set(null);
             VesselForest.Enabled = wasEnabled;
+            VesselForest.Locking = wasLocking;
             Solver.LegacyRowBuild = wasLegacy;
         }
 
