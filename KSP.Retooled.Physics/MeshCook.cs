@@ -9,22 +9,22 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Mesh cooking: checks a source mesh and copies it into a cooked mesh, one relocatable block holding a
-    /// <see cref="NativeStore.MeshData"/> header, the vertices and the triangles, with bounds. The geometry itself is Unity
-    /// Physics' to work out, per shape (<see cref="ColliderBuilder"/>), because its blobs carry a scale, a filter and a
-    /// material that a cook doesn't know.
+    /// Validates a source mesh and copies it into a cooked mesh. The result is one relocatable block containing a <see
+    /// cref="NativeStore.MeshData"/> header, vertices, triangles, and bounds. <see cref="ColliderBuilder"/> uses Unity
+    /// Physics to create the geometry for each shape, since the scale, filter, and material stored in its blobs are not
+    /// known during cooking.
     /// </summary>
     /// <remarks>
-    /// Cooks arrive from import workers and from Physics.BakeMesh in jobs, so nothing here may touch shared state. Nothing
-    /// here allocates or calls into Unity Physics either: its creators use Allocator.Temp, and a thread the job system
-    /// doesn't own has no temp allocator. As with the query functions, the plugin holds Burst function pointers, and until
-    /// the async compile delivers they are stubs running the same code in Mono.
+    /// Cooking runs on import workers and through Physics.BakeMesh in jobs, so this code must not access shared state.
+    /// It must not allocate memory or call Unity Physics either. Unity Physics creation functions use Allocator.Temp,
+    /// which is unavailable on threads outside the job system. As with query functions, the plugin stores Burst
+    /// function pointers. Until asynchronous compilation finishes, these refer to stubs that run the same code in Mono.
     ///
-    /// The block is also the stream Unity stores in a pre-baked mesh asset (m_BakedConvexCollisionMesh and
-    /// m_BakedTriangleCollisionMesh). Unity treats those bytes as opaque and hands them back at load, so the format is ours.
-    /// A build must not depend on which form of this code ran, and thickening a flat mesh computes new vertices, so floats
-    /// stay strict: Burst's default could fuse a multiply and an add, and give different bytes from Mono. Change
-    /// <see cref="StreamVersion"/> with the layout.
+    /// The block is also the stream that Unity stores in a pre-baked mesh asset (m_BakedConvexCollisionMesh and
+    /// m_BakedTriangleCollisionMesh). Unity treats the bytes as opaque and returns them when loading, so we define the
+    /// format. The output must be the same whether cooking runs in Burst or Mono. Thickening a flat mesh calculates new
+    /// vertices, so use strict floating-point operations. Burst's default mode could fuse a multiply and an add,
+    /// producing different bytes from Mono. Change <see cref="StreamVersion"/> when the layout changes.
     /// </remarks>
     [BurstCompile]
     internal static unsafe class MeshCook
@@ -44,8 +44,8 @@ namespace KSP.Retooled.Physics
         internal delegate int ValidateFunction(byte* stream, long size, int convex);
 
         /// <summary>
-        /// Writes the cooked mesh to the output, whose memory the caller owns. With no bytes given it only reports, in size, a
-        /// capacity that is enough. Otherwise size becomes what was written, which may be less.
+        /// Writes the cooked mesh to output memory owned by the caller. If no output bytes are supplied, sets size to
+        /// the required capacity. Otherwise, sets size to the number of bytes written, which may be smaller.
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true, FloatMode = FloatMode.Strict)]
         [MonoPInvokeCallback(typeof(CookFunction))]
@@ -61,7 +61,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst excludes this method, so it runs only in Mono. Catch exceptions here so that they do not leave the
+        /// managed callback.
+        /// </summary>
         [BurstDiscard]
         private static void CookInMono(NativeStore.CookInput* input, NativeStore.CookOutput* output, ref bool ranInMono)
         {
@@ -78,7 +81,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Whether the bytes are a cooked mesh of this kind, safe to read.</summary>
+        /// <summary>
+        /// Checks whether the bytes describe a cooked mesh of the requested kind and can be read safely.
+        /// </summary>
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(ValidateFunction))]
         internal static int Validate(byte* stream, long size, int convex)
@@ -118,13 +123,14 @@ namespace KSP.Retooled.Physics
 
         private static void Run(NativeStore.CookInput* input, NativeStore.CookOutput* output)
         {
-            // A stream is sized in indices, or in triangles when its element is a whole one.
+            // The input count is in indices, or in triangles when each element contains a whole triangle.
             bool convex = input->convex != 0;
             bool wholeTriangles = input->indexStride == 6 || input->indexStride == 12;
             long indexCount = input->indexCount * (wholeTriangles ? 3L : 1L);
             if (output->bytes == null)
             {
-                // A flat convex mesh doubles its vertices.
+                // Allow space for twice as many vertices because thickening a flat convex mesh doubles the vertex
+                // count.
                 output->size = sizeof(NativeStore.MeshData)
                     + input->vertexCount * (convex ? 2L : 1L) * sizeof(float3)
                     + indexCount / 3 * sizeof(int3);
@@ -160,7 +166,8 @@ namespace KSP.Retooled.Physics
             int triangleStatus = CookTriangles(input, vertices, indexCount, triangles, ref triangleCount);
             if (convex)
             {
-                // A hull comes from the vertices alone, so these triangles only describe the source mesh, which may have none.
+                // The hull depends only on vertices. These triangles describe the source mesh, which may have no
+                // triangles.
                 if (triangleStatus == StatusBadIndices || vertexCount == 0)
                 {
                     triangleCount = 0;
@@ -207,8 +214,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Copies the triangles, turned the right way out. A degenerate one stays for Unity Physics to drop, but a mesh with
-        /// nothing else counts as empty, because Unity wants to hear that from the cook.
+        /// Copies the triangles and reverses their winding if flipped normals are requested. Retains degenerate
+        /// triangles for Unity Physics to remove. The test for a usable triangle only checks that its three vertices
+        /// have distinct positions; it does not check for collinearity. Reports the mesh as empty if no triangle passes
+        /// that test, as Unity expects from cooking.
         /// </summary>
         private static int CookTriangles(NativeStore.CookInput* input, float3* vertices, long indexCount, int3* triangles, ref int triangleCount)
         {
@@ -248,8 +257,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// How many points span the input: 4 for a solid, 3 for a plane, with those three in seeds, and fewer for a line or a
-        /// point, which has no hull. Doubles keep the test honest for float input.
+        /// Returns how many points are needed to span the input: 4 for a solid, 3 for a plane, or fewer for a line or a
+        /// point, which cannot form a hull. For a plane, seeds contains the three points. Uses double precision to
+        /// avoid additional errors when testing float input.
         /// </summary>
         private static int FindSeeds(float3* vertices, int count, out int3 seeds)
         {
@@ -267,7 +277,8 @@ namespace KSP.Retooled.Physics
                 largest = math.max(largest, math.cmax(math.abs(p)));
             }
 
-            // Float rounding of the input, so that a point on a plane isn't taken for one off it.
+            // Allow for rounding in the float input so that a point on a plane is not classified as being off the
+            // plane.
             double epsilon = 1e-6 * math.cmax(upper - lower) + 2e-7 * largest;
 
             double3 origin = vertices[first];
@@ -321,8 +332,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX gives a flat convex mesh a body: a slab reaching either side of the plane by 5% of the mesh's smallest extent.
-        /// Unity Physics would leave it with no volume, so no mass. Returns the new count, which is double.
+        /// Thickens a flat convex mesh into a slab, as PhysX does. The slab extends on each side of the plane by 5% of
+        /// the smallest extent greater than 1e-6. Unity Physics would otherwise produce zero volume and therefore no
+        /// mass. Returns the new vertex count, which is twice the original count.
         /// </summary>
         private static int Thicken(float3* vertices, int count, int3 seeds)
         {
@@ -359,8 +371,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// A convex collider is the hull of every vertex and a triangle mesh only its triangles, as in PhysX, so a vertex that
-        /// no triangle uses stays out of a triangle mesh's bounds.
+        /// A convex collider uses the hull of all vertices, while a triangle mesh uses only its triangles, as in PhysX.
+        /// Exclude vertices that no triangle uses when calculating a triangle mesh's bounds.
         /// </summary>
         private static void WriteHeader(
             NativeStore.MeshData* mesh,
