@@ -233,6 +233,7 @@ namespace Unity.Physics
                     Bodies = world.Bodies,
                     StepInput = substepInput,
                     UpdateJoints = substep > 0 && !LegacyRowBuild,
+                    ShareRegularization = !LegacyRowBuild,
                 }.Schedule(work.Headers, headersPerBatch, handle);
 
                 JobHandle alone = new SolveDirectIslandJob
@@ -650,6 +651,13 @@ namespace Unity.Physics
             /// </summary>
             public bool UpdateJoints;
 
+            /// <summary> Works the substep's default regularization out once per worker rather than once per Jacobian. </summary>
+            public bool ShareRegularization;
+
+            // Worked out by the first Jacobian a worker builds, in that worker's copy of the job.
+            RowRegularization regularization;
+            bool hasRegularization;
+
             public void Execute(int index)
             {
                 int islandIndex = Headers[index].Island;
@@ -697,6 +705,17 @@ namespace Unity.Physics
                     SparseContacts = island.ContactPairs > 0,
                     SolveSparsely = true,
                 };
+
+                if (ShareRegularization)
+                {
+                    if (!hasRegularization)
+                    {
+                        regularization = RowRegularization.Of(StepInput);
+                        hasRegularization = true;
+                    }
+
+                    context.Regularization = (RowRegularization*)UnsafeUtility.AddressOf(ref regularization);
+                }
 
                 Vector* JBlocks = stackalloc Vector[jacRows];
                 BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
