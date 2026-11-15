@@ -38,6 +38,9 @@ namespace Unity.Physics
         public const int SummarizeJacobiansKind = -4;
         public const int FillBlocksKind = -5;
 
+        /// <summary>One phase of an iteration of the iteratively solved pairs, whose context is that phase's job.</summary>
+        public const int IterativePhaseKind = -6;
+
         struct Stage
         {
             public void* Context;
@@ -223,6 +226,10 @@ namespace Unity.Physics
             else if (stage.Kind == FillBlocksKind)
             {
                 Solver.FillBlocksTask(stage.Context, task);
+            }
+            else if (stage.Kind == IterativePhaseKind)
+            {
+                Solver.IterativePhaseTask(stage.Context, task);
             }
             else
             {

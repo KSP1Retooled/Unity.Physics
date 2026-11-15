@@ -26,69 +26,59 @@ namespace Unity.Physics
         /// <paramref name="jacobiansBuilt"/> is the end of the Jacobian build alone, without the jobs that change the Jacobians'
         /// impulses or the velocities before the solve, which is all that listing the direct islands' Jacobians waits for.
         /// </summary>
-        internal static SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
+        internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
             in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData,
             JobHandle jacobiansBuilt, JobHandle inputDeps)
         {
-            const int workItemsPerBatch = 4;
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
             DispatchPairSequencer.IterativeSolverSchedulerInfo iterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling;
 
-            JobHandle iterativeHandle = inputDeps;
-            for (int iteration = 0; iteration < stepInput.NumSolverIterations; iteration++)
+            // Every phase of every iteration runs as a stage of one team job rather than as a job of its own, which leaves two
+            // jobs to schedule instead of one per phase and iteration, and two that finish at once when no pairs iterate.
+            var teams = UnsafeList<SparseSolveTeam>.Create(2, Allocator.TempJob);
+            teams->Resize(2, NativeArrayOptions.ClearMemory);
+            teams->ElementAt(0).Configure();
+            teams->ElementAt(1).Configure();
+            int lanes = math.min(JobsUtility.JobWorkerCount + 1, MaxTeamLanes);
+
+            var template = new ParallelIterativeSolverJob
             {
-                stepInput.CurrentSolverIteration = iteration;
-                for (int phase = 0; phase < DispatchPairSequencer.NumIslandPhases; phase++)
-                {
-                    var job = new ParallelIterativeSolverJob
-                    {
-                        JacobiansReader = jacobians.AsReader(),
-                        PhaseIndex = phase,
-                        IterativeSolverSchedulerInfo = iterativePairs,
-                        MotionVelocities = motionVelocities,
-                        SolverStabilizationData = solverStabilizationData,
-                        stepInput = stepInput
-                    };
+                JacobiansReader = jacobians.AsReader(),
+                IterativeSolverSchedulerInfo = iterativePairs,
+                MotionVelocities = motionVelocities,
+                SolverStabilizationData = solverStabilizationData,
+                CollisionEventsWriter = collisionEvents.AsWriter(),
+                TriggerEventsWriter = triggerEvents.AsWriter(),
+                ImpulseEventsWriter = impulseEvents.AsWriter(),
+                stepInput = stepInput,
+            };
 
-                    if (stepInput.ExportEventsInThisIteration)
-                    {
-                        job.CollisionEventsWriter = collisionEvents.AsWriter();
-                        job.TriggerEventsWriter = triggerEvents.AsWriter();
-                        job.ImpulseEventsWriter = impulseEvents.AsWriter();
-                    }
-
-                    iterativeHandle = SchedulePhase(job, iterativePairs, phase, workItemsPerBatch, iterativeHandle);
-                }
-            }
+            JobHandle iterativeHandle = new IterateInTeamJob
+            {
+                Template = template,
+                FirstIteration = 0,
+                Iterations = stepInput.NumSolverIterations,
+                Team = teams->Ptr,
+            }.Schedule(lanes, 1, inputDeps);
 
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
 
             // With the positions moved by the contacts' push, a few more iterations take the push back out of the velocities,
             // as PhysX's velocity iterations do after its position iterations. Events were exported with the step's impulses.
-            StepInput relaxing = stepInput;
-            relaxing.Relaxing = true;
-            relaxing.DisableExportEvents = true;
-            for (int iteration = 0; iteration < RelaxIterations; iteration++)
+            // They count past the step's own iterations, so that none of them counts as its first or last.
+            template.stepInput.Relaxing = true;
+            template.stepInput.DisableExportEvents = true;
+            iterativeHandle = new IterateInTeamJob
             {
-                // Past the step's own iterations, so that none of them counts as its first or last.
-                relaxing.CurrentSolverIteration = stepInput.NumSolverIterations + iteration;
-                for (int phase = 0; phase < DispatchPairSequencer.NumIslandPhases; phase++)
-                {
-                    var job = new ParallelIterativeSolverJob
-                    {
-                        JacobiansReader = jacobians.AsReader(),
-                        PhaseIndex = phase,
-                        IterativeSolverSchedulerInfo = iterativePairs,
-                        MotionVelocities = motionVelocities,
-                        SolverStabilizationData = solverStabilizationData,
-                        stepInput = relaxing
-                    };
+                Template = template,
+                FirstIteration = stepInput.NumSolverIterations,
+                Iterations = RelaxIterations,
+                Team = teams->Ptr + 1,
+            }.Schedule(lanes, 1, iterativeHandle);
 
-                    iterativeHandle = SchedulePhase(job, iterativePairs, phase, workItemsPerBatch, iterativeHandle);
-                }
-            }
+            iterativeHandle = new DestroyTeamsJob { Teams = teams }.Schedule(iterativeHandle);
 
             JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
                 solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps);
@@ -113,6 +103,75 @@ namespace Unity.Physics
             return returnHandles;
         }
 
+        /// <summary>The most lanes a team job gets. Lanes past what its stages keep busy only wait.</summary>
+        const int MaxTeamLanes = 8;
+
+        /// <summary>
+        /// Runs iterations of the iteratively solved pairs, phase by phase, with every lane of the job sharing each phase's work
+        /// items. A phase's pairs touch no body another of its work items touches, and the leader starts a phase only once
+        /// the one before has finished.
+        /// </summary>
+        [BurstCompile]
+        [NoAlias]
+        unsafe struct IterateInTeamJob : IJobParallelFor
+        {
+            /// <summary>The job one phase would run, but for its phase and iteration.</summary>
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public ParallelIterativeSolverJob Template;
+
+            public int FirstIteration;
+            public int Iterations;
+
+            [NativeDisableUnsafePtrRestriction]
+            public SparseSolveTeam* Team;
+
+            public void Execute(int lane)
+            {
+                if (!Team->TryLead())
+                {
+                    Team->Help();
+                    return;
+                }
+
+                var phases = (DispatchPairSequencer.IterativeSolverSchedulerInfo.SolvePhaseInfo*)
+                    NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(Template.IterativeSolverSchedulerInfo.PhaseInfo);
+                ParallelIterativeSolverJob job = Template;
+                for (int iteration = FirstIteration; iteration < FirstIteration + Iterations; iteration++)
+                {
+                    job.stepInput.CurrentSolverIteration = iteration;
+                    for (int phase = 0; phase < DispatchPairSequencer.NumIslandPhases; phase++)
+                    {
+                        job.PhaseIndex = phase;
+                        Team->Lead(&job, SparseSolveTeam.IterativePhaseKind, phases[phase].NumWorkItems, null);
+                    }
+                }
+
+                Team->Finish();
+            }
+        }
+
+        /// <summary>
+        /// One work item of an iterative phase, for a team. The context is that phase's job, which each task copies: the
+        /// event writers in it keep the state of the work item they are writing, so lanes can't share one.
+        /// </summary>
+        internal static unsafe void IterativePhaseTask(void* context, int task)
+        {
+            ParallelIterativeSolverJob job = *(ParallelIterativeSolverJob*)context;
+            job.Execute(task);
+        }
+
+        [BurstCompile]
+        unsafe struct DestroyTeamsJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeList<SparseSolveTeam>* Teams;
+
+            public void Execute()
+            {
+                UnsafeList<SparseSolveTeam>.Destroy(Teams);
+            }
+        }
+
         /// <summary>
         /// The substeps of every direct island. Each substep updates the Jacobians, counts their rows, builds the rows, solves
         /// each island and integrates its bodies. Only the counting runs alone. Small islands solve one per thread, and each big
@@ -124,12 +183,9 @@ namespace Unity.Physics
         {
             const int headersPerBatch = 16;
             const int bodiesPerBatch = 32;
-            const int maxSolveLanes = 8;
 
             var work = new DirectIslandWork(substeps, Allocator.TempJob);
-
-            // Lanes past what the subtrees of a craft keep busy only spin.
-            int lanes = math.min(JobsUtility.JobWorkerCount + 1, maxSolveLanes);
+            int lanes = math.min(JobsUtility.JobWorkerCount + 1, MaxTeamLanes);
 
             JobHandle handle = new IndexDirectIslandsJob
             {
@@ -384,6 +440,8 @@ namespace Unity.Physics
 
             public DirectIslandWork Work;
 
+            public DirectSolverCache Cache;
+
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
@@ -471,8 +529,6 @@ namespace Unity.Physics
         unsafe struct CountIslandRowsJob : IJob
         {
             public DirectIslandWork Work;
-
-            public DirectSolverCache Cache;
 
             public void Execute()
             {
