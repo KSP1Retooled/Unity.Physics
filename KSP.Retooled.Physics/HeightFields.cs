@@ -4,8 +4,9 @@ using Unity.Mathematics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The height field commands: a copy of Unity's samples on the store's heap, where it survives a domain reload, and the
-    /// list of shapes using it. <see cref="ColliderBuilder"/> makes the geometry, per shape, because a shape holds the scale.
+    /// Handles height field commands. Stores a copy of Unity's samples on the store's heap so that they survive a
+    /// domain reload, along with a list of shapes that use the field. <see cref="ColliderBuilder"/> creates the
+    /// geometry separately for each shape because the scale is stored on the shape.
     /// </summary>
     internal static unsafe class HeightFields
     {
@@ -13,7 +14,7 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateHeightField.Auto();
 
-            // A descriptor's count of heights is often zero, so the resolution is what sizes them.
+            // The descriptor's height count is often zero, so calculate the number of samples from the resolution.
             uint resolution = a->value;
             long sampleCount = resolution * (long)resolution;
             if (a->pointer == null || resolution < 2)
@@ -35,8 +36,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Takes in an edit. However small the region Unity names, its descriptor holds the whole grid with the edit in it,
-        /// and no holes at all until the terrain has had one. A collider copies the grid, so each shape's is built again.
+        /// Applies an edit to a height field. Unity's descriptor contains the entire grid with the edit applied, even
+        /// when the specified region is small. It contains no hole data until the terrain has had a hole. Each collider
+        /// contains a copy of the grid, so mark the bodies of all attached shapes for a rebuild.
         /// </summary>
         internal static void Update(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
@@ -120,7 +122,10 @@ namespace KSP.Retooled.Physics
             field->highest = highest;
         }
 
-        /// <summary>Keeps the cells only while some are holes, which is what picks the kind of collider.</summary>
+        /// <summary>
+        /// Stores the cell data only when at least one cell is a hole. The presence of holes determines which kind of
+        /// collider to build.
+        /// </summary>
         private static void StoreHoles(NativeStore.HeightField* field, byte* cells, uint cellCount, NativeStore.StoreGlobals* globals)
         {
             long expected = (field->resolution - 1L) * (field->resolution - 1L);

@@ -8,8 +8,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The plugin API's shape commands, by the id Shape.cpp passes. Attach checks the count against the plugin's. Only what
-    /// runs in <see cref="ShapeKernel"/> has a name here that matters; the mesh commands stay in Mesh.cpp.
+    /// Defines the plugin API's shape commands by the id passed from Shape.cpp. Attach checks that the command count
+    /// matches the plugin's count. The names here matter only for commands handled by <see cref="ShapeKernel"/>; mesh
+    /// commands are handled in Mesh.cpp.
     /// </summary>
     internal enum ShapeCommand : uint
     {
@@ -50,10 +51,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Everything a shape command does that the plugin doesn't answer itself. Shape commands arrive outside a step, mostly on
-    /// the main thread: Unity sets poses from job workers too, which read rows as <see cref="BodyEntities"/> left them. As
-    /// with the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a
-    /// stub running the same code in Mono.
+    /// Handles the parts of shape commands that the plugin does not handle itself. Commands arrive outside a simulation
+    /// step, mostly on the main thread. Unity also sets poses from job workers, which read rows in the state left by
+    /// <see cref="BodyEntities"/>. As with query functions, the plugin stores a Burst function pointer. Until
+    /// asynchronous compilation finishes, that pointer refers to a stub that runs the same code in Mono.
     /// </summary>
     [BurstCompile]
     internal static unsafe class ShapeKernel
@@ -72,7 +73,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst excludes this method, so it runs only in Mono. Catch exceptions here so that they do not leave the
+        /// managed callback.
+        /// </summary>
         [BurstDiscard]
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
         {
@@ -132,7 +136,7 @@ namespace KSP.Retooled.Physics
                     GetWorldBounds(shape, a);
                     break;
                 case ShapeCommand.GetBoundsAtPose:
-                    // The pose replaces the shape's whole world pose, so the shape's own local pose takes no part.
+                    // The supplied pose replaces the shape's entire world pose, so ignore the shape's local pose.
                     ShapeMath.WorldBounds(&shape->data, float3.zero, quaternion.identity, a->position, a->rotation, out float3 lower, out float3 upper);
                     WriteBounds(a, lower, upper);
                     break;
@@ -170,9 +174,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity rewrites the filter of both colliders after every IgnoreCollision, to make PhysX pair them afresh, and contacts
-        /// read the ignore id live. Only what is baked into a collider needs a rebuild. PhysX drops a shape's pairs on any new
-        /// filter, so a sleeping body wakes to find out what it still touches.
+        /// Unity rewrites both colliders' filters after every IgnoreCollision call so that PhysX evaluates their pairs
+        /// again. Contact processing reads the current ignore id directly. Rebuild a collider only if data baked into
+        /// it has changed. PhysX removes a shape's pairs whenever its filter is set, so wake a sleeping body to check
+        /// which shapes it still touches.
         /// </summary>
         private static void SetFilter(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
@@ -271,9 +276,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Answers in SetPose's terms: relative to the body, but in world space for a static body's shape. Unity's transform
-        /// sync reads this on its job workers and leaves out every collider whose new pose matches it, so an answer in
-        /// other terms sends every collider under a moved transform through the main thread's pose writes.
+        /// Returns the pose in the same space that SetPose accepts: relative to the body, or in world space for a shape
+        /// attached to a static body. Unity synchronizes transforms on job workers and skips colliders whose new poses
+        /// match this value. Returning a pose in a different space would cause every collider under a moved transform
+        /// to require a pose update on the main thread.
         /// </summary>
         private static void GetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
@@ -290,10 +296,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether a dynamic body's shape kept its place. Unity works a collider's pose in its body out of world transforms
-        /// that move with the craft, so a collider that stays put comes back a little different every frame, and its
-        /// rotation sometimes as the other quaternion of the same rotation. Taking that for a move would rebuild colliders
-        /// every step: moving a compound's children, or baking a collider again.
+        /// Tests whether a dynamic body's shape has stayed in the same place relative to the body. Unity calculates
+        /// that local pose from world transforms that move with the craft. Even when a collider stays in place, the
+        /// calculated pose differs slightly each frame, and the quaternion may have the opposite sign while
+        /// representing the same rotation. Treating these differences as movement would require rebuilding colliders
+        /// every step, either by moving a compound's children or by baking a collider again.
         /// </summary>
         private static bool IsRounding(float3 position, quaternion rotation, float3 newPosition, quaternion newRotation)
         {
@@ -320,8 +327,9 @@ namespace KSP.Retooled.Physics
             {
                 BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
 
-                // A floating origin shift moves a static and its shapes together, and taking the body's new pose out of
-                // the shape's rounds differently each time. A change that small is rounding, not a move.
+                // A shift of the floating origin moves a static body and its shapes together. Converting the shape's
+                // world pose back to a local pose introduces different rounding each time. Treat changes this small as
+                // rounding rather than movement.
                 float tolerance = 1e-6f * (math.cmax(math.abs(a->position)) + 1.0f);
                 if (math.all(math.abs(shape->data.localPosition - position) <= tolerance)
                     && math.all(math.abs(shape->data.localRotation.value - rotation.value) <= 1e-6f))
@@ -336,14 +344,15 @@ namespace KSP.Retooled.Physics
                 shape->data.localRotation = a->rotation;
             }
 
-            // Unity poses every collider under a transform that moved, and most of them keep their place in their body.
+            // Unity sets the pose of every collider under a moved transform. Most keep the same pose relative to their
+            // body.
             bool moved = math.any(shape->data.localPosition != position) || math.any(shape->data.localRotation.value != rotation.value);
             if (shape->body == null || !moved)
             {
                 return;
             }
 
-            // Only a static body has a posed shape, which the built body carries as its own pose.
+            // Only a static body can use PosedShape. Its built body uses the shape's pose as its own pose.
             if (ColliderBuilder.PosedShape(StoreOps.Hot(shape->body)) != null)
             {
                 StoreOps.MarkStaticMoved(shape->body);
