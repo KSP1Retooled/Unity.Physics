@@ -68,18 +68,27 @@ namespace Unity.Physics
         EnableImpulseEvents = 1 << 5,
 
         /// <summary>
-        /// The joint holds its bodies as a vessel's part joint does, so the direct solve may take its unbounded rows into
-        /// the vessel forest (see <see cref="Joint.ForestRole"/>). Applies only to joint Jacobians.
+        /// The joint constrains its bodies like a vessel part joint. The direct solver may therefore include its
+        /// unbounded rows in the vessel forest (see <see cref="Joint.ForestRole"/>). This flag applies only to joint
+        /// Jacobians.
         /// </summary>
         ForestRow = 1 << 3,
 
-        /// <summary> With <see cref="ForestRow"/>, the joint is an edge of the forest's spanning tree rather than a closure. </summary>
+        /// <summary>
+        /// When combined with <see cref="ForestRow"/>, identifies an edge in the forest's spanning tree rather than a
+        /// closure.
+        /// </summary>
         ForestTree = 1 << 4,
 
-        /// <summary> With <see cref="ForestRow"/>, the joint's owner lets its pair lock (see <see cref="JointForestLock"/>). </summary>
+        /// <summary>
+        /// When combined with <see cref="ForestRow"/>, permits the forest solver to lock the joint's body pair. See
+        /// <see cref="JointForestLock"/>.
+        /// </summary>
         ForestLockable = 1 << 6,
 
-        /// <summary> With <see cref="ForestRow"/>, the joint's owner lets its locked pair stay locked. </summary>
+        /// <summary>
+        /// When combined with <see cref="ForestRow"/>, permits the joint's body pair to remain locked.
+        /// </summary>
         ForestHoldable = 1 << 7,
 
         /// <summary>   A binary constant representing the user flag. Applies to all jacobians. </summary>
@@ -191,7 +200,9 @@ namespace Unity.Physics
             public float Epsilon;
             public float Gamma;
 
-            /// <summary> The constraint is as stiff as the direct solver lets one be, rather than a spring. </summary>
+            /// <summary>
+            /// The constraint has reached the direct solver's stiffness limit and is treated as hard.
+            /// </summary>
             public bool Hard;
         }
 
@@ -751,9 +762,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The stiffest a joint can be, see <see cref="DirectStiffness"/>. One capped by a single number for every joint is
-        /// too soft between heavy parts and too stiff for light ones, which then take far more than their share of a load
-        /// wherever joints close a loop. The mass is the effective mass of the pair, so a light part on a heavy one sets it.
+        /// Returns the maximum joint stiffness; see <see cref="DirectStiffness"/>. A single stiffness limit for all
+        /// joints would be too soft between heavy parts and too stiff between light parts. Light parts would then carry
+        /// too much load in joint loops. The limit uses the pair's effective mass, or effective inertia for angular
+        /// rows, so the lighter part largely determines it when joined to a heavy part.
         /// </summary>
         static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB)
         {

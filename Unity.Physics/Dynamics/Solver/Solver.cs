@@ -204,13 +204,17 @@ namespace Unity.Physics
             /// <summary> Disable exporting events (TriggerEvents, CollisionEvents or ImpulseEvents). Default is false. </summary>
             public bool DisableExportEvents;
 
-            /// <summary> The fastest contacts push apart penetrating bodies when one of them is static, and when both move. </summary>
+            /// <summary>
+            /// The maximum separation velocities for penetrating contacts: first when one body is static, then when
+            /// both bodies are dynamic.
+            /// </summary>
             public float MaxStaticDepenetrationVelocity;
             public float MaxDynamicDepenetrationVelocity;
 
             /// <summary>
-            /// Set for the iterations after positions are integrated, which take penetrating contacts' push back out of the
-            /// velocities: the push has moved the bodies, and kept as velocity it would throw them.
+            /// Enables the iterations after position integration that remove the velocity added to separate penetrating
+            /// contacts. That velocity has already moved the bodies apart. Leaving it in their velocities would cause
+            /// them to continue moving apart.
             /// </summary>
             public bool Relaxing;
 
@@ -286,8 +290,9 @@ namespace Unity.Physics
                     IterativeSolverSchedulerInfo = solverSchedulerInfo.CouplingPairsIterativeScheduling
                 }.ScheduleUnsafeIndex0(solverSchedulerInfo.CouplingPairsIterativeScheduling.NumWorkItems, 1, inputDeps);
 
-                // An island's substeps are its own. The rest of the step knows nothing of them, so a motor's limit for the step
-                // has to be divided here, where the direct solver will apply it once per substep.
+                // Direct islands use their own substep count, which is not used by the rest of the simulation step.
+                // Divide each motor's impulse limit by that count here because the direct solver applies the limit once
+                // per substep.
                 int directSubsteps = input.DirectIslandSubsteps > 0 ? input.DirectIslandSubsteps : input.NumSubsteps;
                 var directJacobiansHandle = new ParallelBuildJacobiansJob
                 {
@@ -683,8 +688,8 @@ namespace Unity.Physics
                 }
                 else
                 {
-                    // A joint is big, and the build only reads it, so it is read in place. Its motors' limits are scaled
-                    // as each constraint is read.
+                    // Read the joint in place to avoid copying a large structure that this build does not modify. Scale
+                    // motor limits on the local copy of each constraint as it is read.
                     ref Joint joint = ref UnsafeUtility.ArrayElementAsRef<Joint>(world.Joints.GetUnsafeReadOnlyPtr(), pair.JointIndex);
 
                     // Need to fetch the real body indices from the joint, as the scheduler may have reordered them
@@ -880,9 +885,10 @@ namespace Unity.Physics
 
                     if (solverTypeOverride == SolverType.Direct)
                     {
-                        // The direct solve may take smaller substeps than the iterative one, and its regularisation is per substep.
-                        // It follows from the kind of row and the constraint's spring alone, besides the joint's bodies, so a
-                        // constraint like the one before it in the joint takes the same.
+                        // The direct solver may use smaller substeps than the iterative solver. Calculate its
+                        // regularization using its own substep duration. Within a joint, the result depends only on the
+                        // row kind, spring frequency, damping ratio and direct stiffness scale. Reuse the previous
+                        // result when these match, unless LegacyRowBuild is enabled.
                         uint kind = (header.IsAngular ? 1u : 0u) | (header.IsVelocityConstraint ? 2u : 0u);
                         bool same = regularized && !LegacyRowBuild && kind == regularizedKind
                             && math.asuint(constraint.SpringFrequency) == math.asuint(regularizedFrom.SpringFrequency)
@@ -1572,7 +1578,7 @@ namespace Unity.Physics
             return handle;
         }
 
-        /// <summary>Schedules a phase that finds out how many work items it has when it starts.</summary>
+        /// <summary> Schedules a phase whose work item count is read when the job starts. </summary>
         static unsafe JobHandle SchedulePhase(in ParallelIterativeSolverJob job, in DispatchPairSequencer.IterativeSolverSchedulerInfo solverSchedulerInfo,
             int phaseId, int innerloopBatchCount, JobHandle inputDependencies)
         {
@@ -1653,7 +1659,8 @@ namespace Unity.Physics
                 MotionVelocity velocityB = header.BodyPair.BodyIndexB < motionVelocities.Length ?
                     motionVelocities[header.BodyPair.BodyIndexB] : MotionVelocity.Zero;
 
-                // Relaxing takes back contacts' push and leaves every other constraint as the step's iterations solved it.
+                // Relaxation removes the separation velocity added by contacts. Skip other constraints to preserve the
+                // results of the earlier solver iterations.
                 if (stepInput.Relaxing && header.Type != JacobianType.Contact)
                 {
                     continue;
