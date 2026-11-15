@@ -29,7 +29,10 @@ namespace KSP.Retooled.Physics.Tests
         [BurstCompile]
         public static class Kernels
         {
-            /// <summary>One target owed by every block in turn, as a top node is.</summary>
+            /// <summary>
+            /// Subtracts each block's product with its source vector from one target.
+            /// This is the operation for a top node in the forward pass.
+            /// </summary>
             [BurstCompile]
             public static void ForwardSix(double* blocks, double* sources, int count, int repeats, double* target)
             {
@@ -46,8 +49,8 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             /// <summary>
-            /// The blocks in the given order, first prefetching the one <paramref name="ahead"/> places on, into L1 or, when
-            /// <paramref name="toL2"/> is set, only as far as L2.
+            /// Processes blocks in the given order. Before each block, prefetches the block <paramref name="ahead"/>
+            /// positions later into L1, or only into L2 when <paramref name="toL2"/> is set.
             /// </summary>
             [BurstCompile]
             public static void ForwardOrdered(double* blocks, int* order, double* sources, int count, int repeats, int ahead,
@@ -60,7 +63,7 @@ namespace KSP.Retooled.Physics.Tests
                     {
                         if (ahead > 0 && i + ahead < count)
                         {
-                            // A block spans five cache lines, or six when it doesn't start on one.
+                            // A 288-byte block spans five or six 64-byte cache lines, depending on its alignment.
                             byte* next = (byte*)(blocks + 36 * order[i + ahead]);
                             for (int line = 0; line < BlockBytes; line += 64)
                             {
@@ -90,7 +93,10 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            /// <summary>One node taking every neighbour's answer in turn, as the backward pass does.</summary>
+            /// <summary>
+            /// Subtracts each transposed block's product with its neighbour's solution from one node, as in the
+            /// backward pass.
+            /// </summary>
             [BurstCompile]
             public static void BackwardSix(double* blocks, double* sources, int count, int repeats, double* target)
             {
@@ -121,7 +127,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            // Prefetch takes its locality as a constant, so the two levels are two calls.
+            // Prefetch requires a constant locality argument, so use a separate call for each cache level.
             private static void Fetch(byte* address, int toL2)
             {
                 if (toL2 != 0)
@@ -157,7 +163,8 @@ namespace KSP.Retooled.Physics.Tests
             var s = (double*)sources.GetUnsafePtr();
             var t = (double*)target.GetUnsafePtr();
 
-            // Every kernel does target -= its blocks times its sources, so from zero they all agree.
+            // Each specialized kernel should match its general version when both start with a zero target.
+            // The backward kernels use transposed blocks; the forward kernels use the blocks as stored.
             foreach ((Kernel kernel, Kernel reference) in new (Kernel, Kernel)[]
             {
                 (Kernels.ForwardSix, Kernels.ForwardGeneral),
@@ -211,7 +218,10 @@ namespace KSP.Retooled.Physics.Tests
             target.Dispose();
         }
 
-        /// <summary>A factor's worth of blocks past L2, read in order and shuffled, prefetching various distances ahead.</summary>
+        /// <summary>
+        /// Measures reads from a set of factor blocks intended to exceed L2 cache capacity. Compares sequential and
+        /// shuffled order while prefetching at several distances ahead.
+        /// </summary>
         [Test]
         public void MeasureOrder()
         {

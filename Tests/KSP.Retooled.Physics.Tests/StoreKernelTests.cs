@@ -8,8 +8,8 @@ using Unity.Transforms;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The command kernels against a world of their own, for cases the Unity API can't reach, or can't show the result of.
-    /// The kernels run as plain methods here, so a failure has a stack.
+    /// Tests command kernels in a separate world, including cases that cannot be set up or inspected through the Unity
+    /// API. Calls the kernels as ordinary methods so that failures include a stack trace.
     /// </summary>
     public unsafe class StoreKernelTests
     {
@@ -177,7 +177,8 @@ namespace KSP.Retooled.Physics.Tests
             ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
         }
 
-        // The ignore table is the store's, shared with every live collider, so ids have to come from it and go back to it.
+        // The store's table of ignored collider pairs is shared by all live colliders. Allocate IDs from that table and
+        // return them after use.
         private uint[] NewIds(int count)
         {
             uint[] ids = new uint[count];

@@ -18,17 +18,18 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Replays everything <see cref="SolverCapture"/> saved through the solver, on one thread in Burst, and writes each
-    /// problem's time by stage to Library/SolverCapture/bench.csv. It also reports how far the impulses are from the ones the
-    /// flight got, so a faster solver can be shown to give the same answer. Run it with `unity exec --method`.
+    /// Solves all problems saved by <see cref="SolverCapture"/> again, using one thread in Burst. Writes the time for
+    /// each stage of each problem to Library/SolverCapture/bench.csv. Also reports the difference between the new
+    /// impulses and those recorded during the flight, to check whether a faster solver produces the same answer. Run it
+    /// with `unity exec --method`.
     /// </summary>
     public static unsafe class SolverCaptureBench
     {
         private const int Repeats = 5;
         private const double BurstWaitSeconds = 120.0;
 
-        // Players build Burst code without safety checks, which the editor turns on by default, and the solver indexes its
-        // lists everywhere, so the checks would weigh on it here as they never do in a game.
+        // Burst safety checks are off in player builds and on by default in the editor. The solver accesses lists
+        // often, so disable the checks here to measure performance as it would be in a game.
         [BurstCompile(DisableSafetyChecks = true)]
         private struct SolveJob : IJob
         {
@@ -104,10 +105,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Solves one run's captures in order, over and over on this thread for a while, as a steady target for a sampling
-        /// profiler, and logs the time per solve. The argument is the run under Library/SolverCapture and the seconds to run,
-        /// separated by a colon, as in "pegasus/004:30". Each pass starts with a fresh solver, so the run's first solve
-        /// analyzes and factors as a flight's would.
+        /// Repeatedly solves one run's captures in order on this thread, so a sampling profiler can observe steady
+        /// work. Logs the time per solve. The argument specifies the run under Library/SolverCapture and the duration
+        /// in seconds, separated by a colon, as in "pegasus/004:30". Each pass starts with a fresh solver, so the first
+        /// solve analyzes and factorizes the problem as it would during a flight.
         /// </summary>
         public static void Loop(string argument)
         {
@@ -153,7 +154,9 @@ namespace KSP.Retooled.Physics.Tests
             return Path.Combine(Path.GetDirectoryName(file), dash < 0 ? name : name.Substring(0, dash));
         }
 
-        /// <summary>Burst compiles in the background; a job that ran managed says so.</summary>
+        /// <summary>
+        /// Waits for Burst compilation to finish by checking whether the job still runs as managed code.
+        /// </summary>
         private static void WaitForBurst(SolverCapture.Saved saved)
         {
             float[] impulses = new float[saved.RowCount];
@@ -173,7 +176,9 @@ namespace KSP.Retooled.Physics.Tests
             solver.Dispose();
         }
 
-        /// <summary>Solves a run in order with one solver, as a flight does, starting cold each time.</summary>
+        /// <summary>
+        /// Solves a run in order with one solver, as during a flight. Each repetition starts with a fresh solver.
+        /// </summary>
         private static IEnumerable<string> Measure(List<string> names, List<SolverCapture.Saved> problems)
         {
             List<Sample>[] samples = names.Select(_ => new List<Sample>()).ToArray();
@@ -218,7 +223,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        /// <summary>Solves on this thread and returns whether that ran managed.</summary>
+        /// <summary>Solves on this thread and returns whether the job ran as managed code.</summary>
         private static bool Solve(ref SparseConstraintSolver solver, SolverCapture.Saved saved, float[] impulses,
             out SparseConstraintSolver.Statistics statistics)
         {

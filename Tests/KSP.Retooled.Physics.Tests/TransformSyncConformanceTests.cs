@@ -3,7 +3,9 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>Transforms and bodies reaching each other with autosync off, which is how Principia and KSPCF run.</summary>
+    /// <summary>
+    /// Tests synchronization between transforms and physics bodies with autosync disabled, as in Principia and KSPCF.
+    /// </summary>
     public class TransformSyncConformanceTests : PhysicsScene
     {
         [SetUp]
@@ -82,8 +84,8 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(hit.collider, Is.SameAs(body.GetComponent<Collider>()));
         }
 
-        // A floating origin shift moves every vessel this way. The child keeps its pose in the body, so Unity leaves out its
-        // write, and the child must follow the body all the same.
+        // A floating origin shift moves every vessel through its transform. The child's pose relative to the body stays
+        // unchanged, so Unity does not write a separate pose for the child. Its collider must still follow the body.
         [Test]
         public void AChildColliderFollowsABodyMovedThroughItsTransform()
         {

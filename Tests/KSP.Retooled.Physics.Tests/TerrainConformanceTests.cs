@@ -35,7 +35,9 @@ namespace KSP.Retooled.Physics.Tests
             return data;
         }
 
-        /// <summary>Normalized heights by sample, x then z.</summary>
+        /// <summary>
+        /// Calls the height function with x and z for each sample, and stores normalized heights in [z, x] order.
+        /// </summary>
         private static float[,] Heights(Func<int, int, float> height)
         {
             float[,] heights = new float[Resolution, Resolution];
@@ -311,7 +313,7 @@ namespace KSP.Retooled.Physics.Tests
             AssertVector(new Vector3(53.0f, 9.0f, 25.0f), collider.bounds.center, 1e-3f, "bounds centre");
             AssertVector(new Vector3(50.0f, 5.0f, 20.0f), collider.bounds.extents, 1e-3f, "bounds extents");
 
-            // An edit only ever widens them.
+            // Editing heights can expand the bounds, but lowering the terrain does not shrink them.
             collider.terrainData.SetHeights(0, 0, new float[Resolution, Resolution]);
             UnityEngine.Physics.SyncTransforms();
 
@@ -614,7 +616,8 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.That(SurfaceY(new Vector3(53.0f, 100.0f, 7.0f)), Is.EqualTo(9.0f).Within(1e-3f));
 
-            // Quarter points in the four cells about the raised sample, whose diagonals say which way each cell splits.
+            // Sample quarter points in the four cells around the raised sample. Each cell's diagonal determines how it
+            // splits into triangles.
             float cellX = 100.0f / 32.0f;
             float cellZ = 40.0f / 32.0f;
             float sampleX = 3.0f + 20.0f * cellX;

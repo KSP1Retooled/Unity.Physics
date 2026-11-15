@@ -23,8 +23,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// One command of each kernel. A kernel that Burst refused would stay in Mono for good with nothing else to show it,
-        /// and a player build would fail on the same error.
+        /// Runs a command from each kernel and waits for Burst compilation. If Burst cannot compile a kernel, that
+        /// kernel keeps running in Mono without an obvious failure. The same compilation error would fail a player
+        /// build.
         /// </summary>
         [UnityTest]
         public IEnumerator EveryKernelLeavesMonoOnceItsCompileLands()
@@ -65,10 +66,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Steps a pile of boxes through the states jobs can be in: whatever a fresh domain found, Mono code as in an async
-        /// compile still running, and compiled code coming in under a running scene. Each state runs between editor
-        /// updates, so that a compile in the background can land. After a cold start without Library/BurstCache the log
-        /// shows when the first state stopped using Mono.
+        /// Steps a pile of boxes in three phases: the initial compilation state after a domain reload, forced Mono jobs
+        /// as while asynchronous compilation is in progress, and compiled jobs enabled again while the scene is
+        /// running. Yields between steps so that the editor can update and background compilation can finish. After a
+        /// cold start without Library/BurstCache, the log shows when the first phase stopped using Mono.
         /// </summary>
         [UnityTest]
         [Category("Slow")]

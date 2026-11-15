@@ -3,7 +3,9 @@ using Unity.Mathematics;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>The bytes a content build stores for a pre-baked mesh, and the checks they pass at load.</summary>
+    /// <summary>
+    /// Tests the bytes stored for a pre-baked mesh by a content build and their validation when loaded.
+    /// </summary>
     public unsafe class MeshBakeStreamTests
     {
         private static readonly float3[] Tetrahedron =

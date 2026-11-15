@@ -4,9 +4,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What a WheelCollider does on its own: its suspension holds a body, its ray finds the ground and skips what it should,
-    /// and it shares a body's mass among its wheels. The game turns tyre friction off and drives its wheels itself, so the
-    /// tests do the same wherever friction would matter.
+    /// Tests WheelCollider suspension, raycasts that find the ground and exclude unwanted colliders, and distribution
+    /// of a body's mass among its wheels. KSP disables tyre friction and controls wheel motion itself, so these tests
+    /// also disable tyre friction wherever it would affect the result.
     /// </summary>
     public class WheelColliderConformanceTests : PhysicsScene
     {
@@ -24,7 +24,7 @@ namespace KSP.Retooled.Physics.Tests
             return body;
         }
 
-        /// <summary>A wheel hung 0.2 m under its body's origin, with friction off.</summary>
+        /// <summary>Creates a wheel at the given position relative to its body, with tyre friction disabled.</summary>
         private WheelCollider Wheel(Rigidbody chassis, Vector3 local)
         {
             GameObject holder = Track(new GameObject("wheel"));
@@ -71,7 +71,8 @@ namespace KSP.Retooled.Physics.Tests
             Ground();
             (Rigidbody body, WheelCollider wheel) = Unicycle();
 
-            // Far more than the spring can hold at full compression, which is the sprung weight plus the spring there.
+            // Apply more downward force than the spring can support at full compression. Its maximum support force is
+            // the sprung weight plus the spring force at that compression.
             for (int i = 0; i < 200; i++)
             {
                 body.AddForce(Vector3.down * 10000.0f);
@@ -88,9 +89,10 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(-40.0f)]
         public void ALeaningBodyLandingHardWhileRollingStopsAtFullCompression(float speed)
         {
-            // PhysX holds the stop along the suspension against the world, so here it throws the body off the ground rolling
-            // one way and lets it sink 7 cm past the stop rolling the other. Its iterative solver softens the throw enough that
-            // a landing aircraft survives it, but our exact solve applies all of it.
+            // PhysX constrains the suspension stop against the world along the suspension axis. In this setup, the body
+            // is thrown off the ground when rolling one way and sinks 7 cm past the stop when rolling the other way.
+            // The PhysX iterative solver reduces the upward impulse enough for a landing aircraft to survive, but our
+            // exact solver would apply the full impulse.
             Assume.That(BackendInfo.IsRetooled);
 
             Box(new Vector3(0.0f, -0.5f, 0.0f), new Vector3(20.0f, 1.0f, 600.0f));
@@ -238,7 +240,8 @@ namespace KSP.Retooled.Physics.Tests
 
             Simulate();
 
-            // Of the sets that sum to the body's mass and balance it, PhysX takes the smallest.
+            // PhysX chooses wheel masses that sum to the body's mass and balance it about its centre of mass.
+            // Of all sets that satisfy those conditions, it chooses the one with the smallest sum of squared masses.
             float[] expected = { 121.6667f, 161.6667f, 38.3333f, 78.3333f };
             for (int i = 0; i < wheels.Length; i++)
             {

@@ -8,15 +8,17 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// What a MeshCollider costs on the selected backend: the cook, and the first use that builds its collider. Meshes are the
-    /// game's own, plus a PQS-sized grid and a sphere. Run with `unity exec --backend`; lines start with [MeshBench].
+    /// Measures the cost of cooking a mesh and building its collider on first use, on the selected backend. The meshes
+    /// come from the game, with an additional grid sized like a PQS terrain patch and a sphere. Run with
+    /// `unity exec --backend`. Output lines start with [MeshBench].
     /// </summary>
     public static class MeshCookBench
     {
         private const int Rounds = 3;
         private const double BurstWaitSeconds = 45.0;
 
-        // The sample the medians come from, and the size above which a mesh isn't one a part would use.
+        // Use this many game meshes for the median measurements. Exclude meshes with more vertices than a part would
+        // normally use.
         private const int SampleSize = 200;
         private const int MaximumVertices = 2000;
 
@@ -36,7 +38,7 @@ namespace KSP.Retooled.Physics.Editor
             Mesh grid = Grid(15);
             Mesh sphere = Sphere();
 
-            // Cooks and builds run in Mono until Burst delivers them.
+            // Mesh cooking and collider building run in Mono until Burst finishes compiling their code.
             Stopwatch wait = Stopwatch.StartNew();
             long managed = -1;
             while (wait.Elapsed.TotalSeconds < BurstWaitSeconds && managed != BackendHost.ManagedCooks)
@@ -89,7 +91,7 @@ namespace KSP.Retooled.Physics.Editor
             return meshes.ToList();
         }
 
-        /// <summary>Unity keeps a mesh's bake, so each round cooks fresh copies.</summary>
+        /// <summary>Unity caches the baked mesh, so cook fresh copies of each mesh in every round.</summary>
         private static void MeasureCook(string name, List<Mesh> meshes, bool convex, bool report = true)
         {
             if (meshes.Count == 0)
@@ -139,7 +141,10 @@ namespace KSP.Retooled.Physics.Editor
             Debug.Log($"[MeshBench] {name}: {Median(samples):F1} us per mesh over {meshes.Count}");
         }
 
-        /// <summary>Milliseconds the first query after adding a collider took, which is its blob plus one rebuild of an empty world.</summary>
+        /// <summary>
+        /// Measures the first query after adding a collider, in milliseconds. This includes building the collider blob
+        /// and rebuilding the query world, which otherwise has no colliders.
+        /// </summary>
         private static double BuildOnce(Mesh mesh, bool convex)
         {
             GameObject gameObject = new GameObject("bench");

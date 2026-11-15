@@ -8,10 +8,11 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// A player that selects the Unity Physics backend without its plugin would fall back without saying so: Unity picks
-    /// its backend before any script runs. So such a build stops here unless the plugin is set to load at startup, and
-    /// its output is checked for the plugin afterwards. The plugin only registers an option, so a PhysX player may ship
-    /// it too, and it stays selectable there through the setting.
+    /// Unity selects its physics backend before any script runs. If a player selects the Unity Physics backend but
+    /// lacks its plugin, Unity silently falls back to another backend. Before such a build, check that the plugin is
+    /// configured to load at startup on the target platform. After the build, check that its output includes the
+    /// plugin. The plugin only registers a backend option, so a PhysX player can also include it and select it through
+    /// the setting.
     /// </summary>
     internal sealed class BackendBuildCheck : IPreprocessBuildWithReport, IPostprocessBuildWithReport
     {

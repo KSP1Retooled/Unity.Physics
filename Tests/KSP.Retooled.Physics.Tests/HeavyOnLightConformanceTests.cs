@@ -4,8 +4,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A heavy stack held up by very light bodies that are pinned to the world and rest on the ground, the way launch clamps
-    /// hold a rocket. The light bodies see forces far beyond what their own mass could take, and the scene has to stay calm.
+    /// Tests a heavy stack supported by very light bodies that are pinned to the world and rest on the ground, as
+    /// launch clamps support a rocket. The forces on the light bodies are very large relative to their mass, but the
+    /// scene must remain stable.
     /// </summary>
     public class HeavyOnLightConformanceTests : PhysicsScene
     {
@@ -88,7 +89,10 @@ namespace KSP.Retooled.Physics.Tests
             return top;
         }
 
-        /// <summary>A part joint as stock sets it up: everything limited far away, and drives doing the holding.</summary>
+        /// <summary>
+        /// Creates a joint configured as in stock KSP, with large linear and angular limits and drives that hold the
+        /// parts together.
+        /// </summary>
         private ConfigurableJoint PartJoint(Rigidbody host, Rigidbody target, Vector3 anchor, float stiffness)
         {
             Vector3 worldAnchor = tilt * anchor;
@@ -132,7 +136,8 @@ namespace KSP.Retooled.Physics.Tests
             Rigidbody arm = Part(new Vector3(0.0f, 1.2f, 0.0f), Vector3.one, 2.0f);
             arm.linearVelocity = Vector3.zero;
 
-            // With an axis locked the drives can't be one soft rotation, and each axis left free holds its own.
+            // Lock one angular axis so that the drives act separately on the remaining axes rather than using a single
+            // soft constraint for the whole rotation.
             ConfigurableJoint joint = PartJoint(arm, mount, new Vector3(0.0f, 0.5f, 0.0f), 60000.0f);
             joint.angularZMotion = ConfigurableJointMotion.Locked;
             JointDrive angular = joint.angularXDrive;
@@ -166,7 +171,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ARocketOnPartJointsStaysCalmWhenItsClampsArrive([Values] bool tilted)
         {
-            // The pad's up in KSP's world, where no axis points anywhere in particular.
+            // In KSP, the upward direction at the launch pad need not align with any world axis.
             tilt = tilted ? Quaternion.FromToRotation(Vector3.up, new Vector3(-0.8231264f, -0.0016914f, 0.567856f)) : Quaternion.identity;
             UnityEngine.Physics.gravity = tilt * UnityEngine.Physics.gravity;
 
