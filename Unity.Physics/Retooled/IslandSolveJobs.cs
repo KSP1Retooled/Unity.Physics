@@ -136,6 +136,7 @@ namespace Unity.Physics
                 Info = info,
                 JacobiansReader = jacobians.AsReader(),
                 Work = work,
+                Cache = stepInput.DirectSolverCache,
             }.Schedule(jacobiansBuilt);
 
             handle = JobHandle.CombineDependencies(handle, inputDeps);
@@ -381,6 +382,17 @@ namespace Unity.Physics
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
+                if (Cache.IsCreated)
+                {
+                    var firstBodies = new NativeArray<int>(islandCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    for (int island = 0; island < islandCount; island++)
+                    {
+                        firstBodies[island] = Info.IslandBodies[Info.FirstIslandBodyIndices[island]];
+                    }
+
+                    Cache.Assign(firstBodies);
+                }
+
                 Work.Islands.ResizeUninitialized(islandCount);
                 Work.Buffers.Bounded->Resize(islandCount);
                 for (int island = 0; island < islandCount; island++)
@@ -454,6 +466,8 @@ namespace Unity.Physics
         unsafe struct CountIslandRowsJob : IJob
         {
             public DirectIslandWork Work;
+
+            public DirectSolverCache Cache;
 
             public void Execute()
             {
