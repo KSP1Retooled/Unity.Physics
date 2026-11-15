@@ -183,6 +183,18 @@ namespace KSP.Retooled.Physics
             return result;
         }
 
+        /// <summary>
+        /// Forgets the last stepped world's island forests, lock states included, so that the next scene starts fresh
+        /// rather than with the lock states of a scene of the same shape before it. Main thread, between steps.
+        /// </summary>
+        internal static unsafe void ForgetIslands()
+        {
+            if (StepKernel.Current != null)
+            {
+                StepKernel.Current->DirectSolverCache.ForgetForests();
+            }
+        }
+
         /// <summary>The last stepped world's milliseconds settling sections after the first solve, since it was built.</summary>
         internal static unsafe double SettleMilliseconds => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.ForestSettleMilliseconds : 0.0;
 

@@ -43,6 +43,9 @@ namespace KSP.Retooled.Physics.Tests
             SetUpScene();
             VesselForest.Enabled = true;
             VesselForest.Locking = locking;
+
+            // Islands keep their lock states by their first body, which the last scene's islands had too.
+            VesselForest.ForgetIslands();
         }
 
         /// <summary>A joint with every axis locked, as a rigid attachment.</summary>
@@ -147,6 +150,11 @@ namespace KSP.Retooled.Physics.Tests
             var turn = new float[2][];
             var lockedAt = new bool[steps];
             var estimate = new float[steps];
+
+            // The lock test reads each step's deflection alone here: this tests locking, yielding and locking again, not
+            // the smoothing, which would hold the yield and the relock back by its time constant.
+            int wasSmoothing = VesselForest.DeflectionSmoothingSteps;
+            VesselForest.DeflectionSmoothingSteps = 0;
             for (int pass = 0; pass < 2; pass++)
             {
                 Fresh(pass == 1);
@@ -179,6 +187,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
+            VesselForest.DeflectionSmoothingSteps = wasSmoothing;
             int changes = 0;
             int firstYield = -1, relock = -1;
             for (int i = 1; i < steps; i++)

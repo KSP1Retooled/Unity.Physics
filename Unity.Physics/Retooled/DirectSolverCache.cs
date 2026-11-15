@@ -346,6 +346,19 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Forgets every island's forest: its pairs, lock states and structure. An island keeps them by its first body, so a
+        /// new scene of the same shape would otherwise start with the last one's; tests that compare runs call this.
+        /// </summary>
+        public void ForgetForests()
+        {
+            for (int slot = 0; slots != null && slot < Capacity; slot++)
+            {
+                ForestIsland.Destroy(slots[slot].Forest);
+                slots[slot].Forest = null;
+            }
+        }
+
         internal ForestIsland* ForestOf(int island)
         {
             if (slots == null)

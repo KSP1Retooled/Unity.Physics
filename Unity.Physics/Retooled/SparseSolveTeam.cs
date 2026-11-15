@@ -49,6 +49,9 @@ namespace Unity.Physics
         /// <summary>A stage of turning rows to a forest's sections, or of settling the sections' bodies and locked loads.</summary>
         public const int ForestSectionsKind = -10;
 
+        /// <summary>Classifying a direct island's rows for the forest by runs of blocks.</summary>
+        public const int ForestClassifyKind = -11;
+
         struct Stage
         {
             public void* Context;
@@ -254,6 +257,10 @@ namespace Unity.Physics
             else if (stage.Kind == ForestSectionsKind)
             {
                 Solver.ForestSectionTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestClassifyKind)
+            {
+                Solver.ForestClassifyTask(stage.Context, task);
             }
             else
             {

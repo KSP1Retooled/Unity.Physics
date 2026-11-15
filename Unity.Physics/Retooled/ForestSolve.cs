@@ -121,6 +121,7 @@ namespace Unity.Physics
             {
                 RowClass.Dispose();
                 BlockSections.Dispose();
+
                 RowBlock.Dispose();
                 ForestBlocks.Dispose();
                 Boundary.Dispose();
@@ -185,59 +186,44 @@ namespace Unity.Physics
             // What each forest block allows its pair: bit 0 lockable, bit 1 holdable, bit 2 every row a forest row or idle.
             var blockAllows = new NativeList<byte>(problem.BlockCount, Allocator.Temp);
             var bodyContact = new NativeArray<byte>(problem.BodyCount, Allocator.Temp);
+
+            // Each block's rows by tasks on the team, then the forest blocks in order on this lane.
+            int classifyTasks = (problem.BlockCount + BlocksPerSectionTask - 1) / BlocksPerSectionTask;
+            var blockKind = new NativeArray<byte>(problem.BlockCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var taskRows = new NativeArray<int2>(math.max(1, classifyTasks), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var classify = new ClassifyTasks
+            {
+                Problem = problem,
+                Headers = headers,
+                Bounded = bounded,
+                Coupled = (bool*)coupled.GetUnsafeReadOnlyPtr(),
+                RowClass = (byte*)rowClass.GetUnsafePtr(),
+                RowBlock = (int*)rowBlock.GetUnsafePtr(),
+                BlockKind = (byte*)blockKind.GetUnsafePtr(),
+                BodyContact = (byte*)bodyContact.GetUnsafePtr(),
+                TaskRows = (int2*)taskRows.GetUnsafePtr(),
+            };
+            SparseSolveTeam.RunAll(team, &classify, SparseSolveTeam.ForestClassifyKind, classifyTasks, null);
             int forestRows = 0, boundaryRows = 0;
+            for (int t = 0; t < classifyTasks; t++)
+            {
+                forestRows += taskRows[t].x;
+                boundaryRows += taskRows[t].y;
+            }
+
             for (int b = 0; b < problem.BlockCount; b++)
             {
-                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
-                JacobianFlags flags = headers[b]->Flags;
-                if (headers[b]->Type == JacobianType.Contact)
-                {
-                    if (block.BodyA >= 0)
-                    {
-                        bodyContact[block.BodyA] = 1;
-                    }
-
-                    if (block.BodyB >= 0)
-                    {
-                        bodyContact[block.BodyB] = 1;
-                    }
-                }
-
-                bool forestBlock = headers[b]->Type != JacobianType.Contact && (flags & JacobianFlags.ForestRow) != 0
-                    && (block.BodyA >= 0 || block.BodyB >= 0);
-                bool allForest = true;
-                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
-                {
-                    rowBlock[row] = b;
-                    float lower = problem.Lower[row], upper = problem.Upper[row];
-                    bool free = !bounded || (lower <= -float.MaxValue && upper >= float.MaxValue);
-                    if (bounded && lower == upper && !coupled[row])
-                    {
-                        // A limit out of reach is a fixed row with no impulse, which doesn't keep its pair from locking.
-                        rowClass[row] = FixedRowClass;
-                        allForest &= lower == 0.0f;
-                    }
-                    else if (forestBlock && free && problem.Epsilon[row] > 0.0f)
-                    {
-                        rowClass[row] = ForestRowClass;
-                        forestRows++;
-                    }
-                    else
-                    {
-                        rowClass[row] = BoundaryRowClass;
-                        boundaryRows++;
-                        allForest = false;
-                    }
-                }
-
-                if (forestBlock)
+                byte kind = blockKind[b];
+                if ((kind & ClassifyTasks.Forest) != 0)
                 {
                     forestBlocks.Add(b);
-                    treeBlocks.Add((flags & JacobianFlags.ForestTree) != 0);
-                    blockAllows.Add((byte)(((flags & JacobianFlags.ForestLockable) != 0 ? 1 : 0)
-                        | ((flags & JacobianFlags.ForestHoldable) != 0 ? 2 : 0) | (allForest ? 4 : 0)));
+                    treeBlocks.Add((kind & ClassifyTasks.Tree) != 0);
+                    blockAllows.Add((byte)(kind & 7));
                 }
             }
+
+            blockKind.Dispose();
+            taskRows.Dispose();
 
             // A coupling's rows and its sources have to be boundary rows, which contacts' always are.
             bool couplingsInBoundary = true;
@@ -726,6 +712,89 @@ namespace Unity.Physics
         }
 
         const int BlocksPerSectionTask = 128;
+
+        /// <summary>What classifying an island's rows shares among a team's lanes; each task takes a run of blocks.</summary>
+        unsafe struct ClassifyTasks
+        {
+            /// <summary>A block's kind: what it allows its pair (bits 0 to 2), and whether it is a forest block, a tree one.</summary>
+            public const byte Forest = 1 << 3;
+            public const byte Tree = 1 << 4;
+
+            public SparseConstraintSolver.Problem Problem;
+            public JacobianHeader** Headers;
+            public bool Bounded;
+            public bool* Coupled;
+            public byte* RowClass;
+            public int* RowBlock;
+            public byte* BlockKind;
+            public byte* BodyContact;
+
+            /// <summary>Each task's forest rows and boundary rows.</summary>
+            public int2* TaskRows;
+        }
+
+        /// <summary>One task of classifying rows: its blocks' rows by class, and each block's kind.</summary>
+        internal static unsafe void ForestClassifyTask(void* context, int task)
+        {
+            var tasks = (ClassifyTasks*)context;
+            ref SparseConstraintSolver.Problem problem = ref tasks->Problem;
+            bool bounded = tasks->Bounded;
+            int forestRows = 0, boundaryRows = 0;
+            int end = math.min((task + 1) * BlocksPerSectionTask, problem.BlockCount);
+            for (int b = task * BlocksPerSectionTask; b < end; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                JacobianHeader* header = tasks->Headers[b];
+                JacobianFlags flags = header->Flags;
+                if (header->Type == JacobianType.Contact)
+                {
+                    // Several tasks may mark one body; they all write the same value.
+                    if (block.BodyA >= 0)
+                    {
+                        tasks->BodyContact[block.BodyA] = 1;
+                    }
+
+                    if (block.BodyB >= 0)
+                    {
+                        tasks->BodyContact[block.BodyB] = 1;
+                    }
+                }
+
+                bool forestBlock = header->Type != JacobianType.Contact && (flags & JacobianFlags.ForestRow) != 0
+                    && (block.BodyA >= 0 || block.BodyB >= 0);
+                bool allForest = true;
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    tasks->RowBlock[row] = b;
+                    float lower = problem.Lower[row], upper = problem.Upper[row];
+                    bool free = !bounded || (lower <= -float.MaxValue && upper >= float.MaxValue);
+                    if (bounded && lower == upper && !tasks->Coupled[row])
+                    {
+                        // A limit out of reach is a fixed row with no impulse, which doesn't keep its pair from locking.
+                        tasks->RowClass[row] = FixedRowClass;
+                        allForest &= lower == 0.0f;
+                    }
+                    else if (forestBlock && free && problem.Epsilon[row] > 0.0f)
+                    {
+                        tasks->RowClass[row] = ForestRowClass;
+                        forestRows++;
+                    }
+                    else
+                    {
+                        tasks->RowClass[row] = BoundaryRowClass;
+                        boundaryRows++;
+                        allForest = false;
+                    }
+                }
+
+                tasks->BlockKind[b] = !forestBlock ? (byte)0 : (byte)(ClassifyTasks.Forest
+                    | ((flags & JacobianFlags.ForestTree) != 0 ? ClassifyTasks.Tree : 0)
+                    | ((flags & JacobianFlags.ForestLockable) != 0 ? 1 : 0)
+                    | ((flags & JacobianFlags.ForestHoldable) != 0 ? 2 : 0) | (allForest ? 4 : 0));
+            }
+
+            tasks->TaskRows[task] = new int2(forestRows, boundaryRows);
+        }
         const int PartsPerSectionTask = 64;
 
         /// <summary>What the team's section tasks share: the run, its problem, and the arrays a settle writes.</summary>
@@ -1220,11 +1289,41 @@ namespace Unity.Physics
         static unsafe double RowStiffness(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int k, int row) =>
             PairBlockGamma(run, k) / (double)problem.Epsilon[row];
 
-        /// <summary>The gamma of the k-th of the pairs' forest blocks, h k / (h k + c), or 1 for a row without one.</summary>
-        static unsafe float PairBlockGamma(in ForestRun run, int k)
+        /// <summary>A row's rate at the bodies' velocities after the solve, which the motions hold by then.</summary>
+        static unsafe double SolvedRowSpeed(in ForestRun run, in SparseConstraintSolver.ConstraintBlock block, float* columns)
         {
-            int b = run.ForestBlocks[run.Forest->PairBlocks[k]];
-            float gamma = run.Headers[b]->AccessDirectSolverRegularizationData().Gamma;
+            double speed = 0.0;
+            if (block.BodyA >= 0)
+            {
+                speed += BodyRowSpeed(run, block.BodyA, columns);
+            }
+
+            if (block.BodyB >= 0)
+            {
+                speed += BodyRowSpeed(run, block.BodyB, columns + 6);
+            }
+
+            return speed;
+        }
+
+        static unsafe double BodyRowSpeed(in ForestRun run, int body, float* columns)
+        {
+            int world = run.WorldBodies[body];
+            MotionVelocity motion = run.MotionVelocities[world];
+            float3 angular = math.rotate(run.MotionDatas[world].WorldFromMotion.rot, motion.AngularVelocity);
+            return math.dot(new float3(columns[0], columns[1], columns[2]), motion.LinearVelocity)
+                + math.dot(new float3(columns[3], columns[4], columns[5]), angular);
+        }
+
+        /// <summary>The gamma of the k-th of the pairs' forest blocks, see <see cref="SpringGamma"/>.</summary>
+        static unsafe float PairBlockGamma(in ForestRun run, int k) => SpringGamma(run.Headers[run.ForestBlocks[run.Forest->PairBlocks[k]]]);
+
+        /// <summary>
+        /// The gamma a Jacobian's rows hold their position with, h k / (h k + c), from its regularization, or 1 for none.
+        /// </summary>
+        static unsafe float SpringGamma(JacobianHeader* header)
+        {
+            float gamma = header->AccessDirectSolverRegularizationData().Gamma;
             return gamma > 1e-6f && gamma <= 1.0f ? gamma : 1.0f;
         }
 
@@ -1294,8 +1393,7 @@ namespace Unity.Physics
 
                     // The rows hold h^2 k + h c = 1 / epsilon and gamma = h k / (h k + c), so the spring alone is
                     // k = gamma / (epsilon h^2): a damped row's compliance alone would read the deflection low by 1 + c / (h k).
-                    float gamma = headers[b]->AccessDirectSolverRegularizationData().Gamma;
-                    gamma = gamma > 1e-6f && gamma <= 1.0f ? gamma : 1.0f;
+                    float gamma = SpringGamma(headers[b]);
                     for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                     {
                         byte rowClass = run.RowClass[row];
@@ -1309,7 +1407,12 @@ namespace Unity.Physics
                         float angular = columns[3] * columns[3] + columns[4] * columns[4] + columns[5] * columns[5];
                         if (linear <= 1e-8f * angular)
                         {
-                            deflection = math.max(deflection, math.abs(impulses[row]) * problem.Epsilon[row] * h / gamma);
+                            // The row's impulse is (-gamma phi / h - J v) / epsilon with v the velocities after the solve,
+                            // so its spring's turn is phi = -(z epsilon + J v) h / gamma: the damper's share, which a
+                            // vibrating pair rectifies into a load it doesn't carry, comes out. Locked, J v is zero.
+                            double speed = rowClass == SectionRowClass ? 0.0 : SolvedRowSpeed(run, block, columns);
+                            double turn = (impulses[row] * (double)problem.Epsilon[row] + speed) * h / gamma;
+                            deflection = math.max(deflection, (float)math.abs(turn));
                         }
                     }
                 }

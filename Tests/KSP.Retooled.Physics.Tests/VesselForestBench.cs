@@ -175,6 +175,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             VesselForest.Enabled = path != "sparse";
+            VesselForest.ForgetIslands();
             VesselForest.Locking = path == "locked";
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
             VesselForest.BoundaryRowCap = string.IsNullOrEmpty(cap) ? VesselForest.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
@@ -243,6 +244,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             VesselForest.Enabled = true;
+            VesselForest.ForgetIslands();
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
             VesselForest.BoundaryRowCap = string.IsNullOrEmpty(cap) ? VesselForest.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
             VesselForest.Locking = locking;
