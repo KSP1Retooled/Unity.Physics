@@ -273,6 +273,9 @@ namespace Unity.Physics
         {
             public int FirstHeader;
 
+            /// <summary> The end of the joints' Jacobians, which come before the contacts'. </summary>
+            public int JointEnd;
+
             /// <summary> The end of the Jacobians the solve takes. The contacts after it are only updated. </summary>
             public int SolveEnd;
 
@@ -283,6 +286,9 @@ namespace Unity.Physics
 
             public int FirstRow;
             public int Rows;
+
+            /// <summary> The rows of the joints' Jacobians, the same every substep. </summary>
+            public int JointRows;
 
             /// <summary>
             /// Whether the island's sparse solve is big enough to share among lanes. A smaller one finishes before helpers
@@ -463,11 +469,16 @@ namespace Unity.Physics
                     int numContacts = Info.IslandContactCounts[island];
                     int firstHeader = Work.Headers.Length;
                     bool touchesSomething = false;
+
+                    // The iterator reads the joints' pairs before the contacts', and only contacts and triggers write the
+                    // first two kinds of Jacobian.
+                    int jointHeaders = 0;
                     var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
                     while (iterator.HasJacobiansLeft())
                     {
                         ref JacobianHeader header = ref iterator.ReadJacobianHeader();
                         touchesSomething |= header.Type == JacobianType.Contact && header.Enabled;
+                        jointHeaders += header.Type != JacobianType.Contact && header.Type != JacobianType.Trigger ? 1 : 0;
                         Work.Headers.Add(new IslandHeader
                         {
                             Header = (JacobianHeader*)UnsafeUtility.AddressOf(ref header),
@@ -475,17 +486,10 @@ namespace Unity.Physics
                         });
                     }
 
-                    int jointHeaders = 0;
-                    var joints = new IslandJacobianIterator(JacobiansReader, Info, island);
-                    while (joints.HasJacobiansLeft())
-                    {
-                        joints.ReadJacobianHeader();
-                        jointHeaders++;
-                    }
-
                     Work.Islands[island] = new DirectIsland
                     {
                         FirstHeader = firstHeader,
+                        JointEnd = firstHeader + jointHeaders,
                         SolveEnd = touchesSomething ? Work.Headers.Length : firstHeader + jointHeaders,
                         HeaderEnd = Work.Headers.Length,
                         ContactPairs = touchesSomething ? numContacts : 0,
@@ -493,7 +497,7 @@ namespace Unity.Physics
                 }
 
                 Work.Buffers.HeaderRows->Resize(Work.Headers.Length);
-                CountIslandRowsJob.CountRows(Work);
+                CountIslandRowsJob.CountRows(Work, true);
             }
         }
 
@@ -523,7 +527,8 @@ namespace Unity.Physics
 
         /// <summary>
         /// Counts the rows each Jacobian has this substep, which a contact's points change as they come and go, and lays the
-        /// islands' rows out one after another.
+        /// islands' rows out one after another. A joint's rows follow from how it was built, so after the first substep only
+        /// the contacts are counted again.
         /// </summary>
         [BurstCompile]
         unsafe struct CountIslandRowsJob : IJob
@@ -532,10 +537,10 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                CountRows(Work);
+                CountRows(Work, false);
             }
 
-            internal static void CountRows(DirectIslandWork work)
+            internal static void CountRows(DirectIslandWork work, bool first)
             {
                 UnsafeList<int>* headerRows = work.Buffers.HeaderRows;
                 int totalRows = 0;
@@ -543,15 +548,29 @@ namespace Unity.Physics
                 {
                     ref DirectIsland island = ref work.Islands.ElementAt(i);
                     int rows = 0;
-                    for (int h = island.FirstHeader; h < island.SolveEnd; h++)
+                    if (first)
+                    {
+                        for (int h = island.FirstHeader; h < island.JointEnd; h++)
+                        {
+                            (*headerRows)[h] = rows;
+                            rows += GetConstraintRows(ref *work.Headers[h].Header);
+                        }
+
+                        island.JointRows = rows;
+                        for (int h = island.SolveEnd; h < island.HeaderEnd; h++)
+                        {
+                            (*headerRows)[h] = -1;
+                        }
+                    }
+                    else
+                    {
+                        rows = island.JointRows;
+                    }
+
+                    for (int h = island.JointEnd; h < island.SolveEnd; h++)
                     {
                         (*headerRows)[h] = rows;
                         rows += GetConstraintRows(ref *work.Headers[h].Header);
-                    }
-
-                    for (int h = island.SolveEnd; h < island.HeaderEnd; h++)
-                    {
-                        (*headerRows)[h] = -1;
                     }
 
                     island.FirstRow = totalRows;
