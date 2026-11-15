@@ -377,6 +377,7 @@ namespace Unity.Physics
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
                 DirectSolverCache = input.DirectSolverCache,
+                VesselSet = VesselSet.OrTestSet(input.VesselSet),
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1,
                 MaxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity > 0
@@ -651,6 +652,7 @@ namespace Unity.Physics
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
                 DirectSolverCache = input.DirectSolverCache,
+                VesselSet = VesselSet.OrTestSet(input.VesselSet),
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1,
                 MaxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity > 0

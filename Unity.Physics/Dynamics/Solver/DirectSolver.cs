@@ -1258,7 +1258,7 @@ namespace Unity.Physics
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
             int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
-            int* headerRows = null, int headerCount = 0, float* recovery = null)
+            int* headerRows = null, int headerCount = 0, float* recovery = null, int* islandVessels = null, int islandVesselCount = 0)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1350,6 +1350,17 @@ namespace Unity.Physics
                 }
             }
 
+            // The parts of the island's vessels are its bodies too, whether or not any Jacobian reaches them.
+            for (int v = 0; v < islandVesselCount; v++)
+            {
+                VesselRecord vessel = stepInput.VesselSet.Vessels[islandVessels[v]];
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    setup.Number(Moving(stepInput.VesselSet.PartBodies[part], (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                        motionVelocities.Length));
+                }
+            }
+
             // Each body's mass matrix is its own, so the lanes split them.
             var bodies = new NativeArray<SparseConstraintSolver.Body>(setup.WorldBodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bodySetup = new BodySetup
@@ -1379,10 +1390,10 @@ namespace Unity.Physics
                 Blocks = blocks.GetUnsafePtr(),
                 RowCount = rows,
                 Jacobian = jacobianRows.Start,
-                Epsilon = (float*)UnsafeUtility.AddressOf(ref eps[0]),
-                RightHandSide = (float*)UnsafeUtility.AddressOf(ref rhs[0]),
-                Lower = (float*)UnsafeUtility.AddressOf(ref l[0]),
-                Upper = (float*)UnsafeUtility.AddressOf(ref u[0]),
+                Epsilon = rows > 0 ? (float*)UnsafeUtility.AddressOf(ref eps[0]) : null,
+                RightHandSide = rows > 0 ? (float*)UnsafeUtility.AddressOf(ref rhs[0]) : null,
+                Lower = rows > 0 ? (float*)UnsafeUtility.AddressOf(ref l[0]) : null,
+                Upper = rows > 0 ? (float*)UnsafeUtility.AddressOf(ref u[0]) : null,
                 InitialStates = (byte*)indexSetArray.GetUnsafeReadOnlyPtr(),
                 CouplingCount = couplings.Length,
                 Couplings = couplings.GetUnsafePtr(),
@@ -1395,14 +1406,38 @@ namespace Unity.Physics
 
             // A forest island solves its forest joints' rows structurally and the rest as a boundary block against them.
             ForestSettings forestSettings = stepInput.DirectSolverCache.Forest;
+
+            // An island with a vessel has no Jacobians for the vessel's edges, so it can only solve with the vessel's own rows.
+            if (islandVesselCount > 0)
+            {
+                SolveVesselIsland(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), headers, setup.WorldBodies, compactBodies,
+                    bounded, holdsPositions, islandIndex, islandVessels, islandVesselCount, motionVelocities, motionDatas, stepInput,
+                    jacobianRows, recovery, contactPairs > 0, team, applyImpulses, impulsesPtr);
+                SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
+                for (int row = 0; row < rows; row++)
+                {
+                    rhs[row] = impulses[row];
+                }
+
+                bodies.Dispose();
+                blocks.Dispose();
+                couplings.Dispose();
+                headers.Dispose();
+                compactBodies.Dispose();
+                setup.WorldBodies.Dispose();
+                impulses.Dispose();
+                return;
+            }
+
             if (forestSettings.Enabled && headers.Length == blocks.Length && blocks.Length > 0)
             {
                 ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
                 int builds = forest != null ? forest->Builds : 0;
                 ForestRun run = default;
+                int fallbackBoundaryRows = 0;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
                     forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), motionVelocities, motionDatas,
-                    stepInput.Timestep, stepInput.CurrentSubstep, out run);
+                    stepInput.Timestep, stepInput.CurrentSubstep, out run, out fallbackBoundaryRows);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {
@@ -1411,9 +1446,14 @@ namespace Unity.Physics
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
                     stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
                         run.LockChanges, run.StructureTicks);
+                    stepInput.DirectSolverCache.AddCount(DirectSolverCache.ForestContactLockChanges, run.ContactLockChanges);
                 }
 
                 stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
+                if (!started && forest != null)
+                {
+                    stepInput.DirectSolverCache.NoteMax(DirectSolverCache.ForestFallbackBoundaryMax, fallbackBoundaryRows);
+                }
                 if (forest != null && forest->Builds != builds)
                 {
                     stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestBuilds);
@@ -1467,10 +1507,15 @@ namespace Unity.Physics
                     }
 
                     float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
-                        stepInput.CurrentSubstep);
+                        stepInput.CurrentSubstep, forestSettings.DeflectionSmoothingSteps);
                     stepInput.DirectSolverCache.NoteDeflection(deflection);
 
                     stepInput.DirectSolverCache.NoteResidual(run.Residual);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestClassifyTime, run.ClassifyTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDecideTime, run.DecideTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSumsTime, run.SumsTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBodyImpulseTime, run.BodyImpulseTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSubtreeTime, run.SubtreeTicks);
                     run.Dispose();
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
@@ -2119,6 +2164,7 @@ namespace Unity.Physics
             {
                 ForestRun pushRun = *forest;
                 pushRun.Problem = pushOut;
+                pushRun.BaseVelocity = default;
                 pushRun.Bounded = true;
                 solved = SolveForest(ref pushRun, rightHandSide, push);
                 float3* linearImpulses = (float3*)bodyImpulses.GetUnsafePtr();

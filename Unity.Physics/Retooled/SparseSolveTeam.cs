@@ -58,6 +58,12 @@ namespace Unity.Physics
         /// </summary>
         public const int ForestSectionsKind = -10;
 
+        /// <summary>Classifying a direct island's rows for the forest by runs of blocks.</summary>
+        public const int ForestClassifyKind = -11;
+
+        /// <summary>A stage of a vessel island's solve: sections, links or parts by runs.</summary>
+        public const int ForestVesselKind = -12;
+
         struct Stage
         {
             public void* Context;
@@ -270,6 +276,14 @@ namespace Unity.Physics
             else if (stage.Kind == ForestSectionsKind)
             {
                 Solver.ForestSectionTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestClassifyKind)
+            {
+                Solver.ForestClassifyTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestVesselKind)
+            {
+                Solver.ForestVesselTask(stage.Context, task);
             }
             else
             {

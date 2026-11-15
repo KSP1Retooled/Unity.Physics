@@ -30,6 +30,9 @@ namespace KSP.Retooled.Physics
             public float Lock;
             public float Yield;
 
+            /// <summary>The deflection smoothing in steps, plus one, so that a zeroed static reads as the default.</summary>
+            public int SmoothingPlusOne;
+
             /// <summary>The minimum hold in steps, plus one, so that a zeroed static reads as the default.</summary>
             public int HoldPlusOne;
 
@@ -43,7 +46,7 @@ namespace KSP.Retooled.Physics
         private static bool initialized;
 
         /// <summary>The boundary rows above which an island solves the old way.</summary>
-        public const int DefaultBoundaryRowCap = 256;
+        public const int DefaultBoundaryRowCap = 512;
 
         /// <summary>A joint whose smoothed load is under this fraction of its break limits lets its pair lock.</summary>
         public const float DefaultLockFraction = 0.25f;
@@ -91,6 +94,13 @@ namespace KSP.Retooled.Physics
             set => Fractions.Data.Hold = value;
         }
 
+        /// <summary>Steps; see <see cref="ForestSettings.DeflectionSmoothingSteps"/>. Negative reads as the default.</summary>
+        public static int DeflectionSmoothingSteps
+        {
+            get => Fractions.Data.SmoothingPlusOne > 0 ? Fractions.Data.SmoothingPlusOne - 1 : ForestSettings.DefaultDeflectionSmoothingSteps;
+            set => Fractions.Data.SmoothingPlusOne = value + 1;
+        }
+
         public static float LockFraction
         {
             get => Fractions.Data.Lock > 0.0f ? Fractions.Data.Lock : DefaultLockFraction;
@@ -126,6 +136,62 @@ namespace KSP.Retooled.Physics
             {
                 StepKernel.Current->DirectSolverCache.GetSectionCounts(out sectionSum, out lockedSum, out structureBuilds,
                     out lockChanges, out structureMilliseconds, out residual, out lastSections, out lastLocked);
+            }
+        }
+
+        /// <summary>
+        /// The last stepped world's lock diagnostics: lock changes of pairs a contact touches, the most boundary rows a
+        /// fallback had, and its tree pairs by deflection (see DirectSolverCache.DeflectionHistogram), 10 bins each.
+        /// </summary>
+        internal static unsafe void GetLockDiagnostics(out long contactChanges, out long fallbackBoundary, long[] all, long[] locked)
+        {
+            contactChanges = fallbackBoundary = 0;
+            if (StepKernel.Current == null)
+            {
+                return;
+            }
+
+            DirectSolverCache cache = StepKernel.Current->DirectSolverCache;
+            contactChanges = cache.ForestCounter(DirectSolverCache.ForestContactLockChanges);
+            fallbackBoundary = cache.ForestCounter(DirectSolverCache.ForestFallbackBoundaryMax);
+            long* a = stackalloc long[10];
+            long* l = stackalloc long[10];
+            cache.DeflectionHistogram(LockAngle, YieldAngle, a, l);
+            for (int i = 0; i < 10; i++)
+            {
+                all[i] = a[i];
+                locked[i] = l[i];
+            }
+        }
+
+        /// <summary>
+        /// The last stepped world's milliseconds, since it was built, in the forest path's one-lane parts: classifying rows,
+        /// lock decisions, section sums, body impulse sums and subtree sums.
+        /// </summary>
+        internal static unsafe double[] SerialMilliseconds()
+        {
+            var result = new double[5];
+            if (StepKernel.Current != null)
+            {
+                DirectSolverCache cache = StepKernel.Current->DirectSolverCache;
+                for (int i = 0; i < 5; i++)
+                {
+                    result[i] = cache.ForestMilliseconds(DirectSolverCache.ForestClassifyTime + i);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Forgets the last stepped world's island forests, lock states included, so that the next scene starts fresh
+        /// rather than with the lock states of a scene of the same shape before it. Main thread, between steps.
+        /// </summary>
+        internal static unsafe void ForgetIslands()
+        {
+            if (StepKernel.Current != null)
+            {
+                StepKernel.Current->DirectSolverCache.ForgetForests();
             }
         }
 

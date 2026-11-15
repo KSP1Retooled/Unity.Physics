@@ -110,6 +110,9 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             VesselForest.Enabled = forest;
+
+            // Islands keep their pairs' lock states by their first body, which the run before had too.
+            VesselForest.ForgetIslands();
             List<Rigidbody> bodies = Column(5.0f, true);
             bodies[0].linearVelocity = new Vector3(1.0f, 0.0f, 0.5f);
             ConfigurableJoint strut = null;
@@ -159,7 +162,8 @@ namespace KSP.Retooled.Physics.Tests
                 StepOnce(everyStepAfresh);
             }
 
-            Assert.That(weak == null, Is.True, "the weak joint should have broken");
+            // With vessels on, the stack joints are hard, so the weak joint across them carries almost nothing and holds.
+            Assert.That(weak == null, Is.EqualTo(!VesselPipeline.Enabled), "the weak joint breaks only where the stack joints flex");
             return Poses(bodies);
         }
 
