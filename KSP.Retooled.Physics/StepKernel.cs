@@ -38,7 +38,7 @@ namespace KSP.Retooled.Physics
         [BurstCompile]
         internal static void SortIslands(SimulationSingleton* singleton, SimulationStepInput* input, JobHandle* dependency)
         {
-            *dependency = Current->SortIslands(*singleton, *input, *dependency);
+            *dependency = Current->SortIslands(*singleton, ref *input, *dependency);
         }
 
         [BurstCompile]
