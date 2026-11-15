@@ -4,7 +4,9 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>Physics.RaycastAll, what a query can ask of a mesh, and the batched commands, which run on job workers.</summary>
+    /// <summary>
+    /// Tests Physics.RaycastAll, queries against meshes, and batched query commands running on job workers.
+    /// </summary>
     public class QueryCommandConformanceTests : QueryScene
     {
         private const float Tolerance = 3e-3f;

@@ -4,8 +4,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// The import settings of the RetooledPhysics plugin, which `RetooledCli native build` installs. It must be preloaded,
-    /// or it would load after Unity has picked its physics backend, and only the host's editor and player use it.
+    /// Configures import settings for the RetooledPhysics plugin installed by `RetooledCli native build`. The plugin
+    /// must load at startup, before Unity selects its physics backend. Enable it only for the editor and player on the
+    /// host operating system.
     /// </summary>
     public static class NativePluginImporter
     {

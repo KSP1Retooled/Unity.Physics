@@ -66,7 +66,8 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.That(body.position, Is.EqualTo(Vector3.zero), "a detached read answers zero");
                 Assert.That(body.rotation, Is.EqualTo(Quaternion.identity), "a detached rotation is valid");
 
-                // Creating needs the core, and Unity copes with a body it wasn't given: the static one, then the dynamic one.
+                // Actor creation requires the managed core. Expect Unity to log an error for each failed creation:
+                // first the static actor for the collider, then the dynamic actor for the Rigidbody.
                 LogAssert.Expect(LogType.Error, new Regex("Could not create Rigidbody actor"));
                 LogAssert.Expect(LogType.Error, new Regex("Could not create Rigidbody actor"));
                 GameObject created = Track(new GameObject("detached"));
@@ -104,7 +105,8 @@ namespace KSP.Retooled.Physics.Tests
                 BackendHost.Attach();
             }
 
-            // The cook was queued, but a shape can't exist without the core, so the collider builds it from the mesh now.
+            // Mesh cooking was queued while the core was detached, but no shape could be created. Re-enable the
+            // collider now that the core is attached so that its shape can be built from the mesh.
             collider.enabled = false;
             collider.enabled = true;
             UnityEngine.Physics.SyncTransforms();

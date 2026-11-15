@@ -4,8 +4,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What friction holds and how fast it stops things, on the static ground and between dynamic bodies. PhysX gives a
-    /// patch of contact twice its coefficient, one for each friction anchor, and the numbers here include that.
+    /// Tests how friction holds bodies in place and slows sliding, both on static ground and between dynamic bodies.
+    /// PhysX uses two friction anchors per contact patch, giving an effective coefficient twice the material
+    /// coefficient. The expected values here include that factor of two.
     /// </summary>
     public class FrictionConformanceTests : PhysicsScene
     {

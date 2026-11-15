@@ -4,7 +4,10 @@ using UnityEngine.TestTools;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>What asks about one collider or one body: Physics.ComputePenetration, Collider.Raycast and Rigidbody.SweepTest.</summary>
+    /// <summary>
+    /// Tests queries involving an individual collider or body: Physics.ComputePenetration, Collider.Raycast and
+    /// Rigidbody.SweepTest.
+    /// </summary>
     public class ShapeQueryConformanceTests : QueryScene
     {
         private const float Tolerance = 3e-3f;

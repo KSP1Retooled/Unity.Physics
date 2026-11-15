@@ -85,7 +85,9 @@ namespace KSP.Retooled.Physics.Tests
                 new[] { 0, 1, 2, 0, 2, 3 });
         }
 
-        /// <summary>A flat floor facing +y, centred on the origin, of one metre squares of two triangles each.</summary>
+        /// <summary>
+        /// Creates a flat floor facing +y, centred on the origin, with two triangles in each one metre square.
+        /// </summary>
         private Mesh GridFloor(int cells)
         {
             var vertices = new List<Vector3>();
@@ -160,7 +162,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ARayHitsAConvexMeshAtItsHull()
         {
-            // A ray along the diagonal face of the tetrahedron, whose plane is x + y + z = 1.
+            // Cast a ray perpendicular to the tetrahedron's diagonal face.
+            // The face lies in the plane x + y + z = 1.
             MeshCollider collider = Collider(RightTetrahedron(), true);
 
             UnityEngine.Physics.SyncTransforms();
@@ -395,7 +398,8 @@ namespace KSP.Retooled.Physics.Tests
 
             body.mass = 9.0f;
 
-            // Volumes 1 and 8, so the centroid sits 2/9 of the way to the mesh.
+            // The mesh has volume 1 and the box has volume 8. The mesh centre is at x = 2, so the combined centre of
+            // mass is one ninth of the way toward it, at x = 2/9.
             AssertVector(new Vector3(2.0f / 9.0f, 0.0f, 0.0f), body.centerOfMass, 1e-3f, "centre of mass");
         }
 
@@ -429,7 +433,7 @@ namespace KSP.Retooled.Physics.Tests
             AssertVector(Vector3.zero, body.centerOfMass, 1e-3f, "centre of mass");
             AssertVector(Vector3.one, body.inertiaTensor, 1e-3f, "inertia");
 
-            // Going dynamic drops the triangle mesh, which leaves the box alone.
+            // Making the body dynamic excludes its triangle mesh, so only the box contributes to its mass properties.
             body.isKinematic = false;
 
             AssertVector(Vector3.one * 1.5f, body.inertiaTensor, 1e-3f, "inertia once dynamic");
@@ -527,7 +531,8 @@ namespace KSP.Retooled.Physics.Tests
 
             body.mass = 10.0f;
 
-            // Both backends keep about 250 vertices of it, which is a little less than the sphere.
+            // Both backends approximate the sphere with a convex hull of about 250 vertices. The hull is slightly
+            // smaller than the sphere, so its moment of inertia is also slightly smaller.
             AssertVector(Vector3.zero, body.centerOfMass, 0.03f, "centre of mass");
             AssertVector(Vector3.one * 15.5f, body.inertiaTensor, 0.8f, "inertia");
             Assert.That(RayDistance(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down), Is.EqualTo(3.0f).Within(0.05f));
@@ -775,7 +780,8 @@ namespace KSP.Retooled.Physics.Tests
                 Rigidbody body = collider.gameObject.AddComponent<Rigidbody>();
 
                 Simulate(100);
-                // Unity keeps such a shape away from the body: it neither lands nor takes rays, and the ray reaches the ground.
+                // Unity excludes a non-convex mesh on a dynamic body from simulation and queries. The body falls
+                // through the ground, and a ray passes through the mesh and hits the ground.
                 Assert.That(body.position.y, Is.LessThan(0.0f));
                 Assert.That(RayDistance(new Vector3(0.1f, 20.0f, 0.1f), Vector3.down), Is.EqualTo(20.0f).Within(1e-3f));
             }

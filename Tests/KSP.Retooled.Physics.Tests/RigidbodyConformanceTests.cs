@@ -154,7 +154,10 @@ namespace KSP.Retooled.Physics.Tests
             AssertVector(new Vector3(0.0f, 5.0f, 0.0f), body.position, Tolerance);
         }
 
-        /// <summary>Unity only sends the target to the physics engine in the step, so the sleep came first.</summary>
+        /// <summary>
+        /// Unity sends the MovePosition target to the physics engine during the next step. Sleeping the body before
+        /// that step must not prevent it from reaching the target.
+        /// </summary>
         [Test]
         public void MovePositionBeforeSleepingStillReachesItsTarget()
         {

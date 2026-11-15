@@ -100,8 +100,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A fully elastic box let go above the ground, with a set bounce threshold, and the highest it gets from the step
-        /// after it would have landed on. A half metre drop lands at about 3.1 m/s, 16 steps in.
+        /// Drops a fully elastic box above the ground with the given bounce threshold. Returns its highest position
+        /// over steps 20 through 70. A half metre drop reaches the ground at about 3.1 m/s, around step 16.
         /// </summary>
         private float PeakAfterDrop(float dropHeight, float bounceThreshold)
         {

@@ -5,8 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Base of the conformance fixtures: a scene stepped by hand at a fixed rate under Earth-like gravity. The fixtures
-    /// assert one behaviour each and hold on PhysX and on the Unity Physics backend alike.
+    /// Provides a scene that conformance fixtures step explicitly at a fixed rate under Earth-like gravity. Each test
+    /// checks one behaviour, with the same assertions for PhysX and the Unity Physics backend.
     /// </summary>
     public abstract class PhysicsScene
     {

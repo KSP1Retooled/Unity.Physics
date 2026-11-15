@@ -12,14 +12,15 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The sparse solver against two things that don't share its code: the package's dense complementarity solver, and the
-    /// definition of a solution checked row by row on a matrix formed here. Sizes of the factor are exact counts.
+    /// Checks the sparse solver in two independent ways: compares with the package's dense complementarity solver, and
+    /// checks the conditions for a solution on each row of a matrix constructed here. Also checks exact counts for the
+    /// size of the factor.
     /// </summary>
     public unsafe class SparseConstraintSolverTests
     {
         private const int Columns = SparseConstraintSolver.ColumnsPerRow;
 
-        /// <summary>A problem in managed lists, with a dense copy of what it means.</summary>
+        /// <summary>Stores a problem in managed lists and can construct the equivalent dense matrix.</summary>
         private sealed class Scenario
         {
             public readonly List<SparseConstraintSolver.Body> Bodies = new List<SparseConstraintSolver.Body>();
@@ -44,7 +45,7 @@ namespace KSP.Retooled.Physics.Tests
 
             public int AddBody()
             {
-                // A wide spread, because craft put tonnes of tank on grams of strut.
+                // Use a wide range of masses and inertias to represent heavy fuel tanks attached to very light struts.
                 double mass = math.pow(10.0, random.NextDouble(-1.0, 2.0));
                 double3 principal = new double3(
                     math.pow(10.0, random.NextDouble(-1.0, 2.0)),
@@ -79,8 +80,9 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             /// <summary>
-            /// A contact of a body on the world, with rows as the direct solver builds them: a normal row for each point that
-            /// only pushes, then friction along two tangents and about the normal, whose bounds follow the normals' sum.
+            /// Adds a contact between a body and the world, using the same rows as the direct solver. Each contact
+            /// point has a normal row that allows pushing only. Three friction rows follow: two along tangents and one
+            /// about the normal. Their bounds depend on the sum of the normal impulses.
             /// </summary>
             public void AddContact(int body, int normals, float friction)
             {
@@ -128,7 +130,9 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            /// <summary>J M^-1 J^t + E, formed the long way.</summary>
+            /// <summary>
+            /// Constructs the dense matrix J M^-1 J^t + E directly from the bodies and Jacobian entries.
+            /// </summary>
             public double[,] Matrix()
             {
                 double[][] jInverseMass = new double[Rows][];
@@ -208,7 +212,10 @@ namespace KSP.Retooled.Physics.Tests
             return impulses;
         }
 
-        /// <summary>Solves on every lane of a job, the first to run leading, as a direct island's big solve runs.</summary>
+        /// <summary>
+        /// Uses all lanes of a parallel job to solve one problem. The first lane to run leads and the others help, as
+        /// when solving a large direct island.
+        /// </summary>
         private struct SharedSolveJob : IJobParallelFor
         {
             [NativeDisableUnsafePtrRestriction]
@@ -304,7 +311,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        /// <summary>What the package's dense path answers for the same numbers.</summary>
+        /// <summary>Solves the same problem with the dense solver from the package.</summary>
         private static float[] SolveDensely(Scenario scenario)
         {
             int rows = scenario.Rows;
@@ -518,8 +525,8 @@ namespace KSP.Retooled.Physics.Tests
             bool converged = Solve(ref solver, scenario, true, impulses);
             int couplings = solver.Stats.CouplingIterations;
 
-            // The bounds it settled on have to be the friction's share of the normals it found, and the answer has to
-            // solve the problem with those bounds.
+            // Each final upper bound must equal the friction coefficient times the sum of the normal impulses.
+            // The lower bound is its negative. The resulting impulses must solve the problem with those bounds.
             foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
             {
                 float normal = 0.0f;
@@ -555,7 +562,8 @@ namespace KSP.Retooled.Physics.Tests
                 scenario.AddContact(contacts.NextInt(scenario.Bodies.Count), contacts.NextInt(1, 4), friction);
             }
 
-            // Each contact pushed earlier in the step, and its friction spent some of what that allowed.
+            // Give each contact a normal impulse from earlier in the step, with part of the allowed friction impulse
+            // already applied.
             for (int i = 0; i < scenario.Couplings.Count; i++)
             {
                 SparseConstraintSolver.Coupling coupling = scenario.Couplings[i];
@@ -573,7 +581,8 @@ namespace KSP.Retooled.Physics.Tests
             float[] impulses = new float[scenario.Rows];
             bool converged = Solve(ref solver, scenario, true, impulses);
 
-            // The bounds sit around minus what each row spent, as far out as the share of everything the contact pushed.
+            // Center each row's bounds on the negative of its previously applied friction impulse. The distance to
+            // either bound is the friction coefficient times the total normal impulse, including earlier impulses.
             foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
             {
                 float normal = coupling.HeldSourceImpulse;

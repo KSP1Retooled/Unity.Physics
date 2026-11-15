@@ -9,8 +9,9 @@ using UnityEngine.TestTools;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The query function once Burst has it. The conformance fixtures mostly catch it still in Mono, and a kind that only
-    /// breaks compiled, such as a collector called through a function pointer, would crash a player and nothing else.
+    /// Tests the query function after Burst compilation. Most conformance fixtures finish while it still runs in Mono.
+    /// A query that fails only in compiled code, such as a collector called through a function pointer, could therefore
+    /// crash a player without failing those fixtures.
     /// </summary>
     public class QueryBurstTests : QueryScene
     {
