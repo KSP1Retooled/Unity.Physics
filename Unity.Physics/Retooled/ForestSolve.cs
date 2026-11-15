@@ -146,7 +146,7 @@ namespace Unity.Physics
         /// </summary>
         static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
             ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies,
-            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep, int substep,
             out ForestRun run)
         {
             run = default;
@@ -267,6 +267,13 @@ namespace Unity.Physics
             for (int p = 0; p < pairCount; p++)
             {
                 bool locked = forest->PairLocked[p] != 0;
+                int held = forest->PairHeld[p];
+                if (substep <= 0 && held < int.MaxValue / 2)
+                {
+                    forest->PairHeld[p] = ++held;
+                }
+
+                bool settled = held >= settings.MinimumHoldSteps;
                 bool next = false;
                 if (settings.Locking && forest->PairEdge[p] != 0 && forest->PairTree[p] != 0)
                 {
@@ -278,13 +285,14 @@ namespace Unity.Physics
 
                     float deflection = forest->PairDeflection[p];
                     next = locked
-                        ? (allows & 6) == 6 && deflection <= settings.YieldAngle
-                        : (allows & 5) == 5 && deflection < settings.LockAngle;
+                        ? (allows & 6) == 6 && (deflection <= settings.YieldAngle || (!settled && deflection <= 2.0f * settings.YieldAngle))
+                        : (allows & 5) == 5 && deflection < settings.LockAngle && settled;
                 }
 
                 if (next != locked)
                 {
                     forest->PairLocked[p] = (byte)(next ? 1 : 0);
+                    forest->PairHeld[p] = 0;
                     lockChanges++;
                 }
             }

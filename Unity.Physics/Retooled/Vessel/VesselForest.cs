@@ -60,8 +60,16 @@ namespace Unity.Physics
         /// <summary>Radians: a locked edge whose load would deflect its springs more than this yields.</summary>
         public float YieldAngle;
 
+        /// <summary>
+        /// Steps a pair keeps a lock state before it may change it again, which stops pairs under a contact's changing load
+        /// from locking and yielding every step. A load past twice <see cref="YieldAngle"/>, or one the joint's owner no
+        /// longer allows, yields a pair at once.
+        /// </summary>
+        public int MinimumHoldSteps;
+
         public const float DefaultLockAngle = 0.5e-3f;
         public const float DefaultYieldAngle = 2e-3f;
+        public const int DefaultMinimumHoldSteps = 10;
 
         public static ForestSettings Default => new ForestSettings
         {
@@ -70,6 +78,7 @@ namespace Unity.Physics
             Locking = false,
             LockAngle = DefaultLockAngle,
             YieldAngle = DefaultYieldAngle,
+            MinimumHoldSteps = DefaultMinimumHoldSteps,
         };
     }
 
@@ -127,6 +136,9 @@ namespace Unity.Physics
         /// mean over the step is the deflection of the load the step applied.
         /// </summary>
         public UnsafeList<float> PairDeflectionSum;
+
+        /// <summary>Steps each pair has kept its lock state.</summary>
+        public UnsafeList<int> PairHeld;
 
         /// <summary>The solves summed in <see cref="PairDeflectionSum"/>.</summary>
         public int DeflectionCount;
@@ -186,6 +198,7 @@ namespace Unity.Physics
                 PairLocked = new UnsafeList<byte>(16, Allocator.Persistent),
                 PairDeflection = new UnsafeList<float>(16, Allocator.Persistent),
                 PairDeflectionSum = new UnsafeList<float>(16, Allocator.Persistent),
+                PairHeld = new UnsafeList<int>(16, Allocator.Persistent),
                 PairBlockStart = new UnsafeList<int>(16, Allocator.Persistent),
                 PairInverse = new UnsafeList<double>(16, Allocator.Persistent),
                 PairInverseKey = new UnsafeList<float>(16, Allocator.Persistent),
@@ -231,6 +244,7 @@ namespace Unity.Physics
             forest->PairLocked.Dispose();
             forest->PairDeflection.Dispose();
             forest->PairDeflectionSum.Dispose();
+            forest->PairHeld.Dispose();
             forest->PairBlockStart.Dispose();
             forest->PairInverse.Dispose();
             forest->PairInverseKey.Dispose();
@@ -272,10 +286,12 @@ namespace Unity.Physics
 
             var oldLocked = new NativeArray<byte>(PairLocked.Length, Allocator.Temp);
             var oldDeflection = new NativeArray<float>(PairDeflection.Length, Allocator.Temp);
+            var oldHeld = new NativeArray<int>(PairHeld.Length, Allocator.Temp);
             for (int p = 0; p < PairLocked.Length; p++)
             {
                 oldLocked[p] = PairLocked[p];
                 oldDeflection[p] = PairDeflection[p];
+                oldHeld[p] = PairHeld[p];
             }
 
             // Distinct pairs, in block order; tree joints first take part in the spanning forest.
@@ -460,6 +476,7 @@ namespace Unity.Physics
             PairLocked.Resize(pairCount);
             PairDeflection.Resize(pairCount);
             PairDeflectionSum.Resize(pairCount);
+            PairHeld.Resize(pairCount);
             UnsafeUtility.MemClear(PairDeflectionSum.Ptr, pairCount * (long)sizeof(float));
             DeflectionCount = 0;
             PairInverse.Resize(36 * math.max(1, pairCount));
@@ -480,17 +497,20 @@ namespace Unity.Physics
                 {
                     PairLocked[p] = oldLocked[old];
                     PairDeflection[p] = oldDeflection[old];
+                    PairHeld[p] = oldHeld[old];
                 }
                 else
                 {
                     PairLocked[p] = 0;
                     PairDeflection[p] = float.PositiveInfinity;
+                    PairHeld[p] = int.MaxValue / 2;
                 }
             }
 
             previous.Dispose();
             oldLocked.Dispose();
             oldDeflection.Dispose();
+            oldHeld.Dispose();
             pairOf.Dispose();
             pairFill.Dispose();
             root.Dispose();

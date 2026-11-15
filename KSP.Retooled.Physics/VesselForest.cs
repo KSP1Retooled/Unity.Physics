@@ -29,6 +29,15 @@ namespace KSP.Retooled.Physics
         {
             public float Lock;
             public float Yield;
+
+            /// <summary>The minimum hold in steps, plus one, so that a zeroed static reads as the default.</summary>
+            public int HoldPlusOne;
+
+            public int Hold
+            {
+                get => HoldPlusOne - 1;
+                set => HoldPlusOne = value + 1;
+            }
         }
 
         private static bool initialized;
@@ -73,6 +82,13 @@ namespace KSP.Retooled.Physics
         {
             get => Shared.Data.YieldAngle > 0.0f ? Shared.Data.YieldAngle : ForestSettings.DefaultYieldAngle;
             set => Shared.Data.YieldAngle = value;
+        }
+
+        /// <summary>Steps; see <see cref="ForestSettings.MinimumHoldSteps"/>. Negative reads as the default.</summary>
+        public static int MinimumHoldSteps
+        {
+            get => Fractions.Data.Hold >= 0 ? Fractions.Data.Hold : ForestSettings.DefaultMinimumHoldSteps;
+            set => Fractions.Data.Hold = value;
         }
 
         public static float LockFraction

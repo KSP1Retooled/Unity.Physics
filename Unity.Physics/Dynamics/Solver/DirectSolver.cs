@@ -1402,7 +1402,7 @@ namespace Unity.Physics
                 ForestRun run = default;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
                     forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), motionVelocities, motionDatas,
-                    stepInput.Timestep, out run);
+                    stepInput.Timestep, stepInput.CurrentSubstep, out run);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {

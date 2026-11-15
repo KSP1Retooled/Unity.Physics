@@ -176,6 +176,8 @@ namespace KSP.Retooled.Physics.Tests
             SetUpScene();
             VesselForest.Enabled = path != "sparse";
             VesselForest.Locking = path == "locked";
+            string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
+            VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             Build(graph, ground);
             Simulate(WarmUp);
