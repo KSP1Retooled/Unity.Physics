@@ -23,6 +23,7 @@ namespace KSP.Retooled.Physics.Tests
     /// session starts only once the machine's total CPU load is under 15%, waiting up to ten minutes, and reports the
     /// load it started at. Results go to the log and to VesselSolverBench.txt in the project's Logs folder.
     /// </summary>
+    [Explicit("A benchmark, about half an hour long")]
     [Category("Slow")]
     public unsafe class VesselSolverBench
     {
