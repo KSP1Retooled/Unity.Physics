@@ -131,6 +131,14 @@ namespace Unity.Physics
         /// <summary>The solves summed in <see cref="PairDeflectionSum"/>.</summary>
         public int DeflectionCount;
         public UnsafeList<int> PairBlockStart;
+
+        /// <summary>
+        /// Each locked pair's (J^T W J)^-1 in its child's frame, 36 each, with the sum of its rows' compliances and their
+        /// count when it was found; NaN until then, and again once the pair unlocks.
+        /// </summary>
+        public UnsafeList<double> PairInverse;
+        public UnsafeList<float> PairInverseKey;
+        public UnsafeList<int> PairInverseRows;
         public UnsafeList<int> PairBlocks;
 
         public UnsafeList<VesselSection> Sections;
@@ -179,6 +187,9 @@ namespace Unity.Physics
                 PairDeflection = new UnsafeList<float>(16, Allocator.Persistent),
                 PairDeflectionSum = new UnsafeList<float>(16, Allocator.Persistent),
                 PairBlockStart = new UnsafeList<int>(16, Allocator.Persistent),
+                PairInverse = new UnsafeList<double>(16, Allocator.Persistent),
+                PairInverseKey = new UnsafeList<float>(16, Allocator.Persistent),
+                PairInverseRows = new UnsafeList<int>(16, Allocator.Persistent),
                 PairBlocks = new UnsafeList<int>(16, Allocator.Persistent),
                 Sections = new UnsafeList<VesselSection>(16, Allocator.Persistent),
                 Blocks = new UnsafeList<double>(16, Allocator.Persistent),
@@ -221,6 +232,9 @@ namespace Unity.Physics
             forest->PairDeflection.Dispose();
             forest->PairDeflectionSum.Dispose();
             forest->PairBlockStart.Dispose();
+            forest->PairInverse.Dispose();
+            forest->PairInverseKey.Dispose();
+            forest->PairInverseRows.Dispose();
             forest->PairBlocks.Dispose();
             forest->Sections.Dispose();
             forest->Blocks.Dispose();
@@ -448,6 +462,14 @@ namespace Unity.Physics
             PairDeflectionSum.Resize(pairCount);
             UnsafeUtility.MemClear(PairDeflectionSum.Ptr, pairCount * (long)sizeof(float));
             DeflectionCount = 0;
+            PairInverse.Resize(36 * math.max(1, pairCount));
+            PairInverseKey.Resize(math.max(1, pairCount));
+            PairInverseRows.Resize(math.max(1, pairCount));
+            for (int p = 0; p < pairCount; p++)
+            {
+                PairInverseKey[p] = float.NaN;
+            }
+
             for (int p = 0; p < pairCount; p++)
             {
                 int2 pb = PairBodies[p];
@@ -497,6 +519,14 @@ namespace Unity.Physics
 
             LockedPairs = 0;
             Closures.Clear();
+            for (int p = 0; p < pairCount; p++)
+            {
+                if (PairLocked[p] == 0)
+                {
+                    PairInverseKey[p] = float.NaN;
+                }
+            }
+
             var pairClosure = new NativeArray<int>(math.max(1, pairCount), Allocator.Temp);
             for (int p = 0; p < pairCount; p++)
             {

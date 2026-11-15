@@ -46,6 +46,9 @@ namespace Unity.Physics
         public const int ForestForwardKind = -8;
         public const int ForestSubstituteKind = -9;
 
+        /// <summary>A stage of turning rows to a forest's sections, or of settling the sections' bodies and locked loads.</summary>
+        public const int ForestSectionsKind = -10;
+
         struct Stage
         {
             public void* Context;
@@ -247,6 +250,10 @@ namespace Unity.Physics
             else if (stage.Kind == ForestSubstituteKind)
             {
                 ((VesselContext*)stage.Context)->SubstituteChunk(task);
+            }
+            else if (stage.Kind == ForestSectionsKind)
+            {
+                Solver.ForestSectionTask(stage.Context, task);
             }
             else
             {
