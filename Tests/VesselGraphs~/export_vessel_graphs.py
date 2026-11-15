@@ -16,7 +16,7 @@ Format, gzip-compressed text, one record per line, whitespace separated:
 
     vessel <name>
     bodies <count>
-    <parent> <kind> <mass t> <Ixx> <Iyy> <Izz> <x> <y> <z> <joint x> <joint y> <joint z> <axis x> <axis y> <axis z> <swing k>
+    <parent> <kind> <mass t> <Ixx> <Iyy> <Izz> <x> <y> <z> <joint x> <joint y> <joint z> <axis x> <axis y> <axis z> <swing k> <rigid>
     ...
     closures <count>
     <body a> <body b> <kind>
@@ -25,7 +25,8 @@ Format, gzip-compressed text, one record per line, whitespace separated:
 Bodies come parents first, the root has parent -1 and kind "root". Kind is one of stack, srf, servo, docking,
 decoupler. Inertia is diagonal in the vessel frame (an approximation: the census only estimates each body's size), every
 body starts with the identity orientation, and the joint point and axis are in the vessel frame. Swing k is the stock
-joint's swing stiffness in kN m/rad. Closure kind is autostrut or manual.
+joint's swing stiffness in kN m/rad. Rigid is 1 for an edge with rigid attachment (the part's setting or a rigid
+node), which the study's lock rules keep locked. Closure kind is autostrut or manual.
 """
 import gzip
 import importlib.util
@@ -87,7 +88,7 @@ def craft_graph(census, path):
         # plus the folded physicsless parts' offsets.
         inertia = np.diag(Ib_own[b]) + max(1.0, Mb[b]) * kg2[b]
         if bpar[b] < 0:
-            kind, joint, axis, swing = "root", com[b], np.array([0.0, 1.0, 0.0]), 0.0
+            kind, joint, axis, swing, rigid = "root", com[b], np.array([0.0, 1.0, 0.0]), 0.0, 0
         else:
             e = edge[b]
             # As the study's lock rule "only servos, docking ports and decouplers live" reads it: a docking port or
@@ -101,7 +102,8 @@ def craft_graph(census, path):
             else:
                 kind = e["mode"]
             joint, axis, swing = np.asarray(e["J"], float), np.asarray(e["n"], float), float(e["k"])
-        rows.append((int(bpar[b]), kind, float(Mb[b]), *inertia, *com[b], *joint, *axis, swing))
+            rigid = 1 if e["kind"] == "rigid" else 0
+        rows.append((int(bpar[b]), kind, float(Mb[b]), *inertia, *com[b], *joint, *axis, swing, rigid))
     closures = [(int(a), int(b), "autostrut") for a, b, *_ in it["struts"]]
     closures += [(int(a), int(b), "manual") for a, b in it["manual"]]
     return name, rows, closures
@@ -127,7 +129,7 @@ def synthetic_graph(folder, count):
             s = min(v.size[i], v.size[p]) if v.attach[i][0] == "stack" else min(v.size[i], 1)
             swing = 30000.0 * (s + 1)
         axis = v.axis[i] if np.linalg.norm(v.axis[i]) > 0 else np.array([0.0, 1.0, 0.0])
-        rows.append((p, kind, float(v.mass[i]), *v.I[i], *v.pos[i], *v.anchor[i], *axis, swing))
+        rows.append((p, kind, float(v.mass[i]), *v.I[i], *v.pos[i], *v.anchor[i], *axis, swing, 0))
     return f"synthetic {count}", rows, []
 
 
@@ -136,7 +138,7 @@ def write(path, name, rows, closures):
         f.write(f"vessel {name}\n")
         f.write(f"bodies {len(rows)}\n")
         for r in rows:
-            f.write(f"{r[0]} {r[1]} " + " ".join(f"{x:.9g}" for x in r[2:]) + "\n")
+            f.write(f"{r[0]} {r[1]} " + " ".join(f"{x:.9g}" for x in r[2:-1]) + f" {r[-1]}\n")
         f.write(f"closures {len(closures)}\n")
         for a, b, kind in closures:
             f.write(f"{a} {b} {kind}\n")
