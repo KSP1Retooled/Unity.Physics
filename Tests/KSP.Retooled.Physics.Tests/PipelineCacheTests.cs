@@ -213,6 +213,9 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(true)]
         public void AContactOnAKeptIslandLandsAsOnAFreshOne(bool forest)
         {
+            // The first scene an editor steps with the forest switched on from the start lands a few ulps away from every
+            // later one, kept or afresh, so a run first leaves both compared runs on equal footing.
+            RunLanding(forest, true);
             AssertSame(RunLanding(forest, false), RunLanding(forest, true));
         }
 
@@ -235,8 +238,28 @@ namespace KSP.Retooled.Physics.Tests
             joint.connectedBody = second;
             Moved("adding a joint");
 
+            // A joint free to slide is no part of a group or the forest, so tuning it leaves both alone.
             joint.angularXMotion = ConfigurableJointMotion.Locked;
-            Moved("locking an axis");
+            Simulate();
+            Assert.That(JointTopology.Version, Is.EqualTo(version), "locking a turn of a joint that slides keeps the version");
+
+            joint.xMotion = ConfigurableJointMotion.Locked;
+            joint.yMotion = ConfigurableJointMotion.Locked;
+            joint.zMotion = ConfigurableJointMotion.Locked;
+            Moved("locking the anchors, which makes it hold its bodies as a part joint does");
+
+            joint.axis = Vector3.up;
+            Moved("turning its frames");
+
+            joint.targetRotation = Quaternion.Euler(10.0f, 0.0f, 0.0f);
+            Moved("giving it a target away from rest, which leaves the forest");
+
+            joint.targetRotation = Quaternion.Euler(20.0f, 0.0f, 0.0f);
+            Simulate();
+            Assert.That(JointTopology.Version, Is.EqualTo(version), "a servo's next target keeps the version");
+
+            joint.targetRotation = Quaternion.identity;
+            Moved("bringing its target back to rest");
 
             joint.connectedBody = null;
             Moved("joining it to the world");

@@ -104,11 +104,31 @@ namespace KSP.Retooled.Physics
         private static void Execute(JointCommand command, NativeStore.JointData* joint, NativeStore.CommandArgs* a)
         {
             NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, (int)math.min(a->value, NativeStore.JointAxisCount - 1));
-            if (Changes(command))
+            if (!Changes(command))
+            {
+                Run(command, joint, a, axis);
+                return;
+            }
+
+            // The step's groups and forest roles follow from which joints are mergeable, and for those from their bodies and
+            // frames. A command that leaves all of that alone, as a servo's new target or a drive tuned on a joint that
+            // isn't mergeable does, keeps them.
+            bool wasMergeable = BuildJointsJob.Mergeable(joint);
+            NativeStore.Body* body0 = joint->body0, body1 = joint->body1;
+            quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
+            var flags = joint->flags;
+            Run(command, joint, a, axis);
+            bool mergeable = BuildJointsJob.Mergeable(joint);
+            bool moved = joint->body0 != body0 || joint->body1 != body1 || joint->flags != flags
+                || !math.all(joint->rotation0.value == rotation0.value) || !math.all(joint->rotation1.value == rotation1.value);
+            if (mergeable != wasMergeable || (mergeable && moved))
             {
                 JointTopology.Changed();
             }
+        }
 
+        private static void Run(JointCommand command, NativeStore.JointData* joint, NativeStore.CommandArgs* a, NativeStore.JointAxis* axis)
+        {
             switch (command)
             {
                 case JointCommand.SetFlags:
