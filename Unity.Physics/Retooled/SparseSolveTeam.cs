@@ -7,23 +7,25 @@ using Unity.Profiling.LowLevel.Unsafe;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Coordinates lanes within one job to solve large direct islands with the sparse solver. The first lane to run
-    /// becomes the leader. It performs the solve and publishes stages that can be split into independent tasks, while
-    /// also taking tasks itself. Other lanes help with those stages until the leader finishes. Helpers wait only for a
-    /// leader that is already running. A lane that starts late or never starts therefore reduces parallelism without
-    /// preventing progress.
+    /// Coordinates lanes within one job for island solving, including large direct solves and iterative phases. The
+    /// first lane to run becomes the leader. It performs the solve and publishes stages made up of independent tasks.
+    /// The leader also executes tasks, while other lanes help until the leader finishes or they exceed their idle
+    /// timeout. Helpers wait only for a leader that is already running. If a lane starts late or never starts, fewer
+    /// lanes share the work, but the solve can still finish.
     /// </summary>
     internal unsafe struct SparseSolveTeam
     {
         /// <summary>
-        /// How long an idle helper spins before blocking. If a stage starts during this interval, the helper can work
-        /// immediately. A blocked helper takes a few microseconds to wake, which is short compared with this interval.
+        /// The time that an idle helper spins before blocking, if address waiting is available. If a stage starts while
+        /// the helper is spinning, it can work immediately. A blocked helper takes a few microseconds to wake, which is
+        /// short compared with this spin interval.
         /// </summary>
         const long SpinMicroseconds = 50;
 
         /// <summary>
-        /// How long an idle helper waits before leaving the leader to finish alone. This returns helper threads to the
-        /// job system if the leader spends a long time on serial work.
+        /// The idle time after which a helper stops helping and returns its thread to the job system. This is checked
+        /// between waits, so a blocked helper must wake before it can leave. This returns helper threads to the job
+        /// system if the leader spends a long time on serial work. The leader can finish without those helpers.
         /// </summary>
         const long PatienceMicroseconds = 2000;
 
@@ -45,23 +47,29 @@ namespace Unity.Physics
         public const int IterativePhaseKind = -6;
 
         /// <summary>
-        /// Identifies factorization and forward substitution by chunks of a vessel forest, and its backward
-        /// substitution.
+        /// Identifies the stages for factorization, forward substitution and backward substitution, each processed in
+        /// chunks of a vessel forest.
         /// </summary>
         public const int ForestFactorKind = -7;
         public const int ForestForwardKind = -8;
         public const int ForestSubstituteKind = -9;
 
         /// <summary>
-        /// Identifies a stage that assigns rows to forest sections or resolves the bodies and locked loads for those
-        /// sections.
+        /// Identifies a stage that assigns rows to forest sections or computes body impulses and loads on locked
+        /// pairs for those sections.
         /// </summary>
         public const int ForestSectionsKind = -10;
 
-        /// <summary>Classifying a direct island's rows for the forest by runs of blocks.</summary>
+        /// <summary>
+        /// Identifies the stage that classifies a direct island's rows for the forest, processing a range of blocks per
+        /// task.
+        /// </summary>
         public const int ForestClassifyKind = -11;
 
-        /// <summary>A stage of a vessel island's solve: sections, links or parts by runs.</summary>
+        /// <summary>
+        /// Identifies a stage that processes a range of sections, links or parts per task while solving a vessel
+        /// island.
+        /// </summary>
         public const int ForestVesselKind = -12;
 
         struct Stage
@@ -79,13 +87,13 @@ namespace Unity.Physics
         long spinTicks;
         long patienceTicks;
 
-        // Separate flags written once per solve from counters updated for every task by at least one cache line,
-        // regardless of the team's starting address. Reading a flag then avoids loading a cache line that working lanes
-        // are modifying.
+        // Leave at least one cache line between the flags written once per solve and the counters updated for every
+        // task. This separation holds regardless of the team's starting address. Reading a flag therefore avoids
+        // loading a cache line that other lanes are modifying.
         fixed byte separation[64];
 
-        // The high half stores the current stage's generation, and the low half stores its next task index. Checking
-        // both prevents a lane from taking a task from a stage that has ended.
+        // The upper 32 bits store the current stage's generation; the lower 32 bits store the next task index. Check
+        // and update both together so a lane cannot claim a task from a stage that has ended.
         long next;
         int done;
 
@@ -125,9 +133,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Runs all tasks in a stage using this lane and any helpers, then returns when every task is complete. For
-        /// sparse solver stages, the context points to the sparse solver. For the direct solver's stages, it points to
-        /// the data that the stage reads and writes.
+        /// Runs all tasks in a stage using the leader's lane and any available helpers. Returns only after every task
+        /// is complete. For sparse solver stages, the context points to the sparse solver. For the direct solver's
+        /// stages, it points to the data read and written during that stage.
         /// </summary>
         public void Lead(void* context, int kind, int taskCount, double* vector)
         {
@@ -160,8 +168,8 @@ namespace Unity.Physics
 
             Work(generation, stage);
 
-            // Poll with reads that do not lock the cache line. A locked read would take ownership from lanes still
-            // finishing tasks.
+            // Poll using reads that do not lock the cache line. A locked read would take ownership of that line from
+            // lanes that are still finishing tasks.
             while (Volatile.Read(ref done) < taskCount)
             {
                 Common.Pause();
@@ -169,9 +177,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Takes tasks from each stage that the leader publishes until the leader finishes or this lane exceeds its
-        /// idle timeout. Between stages, the lane spins briefly and then blocks while waiting for a signal from the
-        /// leader.
+        /// Executes tasks from each stage published by the leader until the leader finishes or this lane exceeds its
+        /// idle timeout. Between stages, the lane spins briefly. If address waiting is available, it then blocks until
+        /// signalled. It checks the idle timeout while spinning and after returning from a wait.
         /// </summary>
         public void Help()
         {
