@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -15,7 +16,8 @@ namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
     /// Whole physics steps of a large craft built from a vessel graph (Tests/VesselGraphs~) as Rigidbodies and stock-style
-    /// ConfigurableJoints, on the sparse path and on the forest path, on one thread and on eight, warm. The craft floats
+    /// ConfigurableJoints, on the sparse path, the forest path and the forest path with locking, on one thread and on eight,
+    /// warm (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS pick part of the table). The craft floats
     /// (every row a forest row) or rests on the ground (contacts make a boundary). Parts never collide with each other.
     /// Reports the machine's CPU load when it starts. Results go to the log and to VesselForestBench.txt in Logs.
     /// </summary>
@@ -167,17 +169,21 @@ namespace KSP.Retooled.Physics.Tests
 
         private string lastTimes;
 
-        private (double min, double median, long solves, long fallbacks) Session(Graph graph, bool ground, bool forest, int threads,
+        private (double min, double median, long solves, long fallbacks) Session(Graph graph, bool ground, string path, int threads,
             int workers)
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = forest;
+            VesselForest.Enabled = path != "sparse";
+            VesselForest.Locking = path == "locked";
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             Build(graph, ground);
             Simulate(WarmUp);
             VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
             VesselForest.GetTimes(out double s0, out double a0, out double b0, out double c0, out double f0, out double w0, out double d0);
+            VesselForest.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
+                out _, out _, out _);
+            double settle0 = VesselForest.SettleMilliseconds;
             var samples = new List<double>(Measured);
             for (int i = 0; i < Measured; i++)
             {
@@ -188,8 +194,20 @@ namespace KSP.Retooled.Physics.Tests
 
             VesselForest.GetCounts(out long solves, out long fallbacks, out _);
             VesselForest.GetTimes(out double s1, out double a1, out double b1, out double c1, out double f1, out double w1, out double d1);
-            lastTimes = $"sparse {(s1 - s0) / Measured:F2}, forest start {(a1 - a0) / Measured:F2} (factor {(f1 - f0) / Measured:F2}, " +
-                $"boundary {(w1 - w0) / Measured:F2}), solve {(b1 - b0) / Measured:F2}, finish {(c1 - c0) / Measured:F2} (drift aim {(d1 - d0) / Measured:F2})";
+            VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
+                out double residual, out _, out _);
+            long forestSolves = Math.Max(1, solves - solvesBefore);
+            lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / Measured:F2}"
+                : $"start {(a1 - a0) / Measured:F2} (factor {(f1 - f0) / Measured:F2}, boundary {(w1 - w0) / Measured:F2}), " +
+                $"solve {(b1 - b0) / Measured:F2}, finish {(c1 - c0) / Measured:F2} (settle {(VesselForest.SettleMilliseconds - settle0) / Measured:F2}, " +
+                $"drift aim {(d1 - d0) / Measured:F2}), " +
+                $"fallback sparse {(s1 - s0) / Measured:F2}";
+            if (path == "locked")
+            {
+                lastTimes += $"; sections {(sections1 - sections0) / (double)forestSolves:F0}, locked pairs {(locked1 - locked0) / (double)forestSolves:F0} " +
+                    $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / Math.Max(1, builds1 - builds0):F2} ms each), " +
+                    $"lock changes {changes1 - changes0}, largest residual {residual:E1} N s";
+            }
             JobsUtility.JobWorkerCount = workers;
             samples.Sort();
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
@@ -213,6 +231,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
             bool wasEnabled = VesselForest.Enabled;
+            bool wasLocking = VesselForest.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
             bool jobDebugger = JobsUtility.JobDebuggerEnabled;
@@ -222,8 +241,9 @@ namespace KSP.Retooled.Physics.Tests
             double load = SampleLoad();
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +
                 $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default\n");
-            report.Append("craft | bodies | scene | threads | sparse path | forest path | forest solves / fallbacks in the forest run | " +
-                "island solve ms per step: sparse run; forest run\n");
+            string[] paths = Choice("RETOOLED_BENCH_PATHS", "sparse,forest,locked");
+            report.Append($"craft | bodies | scene | threads | {string.Join(" | ", paths)} (ms min / median) | " +
+                "island solve ms per step and counts, by path\n");
             try
             {
                 foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,synthetic4500"))
@@ -233,12 +253,18 @@ namespace KSP.Retooled.Physics.Tests
                     {
                         foreach (int threads in Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse))
                         {
-                            var sparse = Session(graph, ground, false, threads, workers);
-                            string sparseTimes = lastTimes;
-                            var forest = Session(graph, ground, true, threads, workers);
+                            var cells = new List<string>();
+                            var notes = new List<string>();
+                            foreach (string path in paths)
+                            {
+                                var result = Session(graph, ground, path, threads, workers);
+                                cells.Add($"{result.min:F2} / {result.median:F2}");
+                                notes.Add(path == "sparse" ? $"{path}: {lastTimes}"
+                                    : $"{path}: {result.solves} forest solves / {result.fallbacks} fallbacks, {lastTimes}");
+                            }
+
                             report.Append($"{craft} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threads} | " +
-                                $"{sparse.min:F2} / {sparse.median:F2} | {forest.min:F2} / {forest.median:F2} | " +
-                                $"{forest.solves} / {forest.fallbacks} | {sparseTimes}; {lastTimes}\n");
+                                $"{string.Join(" | ", cells)} | {string.Join("; ", notes)}\n");
                         }
                     }
                 }
@@ -248,6 +274,7 @@ namespace KSP.Retooled.Physics.Tests
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
                 VesselForest.Enabled = wasEnabled;
+                VesselForest.Locking = wasLocking;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 

@@ -1,6 +1,7 @@
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
 
 namespace Unity.Physics
 {
@@ -65,7 +66,25 @@ namespace Unity.Physics
         internal const int ForestFactorTime = 7;
         internal const int ForestBoundaryTime = 8;
         internal const int ForestDriftTime = 9;
-        const int CounterCount = 10;
+
+        /// <summary>Sections and locked pairs summed over forest solves, structure rebuilds, lock changes, rebuild time.</summary>
+        internal const int ForestSectionSum = 10;
+        internal const int ForestLockedSum = 11;
+        internal const int ForestStructureBuilds = 12;
+        internal const int ForestLockChanges = 13;
+        internal const int ForestStructureTime = 14;
+
+        /// <summary>The largest momentum left at a section's first body by inverse dynamics, in nano N s, and the last solve's sections.</summary>
+        internal const int ForestResidual = 15;
+        internal const int ForestLastSections = 16;
+        internal const int ForestLastLocked = 17;
+
+        /// <summary>The largest deflection a tree pair's springs would take under the last solve's load, in nanoradians.</summary>
+        internal const int ForestLastDeflection = 18;
+
+        /// <summary>Time the forest path spent turning sections' answers into bodies' and locked pairs' loads, once per solve.</summary>
+        internal const int ForestSettleTime = 19;
+        const int CounterCount = 20;
 
         public static DirectSolverCache Create()
         {
@@ -145,6 +164,11 @@ namespace Unity.Physics
             forestBoundary = forestCounters != null ? forestCounters[ForestBoundaryTime] * scale : 0;
         }
 
+        /// <summary>Milliseconds the forest path spent settling its sections after its first solve, inside its finish.</summary>
+        public double ForestSettleMilliseconds => forestCounters != null ? forestCounters[ForestSettleTime]
+            * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6) : 0;
+
         /// <summary>Milliseconds the forest path spent aiming at the predicted drift, inside its finish.</summary>
         public double ForestDriftMilliseconds => forestCounters != null ? forestCounters[ForestDriftTime]
             * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
@@ -156,6 +180,78 @@ namespace Unity.Physics
             {
                 System.Threading.Interlocked.Add(ref forestCounters[counter], ticks);
             }
+        }
+
+        internal void CountSections(int sections, int locked, bool rebuilt, int lockChanges, long structureTicks)
+        {
+            if (forestCounters == null)
+            {
+                return;
+            }
+
+            System.Threading.Interlocked.Add(ref forestCounters[ForestSectionSum], sections);
+            System.Threading.Interlocked.Add(ref forestCounters[ForestLockedSum], locked);
+            System.Threading.Interlocked.Add(ref forestCounters[ForestLockChanges], lockChanges);
+            System.Threading.Interlocked.Exchange(ref forestCounters[ForestLastSections], sections);
+            System.Threading.Interlocked.Exchange(ref forestCounters[ForestLastLocked], locked);
+            if (rebuilt)
+            {
+                System.Threading.Interlocked.Increment(ref forestCounters[ForestStructureBuilds]);
+                System.Threading.Interlocked.Add(ref forestCounters[ForestStructureTime], structureTicks);
+            }
+        }
+
+        internal void NoteDeflection(double radians)
+        {
+            if (forestCounters != null)
+            {
+                System.Threading.Interlocked.Exchange(ref forestCounters[ForestLastDeflection], (long)math.min(radians * 1e9, 9e18));
+            }
+        }
+
+        /// <summary>The largest deflection a tree pair's springs would take under the last forest solve's load, in radians.</summary>
+        public double LastDeflection => forestCounters != null ? forestCounters[ForestLastDeflection] * 1e-9 : 0;
+
+        internal void NoteResidual(double residual)
+        {
+            if (forestCounters == null)
+            {
+                return;
+            }
+
+            long value = (long)math.min(residual * 1e9, 9e18);
+            long seen = forestCounters[ForestResidual];
+            while (value > seen)
+            {
+                long was = System.Threading.Interlocked.CompareExchange(ref forestCounters[ForestResidual], value, seen);
+                if (was == seen)
+                {
+                    break;
+                }
+
+                seen = was;
+            }
+        }
+
+        /// <summary>
+        /// Since the cache was made: sections and locked pairs summed over forest solves, structure rebuilds, lock changes,
+        /// milliseconds spent rebuilding, the largest inverse-dynamics residual in N s, and the last solve's sections and
+        /// locked pairs.
+        /// </summary>
+        public void GetSectionCounts(out long sectionSum, out long lockedSum, out long structureBuilds, out long lockChanges,
+            out double structureMilliseconds, out double residual, out long lastSections, out long lastLocked)
+        {
+            bool any = forestCounters != null;
+            sectionSum = any ? forestCounters[ForestSectionSum] : 0;
+            lockedSum = any ? forestCounters[ForestLockedSum] : 0;
+            structureBuilds = any ? forestCounters[ForestStructureBuilds] : 0;
+            lockChanges = any ? forestCounters[ForestLockChanges] : 0;
+            structureMilliseconds = any ? forestCounters[ForestStructureTime]
+                * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                    / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6) : 0;
+            residual = any ? forestCounters[ForestResidual] * 1e-9 : 0;
+            lastSections = any ? forestCounters[ForestLastSections] : 0;
+            lastLocked = any ? forestCounters[ForestLastLocked] : 0;
         }
 
         internal void CountForest(int counter)

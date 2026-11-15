@@ -42,6 +42,7 @@ namespace KSP.Retooled.Physics
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
         private NativeList<JointForestRole> jointRoles;
+        private NativeList<JointForestLock> jointLocks;
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
         private DirectSolverCache directSolverCache;
@@ -91,6 +92,7 @@ namespace KSP.Retooled.Physics
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
             jointRoles = new NativeList<JointForestRole>(Allocator.Persistent);
+            jointLocks = new NativeList<JointForestLock>(Allocator.Persistent);
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -141,6 +143,7 @@ namespace KSP.Retooled.Physics
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
             jointRoles.Dispose();
+            jointLocks.Dispose();
             jointLoads.Dispose();
             groupLoads.Dispose();
             directSolverCache.Dispose();
@@ -370,6 +373,9 @@ namespace KSP.Retooled.Physics
             {
                 Enabled = VesselForest.Enabled,
                 BoundaryRowCap = VesselForest.BoundaryRowCap,
+                Locking = VesselForest.Locking,
+                LockAngle = VesselForest.LockAngle,
+                YieldAngle = VesselForest.YieldAngle,
             };
             input.DirectSolverCache = directSolverCache;
             return new WarmStartJob
@@ -796,7 +802,11 @@ namespace KSP.Retooled.Physics
                     Members = jointGroupMembers,
                     Units = jointUnits,
                     Roles = jointRoles,
+                    Locks = jointLocks,
                     Forest = VesselForest.Enabled,
+                    Locking = VesselForest.Enabled && VesselForest.Locking,
+                    LockFraction = VesselForest.LockFraction,
+                    YieldFraction = VesselForest.YieldFraction,
                 }.Schedule(dependency);
 
                 // Each unit builds a number of joints only it knows, so each writes its own run of a stream.
@@ -813,6 +823,7 @@ namespace KSP.Retooled.Physics
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
                     Roles = jointRoles.AsDeferredJobArray(),
+                    Locks = jointLocks.AsDeferredJobArray(),
                 }.Schedule(jointUnits, JointBatchSize, allocated);
 
                 JobHandle gathered = new GatherJointsJob

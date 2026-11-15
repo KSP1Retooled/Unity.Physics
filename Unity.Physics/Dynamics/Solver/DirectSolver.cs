@@ -1401,13 +1401,16 @@ namespace Unity.Physics
                 int builds = forest != null ? forest->Builds : 0;
                 ForestRun run = default;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
-                    forest, forestSettings.BoundaryRowCap, team, out run);
+                    forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), motionVelocities, motionDatas,
+                    stepInput.Timestep, out run);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - solveStarted);
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFactorTime, run.FactorTicks);
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
+                    stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
+                        run.LockChanges, run.StructureTicks);
                 }
 
                 stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
@@ -1425,15 +1428,18 @@ namespace Unity.Physics
                     var bodyAngular = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var linearPtr = (float3*)bodyLinear.GetUnsafePtr();
                     var angularPtr = (float3*)bodyAngular.GetUnsafePtr();
+                    SettleForest(ref run, problem, impulsesPtr, linearPtr, angularPtr, false);
+                    long settledAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime, settledAt - solvedAt);
                     if (holdsPositions)
                     {
                         var forestDrift = new NativeArray<float>(rows, Allocator.Temp);
                         float* forestDriftPtr = (float*)forestDrift.GetUnsafePtr();
-                        SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
                         bool drifts = AimAtPredictedDrift(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
-                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team, true);
+                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team, true,
+                            run.BlockInSection.IsCreated ? (byte*)run.BlockInSection.GetUnsafeReadOnlyPtr() : null);
                         stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDriftTime,
-                            Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
+                            Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - settledAt);
                         if (drifts)
                         {
                             for (int row = 0; row < rows; row++)
@@ -1442,6 +1448,7 @@ namespace Unity.Physics
                             }
 
                             SolveForest(ref run, problem.RightHandSide, impulsesPtr);
+                            SettleForest(ref run, problem, impulsesPtr, linearPtr, angularPtr, false);
                         }
 
                         forestDrift.Dispose();
@@ -1449,7 +1456,6 @@ namespace Unity.Physics
 
                     if (applyImpulses)
                     {
-                        SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
                         ApplySparseImpulses(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
                             motionVelocities, motionDatas, contactPairs > 0, team);
                         if (recovery != null)
@@ -1460,8 +1466,10 @@ namespace Unity.Physics
                         }
                     }
 
-                    run.Dispose();
+                    stepInput.DirectSolverCache.NoteDeflection(RecordDeflections(ref run, impulsesPtr, stepInput.CurrentSubstep));
 
+                    stepInput.DirectSolverCache.NoteResidual(run.Residual);
+                    run.Dispose();
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
@@ -1816,7 +1824,7 @@ namespace Unity.Physics
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
-            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team, bool skipSlow = false)
+            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team, bool skipSlow = false, byte* skipBlocks = null)
         {
             using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
@@ -1874,6 +1882,7 @@ namespace Unity.Physics
                 Timestep = timestep,
                 Change = rhsChange,
                 Turns = skipSlow ? (float2*)turns.GetUnsafeReadOnlyPtr() : null,
+                SkipBlocks = skipBlocks,
             };
 
             int tasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
@@ -1915,6 +1924,9 @@ namespace Unity.Physics
             /// Jacobian.
             /// </summary>
             public float2* Turns;
+
+            /// <summary>Blocks to leave unaimed, such as those inside a rigid section, or null.</summary>
+            public byte* SkipBlocks;
         }
 
         /// <summary>
@@ -1960,6 +1972,11 @@ namespace Unity.Physics
             {
                 int startRow = prediction->Blocks[block].FirstRow;
                 int jacRows = prediction->Blocks[block].RowCount;
+                if (prediction->SkipBlocks != null && prediction->SkipBlocks[block] != 0)
+                {
+                    continue;
+                }
+
                 // The block's own body numbers spare reading the Jacobian, unless a side isn't one of the solve's bodies.
                 JacobianHeader* headerPointer = prediction->Headers[block];
                 if (prediction->Turns != null)
@@ -2103,7 +2120,7 @@ namespace Unity.Physics
                 pushRun.Bounded = true;
                 solved = SolveForest(ref pushRun, rightHandSide, push);
                 float3* linearImpulses = (float3*)bodyImpulses.GetUnsafePtr();
-                SumBodyImpulses(pushOut, push, linearImpulses, linearImpulses + worldBodies.Length);
+                SettleForest(ref pushRun, pushOut, push, linearImpulses, linearImpulses + worldBodies.Length, true);
             }
             else
             {

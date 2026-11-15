@@ -106,8 +106,13 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointForestRole> Roles;
 
+        /// <summary>What each unit lets its forest pair do, see <see cref="GroupJointsJob"/>.</summary>
+        [ReadOnly]
+        public NativeArray<JointForestLock> Locks;
+
         private PhysicsJoint pending;
         private JointForestRole role;
+        private JointForestLock forestLock;
         private int pendingCount;
         private bool emitted;
 
@@ -116,6 +121,7 @@ namespace KSP.Retooled.Physics
             Output.BeginForEachIndex(index);
             JointUnit unit = Units[index];
             role = Roles[index];
+            forestLock = Locks[index];
             if (unit.Group < 0)
             {
                 Append(World->joints[unit.Joint]);
@@ -383,6 +389,7 @@ namespace KSP.Retooled.Physics
                 Entity = entity,
                 EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
                 ForestRole = role,
+                ForestLock = forestLock,
             };
             pendingCount = 0;
             emitted = false;
@@ -734,7 +741,17 @@ namespace KSP.Retooled.Physics
         /// <summary>Each unit's place in the vessel forest, or None for every unit when the forest is off.</summary>
         public NativeList<JointForestRole> Roles;
 
+        /// <summary>
+        /// What each forest unit lets its pair do when the forest locks pairs: lock while the load that counts against its
+        /// break limits is under <see cref="LockFraction"/> of them, and stay locked while it is under
+        /// <see cref="YieldFraction"/>. A joint with every axis locked may do both whatever its load, until it breaks.
+        /// </summary>
+        public NativeList<JointForestLock> Locks;
+
         public bool Forest;
+        public bool Locking;
+        public float LockFraction;
+        public float YieldFraction;
 
         public void Execute()
         {
@@ -762,6 +779,12 @@ namespace KSP.Retooled.Physics
         private void FindForest()
         {
             Roles.ResizeUninitialized(Units.Length);
+            Locks.ResizeUninitialized(Units.Length);
+            for (int u = 0; u < Units.Length; u++)
+            {
+                Locks[u] = JointForestLock.None;
+            }
+
             if (!Forest)
             {
                 for (int u = 0; u < Units.Length; u++)
@@ -794,6 +817,11 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
+                if (Locking)
+                {
+                    Locks[u] = UnitLock(Units[u]);
+                }
+
                 int a = Find(root, (int)joint->body0->index), b = Find(root, (int)joint->body1->index);
                 if (a == b)
                 {
@@ -804,6 +832,44 @@ namespace KSP.Retooled.Physics
                 root[a] = b;
                 Roles[u] = JointForestRole.Tree;
             }
+        }
+
+        /// <summary>What a unit lets its pair do: what all its joints let it.</summary>
+        private JointForestLock UnitLock(JointUnit unit)
+        {
+            if (unit.Group < 0)
+            {
+                return JointLock(World->joints[unit.Joint]);
+            }
+
+            JointGroup group = Groups[unit.Group];
+            JointForestLock allowed = JointForestLock.Lockable | JointForestLock.Holdable;
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                allowed &= JointLock(World->joints[Members[group.FirstMember + i].Joint]);
+            }
+
+            return allowed;
+        }
+
+        private JointForestLock JointLock(NativeStore.JointData* joint)
+        {
+            int lockedAngles = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                lockedAngles += NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked ? 1 : 0;
+            }
+
+            if (lockedAngles == 3)
+            {
+                return JointForestLock.Lockable | JointForestLock.Holdable;
+            }
+
+            float fraction = math.max(
+                joint->breakForce > 0.0f ? joint->breakingForce / joint->breakForce : 0.0f,
+                joint->breakTorque > 0.0f ? joint->breakingTorque / joint->breakTorque : 0.0f);
+            return (fraction < LockFraction ? JointForestLock.Lockable : JointForestLock.None)
+                | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
         }
 
         private static bool Immobile(NativeStore.Body* body)
