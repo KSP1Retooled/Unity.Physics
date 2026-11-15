@@ -47,6 +47,19 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>The last stepped world's solve times in ms since it was built, see DirectSolverCache.GetSolveTimes.</summary>
+        internal static unsafe void GetTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
+            out double forestFactor, out double forestBoundary, out double forestDrift)
+        {
+            sparse = forestStart = forestSolve = forestFinish = forestFactor = forestBoundary = forestDrift = 0;
+            if (StepKernel.Current != null)
+            {
+                StepKernel.Current->DirectSolverCache.GetSolveTimes(out sparse, out forestStart, out forestSolve, out forestFinish,
+                    out forestFactor, out forestBoundary);
+                forestDrift = StepKernel.Current->DirectSolverCache.ForestDriftMilliseconds;
+            }
+        }
+
         /// <summary>Reads the environment once, on the main thread, before the first step.</summary>
         internal static void Initialize()
         {

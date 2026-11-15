@@ -45,6 +45,10 @@ namespace Unity.Physics
             /// <summary>The lanes that share the island's solve, or null.</summary>
             public SparseSolveTeam* Team;
 
+            /// <summary>How long the factor and the boundary block took, in profiler timestamp units.</summary>
+            public long FactorTicks;
+            public long BoundaryTicks;
+
             public void Dispose()
             {
                 RowClass.Dispose();
@@ -173,6 +177,7 @@ namespace Unity.Physics
                 blockSections[b] = new int2(block.BodyA >= 0 ? partSection[block.BodyA] : -1, block.BodyB >= 0 ? partSection[block.BodyB] : -1);
             }
 
+            long factorStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             using (ForestFactorMarker.Auto())
             {
                 // Each link's rows, and the rows on one moving body, which go to its section's diagonal.
@@ -280,6 +285,7 @@ namespace Unity.Physics
                 }
             }
 
+            long boundaryStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             var w = new NativeArray<double>(math.max(1, nb * nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             using (ForestBoundaryMarker.Auto())
             {
@@ -390,6 +396,8 @@ namespace Unity.Physics
                 Velocity = new NativeArray<double>(6 * sections, Allocator.Temp),
                 Work = new NativeArray<double>(6 * sections, Allocator.Temp),
                 Team = team,
+                FactorTicks = boundaryStarted - factorStarted,
+                BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted,
             };
             return true;
         }

@@ -1391,6 +1391,7 @@ namespace Unity.Physics
 
             var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             float* impulsesPtr = (float*)impulses.GetUnsafePtr();
+            long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
             // A forest island solves its forest joints' rows structurally and the rest as a boundary block against them.
             ForestSettings forestSettings = stepInput.DirectSolverCache.Forest;
@@ -1401,6 +1402,14 @@ namespace Unity.Physics
                 ForestRun run = default;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
                     forest, forestSettings.BoundaryRowCap, team, out run);
+                long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                if (started)
+                {
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - solveStarted);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFactorTime, run.FactorTicks);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
+                }
+
                 stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
                 if (forest != null && forest->Builds != builds)
                 {
@@ -1410,6 +1419,8 @@ namespace Unity.Physics
                 if (started)
                 {
                     SolveForest(ref run, problem.RightHandSide, impulsesPtr);
+                    long solvedAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solvedAt - lap);
                     var bodyLinear = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var bodyAngular = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var linearPtr = (float3*)bodyLinear.GetUnsafePtr();
@@ -1419,8 +1430,11 @@ namespace Unity.Physics
                         var forestDrift = new NativeArray<float>(rows, Allocator.Temp);
                         float* forestDriftPtr = (float*)forestDrift.GetUnsafePtr();
                         SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
-                        if (AimAtPredictedDrift(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
-                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team))
+                        bool drifts = AimAtPredictedDrift(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
+                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team);
+                        stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDriftTime,
+                            Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
+                        if (drifts)
                         {
                             for (int row = 0; row < rows; row++)
                             {
@@ -1449,6 +1463,8 @@ namespace Unity.Physics
 
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
+                        Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
                     SparseProblemObserver.Report(&problem, impulsesPtr, bounded);
                     for (int row = 0; row < rows; row++)
                     {
@@ -1506,6 +1522,8 @@ namespace Unity.Physics
             }
 
             kept->Team = null;
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.SparseTime,
+                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
 
             if (kept == &temporary)
             {

@@ -57,6 +57,16 @@ namespace Unity.Physics
         internal const int ForestFallbacks = 1;
         internal const int ForestBuilds = 2;
 
+        /// <summary>Time spent, in profiler timestamp units: see <see cref="GetSolveTimes"/>.</summary>
+        internal const int SparseTime = 3;
+        internal const int ForestStartTime = 4;
+        internal const int ForestSolveTime = 5;
+        internal const int ForestFinishTime = 6;
+        internal const int ForestFactorTime = 7;
+        internal const int ForestBoundaryTime = 8;
+        internal const int ForestDriftTime = 9;
+        const int CounterCount = 10;
+
         public static DirectSolverCache Create()
         {
             var cache = new DirectSolverCache
@@ -69,8 +79,9 @@ namespace Unity.Physics
             };
 
             *cache.forestSettings = ForestSettings.Default;
-            cache.forestCounters = (long*)UnsafeUtility.MallocTracked(3 * sizeof(long), UnsafeUtility.AlignOf<long>(), Allocator.Persistent, 0);
-            UnsafeUtility.MemClear(cache.forestCounters, 3 * sizeof(long));
+            cache.forestCounters = (long*)UnsafeUtility.MallocTracked(CounterCount * sizeof(long), UnsafeUtility.AlignOf<long>(),
+                Allocator.Persistent, 0);
+            UnsafeUtility.MemClear(cache.forestCounters, CounterCount * sizeof(long));
 
             UnsafeUtility.MemClear(cache.slots, Capacity * sizeof(Slot));
             for (int slot = 0; slot < Capacity; slot++)
@@ -114,6 +125,37 @@ namespace Unity.Physics
             solves = forestCounters != null ? forestCounters[ForestSolves] : 0;
             fallbacks = forestCounters != null ? forestCounters[ForestFallbacks] : 0;
             builds = forestCounters != null ? forestCounters[ForestBuilds] : 0;
+        }
+
+        /// <summary>
+        /// Milliseconds spent since the cache was made, summed over islands and substeps: sparse solves from their start
+        /// to their impulses applied, and the forest path's start (classify, factor, boundary block), its solves, and its
+        /// finish (drift, application, push-out), with the factor and boundary block of the start apart.
+        /// </summary>
+        public void GetSolveTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
+            out double forestFactor, out double forestBoundary)
+        {
+            double scale = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
+            sparse = forestCounters != null ? forestCounters[SparseTime] * scale : 0;
+            forestStart = forestCounters != null ? forestCounters[ForestStartTime] * scale : 0;
+            forestSolve = forestCounters != null ? forestCounters[ForestSolveTime] * scale : 0;
+            forestFinish = forestCounters != null ? forestCounters[ForestFinishTime] * scale : 0;
+            forestFactor = forestCounters != null ? forestCounters[ForestFactorTime] * scale : 0;
+            forestBoundary = forestCounters != null ? forestCounters[ForestBoundaryTime] * scale : 0;
+        }
+
+        /// <summary>Milliseconds the forest path spent aiming at the predicted drift, inside its finish.</summary>
+        public double ForestDriftMilliseconds => forestCounters != null ? forestCounters[ForestDriftTime]
+            * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6) : 0;
+
+        internal void AddTime(int counter, long ticks)
+        {
+            if (forestCounters != null)
+            {
+                System.Threading.Interlocked.Add(ref forestCounters[counter], ticks);
+            }
         }
 
         internal void CountForest(int counter)
