@@ -9,10 +9,10 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Integrates what PhysX integrates before its solver: collected forces, gravity, damping and the velocity limits.
-    /// The step passes zero gravity to Unity Physics because of this, so a body's velocity already holds the whole
-    /// step's acceleration when contacts are solved, as under PhysX, and positions move by the semi-implicit
-    /// <c>v * dt</c> that PhysX gives.
+    /// Updates velocities before the solver runs, as PhysX does, by applying accumulated forces, gravity, damping and
+    /// velocity limits. The backend therefore passes zero gravity to Unity Physics. When the solver resolves contacts,
+    /// the velocities already include the acceleration for the whole step. Positions are then updated by <c> v * dt
+    /// </c> , using the semi-implicit integration that PhysX uses.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ApplyForcesJob : IJobParallelFor
@@ -62,7 +62,7 @@ namespace KSP.Retooled.Physics
             ClearAccumulators(ref body);
         }
 
-        /// <summary>Burst drops this, so the count only moves while a step runs the job's Mono code.</summary>
+        /// <summary>Burst omits this method, so the counter increases only when the job runs in Mono.</summary>
         [BurstDiscard]
         private static void NoteManagedRun()
         {
@@ -89,9 +89,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Fills the built world's bodies and motions from the store. Dynamic bodies come first, as Unity Physics requires;
-    /// kinematic and sleeping bodies are among them with infinite mass, and the last static is the world's anchor body.
-    /// With a <see cref="DeltaTime"/> of zero the kinematic velocities stay zero, which is what a query world wants.
+    /// Copies bodies and motion data from the store into the built world. Dynamic bodies come first, as Unity Physics
+    /// requires. Kinematic and sleeping bodies are included among them with infinite mass. The last static body is the
+    /// anchor for the world. When <see cref="DeltaTime"/> is zero, kinematic velocities remain zero, as required for a
+    /// world built for queries.
     /// </summary>
     [BurstCompile]
     internal unsafe struct BuildBodiesJob : IJobParallelFor
@@ -111,7 +112,7 @@ namespace KSP.Retooled.Physics
 
         public float DeltaTime;
 
-        /// <summary>One for each built body, the anchor included.</summary>
+        /// <summary>The number of built bodies, including the anchor.</summary>
         public int Count => DynamicIndices.Length + StaticIndices.Length + 1;
 
         public void Execute(int builtIndex)
@@ -174,7 +175,8 @@ namespace KSP.Retooled.Physics
                 angular = float3.zero;
                 if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0 && DeltaTime > 0.0f)
                 {
-                    // Motion velocities are those of the centre of mass, and a rotation about the body origin moves it.
+                    // Motion velocities describe movement of the centre of mass. Rotating around the body origin also
+                    // moves the centre of mass.
                     float3 targetCenter = body.target->Position + math.rotate(body.target->Rotation, body.mass->Transform.pos);
                     linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
                     quaternion turn = math.normalize(math.mul(body.target->Rotation, math.conjugate(body.pose->Rotation)));
@@ -210,7 +212,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Moves the built statics to the store's poses, for a world in which nothing else changed.</summary>
+    /// <summary>
+    /// Updates the poses of the built static bodies from the store when nothing else in the world has changed.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct PoseStaticsJob : IJobParallelFor
     {
@@ -220,7 +224,7 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<int> StaticIndices;
 
-        /// <summary>The built world's statics, in the order of <see cref="StaticIndices"/>.</summary>
+        /// <summary>The static bodies in the built world, in the order of <see cref="StaticIndices"/> .</summary>
         public NativeArray<RigidBody> StaticBodies;
 
         public void Execute(int i)
@@ -231,7 +235,10 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Sets where each built body's shapes start among the query's shapes, and sizes the shapes to hold them all.</summary>
+    /// <summary>
+    /// Calculates the first index for each built body in the list of query shapes, then resizes the list to hold all
+    /// shapes.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct FindFirstShapesJob : IJob
     {
@@ -263,8 +270,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Copies what a query reads about bodies and shapes out of the store, in the built world's body order, one body a
-    /// work item. <see cref="FirstShapes"/> holds where each body's shapes start.
+    /// Copies the body and shape data that queries need from the store. The data follows the order of bodies in the
+    /// built world, with one body per work item. <see cref="FirstShapes"/> contains the index where each body's shapes
+    /// begin.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SnapshotQueryDataJob : IJobParallelFor
@@ -320,7 +328,10 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Publishes the solved motions to the store as body poses and world-space velocities.</summary>
+    /// <summary>
+    /// Writes the solved body poses and velocities back to the store. Linear velocities are in world space; angular
+    /// velocities are in the motion frame.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct WriteBackJob : IJobParallelFor
     {
