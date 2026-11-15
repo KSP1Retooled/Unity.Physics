@@ -551,7 +551,7 @@ namespace Unity.Physics
             var coupled = new NativeArray<bool>(math.max(1, rows), Allocator.Temp);
             for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
             {
-                SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                BoundCoupling coupling = problem.Couplings[c];
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
                     coupled[row] = true;

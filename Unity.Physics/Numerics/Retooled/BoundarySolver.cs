@@ -2,15 +2,18 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 
-namespace Unity.Physics
+namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>
-    /// The boundary block of a forest solve: a dense, symmetric positive definite W (J_b A^-1 J_b^T + E_b) with bounds on
-    /// its unknowns and friction couplings, solved as <see cref="SparseConstraintSolver"/> solves its rows: block principal
-    /// pivoting, flipping every infeasible row and falling back to Murty's rule when that stalls, and lagged coupled bounds
-    /// that each feasible answer moves. Each pivoting step solves the free rows by a dense Cholesky factorization, in double.
+    /// Solves the boundary block of a forest solve. The block is a dense matrix W = J_b A^-1 J_b^T + E_b, which is
+    /// symmetric and positive definite. Its unknowns have bounds, and some of those bounds depend on other unknowns,
+    /// for example friction bounds that depend on a normal impulse. The solver uses the same method as the sparse
+    /// constraint solver, which is block principal pivoting. Each step flips every row that breaks its conditions. If
+    /// the number of such rows stops going down, the solver flips only the last such row instead (Murty's rule). The
+    /// coupled bounds lag behind: after each feasible answer, the solver moves the coupled bounds and solves again.
+    /// Each pivoting step solves for the free rows with a dense Cholesky factorization in double precision.
     /// </summary>
-    internal static unsafe class BoundarySolver
+    public static unsafe class BoundarySolver
     {
         const double Tolerance = 1e-4;
         const int MaxPivotingIterations = 200;
@@ -23,13 +26,15 @@ namespace Unity.Physics
         const byte UpperTight = 2;
 
         /// <summary>
-        /// Solves for <paramref name="z"/>, with W z - q = 0 on free rows and the sign conditions of a bounded row at its
-        /// bound. <paramref name="states"/> holds a first guess at which rows are tight (the values of
-        /// <see cref="LCP.MLCPIndexFlag"/>) and is left with the answer's. Returns false if pivoting ran out of iterations,
-        /// leaving z clamped to its bounds.
+        /// Solves for <paramref name="z"/>. On a free row, W z - q = 0. On a row at a bound, z equals that bound, and
+        /// W z - q has the sign that the bound requires. On input, <paramref name="states"/> holds a first guess at
+        /// which rows are at a bound: 0 for a free row, 1 for a row at its lower bound, and 2 for a row at its upper
+        /// bound. On output, it holds the states of the answer. If <paramref name="bounded"/> is false, the solver
+        /// ignores the bounds and treats every row as free. The function returns false if pivoting ran out of
+        /// iterations. In that case, z is clamped to its bounds.
         /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
-            SparseConstraintSolver.Coupling* couplings, int couplingCount, bool bounded, double* z)
+            BoundCoupling* couplings, int couplingCount, bool bounded, double* z)
         {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -130,7 +135,10 @@ namespace Unity.Physics
             return result;
         }
 
-        /// <summary>Tight rows at their bounds, and the free rows from W_FF z_F = q_F - W_FT z_T.</summary>
+        /// <summary>
+        /// Sets each row that is at a bound to that bound. Then solves W_FF z_F = q_F - W_FT z_T for the free rows,
+        /// where F is the set of free rows and T is the set of rows at a bound.
+        /// </summary>
         static void SolveFree(int n, double* w, double* q, double* lower, double* upper, byte* states, double* z,
             double* factor, double* rhs, int* free)
         {
@@ -167,7 +175,7 @@ namespace Unity.Physics
                 }
             }
 
-            // Lower Cholesky in place, then the two triangular solves.
+            // Factor W_FF in place as L L^T, where L is lower triangular. Then solve with L and with L^T.
             for (int a = 0; a < m; a++)
             {
                 double* ra = factor + a * m;
@@ -219,6 +227,13 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Finds the rows that break their conditions. A free row breaks them when it is outside its bounds by more
+        /// than the tolerance. A row at a bound breaks them when W z - q has the wrong sign by more than the tolerance.
+        /// The routine skips rows whose two bounds are equal. If <paramref name="flipAll"/> is true, the routine
+        /// changes the state of every row that breaks its conditions. Otherwise, it changes only the state of the last
+        /// such row. Returns how many rows break their conditions.
+        /// </summary>
         static int Pivot(int n, double* w, double* q, double* lower, double* upper, byte* states, double* z, bool flipAll)
         {
             int infeasible = 0;
@@ -279,13 +294,19 @@ namespace Unity.Physics
             return infeasible;
         }
 
-        static bool Couple(SparseConstraintSolver.Coupling* couplings, int couplingCount, double* problemLower,
+        /// <summary>
+        /// Moves the coupled bounds to match the source impulses in <paramref name="z"/>. When the bounds of a free row
+        /// shrink to zero width, the row goes to its lower bound. When a row that had equal bounds gets room to move,
+        /// it becomes free. Returns true if any bound moved by more than the tolerance, which means that the caller has
+        /// to solve again.
+        /// </summary>
+        static bool Couple(BoundCoupling* couplings, int couplingCount, double* problemLower,
             double* problemUpper, double* lower, double* upper, byte* states, double* z)
         {
             bool moved = false;
             for (int c = 0; c < couplingCount; c++)
             {
-                SparseConstraintSolver.Coupling coupling = couplings[c];
+                BoundCoupling coupling = couplings[c];
                 double sum = coupling.HeldSourceImpulse;
                 for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
                 {

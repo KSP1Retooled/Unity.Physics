@@ -197,7 +197,7 @@ namespace Unity.Physics
             var coupled = new NativeArray<bool>(rows, Allocator.Temp);
             for (int c = 0; bounded && c < problem.CouplingCount; c++)
             {
-                SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                BoundCoupling coupling = problem.Couplings[c];
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
                     coupled[row] = true;
@@ -255,7 +255,7 @@ namespace Unity.Physics
             bool couplingsInBoundary = true;
             for (int c = 0; bounded && c < problem.CouplingCount; c++)
             {
-                SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                BoundCoupling coupling = problem.Couplings[c];
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
                     couplingsInBoundary &= rowClass[row] == BoundaryRowClass;
@@ -1033,10 +1033,10 @@ namespace Unity.Physics
                     }
                 }
 
-                var couplings = new NativeList<SparseConstraintSolver.Coupling>(problem.CouplingCount, Allocator.Temp);
+                var couplings = new NativeList<BoundCoupling>(problem.CouplingCount, Allocator.Temp);
                 for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
                 {
-                    SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                    BoundCoupling coupling = problem.Couplings[c];
                     coupling.FirstRow = run.BoundaryOf[coupling.FirstRow];
                     coupling.FirstSourceRow = run.BoundaryOf[coupling.FirstSourceRow];
                     couplings.Add(coupling);

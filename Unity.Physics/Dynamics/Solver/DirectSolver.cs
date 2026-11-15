@@ -25,6 +25,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
@@ -1266,7 +1267,7 @@ namespace Unity.Physics
             var setup = new SparseSetup
             {
                 Blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp),
-                Couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp),
+                Couplings = new NativeList<BoundCoupling>(contactPairs, Allocator.Temp),
                 Headers = new NativeList<IntPtr>(Allocator.Temp),
                 WorldBodies = new NativeList<int>(Allocator.Temp),
                 CompactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory),
@@ -1377,7 +1378,7 @@ namespace Unity.Physics
             SparseSolveTeam.RunAll(team, &bodySetup, SparseSolveTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
 
             NativeList<SparseConstraintSolver.ConstraintBlock> blocks = setup.Blocks;
-            NativeList<SparseConstraintSolver.Coupling> couplings = setup.Couplings;
+            NativeList<BoundCoupling> couplings = setup.Couplings;
             NativeList<IntPtr> headers = setup.Headers;
             NativeArray<int> compactBodies = setup.CompactBodies;
             bool holdsPositions = setup.HoldsPositions;
@@ -1606,7 +1607,7 @@ namespace Unity.Physics
         unsafe struct SparseSetup
         {
             public NativeList<SparseConstraintSolver.ConstraintBlock> Blocks;
-            public NativeList<SparseConstraintSolver.Coupling> Couplings;
+            public NativeList<BoundCoupling> Couplings;
 
             /// <summary>Each block's Jacobian, which stays where it is in the stream for the whole step.</summary>
             public NativeList<IntPtr> Headers;
@@ -1720,10 +1721,10 @@ namespace Unity.Physics
         }
 
         /// <summary>A contact's friction rows, which follow its normal rows and are bounded by them.</summary>
-        static SparseConstraintSolver.Coupling FrictionCoupling(in JacobianSummary summary, int firstRow)
+        static BoundCoupling FrictionCoupling(in JacobianSummary summary, int firstRow)
         {
             int normals = summary.Rows - 3;
-            return new SparseConstraintSolver.Coupling
+            return new BoundCoupling
             {
                 FirstRow = firstRow + normals,
                 RowCount = 3,
@@ -1765,7 +1766,7 @@ namespace Unity.Physics
 
             public SparseConstraintSolver.ConstraintBlock* Blocks;
             public IntPtr* HeaderPointers;
-            public SparseConstraintSolver.Coupling* Couplings;
+            public BoundCoupling* Couplings;
         }
 
         internal static unsafe void SummarizeJacobiansTask(void* context, int task)
@@ -2137,7 +2138,7 @@ namespace Unity.Physics
 
             for (int coupling = 0; coupling < problem.CouplingCount; coupling++)
             {
-                SparseConstraintSolver.Coupling friction = problem.Couplings[coupling];
+                BoundCoupling friction = problem.Couplings[coupling];
                 for (int row = friction.FirstRow; row < friction.FirstRow + friction.RowCount; row++)
                 {
                     lower[row] = 0.0f;

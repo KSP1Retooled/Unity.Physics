@@ -88,7 +88,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     for (int i = 0; i < count; i++)
                     {
-                        SparseConstraintSolver.SubtractProduct(target, blocks + 36 * i, sources + 6 * i, 6, 6, 1.0);
+                        DenseKernels.SubtractProduct(target, blocks + 36 * i, sources + 6 * i, 6, 6, 1.0);
                     }
                 }
             }
@@ -121,7 +121,7 @@ namespace KSP.Retooled.Physics.Tests
                     {
                         for (int row = 0; row < 6; row++)
                         {
-                            SparseConstraintSolver.AddScaled(target, blocks + 36 * i + 6 * row, -sources[6 * i + row], 6);
+                            DenseKernels.AddScaled(target, blocks + 36 * i + 6 * row, -sources[6 * i + row], 6);
                         }
                     }
                 }

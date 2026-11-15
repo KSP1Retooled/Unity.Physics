@@ -11,6 +11,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -237,7 +238,7 @@ namespace KSP.Retooled.Physics.Tests
             fixed (float* lower = saved.Lower)
             fixed (float* upper = saved.Upper)
             fixed (byte* initialStates = saved.InitialStates)
-            fixed (SparseConstraintSolver.Coupling* couplings = saved.Couplings)
+            fixed (BoundCoupling* couplings = saved.Couplings)
             fixed (float* output = impulses)
             fixed (SparseConstraintSolver* solverPointer = &solver)
             {

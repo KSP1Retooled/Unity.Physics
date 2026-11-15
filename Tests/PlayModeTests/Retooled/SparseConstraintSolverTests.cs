@@ -8,6 +8,7 @@ using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Memory;
 using Unity.Physics;
+using Unity.Physics.Numerics.Retooled;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -32,7 +33,7 @@ namespace KSP.Retooled.Physics.Tests
             public readonly List<float> RightHandSide = new List<float>();
             public readonly List<float> Lower = new List<float>();
             public readonly List<float> Upper = new List<float>();
-            public readonly List<SparseConstraintSolver.Coupling> Couplings = new List<SparseConstraintSolver.Coupling>();
+            public readonly List<BoundCoupling> Couplings = new List<BoundCoupling>();
 
             private Random random;
 
@@ -110,7 +111,7 @@ namespace KSP.Retooled.Physics.Tests
                     Upper[row] = 0.0f;
                 }
 
-                Couplings.Add(new SparseConstraintSolver.Coupling
+                Couplings.Add(new BoundCoupling
                 {
                     FirstRow = first + normals,
                     RowCount = 3,
@@ -260,9 +261,9 @@ namespace KSP.Retooled.Physics.Tests
             float[] rightHandSide = scenario.RightHandSide.ToArray();
             float[] lower = scenario.Lower.ToArray();
             float[] upper = scenario.Upper.ToArray();
-            SparseConstraintSolver.Coupling[] couplings = scenario.Couplings.ToArray();
+            BoundCoupling[] couplings = scenario.Couplings.ToArray();
 
-            fixed (SparseConstraintSolver.Coupling* couplingsPointer = couplings)
+            fixed (BoundCoupling* couplingsPointer = couplings)
             fixed (SparseConstraintSolver.Body* bodiesPointer = bodies)
             fixed (SparseConstraintSolver.ConstraintBlock* blocksPointer = blocks)
             fixed (float* jacobianPointer = jacobian, epsilonPointer = epsilon, rightPointer = rightHandSide)
@@ -527,7 +528,7 @@ namespace KSP.Retooled.Physics.Tests
 
             // Each final upper bound must equal the friction coefficient times the sum of the normal impulses.
             // The lower bound is its negative. The resulting impulses must solve the problem with those bounds.
-            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            foreach (BoundCoupling coupling in scenario.Couplings)
             {
                 float normal = 0.0f;
                 for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
@@ -566,7 +567,7 @@ namespace KSP.Retooled.Physics.Tests
             // already applied.
             for (int i = 0; i < scenario.Couplings.Count; i++)
             {
-                SparseConstraintSolver.Coupling coupling = scenario.Couplings[i];
+                BoundCoupling coupling = scenario.Couplings[i];
                 coupling.HeldSourceImpulse = contacts.NextFloat(1.0f, 4.0f);
                 scenario.Couplings[i] = coupling;
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
@@ -583,7 +584,7 @@ namespace KSP.Retooled.Physics.Tests
 
             // Center each row's bounds on the negative of its previously applied friction impulse. The distance to
             // either bound is the friction coefficient times the total normal impulse, including earlier impulses.
-            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            foreach (BoundCoupling coupling in scenario.Couplings)
             {
                 float normal = coupling.HeldSourceImpulse;
                 for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
@@ -601,7 +602,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            foreach (SparseConstraintSolver.Coupling coupling in scenario.Couplings)
+            foreach (BoundCoupling coupling in scenario.Couplings)
             {
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
