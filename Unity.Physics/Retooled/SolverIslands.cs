@@ -11,8 +11,8 @@ namespace Unity.Physics
     partial struct DispatchPairSequencer
     {
         /// <summary>
-        /// How many phases an island may need and stay with the iterative solver. A step schedules this many jobs for each
-        /// iteration whatever it contains, so this is what keeps their number fixed and small.
+        /// The maximum number of phases for an island that uses the iterative solver. The team job processes this fixed
+        /// number of phases in each iteration, including empty phases.
         /// </summary>
         internal const int NumIslandPhases = 4;
 
@@ -20,9 +20,10 @@ namespace Unity.Physics
         const int NumIslandBuckets = NumIslandPhases + 1;
 
         /// <summary>
-        /// Finds the islands one job at a time, then has each island sort itself into the buckets at once. The phased pairs hold
-        /// <see cref="NumIslandBuckets"/> buckets of the same size, each big enough for every pair, so that no bucket has to
-        /// know how much the others got and nothing has to be copied together afterwards.
+        /// Finds the islands in one job, then sorts their pairs into buckets in parallel across islands. The array of
+        /// phased pairs contains <see cref="NumIslandBuckets"/> equally sized buckets, each large enough to hold every
+        /// pair. Each job can therefore reserve space in its bucket independently, without a later pass to combine the
+        /// results.
         /// </summary>
         internal static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
             NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps)
@@ -88,22 +89,28 @@ namespace Unity.Physics
             public int FirstBody;
             public int BodyCount;
 
-            /// <summary> Where its pairs are in the direct bucket, or -1 if they fit in phases. </summary>
+            /// <summary>
+            /// The offset of the island's pairs in the direct bucket, or -1 if the island uses the iterative phases.
+            /// </summary>
             public int FirstDirectPair;
 
-            /// <summary> How many of those are joints, which come before the contacts. </summary>
+            /// <summary>
+            /// The number of joint pairs in the direct bucket for this island. Joints precede contacts.
+            /// </summary>
             public int NumDirectJoints;
 
             /// <summary>
-            /// Whether the island holds a vessel. Its bodies are joined by the vessel's edges, which are not pairs, so the
+            /// Whether the island holds a vessel. Its bodies are joined by the vessel's edges, which are not pairs, so
+            /// the
             /// island exists even with no pairs at all, and it always goes to the direct solver.
             /// </summary>
             public bool HasVessel;
         }
 
         /// <summary>
-        /// Groups the pairs by island. Islands connect through joints and contacts alike, and through dynamic bodies only: a
-        /// static body is never written to, so what happens on either side of one is independent.
+        /// Groups pairs into islands connected by joints, contacts or vessel parts. Only dynamic bodies connect
+        /// islands. The solver does not modify static bodies, so islands that share only a static body can be solved
+        /// independently.
         /// </summary>
         [BurstCompile]
         unsafe struct FindSolverIslandsJob : IJob
@@ -118,29 +125,39 @@ namespace Unity.Physics
 
             public NativeList<SolverIsland> Islands;
 
-            /// <summary> The pairs to solve, grouped by island and in their sorted order within one. </summary>
+            /// <summary>
+            /// The pairs to solve, grouped by island and preserving their sorted order within each island.
+            /// </summary>
             public NativeList<DispatchPair> IslandPairs;
 
             public NativeList<int> IslandBodies;
 
-            /// <summary> Sized here for the buckets, once it is known how many pairs each must be able to hold. </summary>
+            /// <summary> Sized here for the buckets, once it is known how many pairs each must be able to hold.
+            /// </summary>
             public NativeList<DispatchPair> PhasedDispatchPairs;
 
-            /// <summary> The phases each dynamic body is in so far. </summary>
+            /// <summary>
+            /// The phases already assigned to links that involve each dynamic body.
+            /// </summary>
             public NativeList<byte> PhasesUsed;
 
-            /// <summary> Only sized here: an island fills in its bodies' rows if it has to recolour. </summary>
+            /// <summary>
+            /// Allocated here, then filled for an island's bodies only if links need to be recoloured.
+            /// </summary>
             public NativeList<int> LinksInPhases;
 
-            /// <summary> The last step's islands, which stand if this step solves the same pairs. </summary>
+            /// <summary>
+            /// The previous step's islands, reusable if the solved pairs, dynamic body count and vessel key are
+            /// unchanged.
+            /// </summary>
             public SolverIslandCache Cache;
 
             /// <summary> The step's vessels. All the bodies of one vessel are in one island. </summary>
             public VesselSet Vessels;
 
             /// <summary>
-            /// A number that changes whenever the vessels change in a way that can change the islands: which vessels there
-            /// are, their structure, and which bodies their parts are.
+            /// Computes a key from the vessel count, vessel IDs, structure versions and body indices of their parts.
+            /// These values determine whether cached islands can be reused when vessels are present.
             /// </summary>
             ulong VesselKey()
             {
@@ -174,8 +191,8 @@ namespace Unity.Physics
                 return body;
             }
 
-            // A joint with no constraints has had its say on whether its bodies collide, and writes no Jacobians to solve. A
-            // joint is big, so this reads the one field in place rather than copying it.
+            // A joint with no constraints has already affected whether its bodies can collide, but produces no
+            // Jacobians to solve. Read its constraint count in place to avoid copying the large Joint struct.
             bool IsSolved(DispatchPair pair, Joint* joints)
             {
                 return pair.IsValid && (pair.IsJoint ? joints[pair.JointIndex].Constraints.Length != 0 : pair.IsCollisionEnabled);
@@ -189,8 +206,8 @@ namespace Unity.Physics
                     parents[i] = i;
                 }
 
-                // Most overlaps in a craft are between parts that ignore each other, so the passes after this one only go over
-                // the pairs that are solved.
+                // Most overlaps in a craft involve parts with collisions disabled between them. Filter those pairs here
+                // so later passes process only pairs that need to be solved.
                 var solved = new NativeArray<DispatchPair>(DispatchPairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 var joints = (Joint*)Joints.GetUnsafeReadOnlyPtr();
                 int numPairs = 0;
@@ -203,7 +220,8 @@ namespace Unity.Physics
                     }
                 }
 
-                // The islands follow from the solved pairs and the number of bodies alone.
+                // Reuse the islands only if the solved pairs, dynamic body count and vessel key match the cached
+                // values.
                 NativeArray<DispatchPair> solvedPairs = solved.GetSubArray(0, numPairs);
                 ulong vesselKey = Vessels.IsCreated ? VesselKey() : 0;
                 if (Cache.IsCreated && Cache.TryReuse(solvedPairs, NumDynamicBodies, vesselKey, Islands, IslandPairs, IslandBodies))
@@ -237,7 +255,7 @@ namespace Unity.Physics
                     }
                 }
 
-                // Every body points straight at its root from here on.
+                // Store each body's root directly so later passes do not need to follow parent chains.
                 for (int body = 0; body < NumDynamicBodies; body++)
                 {
                     parents[body] = FindRoot(parents, body);
@@ -252,7 +270,8 @@ namespace Unity.Physics
                     }
                 }
 
-                // Roots with pairs or a vessel become islands, numbered in body order so that the numbers don't depend on the
+                // Roots with pairs or a vessel become islands, numbered in body order so that the numbers don't depend
+                // on the
                 // pairs' order.
                 var islandOfRoot = new NativeArray<int>(NumDynamicBodies, Allocator.Temp);
                 for (int i = 0; i < numPairs; i++)
@@ -337,20 +356,24 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Colours one island, and sorts its pairs into the bucket of each phase if it has no joints and fits in
-        /// <see cref="NumIslandPhases"/> of them, or all into the direct bucket if not, so that no body is left between the two
-        /// solvers. What gets a colour is a
-        /// link (see <see cref="DispatchPair.IsSameLink"/>): its pairs run one after another on one thread, so they conflict
-        /// with nothing among themselves. Islands share no dynamic body, which lets them share <see cref="PhasesUsed"/> and
-        /// <see cref="LinksInPhases"/>, and a thread takes room in a bucket atomically. The order of islands in a bucket
-        /// therefore varies from run to run, and the order of pairs within an island doesn't.
+        /// Assigns phases to an island's links and puts its pairs in the corresponding buckets. An island uses
+        /// iterative phases only if it has no joints or vessels and its links fit in <see cref="NumIslandPhases"/>
+        /// phases. Otherwise, all its pairs go into the direct bucket, so each body is handled by one solver. A colour
+        /// represents a phase assigned to a link (see <see cref="DispatchPair.IsSameLink"/>). Pairs on the same link
+        /// run sequentially on one thread and therefore do not conflict with each other. Islands have no dynamic bodies
+        /// in common, so jobs can use the shared <see cref="PhasesUsed"/> and <see cref="LinksInPhases"/> arrays. Each
+        /// thread reserves space in a bucket atomically. Island order within a bucket can vary between runs, but pair
+        /// order within each island is preserved.
         /// </summary>
         [BurstCompile]
         unsafe struct SortIslandIntoBucketsJob : IJobParallelForDefer
         {
             const int AllPhases = (1 << NumIslandPhases) - 1;
 
-            /// <summary> Plenty for the rare stuck link in a craft, and it bounds the worst case of a very large island. </summary>
+            /// <summary>
+            /// The number of chain traversal steps allowed per link. This usually permits recolouring a craft's links
+            /// while bounding the total work for large islands.
+            /// </summary>
             const int MaxChainStepsPerLink = 8;
 
             [ReadOnly]
@@ -362,7 +385,10 @@ namespace Unity.Physics
             [NativeDisableParallelForRestriction]
             public NativeArray<byte> PhasesUsed;
 
-            /// <summary> For each dynamic body and phase, the link there, or -1. Valid only once an island has got stuck. </summary>
+            /// <summary>
+            /// The link assigned to each dynamic body and phase, or -1 if none is assigned. Filled only when the
+            /// initial phase assignment needs recolouring.
+            /// </summary>
             [NativeDisableParallelForRestriction]
             public NativeArray<int> LinksInPhases;
 
@@ -395,8 +421,8 @@ namespace Unity.Physics
 
                 firstPairs[numLinks] = pairs.Length;
 
-                // A joint goes direct however few colours its island needs: sweeps alone leave a stiff joint soft, and a craft
-                // shouldn't behave differently for being small.
+                // Use the direct solver for every island with a joint, even if its links fit in the available phases.
+                // Iterative sweeps alone would make a stiff joint appear soft, including on small craft.
                 var phases = new NativeArray<byte>(numLinks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 bool fits = !island.HasVessel && !hasJoint && CountCrowdedBodies(pairs, firstPairs, numLinks) == 0
                     && ColourLinks(pairs, firstPairs, numLinks, phases);
@@ -404,8 +430,9 @@ namespace Unity.Physics
                 int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
                 if (!fits)
                 {
-                    // Only joints get the direct solver's Jacobians. The contacts keep the iterative solver's kind, which the
-                    // island's sparse solve builds its contact rows from and the event export reads afterwards.
+                    // Build Jacobians of the direct solver's type only for joints. Keep the iterative type for contact
+                    // Jacobians: the sparse solver uses them to build contact rows, and the event export reads them
+                    // afterwards.
                     island.FirstDirectPair = Reserve(NumIslandPhases, pairs.Length);
                     int nextPair = NumIslandPhases * bucketSize + island.FirstDirectPair;
                     for (int pass = 0; pass < 2; pass++)
@@ -456,8 +483,9 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Counts the bodies on more links than there are phases. Links sharing a body can't share a phase, so one such body
-            /// settles where the island goes before any colouring is tried. Leaves <see cref="PhasesUsed"/> clear.
+            /// Counts bodies that participate in more links than there are phases. Links that share a body need
+            /// different phases, so any such body requires the direct solver without attempting to assign phases.
+            /// Clears <see cref="PhasesUsed"/> before returning.
             /// </summary>
             int CountCrowdedBodies(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks)
             {
@@ -485,7 +513,9 @@ namespace Unity.Physics
                 return crowdedBodies;
             }
 
-            /// <summary> Returns 1 the moment a body goes past the number of phases. </summary>
+            /// <summary>
+            /// Returns 1 when the body's link count first exceeds the number of phases; otherwise returns 0.
+            /// </summary>
             int CountLink(int body)
             {
                 int links = PhasesUsed[body];
@@ -499,9 +529,11 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Gives every link a phase, or returns false. First fit does nearly all of it in one pass over the links. Only when
-            /// it sticks does the island pay for <see cref="LinksInPhases"/> and swap colours along chains, on a budget that
-            /// keeps the whole thing linear in the links: an island that uses it up has odd cycles and goes direct.
+            /// Assigns a phase to every link, or returns false. First tries an available phase for each link. If
+            /// none is available, fills <see cref="LinksInPhases"/> and attempts to free a phase by swapping colours
+            /// along chains. The total number of chain traversal steps is limited in proportion to the number of links.
+            /// If no swap succeeds or the limit is reached, the island uses the direct solver. A failed attempt can
+            /// result from an odd cycle, but reaching the limit alone does not prove that the island has one.
             /// </summary>
             bool ColourLinks(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks, NativeArray<byte> phases)
             {
@@ -546,9 +578,10 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Finds a phase free on the dynamic bodies a link touches, or returns -1 if there is none. A static body doesn't
-            /// count: nothing writes to one, so any number of links can share it in a phase. A link with a static body takes the
-            /// last phase it can, which leaves the last word on a body to what holds it against the world.
+            /// Finds a phase that is available on both dynamic bodies of a link, or returns -1 if none is available.
+            /// Static bodies are not modified, so any number of links can share a static body within a phase. For a
+            /// link to a static body, chooses the last available phase so constraints against the world are processed
+            /// later.
             /// </summary>
             int FirstFreePhase(DispatchPair pair)
             {
@@ -592,7 +625,10 @@ namespace Unity.Physics
                 }
             }
 
-            /// <summary> Records the links coloured so far: those of earlier passes, and of this pass up to the stuck one. </summary>
+            /// <summary>
+            /// Records links that already have a phase: all links from earlier passes and links before the current link
+            /// in this pass.
+            /// </summary>
             void FillLinksInPhases(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, NativeArray<byte> phases, int stuckLink, int stuckPass)
             {
                 int numLinks = phases.Length;
@@ -621,10 +657,12 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Frees a phase on both ends of a stuck link. Each end has a phase the other uses; the links alternating between those
-            /// two phases from one end form a path, and swapping the two along it frees one on that end unless the path comes
-            /// back to the other end, which takes an odd cycle. So this can't fail on a tree, but can on a craft closed by struts
-            /// or contacts. Returns -1 if every choice of the two phases fails or the steps run out.
+            /// Attempts to free the same phase at both ends of a link that could not be assigned a phase. Chooses a
+            /// phase free at each end, then follows a path of links with alternating phases from one end. Swapping
+            /// those phases along the path frees a common phase unless the path reaches the other end. Reaching the
+            /// other end forms an odd cycle with the unassigned link. This obstruction cannot occur in a tree, but can
+            /// occur in a craft with cycles formed by struts or contacts. Returns -1 if every pair of phases fails or
+            /// the traversal limit is reached, including if that limit is reached on a tree.
             /// </summary>
             int FreePhaseWithChain(DispatchPair stuck, NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs,
                 NativeArray<byte> phases, NativeArray<int> chain, ref int stepsLeft)
@@ -682,7 +720,8 @@ namespace Unity.Physics
                             continue;
                         }
 
-                        // Everything comes off before anything goes on: neighbours on the path trade the same two slots.
+                        // Clear all assignments on the path before setting new ones, because adjacent links exchange
+                        // the same two phase slots.
                         for (int i = 0; i < length; i++)
                         {
                             ClearPhase(pairs[firstPairs[chain[i]]], phases[chain[i]]);
@@ -702,7 +741,9 @@ namespace Unity.Physics
                 return -1;
             }
 
-            /// <summary> Takes room in a bucket, and returns where the room starts. </summary>
+            /// <summary>
+            /// Atomically reserves space in a bucket and returns its starting offset.
+            /// </summary>
             int Reserve(int bucket, int count)
             {
                 ref int bucketCount = ref UnsafeUtility.ArrayElementAsRef<int>(BucketCounts.GetUnsafePtr(), bucket);
@@ -712,8 +753,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Tells the solver what ended up in the buckets. A bucket can be empty: <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/>
-        /// copes, as the next phase has the same offset.
+        /// Publishes the pairs and work items in each bucket to the solver's scheduling data. Empty buckets are
+        /// allowed. <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/> handles consecutive phases with the same
+        /// offset in the work items.
         /// </summary>
         [BurstCompile]
         struct PublishIslandBucketsJob : IJob
@@ -827,9 +869,10 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// The islands of the last step, kept with the pairs they were found from. A craft solves the same joints step after
-    /// step, and a floating one nothing else, so most steps find the same islands again. The caller of a step owns this and
-    /// passes it in <see cref="SimulationStepInput"/>. Without one, the islands are found afresh every step.
+    /// Caches the previous step's islands and the pairs used to find them. A craft often has the same joints across
+    /// steps, and a floating craft may have no other constraints, so the islands can often be reused. Reuse requires
+    /// matching pairs, dynamic body count and vessel key. The caller owns this cache and passes it in
+    /// <see cref="SimulationStepInput"/>. Without a cache, islands are found again every step.
     /// </summary>
     public unsafe struct SolverIslandCache : IDisposable
     {
@@ -845,11 +888,15 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<int>* islandBodies;
 
-        /// <summary> The bodies the islands were found among, or -1 while nothing is kept. </summary>
+        /// <summary>
+        /// The number of dynamic bodies used to find the cached islands, or -1 if no islands have been cached.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         int* numDynamicBodies;
 
-        /// <summary> The key of the vessels the islands were found with. </summary>
+        /// <summary>
+        /// The key computed from the vessels used to find the cached islands.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         ulong* vesselKey;
 

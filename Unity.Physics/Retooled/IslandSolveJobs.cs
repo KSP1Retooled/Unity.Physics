@@ -13,18 +13,20 @@ namespace Unity.Physics
     public static partial class Solver
     {
         /// <summary>
-        /// How many iterations take the push back out of the iteratively solved pairs' velocities. Those pairs are loose bodies,
-        /// which a few iterations settle.
+        /// The number of iterations used to remove the velocity added for contact penetration correction after
+        /// integrating bodies solved iteratively. These pairs involve loose bodies that usually settle within a few
+        /// iterations.
         /// </summary>
         const int RelaxIterations = 4;
 
         /// <summary>
-        /// One step of every island, in a fixed set of jobs that find out how much work they have when they start, which leaves
-        /// nothing for the main thread to wait for. The islands that fit in phases run their iterations phase by phase, and the
-        /// bodies they hold integrate after them. The direct islands run each substep as a chain of jobs, with the Jacobians
-        /// updated and their rows built in parallel. An island's bodies are its own, so the two sides run side by side.
-        /// <paramref name="jacobiansBuilt"/> is the end of the Jacobian build alone, without the jobs that change the Jacobians'
-        /// impulses or the velocities before the solve, which is all that listing the direct islands' Jacobians waits for.
+        /// Schedules one step for every island. The jobs determine their work counts when they run, so the main thread
+        /// can schedule them without waiting for those counts. Islands assigned to iterative phases are solved phase by
+        /// phase, then their bodies are integrated. For direct islands, each substep runs a sequence of jobs that
+        /// update Jacobians, build rows in parallel, solve and integrate. The iterative and direct paths can run
+        /// concurrently because they modify different bodies. <paramref name="jacobiansBuilt"/> marks completion of
+        /// Jacobian construction, before jobs that change impulses or velocities in preparation for solving. Listing
+        /// the direct islands' Jacobians depends only on construction, so it waits for that handle alone.
         /// </summary>
         internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
@@ -34,8 +36,9 @@ namespace Unity.Physics
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
             DispatchPairSequencer.IterativeSolverSchedulerInfo iterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling;
 
-            // Every phase of every iteration runs as a stage of one team job rather than as a job of its own, which leaves two
-            // jobs to schedule instead of one per phase and iteration, and two that finish at once when no pairs iterate.
+            // Schedule two team jobs: one for the solver iterations and one for relaxation. Each job processes its
+            // phases and iterations as team stages. This avoids scheduling a separate job for every phase of every
+            // iteration. Both jobs finish quickly if there are no iterative pairs.
             var teams = UnsafeList<SparseSolveTeam>.Create(2, Allocator.TempJob);
             teams->Resize(2, NativeArrayOptions.ClearMemory);
             teams->ElementAt(0).Configure();
@@ -65,9 +68,10 @@ namespace Unity.Physics
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
 
-            // With the positions moved by the contacts' push, a few more iterations take the push back out of the velocities,
-            // as PhysX's velocity iterations do after its position iterations. Events were exported with the step's impulses.
-            // They count past the step's own iterations, so that none of them counts as its first or last.
+            // After integration has applied the contact penetration correction to positions, run a few iterations to
+            // remove that correction from velocities. This is similar to PhysX velocity iterations after position
+            // iterations. Events have already been exported using the step's impulses. Start the relaxation iteration
+            // indices after the solver iterations so none is treated as the first or last solver iteration.
             template.stepInput.Relaxing = true;
             template.stepInput.DisableExportEvents = true;
             iterativeHandle = new IterateInTeamJob
@@ -103,19 +107,24 @@ namespace Unity.Physics
             return returnHandles;
         }
 
-        /// <summary>The most lanes a team job gets. Lanes past what its stages keep busy only wait.</summary>
+        /// <summary>
+        /// The maximum number of lanes scheduled for a team job. Additional lanes would wait if the stages have too few
+        /// tasks.
+        /// </summary>
         const int MaxTeamLanes = 8;
 
         /// <summary>
-        /// Runs iterations of the iteratively solved pairs, phase by phase, with every lane of the job sharing each phase's work
-        /// items. A phase's pairs touch no body another of its work items touches, and the leader starts a phase only once
-        /// the one before has finished.
+        /// Solves the iterative pairs one phase at a time in each iteration. The job's lanes share the work items for
+        /// each phase. Work items in the same phase do not modify the same body. The leader waits for all tasks in one
+        /// phase to finish before starting the next phase.
         /// </summary>
         [BurstCompile]
         [NoAlias]
         unsafe struct IterateInTeamJob : IJobParallelFor
         {
-            /// <summary>The job one phase would run, but for its phase and iteration.</summary>
+            /// <summary>
+            /// The job data copied for each phase, with the phase index and iteration number set before execution.
+            /// </summary>
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public ParallelIterativeSolverJob Template;
 
@@ -151,8 +160,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// One work item of an iterative phase, for a team. The context is that phase's job, which each task copies: the
-        /// event writers in it keep the state of the work item they are writing, so lanes can't share one.
+        /// Executes one work item in an iterative phase on a team lane. Each task copies the phase's job from the
+        /// context because its event writers contain state for the current work item and cannot be shared across lanes.
         /// </summary>
         internal static unsafe void IterativePhaseTask(void* context, int task)
         {
@@ -173,10 +182,12 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The substeps of every direct island. Each substep updates the Jacobians, counts their rows, builds the rows, solves
-        /// each island and integrates its bodies. Only the counting runs alone. Small islands solve one per thread, and each big
-        /// one shares its solve among the lanes of a job of its own. The first substep's rows depend only on what the Jacobian
-        /// build wrote, so they are counted while the islands are listed, beside the jobs that finish preparing the solve.
+        /// Schedules the substeps for all direct islands. Each substep updates Jacobians, counts and builds their rows,
+        /// solves the islands, and integrates their bodies. Row counting is serial; the other stages run in parallel.
+        /// Small islands are solved independently on worker threads. One team job solves all large islands
+        /// sequentially, sharing each solve among its lanes. The first substep's row counts depend only on the
+        /// constructed Jacobians, so they can be counted while listing the islands, concurrently with jobs that finish
+        /// preparing the solve.
         /// </summary>
         static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
             in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps)
@@ -208,8 +219,9 @@ namespace Unity.Physics
                 substepInput.CurrentSubstep = substep;
                 if (substep > 0)
                 {
-                    // Only the contacts are updated ahead of the count, because only theirs can change. Each joint is
-                    // updated by the job that builds its rows, while it has the joint at hand.
+                    // Normally, update only contacts before counting rows, because only contact row counts can change.
+                    // Update each joint while building its rows to reuse the joint data already being read.
+                    // LegacyRowBuild instead updates all Jacobians here.
                     handle = new UpdateIslandJacobiansJob
                     {
                         Headers = work.Headers.AsDeferredJobArray(),
@@ -278,39 +290,51 @@ namespace Unity.Physics
             return work.Dispose(handle);
         }
 
-        /// <summary> A direct island's Jacobians among <see cref="DirectIslandWork.Headers"/>, and its rows this substep. </summary>
+        /// <summary>
+        /// Describes the Jacobians for one direct island in <see cref="DirectIslandWork.Headers"/> and its rows for the
+        /// current substep.
+        /// </summary>
         struct DirectIsland
         {
             public int FirstHeader;
 
-            /// <summary> The end of the joints' Jacobians, which come before the contacts'. </summary>
+            /// <summary>
+            /// The exclusive end index of the joint Jacobians, which precede the contact Jacobians.
+            /// </summary>
             public int JointEnd;
 
-            /// <summary> The end of the Jacobians the solve takes. The contacts after it are only updated. </summary>
+            /// <summary>
+            /// The exclusive end index of the Jacobians included in the solve. Contact Jacobians after this index are
+            /// updated but not solved.
+            /// </summary>
             public int SolveEnd;
 
             public int HeaderEnd;
 
-            /// <summary> The contacts the solve takes along with the joints, which it solves sparsely. </summary>
+            /// <summary>
+            /// The number of contact pairs included with the joints in the sparse solve.
+            /// </summary>
             public int ContactPairs;
 
             public int FirstRow;
             public int Rows;
 
-            /// <summary> The rows of the joints' Jacobians, the same every substep. </summary>
+            /// <summary>
+            /// The number of rows in the joint Jacobians, which remains the same across substeps.
+            /// </summary>
             public int JointRows;
 
             /// <summary>
-            /// The island's vessels, as a range of <see cref="DirectIslandWork.IslandVessels"/>, and how many parts they have
-            /// together. An island with a vessel solves even when it has no rows.
+            /// The range of this island's vessels in <see cref="DirectIslandWork.IslandVessels"/> and their total
+            /// number of parts. An island with a vessel is solved even if it has no Jacobian rows.
             /// </summary>
             public int FirstVessel;
             public int VesselCount;
             public int VesselParts;
 
             /// <summary>
-            /// Whether the island's solve is big enough to share among lanes. A smaller one finishes before helpers would gain
-            /// anything, and runs beside the others.
+            /// Whether the island has enough rows or vessel parts to benefit from sharing the solve among lanes.
+            /// Smaller islands are solved independently in parallel.
             /// </summary>
             public bool SolvesInTeam => Rows >= SharedSolveRows || VesselParts >= SharedSolveParts;
         }
@@ -321,8 +345,9 @@ namespace Unity.Physics
         const int SharedSolveRows = 512;
 
         /// <summary>
-        /// Builds the direct islands' rows the way they were built before the joints' rows were fused with their updates and
-        /// builds. Only for tests, which compare the two. Read when the jobs are scheduled.
+        /// Selects the earlier method of building direct island rows, which updates joints separately and computes
+        /// regularization for each Jacobian. Tests use this to compare against updating joints during row construction
+        /// and sharing regularization. Read when scheduling the jobs.
         /// </summary>
         internal static bool LegacyRowBuild
         {
@@ -341,12 +366,16 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The rows of every direct island in a substep, one island after another. Each list is resized while the jobs run, so
-        /// the jobs hold the lists rather than their contents.
+        /// Stores rows for all direct islands in the current substep, with each island's rows in a contiguous range.
+        /// Jobs can resize these lists, so they store pointers to the list structures instead of pointers to the data
+        /// that may move.
         /// </summary>
         unsafe struct DirectIslandBuffers
         {
-            /// <summary> Where each Jacobian's rows start in its island, or -1 if this substep doesn't build them. </summary>
+            /// <summary>
+            /// The starting row offset of each Jacobian within its island, or -1 if its rows are not built in this
+            /// substep.
+            /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* HeaderRows;
 
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Jacobian;
@@ -356,17 +385,21 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* RightHandSide;
 
             /// <summary>
-            /// The push-out of each contact row that moves bodies rather than speeding them up, and -1 on rows that aren't
-            /// contacts.
+            /// The position correction for each contact row, used to move bodies without changing their velocities.
+            /// Contains -1 for rows that are not contacts.
             /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<float>* Recovery;
 
             [NativeDisableUnsafePtrRestriction] public UnsafeList<LCP.MLCPIndexFlag>* IndexFlags;
 
-            /// <summary> Per island, 1 once any of its rows has a bound, which makes its solve a bounded one. </summary>
+            /// <summary>
+            /// For each island, contains 1 if any row requires a bounded solve; otherwise contains 0.
+            /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* Bounded;
 
-            /// <summary> One team per substep, since a team has one leader and lets its helpers go for good. </summary>
+            /// <summary>
+            /// One team for each substep. A team cannot be reused after its leader finishes and releases the helpers.
+            /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<SparseSolveTeam>* Teams;
 
             public DirectIslandBuffers(int substeps, Allocator allocator)
@@ -410,7 +443,9 @@ namespace Unity.Physics
                 return Vector.Create(default, list->Ptr + island.FirstRow, 1, island.Rows);
             }
 
-            /// <summary> The island's index flags, as the row builder and the solver take them. </summary>
+            /// <summary>
+            /// Provides the island's index flags in the array format used by row construction and solving.
+            /// </summary>
             public NativeArray<LCP.MLCPIndexFlag> Flags(in DirectIsland island)
             {
                 var flags = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<LCP.MLCPIndexFlag>(
@@ -442,7 +477,9 @@ namespace Unity.Physics
             public NativeList<DirectIsland> Islands;
             public DirectIslandBuffers Buffers;
 
-            /// <summary> Each island's vessels, as indices among the step's vessels. </summary>
+            /// <summary>
+            /// The indices of each island's vessels in the step's vessel set.
+            /// </summary>
             public NativeList<int> IslandVessels;
 
             public DirectIslandWork(int substeps, Allocator allocator)
@@ -474,8 +511,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Lists every direct island's Jacobians, with the joints before the contacts, in the order the island's iterator reads
-        /// them, decides once a step whether an island's contacts take part in its solve, and counts the first substep's rows.
+        /// Lists each direct island's Jacobians in iterator order, with joints before contacts. Decides once per step
+        /// whether to include the island's contacts in its solve, then counts the rows for the first substep.
         /// </summary>
         [BurstCompile]
         unsafe struct IndexDirectIslandsJob : IJob
@@ -495,7 +532,7 @@ namespace Unity.Physics
             {
                 int islandCount = Info.NumIslands;
 
-                // Which vessel each dynamic body is a part of, or -1.
+                // Map each dynamic body to the index of its vessel, or -1 if it is not part of a vessel.
                 int bodyCount = Info.BodiesInIslands.Length;
                 var bodyVessel = new NativeArray<int>(Vessels.IsCreated ? bodyCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 for (int i = 0; i < bodyVessel.Length; i++)
@@ -537,8 +574,9 @@ namespace Unity.Physics
                 Work.Islands.ResizeUninitialized(islandCount);
                 Work.Buffers.Bounded->Resize(islandCount);
 
-                // Each header's rows are counted while the walk has it at hand, and turned into where its rows start once
-                // the islands are known. A second pass over the headers would miss the cache on most of them.
+                // Count each header's rows while reading it, then convert the counts to starting row offsets after
+                // listing the islands. This avoids another pass over headers that would mostly no longer be in the CPU
+                // cache.
                 UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
                 headerRows->Clear();
                 for (int island = 0; island < islandCount; island++)
@@ -547,8 +585,8 @@ namespace Unity.Physics
                     int firstHeader = Work.Headers.Length;
                     bool touchesSomething = false;
 
-                    // The iterator reads the joints' pairs before the contacts', and only contacts and triggers write the
-                    // first two kinds of Jacobian.
+                    // The iterator reads joint pairs before contact pairs. Identify joint Jacobians by excluding the
+                    // Contact and Trigger types, which are produced only by contact pairs.
                     int jointHeaders = 0;
                     var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
                     while (iterator.HasJacobiansLeft())
@@ -607,7 +645,10 @@ namespace Unity.Physics
             [ReadOnly]
             public NativeArray<DirectIsland> Islands;
 
-            /// <summary> Leaves the joints, which come before an island's contacts, to <see cref="BuildIslandRowsJob"/>. </summary>
+            /// <summary>
+            /// When true, skips joint Jacobians so <see cref="BuildIslandRowsJob"/> updates them. Joints precede
+            /// contacts in each island.
+            /// </summary>
             public bool ContactsOnly;
 
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
@@ -633,10 +674,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Counts the rows each Jacobian has this substep, which a contact's points change as they come and go, and lays the
-        /// islands' rows out one after another. A joint's rows follow from how it was built, so after the first substep only
-        /// the contacts are counted again. In the first, <see cref="IndexDirectIslandsJob"/> has left each header's count in
-        /// its place among the header rows.
+        /// Counts the Jacobian rows for the current substep and assigns a contiguous range of rows to each island.
+        /// Contact row counts can change as contact points appear or disappear. Joint row counts are fixed by
+        /// construction, so only contacts need to be counted again after the first substep. For the first substep,
+        /// <see cref="IndexDirectIslandsJob"/> has already stored each header's row count in HeaderRows.
         /// </summary>
         [BurstCompile]
         unsafe struct CountIslandRowsJob : IJob
@@ -691,7 +732,10 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary> Builds the rows of one Jacobian of a sparse island, which writes no rows but its own. </summary>
+        /// <summary>
+        /// Builds rows for one Jacobian in a sparse island. Each invocation writes only the rows assigned to that
+        /// Jacobian.
+        /// </summary>
         [BurstCompile]
         [NoAlias]
         unsafe struct BuildIslandRowsJob : IJobParallelForDefer
@@ -716,15 +760,18 @@ namespace Unity.Physics
             public StepInput StepInput;
 
             /// <summary>
-            /// Updates each joint's Jacobian to this substep's poses before building its rows. A Jacobian's update and its
-            /// rows read nothing of any other Jacobian, so this is the same as updating them all first.
+            /// Updates each joint Jacobian from the current substep's poses before building its rows. Updating and
+            /// building a Jacobian do not read other Jacobians, so this gives the same result as updating all Jacobians
+            /// first.
             /// </summary>
             public bool UpdateJoints;
 
-            /// <summary> Works the substep's default regularization out once per worker rather than once per Jacobian. </summary>
+            /// <summary>
+            /// Computes the substep's default regularization once per worker instead of once per Jacobian.
+            /// </summary>
             public bool ShareRegularization;
 
-            // Worked out by the first Jacobian a worker builds, in that worker's copy of the job.
+            // Compute this when a worker builds its first Jacobian, and keep it in that worker's copy of the job.
             RowRegularization regularization;
             bool hasRegularization;
 
@@ -750,7 +797,7 @@ namespace Unity.Physics
                     return;
                 }
 
-                // Every row starts free and unbounded, and the builder bounds the rows that need it.
+                // Initialize every row as free and unbounded. Row construction then sets bounds where required.
                 int firstRow = island.FirstRow + startRow;
                 for (int row = firstRow; row < firstRow + jacRows; row++)
                 {
@@ -790,8 +837,9 @@ namespace Unity.Physics
                 Vector* JBlocks = stackalloc Vector[jacRows];
                 BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
 
-                // Builders only ever store 1, and the solve reads it after this job, so a plain store is enough. Checking
-                // first keeps the builders of one island from writing its line over and over.
+                // All workers that update this flag store 1, and the solver reads it only after this job finishes, so a
+                // plain store is enough. Check the flag first to avoid repeated writes to the same cache line by
+                // workers building rows for one island.
                 int* bounded = Work.Bounded->Ptr + islandIndex;
                 if (context.IsLCP && *bounded == 0)
                 {
@@ -801,9 +849,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves one direct island from the rows built for it and applies the impulses. The direct solver takes the joints and the contacts, friction included, together: a heavy stack resting
-        /// on a light part can't press it into the ground, and the friction under a craft holds all of it through its joints
-        /// in one solve.
+        /// Solves one direct island using its constructed rows and applies the resulting impulses. Solves joints and
+        /// contacts, including friction, together. This accounts for the combined constraints when supporting a heavy
+        /// stack on a light part or transmitting friction forces through a craft's joints.
         /// </summary>
         [BurstCompile]
         [NoAlias]
@@ -843,8 +891,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves the islands big enough to share, one after another, with every lane of this job sharing each solve. It runs
-        /// beside <see cref="SolveDirectIslandJob"/>, which takes the rest.
+        /// Solves large islands sequentially, using the team's available lanes for each solve. Runs concurrently with
+        /// <see cref="SolveDirectIslandJob"/>, which solves the smaller islands.
         /// </summary>
         [BurstCompile]
         [NoAlias]
