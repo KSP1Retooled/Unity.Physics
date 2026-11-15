@@ -22,6 +22,9 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
             }
 
+            // The environment's switches apply when the first world attaches; read them now, so they can't land on top
+            // of what this fixture sets.
+            VesselForest.Initialize();
             wasEnabled = VesselForest.Enabled;
             wasLocking = VesselForest.Locking;
             VesselForest.Enabled = true;
