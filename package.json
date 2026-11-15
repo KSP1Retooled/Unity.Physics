@@ -12,6 +12,6 @@
     "unity",
     "physics"
   ],
-  "name": "com.unity.physics",
+  "name": "io.github.ksp1retooled.physics",
   "version": "6.7.0"
 }
