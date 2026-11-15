@@ -13,8 +13,9 @@ namespace KSP.Retooled.Physics
     /// and passes them to the step through <see cref="SimulationStepInput.VesselSet"/> . The solver uses the vessel
     /// kernel's rows for those joints. The backend omits their Unity Physics constraints, but may still build joints
     /// without constraints to disable collisions. Enabling vessels also enables the forest path. The flag is stored in
-    /// a SharedStatic so that Burst code can read it. Setting RETOOLED_VESSEL to 1 or true enables it when the first
-    /// world attaches; true is case-insensitive.
+    /// a SharedStatic so that Burst code can read it. Vessels are on by default. When the first world attaches, the
+    /// backend reads RETOOLED_VESSEL: the value 0 or false turns vessels off, and any other value turns them on. The
+    /// comparison with "true" and "false" ignores case.
     /// </summary>
     public static class VesselPipeline
     {
@@ -52,11 +53,14 @@ namespace KSP.Retooled.Physics
 
             initialized = true;
             string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
-            if (!string.IsNullOrEmpty(value))
+            if (string.IsNullOrEmpty(value))
             {
-                Enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
-                UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL={value}: vessels {(Enabled ? "on" : "off")}");
+                Enabled = true;
+                return;
             }
+
+            Enabled = !(value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase));
+            UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL={value}: vessels {(Enabled ? "on" : "off")}");
         }
     }
 

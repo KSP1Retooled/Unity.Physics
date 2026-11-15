@@ -11,28 +11,31 @@ namespace Unity.Physics
         static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Solve");
 
         /// <summary>
-        /// The steps that a locked edge keeps its state for before it may yield on load, and that a yielding edge keeps its
-        /// state for before it may lock again. Past the edge's break strength, the edge yields at once.
+        /// The number of steps that an edge must remain locked before it can yield under load, or remain yielding
+        /// before it can lock again. A locked edge yields immediately if its load reaches its break strength or if
+        /// locking is no longer allowed.
         /// </summary>
         const int VesselHoldSteps = 10;
 
         /// <summary>
-        /// Used when the caller leaves an edge's fractions at zero. A locked edge yields at half its break strength, and a
-        /// yielding edge locks again below a quarter of it.
+        /// The default fractions used when an edge's configured fractions are not positive. A locked edge yields at
+        /// half its break strength after the required hold time. A yielding edge can lock again below a quarter of its
+        /// break strength after that hold time.
         /// </summary>
         const double DefaultYieldFraction = 0.5;
 
         const double DefaultRelockFraction = 0.5;
 
         /// <summary>
-        /// Solves a direct island that holds one or more vessels. The vessels' edges and closures are solved with the vessel
-        /// kernel's own rows. Every Jacobian row of the island (contacts, and the joints that are not vessel edges) forms a
-        /// boundary block, which the solve couples to the vessels through the kernel's factor.
+        /// Solves a direct island that contains one or more vessels. The vessel kernel solves the vessels' edges and
+        /// closures using its own rows. The island's Jacobian rows represent contacts and joints that are not vessel
+        /// edges. These rows form a boundary block that is coupled to the vessels through the kernel's factorization.
         ///
-        /// Every moving body of the island is a part of the factor. A body that isn't in a vessel becomes a part on its own.
-        /// The solve works with the sections' velocities themselves rather than with changes to them, so the boundary rows'
-        /// right-hand sides get back the bodies' current rates. Afterwards, every body takes the impulse that gives it its
-        /// section's motion, and the edges' loads go to the vessel set.
+        /// Every moving body in the island is included in the factorization. A body that is not in a vessel is treated
+        /// as a separate part. The solver computes section velocities rather than changes in velocity, so it adds the
+        /// contribution from the bodies' current velocities back to each boundary row's right-hand side. It then
+        /// computes the impulse needed for each body to follow its section's motion and writes the edge loads to the
+        /// vessel set.
         /// </summary>
         static unsafe void SolveVesselIsland(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
@@ -42,7 +45,8 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = VesselSolveMarker.Auto();
 
-            // An island without a kept forest (the cache is full or missing) builds one for this solve alone.
+            // If no forest is cached for this island because the cache is full or missing, create one for this solve
+            // only.
             ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
             bool temporary = forest == null;
             if (temporary)
@@ -92,9 +96,9 @@ namespace Unity.Physics
             stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
 
-            // A boundary row that holds a position aims at where the integrator will really take its constraint. The
-            // vessel's own rows don't need this: the kernel builds them from the parts' poses every substep, so each row
-            // sees its own error and corrects it.
+            // For boundary rows that constrain positions, correct for the drift predicted from integration. The vessel
+            // kernel builds its own rows from the parts' poses every substep and includes their position errors, so
+            // those rows do not need this correction.
             if (holdsPositions && problem.RowCount > 0)
             {
                 var drift = new NativeArray<float>(problem.RowCount, Allocator.Temp);
@@ -138,10 +142,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Lays out the island's parts: each vessel's parts in order, then each moving body that isn't in a vessel, as a part
-        /// on its own. When the island's vessels or extra bodies differ from last time, the lock states are carried over
-        /// from vessels that are still the same, and the structure is rebuilt. At a step's first substep, each edge's lock
-        /// state is tested against the load it carried over the last step.
+        /// Arranges the island's parts in order: first the parts of each vessel, then a separate part for each moving
+        /// body that is not in a vessel. If the vessels or extra bodies have changed, preserves the lock states for
+        /// vessels with the same ID and structure version, then rebuilds the structure. On the first substep of each
+        /// step, tests each edge's lock state against its load from the previous step.
         /// </summary>
         static unsafe void PrepareVesselParts(ref ForestRun run, int substep)
         {
@@ -150,7 +154,7 @@ namespace Unity.Physics
             VesselSet set = run.Vessels;
             int bodies = problem.BodyCount;
 
-            // Which compact bodies are vessel parts, and the island's layout.
+            // Record which bodies in the compact array are vessel parts, and build a signature for the island's layout.
             var bodyIsPart = new NativeArray<byte>(math.max(1, bodies), Allocator.Temp);
             var signature = new NativeList<ulong>(4 + 4 * run.IslandVesselCount, Allocator.Temp);
             signature.Add((ulong)run.IslandVesselCount);
@@ -276,7 +280,7 @@ namespace Unity.Physics
                 BuildVesselStructure(forest);
             }
 
-            // The island numbers its bodies afresh every solve, so each body's section is found again too.
+            // The compact body indices can change between solves, so rebuild the mapping from bodies to sections.
             forest->BodySection.Resize(math.max(1, bodies));
             for (int body = 0; body < bodies; body++)
             {
@@ -288,11 +292,15 @@ namespace Unity.Physics
             signature.Dispose();
         }
 
-        /// <summary>The compact body of a body of the dynamics world, or -1 if the island doesn't have it.</summary>
+        /// <summary>
+        /// Returns the compact index of a body in the dynamics world, or -1 if the body is not in this island.
+        /// </summary>
         static unsafe int CompactOf(in ForestRun run, int worldBody) =>
             worldBody >= 0 && worldBody < run.CompactOfWorldLength ? run.CompactOfWorld[worldBody] : -1;
 
-        /// <summary>A body as a kernel part: its mass and principal inertia, and its pose and velocity in world space.</summary>
+        /// <summary>
+        /// Converts a body to a kernel part with mass, principal inertia, and a pose and velocity in world space.
+        /// </summary>
         static unsafe VesselPart PartOf(in ForestRun run, int compact)
         {
             if (compact < 0)
@@ -315,15 +323,16 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Lays the island's parts out anew and carries over the lock state of each part whose vessel is still the same. A
-        /// new vessel's edges start locked where they may lock, which makes a new craft rigid from its first step.
+        /// Rebuilds the arrangement of the island's parts and preserves each part's lock state if its vessel has the
+        /// same ID and structure version. For a new vessel, edges that are allowed to lock start locked, so the craft
+        /// starts with those connections rigid.
         /// </summary>
         static unsafe void CarryVesselStates(ForestIsland* forest, NativeList<ulong> signature, in ForestRun run, int partCount,
             int closureCount)
         {
             VesselSet set = run.Vessels;
 
-            // The old layout: each kept vessel's Id, version and first part.
+            // Record each cached vessel's ID, structure version and index of its first part in the previous layout.
             var old = new NativeHashMap<ulong, int2>(math.max(1, forest->VesselPartStart.Length), Allocator.Temp);
             if (forest->VesselMode)
             {
@@ -383,7 +392,8 @@ namespace Unity.Physics
 
             forest->VesselMode = true;
 
-            // The handed-in rows' forest must rebuild if the island ever goes back to it.
+            // Invalidate the signature for the forest built from supplied Jacobian rows, so it is rebuilt if the island
+            // returns to that solver path.
             forest->Signature.Clear();
             forest->Signature.Add(ulong.MaxValue);
             old.Dispose();
@@ -393,10 +403,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Tests one edge's lock state against the load it carried over the last step, once per step, and returns whether
-        /// the state changed. A locked edge yields once its load passes its yield fraction of its break strength, and a
-        /// yielding edge locks again once its load falls below its relock fraction of that. Either way the edge first keeps
-        /// its state for <see cref="VesselHoldSteps"/>, unless the load reaches the break strength itself.
+        /// Tests an edge's lock state once per step using its load from the previous step. Returns whether the state
+        /// changed. After <see cref="VesselHoldSteps"/> steps in the same state, a locked edge yields when its load
+        /// reaches the yield fraction of its break strength. A yielding edge can lock again when its load falls below
+        /// the relock fraction multiplied by the yield threshold. A locked edge yields without waiting if its load
+        /// reaches the break strength or if locking is no longer allowed.
         /// </summary>
         static unsafe bool TestLock(ForestIsland* forest, int part, in VesselEdge edge)
         {
@@ -430,7 +441,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Builds the kernel's structure for the island's parts, edges and closures, and the context that points into the
+        /// Builds the kernel's structure for the island's parts, edges and closures, and the context that points into
+        /// the
         /// island's arrays. The kernel builds the rows itself from the parts' poses.
         /// </summary>
         static unsafe void BuildVesselStructure(ForestIsland* forest)
@@ -527,9 +539,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The parts of the run's solve before the boundary: the sections' properties, the kernel's factor and its answer
-        /// without the boundary (taking the fixed rows' known impulses in), the rows as the sections see them, and the
-        /// boundary block.
+        /// Prepares the solve before solving the boundary block. Computes the section properties, factorizes the
+        /// kernel's system, and solves it without boundary impulses but with the known impulses from fixed rows. Then
+        /// converts the Jacobian rows to section coordinates and builds the boundary block.
         /// </summary>
         static unsafe void StartVesselRun(ref ForestRun run)
         {
@@ -607,9 +619,9 @@ namespace Unity.Physics
             run.BaseVelocity = new NativeArray<double>(6 * sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             UnsafeUtility.MemCpy(run.BaseVelocity.GetUnsafePtr(), context.Solution, 6L * sections * sizeof(double));
 
-            // The rows as the sections see them: a row on a part acts on its section at the part's offset from the section's
-            // centre. The solve works with velocities rather than changes, so each boundary row's right-hand side gets the
-            // rate that its bodies have now added back.
+            // Express each row in section coordinates, accounting for the part's offset from its section's centre. The
+            // solver computes velocities rather than changes in velocity, so add the contribution from the bodies'
+            // current velocities back to each boundary row's right-hand side.
             long floats = SparseConstraintSolver.ColumnsPerRow * (long)rows;
             run.SectionJacobian = new NativeArray<float>((int)math.max(1, floats), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             float* jacobian = (float*)run.SectionJacobian.GetUnsafePtr();
@@ -636,7 +648,10 @@ namespace Unity.Physics
             BuildBoundary(ref run, boundaryRows);
         }
 
-        /// <summary>Adds a row's known impulse to the part of one of its sides, as a force through the part's centre and a moment.</summary>
+        /// <summary>
+        /// Adds a row's known impulse to the part on one side of the row, as linear and angular impulses about the
+        /// part's centre.
+        /// </summary>
         static unsafe void AddPartImpulse(ForestIsland* forest, int body, float* columns, float impulse)
         {
             if (body < 0 || forest->BodyPart[body] < 0)
@@ -650,8 +665,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Turns one side of a row from its body's columns to its section's (angular + r x linear, r from the section's
-        /// centre to the part's), and returns the row's rate at the body's current velocity.
+        /// Converts the columns on one side of a row from body coordinates to section coordinates. The angular columns
+        /// become angular + r x linear, where r points from the section's centre to the part's centre. Returns the
+        /// contribution to the row's rate from the body's current velocity.
         /// </summary>
         static unsafe double TurnToSection(ForestIsland* forest, int body, float* columns)
         {
@@ -673,10 +689,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// After a solve of a vessel island: the kernel's rows get their impulses from the sections' new velocities, the
-        /// parts take the boundary's impulses as outside impulses, and the kernel works out every edge's load (by inverse
-        /// dynamics for the locked ones). Then every body takes the impulse that gives it its section's motion. For a
-        /// push-out, the sections start from rest and only the bodies' impulses are written.
+        /// After solving a vessel island, computes the impulses for the kernel's rows from the new section velocities.
+        /// Uses the boundary impulses as external impulses on the parts, then computes every edge's load, using inverse
+        /// dynamics for locked edges. Finally, computes the impulse needed for each body to follow its section's
+        /// motion. For a push-out, treats the sections as initially at rest and writes only the body impulses.
         /// </summary>
         static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
@@ -687,8 +703,8 @@ namespace Unity.Physics
             double* v = (double*)run.Velocity.GetUnsafePtr();
             if (!pushOut)
             {
-                // At this point, linear and angular hold the impulse that the boundary rows and the fixed rows gave each
-                // body. The kernel takes these as the parts' outside impulses when it works out the locked edges' loads.
+                // At this point, linear and angular contain each body's impulses from the boundary rows and fixed rows.
+                // The kernel uses these as external impulses on the parts when computing the loads on locked edges.
                 for (int part = 0; part < forest->Parts.Length; part++)
                 {
                     int body = forest->PartBody[part];
@@ -701,7 +717,9 @@ namespace Unity.Physics
                 UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
                 RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
 
-                // The finish moves the kernel's copies of the parts, which are refilled from the bodies next substep.
+                // FinishSections changes the kernel's copies of the parts. Save and restore those copies here so later
+                // calculations in this substep use the original poses. The next substep fills them from the bodies
+                // again.
                 var poses = new NativeArray<VesselPart>(forest->Parts.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 UnsafeUtility.MemCpy(poses.GetUnsafePtr(), forest->Parts.Ptr, forest->Parts.Length * (long)sizeof(VesselPart));
                 RunVesselStage(ref run, VesselTasks.FinishSections, sections);
@@ -723,10 +741,14 @@ namespace Unity.Physics
                 (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
         }
 
-        /// <summary>How many sections, links or parts one task of a vessel stage takes.</summary>
+        /// <summary>
+        /// The number of sections, links or parts processed by one task in a vessel stage.
+        /// </summary>
         const int VesselItemsPerTask = 64;
 
-        /// <summary>What a vessel island's stages share among a team's lanes.</summary>
+        /// <summary>
+        /// The data shared by the team's lanes while processing a stage for a vessel island.
+        /// </summary>
         unsafe struct VesselTasks
         {
             public const int ComputeSections = 0;
@@ -754,7 +776,9 @@ namespace Unity.Physics
             SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
         }
 
-        /// <summary>One task of a vessel stage, for a team.</summary>
+        /// <summary>
+        /// Processes one task in a vessel stage on a team lane.
+        /// </summary>
         internal static unsafe void ForestVesselTask(void* context, int task)
         {
             var tasks = (VesselTasks*)context;
@@ -782,9 +806,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The impulse that gives one part's body its section's motion: the section's velocity at the part, and the
-        /// section's spin. After a solve, the part lands where the section's turn takes it, so that a locked section stays
-        /// rigid. After a push-out, the section starts from rest.
+        /// Computes the impulse needed for a part's body to follow the linear and angular motion of its section. After
+        /// a solve, the target position accounts for the section's rotation over the timestep, so a locked section
+        /// remains rigid. For a push-out, treats the section as initially at rest.
         /// </summary>
         static unsafe void PartImpulse(ref ForestRun run, int part, float3* linear, float3* angular, bool pushOut)
         {
@@ -815,7 +839,8 @@ namespace Unity.Physics
             }
             else
             {
-                // The part lands where the section's turn takes it, so that a locked section stays rigid.
+                // Choose a velocity that places the part at its offset after the section rotates, so the locked section
+                // remains rigid.
                 double angle = math.length(sectionAngular) * h;
                 double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
                     : new double4(0.0, 0.0, 0.0, 1.0);
@@ -834,9 +859,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Writes the island's edges' and closures' loads to the vessel set, as the mean over the step's substeps, with their
-        /// ratios against their break strengths and whether each edge was locked. At the step's last substep, each edge's
-        /// ratio is kept for the next step's lock test.
+        /// Writes the loads on the island's edges and closures to the vessel set, averaging the force and torque over
+        /// the step's substeps. Also records each edge's load ratio relative to its break strengths and whether it was
+        /// locked. On the last substep, saves each edge's ratio for the next step's lock test.
         /// </summary>
         static unsafe void WriteVesselLoads(ref ForestRun run, int substep, int substeps)
         {

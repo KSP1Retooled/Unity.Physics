@@ -197,7 +197,7 @@ namespace Unity.Physics
         // ProcessBodyPairsJob, which outputs contact and joint Jacobians.
         public NativeList<DispatchPairSequencer.DispatchPair> PhasedDispatchPairs;
 
-        // The sorted pairs, between the broadphase and Simulation.ScheduleIslandJobs.
+        // The sorted pairs available after the broadphase and before Simulation.ScheduleIslandJobs runs.
         public NativeList<DispatchPairSequencer.DispatchPair> PairsToSortByIsland;
 
         // Job handle for the scheduler's job that creates the phased dispatch pairs.
@@ -486,9 +486,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Sorts the pairs into islands, with <see cref="SimulationStepInput.DirectIslandSubsteps"/> set. This comes apart from
-        /// the broadphase so that a caller can take pairs out of <see cref="StepContext.PairsToSortByIsland"/> first: a pair
-        /// that won't be solved must not tie two bodies into one island or take up a phase.
+        /// Groups pairs into islands when <see cref="SimulationStepInput.DirectIslandSubsteps"/> is positive. This is
+        /// separate from the broadphase so that the caller can first remove pairs from
+        /// <see cref="StepContext.PairsToSortByIsland"/>. A pair that will not be solved must not connect bodies into
+        /// an island or occupy a solver phase.
         /// </summary>
         internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps)
         {
@@ -708,8 +709,8 @@ namespace Unity.Physics
                     m_StepHandles.FinalExecutionHandle = jobHandle;
                 }
 
-                // Jobs wait in a batch until something flushes it, so without this the workers sit idle while the main thread
-                // schedules the rest of the substeps.
+                // Submit the batched jobs so that workers can run them while the main thread schedules the remaining
+                // substeps.
                 JobHandle.ScheduleBatchedJobs();
             }
 

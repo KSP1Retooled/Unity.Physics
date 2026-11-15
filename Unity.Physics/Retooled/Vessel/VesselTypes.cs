@@ -6,63 +6,71 @@ namespace Unity.Physics
     public enum VesselEdgeState : byte
     {
         /// <summary>
-        /// No relative motion. The part folds into its parent's rigid section, so the edge costs nothing in the solve; its
-        /// load still comes out every step, by inverse dynamics inside the section.
+        /// The part has no motion relative to its parent and belongs to the same rigid section. The solver does not
+        /// need rows for this edge. Its load is still calculated every step using inverse dynamics within the section.
         /// </summary>
         Locked,
 
-        /// <summary>Three hard linear rows and three angular rows that are stiff damped springs (twist and two swings).</summary>
+        /// <summary>
+        /// Uses three hard linear rows and three angular rows with stiff, damped springs: one twist and two swings.
+        /// </summary>
         Yielding,
 
         /// <summary>
-        /// A servo or hinge: five hard rows, and the twist row a spring and damper toward <see cref="VesselEdge.DriveTarget"/>.
+        /// A servo or hinge with five hard rows. The twist row uses a spring and damper with
+        /// <see cref="VesselEdge.DriveTarget"/> as the target angle.
         /// </summary>
         FreeAxis,
 
-        /// <summary>No edge: the part and everything beyond it move on their own.</summary>
+        /// <summary>
+        /// The edge is broken, so the part and its descendants can move independently of its former parent.
+        /// </summary>
         Broken,
     }
 
     /// <summary>
-    /// One part of a vessel, as the backend hands it to <see cref="VesselSolver"/> each step and reads it back after.
-    /// Everything is in double precision and in world space, apart from the principal moments.
+    /// The state of one vessel part, supplied by the backend to <see cref="VesselSolver"/> each step and read back
+    /// afterwards. All values use double precision. Values are in world space except for the principal moments of
+    /// inertia.
     /// </summary>
     public struct VesselPart
     {
         public double Mass;
 
-        /// <summary>Principal moments of inertia, in the part's own frame.</summary>
+        /// <summary>The principal moments of inertia in the part's own frame.</summary>
         public double3 Inertia;
 
-        /// <summary>Centre of mass.</summary>
+        /// <summary>The centre of mass in world space.</summary>
         public double3 Position;
 
-        /// <summary>The rotation from the part's frame to world, as a quaternion x, y, z, w.</summary>
+        /// <summary>The rotation from the part's frame to world space, as a quaternion in x, y, z, w order.</summary>
         public double4 Orientation;
 
         public double3 LinearVelocity;
         public double3 AngularVelocity;
 
-        /// <summary>External impulse over the step (force times the time step), applied at the centre of mass.</summary>
+        /// <summary>
+        /// The external impulse applied at the centre of mass over the step: force multiplied by the time step.
+        /// </summary>
         public double3 LinearImpulse;
 
         public double3 AngularImpulse;
     }
 
     /// <summary>
-    /// The edge from a part to its parent. Edges are indexed by their child part, so edge i joins part i to part
-    /// <see cref="Parent"/>, and parents must come before their children.
+    /// The edge that joins a part to its parent. Edges use the index of their child part: edge i joins part i to the
+    /// part at <see cref="Parent"/>. Parents must appear before their children.
     /// </summary>
     public struct VesselEdge
     {
-        /// <summary>The parent part, or -1 for the vessel's root.</summary>
+        /// <summary>The index of the parent part, or -1 for the vessel's root.</summary>
         public int Parent;
 
         public VesselEdgeState State;
 
         /// <summary>
-        /// Whether a yielding edge whose load falls low enough may lock again. Servos, docking ports and decouplers stay
-        /// live, so this is off for them.
+        /// Whether a yielding edge may lock again when its load falls below the threshold. This is disabled for servos,
+        /// docking ports and decouplers so that their rows remain active in the solver.
         /// </summary>
         public bool MayLock;
 
@@ -73,41 +81,42 @@ namespace Unity.Physics
         public double3 ChildAnchor;
 
         /// <summary>
-        /// The joint's axes in the parent's frame, as columns: twist, then the two swing axes. The rows act along these.
+        /// The joint axes in the parent's frame, stored as columns: the twist axis followed by the two swing axes. The
+        /// constraint rows act along these axes.
         /// </summary>
         public double3x3 Frame;
 
-        /// <summary>The child's orientation relative to the parent's at rest, conj(parent) * child.</summary>
+        /// <summary>The child's rest orientation relative to its parent, calculated as conj(parent) * child.</summary>
         public double4 Rest;
 
-        /// <summary>Spring rates of the angular rows, kN m/rad, and their dampers, kN m s/rad.</summary>
+        /// <summary>The angular spring rates in kN m/rad and damping coefficients in kN m s/rad.</summary>
         public double TwistStiffness;
 
         public double SwingStiffness;
         public double TwistDamping;
         public double SwingDamping;
 
-        /// <summary>For a free axis, the twist angle its spring drives toward, in radians.</summary>
+        /// <summary>The target twist angle in radians for the spring on a free axis.</summary>
         public double DriveTarget;
 
-        /// <summary>Force and torque at which the edge breaks, kN and kN m.</summary>
+        /// <summary>The force in kN and torque in kN m at which the edge breaks.</summary>
         public double BreakForce;
 
         public double BreakTorque;
 
-        /// <summary>The fraction of its strength above which a locked edge starts to yield.</summary>
+        /// <summary>The fraction of the edge's break strength above which a locked edge starts to yield.</summary>
         public double YieldFraction;
 
         /// <summary>
-        /// The fraction of the yield load below which a yielding edge locks again. Kept well under one, so that an edge
-        /// near its yield load does not lock and unlock on alternate steps.
+        /// The fraction of the yield load below which a yielding edge locks again. Keep this well below one to prevent
+        /// an edge near its yield load from locking and unlocking on alternate steps.
         /// </summary>
         public double RelockFraction;
     }
 
     /// <summary>
-    /// A strut, autostrut or anything else that closes a loop in the part tree: six compliant rows between two parts. One
-    /// between two parts of the same rigid section carries nothing and drops out of the solve.
+    /// A strut, autostrut or other connection that closes a loop in the part tree. It has six compliant rows between
+    /// two parts. A closure between parts in the same rigid section carries no load and is excluded from the solve.
     /// </summary>
     public struct VesselClosure
     {
@@ -122,7 +131,7 @@ namespace Unity.Physics
         /// <summary>The axes in part A's frame, as columns.</summary>
         public double3x3 Frame;
 
-        /// <summary>Part B's orientation relative to part A's at rest, conj(A) * B.</summary>
+        /// <summary>The rest orientation of part B relative to part A, calculated as conj(A) * B.</summary>
         public double4 Rest;
 
         public double LinearStiffness;
@@ -132,9 +141,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// The load that an edge carried: the force that the parent part applied to the child part, and the torque about the
-    /// joint point. For a closure, it is what part A applied to part B. Both are in world space. The ratio is the larger of
-    /// the force over the break force and the torque over the break torque.
+    /// The force that the parent part applied to the child part and the torque about the joint point. For a closure,
+    /// these are the force and torque that part A applied to part B. Both are in world space. The ratio is the larger
+    /// of force divided by break force and torque divided by break torque.
     /// </summary>
     public struct VesselEdgeLoad
     {
@@ -149,31 +158,35 @@ namespace Unity.Physics
         public double TimeStep;
 
         /// <summary>
-        /// The period of a hard row, as a spring on the reduced mass (or inertia) of the two sections it joins. Taken from
-        /// the sections, never from single parts: a light part between heavy ones would otherwise make the softest joint
-        /// of the vessel exactly where it should be stiffest.
+        /// The spring period used for a hard row. Its stiffness is calculated from the reduced mass or inertia of the
+        /// two sections that it joins. Use the sections rather than individual parts. Otherwise, a light part between
+        /// heavy parts would produce the vessel's softest joint where it needs the greatest stiffness.
         /// </summary>
         public double HardPeriod;
 
-        /// <summary>A hard row's damping as a fraction of critical damping on that same reduced mass.</summary>
+        /// <summary>The damping for a hard row, as a fraction of critical damping for the same reduced mass.</summary>
         public double HardDampingRatio;
 
-        /// <summary>Sections with at least this many live closures are eliminated last, as a hub.</summary>
+        /// <summary>Sections with at least this many active closures are treated as hubs and eliminated last.</summary>
         public int HubClosures;
 
-        /// <summary>About how many independent pieces of work the factor is cut into for the job threads.</summary>
+        /// <summary>
+        /// The approximate number of independent pieces of factorization work to distribute among job threads.
+        /// </summary>
         public int ChunkTarget;
 
         /// <summary>
-        /// Orders sections by minimum degree instead of leaves-inward along the section tree with hubs last. The tree
-        /// order lets every strut fill the whole tree path between its ends, which on strutted craft leaves a wide,
-        /// serial top; minimum degree keeps the fill near what the struts themselves add.
+        /// Orders sections by minimum degree. Otherwise, sections are ordered from the leaves inward along the section
+        /// tree, with hubs last. With tree ordering, each strut can introduce matrix fill along the entire tree path
+        /// between its ends. On craft with struts, this creates a large block near the root that must be processed
+        /// serially. Minimum degree ordering limits fill to roughly the entries introduced by the struts themselves.
         /// </summary>
         public bool MinimumDegree;
 
         /// <summary>
-        /// Whether locked edges' loads include the centripetal force of a spinning section. The solve itself has no
-        /// gyroscopic or centripetal terms, so loads without it close exactly against the live rows' impulses.
+        /// Whether loads on locked edges include the centripetal force of a rotating section. The solver has no
+        /// gyroscopic or centripetal terms. If centripetal force is excluded from these loads, they balance exactly
+        /// against the impulses from active rows.
         /// </summary>
         public bool CentripetalLoads;
 

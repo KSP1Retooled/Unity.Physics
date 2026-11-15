@@ -6,32 +6,40 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Sparse solvers kept from one solve to the next, so each island can reuse what its solver worked out last time. The
-    /// caller of a step owns this and passes it in <see cref="SimulationStepInput"/>. Without one, nothing is reused.
+    /// Caches sparse solvers between solves so islands can reuse previous analysis. The caller owns this cache and
+    /// passes it in <see cref="SimulationStepInput"/>. Without a cache, each solve starts without results from a
+    /// previous solve.
     ///
-    /// An island keeps its solver by its first body, the lowest-numbered, rather than by its place among the islands: a craft
-    /// that drops a stage or lands beside another keeps its body numbers, while every island after a new one moves up a place.
-    /// A solver handed to another island costs a new analysis and nothing else, because a solver checks everything it reuses
-    /// against the problem it is given.
+    /// Slots are matched by each island's first body, which has its lowest body index, rather than by
+    /// the island's index. Adding an island can change later island indices without changing their body indices. The
+    /// first body is a useful key while those body indices remain stable, including when a craft drops a stage or lands
+    /// near another craft. A solver can also be assigned to a different island: it validates cached analysis against
+    /// the new problem and repeats analysis when necessary.
     /// </summary>
     public unsafe struct DirectSolverCache : IDisposable
     {
-        // Beyond this many islands the rest solve from scratch, which the craft that matter never reach.
+        // Cache at most this many islands per step. Any additional islands solve without cached data.
         const int Capacity = 64;
 
         struct Slot
         {
             public SparseConstraintSolver Solver;
 
-            /// <summary>The island's vessel forest, or null until a forest solve first asks for one.</summary>
+            /// <summary>
+            /// The island's vessel forest, created when first needed and null until then.
+            /// </summary>
             public ForestIsland* Forest;
 
-            /// <summary>The first body of the island the solver last solved, or -1 if it has never solved one.</summary>
+            /// <summary>
+            /// The first body of the island last assigned to this slot, or -1 if the slot has never been assigned.
+            /// </summary>
             public int Key;
 
             public bool Created;
 
-            /// <summary>The step this slot last went to an island.</summary>
+            /// <summary>
+            /// The step in which this slot was last assigned to an island.
+            /// </summary>
             public long LastUsed;
         }
 
@@ -39,8 +47,9 @@ namespace Unity.Physics
         Slot* slots;
 
         /// <summary>
-        /// Each island's slot this step, or -1 for an island that solves from scratch. Empty until a step assigns slots, in
-        /// which case an island's slot is its index.
+        /// The cache slot for each island in this step, or -1 if the island has no slot and must solve without cached
+        /// data. Before slots have been assigned, this list is empty and lookups use the island index as the slot
+        /// index.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<int>* slotOfIsland;
@@ -67,29 +76,46 @@ namespace Unity.Physics
         internal const int ForestBoundaryTime = 8;
         internal const int ForestDriftTime = 9;
 
-        /// <summary>Sections and locked pairs summed over forest solves, structure rebuilds, lock changes, rebuild time.</summary>
+        /// <summary>
+        /// Counters for total sections and locked pairs across forest solves, structure rebuilds, lock changes, and
+        /// time spent rebuilding.
+        /// </summary>
         internal const int ForestSectionSum = 10;
         internal const int ForestLockedSum = 11;
         internal const int ForestStructureBuilds = 12;
         internal const int ForestLockChanges = 13;
         internal const int ForestStructureTime = 14;
 
-        /// <summary>The largest momentum left at a section's first body by inverse dynamics, in nano N s, and the last solve's sections.</summary>
+        /// <summary>
+        /// Counters for the largest residual momentum at a section's first body after inverse dynamics, in units of
+        /// 1e-9 N s, and the section and locked-pair counts from the last solve.
+        /// </summary>
         internal const int ForestResidual = 15;
         internal const int ForestLastSections = 16;
         internal const int ForestLastLocked = 17;
 
-        /// <summary>The largest deflection the lock tests read after the last solve (a step's mean), in nanoradians.</summary>
+        /// <summary>
+        /// The most recently recorded deflection, stored in nanoradians. NoteDeflection replaces the previous value;
+        /// it does not compute a maximum or an average.
+        /// </summary>
         internal const int ForestLastDeflection = 18;
 
-        /// <summary>Time the forest path spent turning sections' answers into bodies' and locked pairs' loads, once per solve.</summary>
+        /// <summary>
+        /// Time spent after the initial forest solve computing body impulses and loads on locked pairs from the section
+        /// results.
+        /// </summary>
         internal const int ForestSettleTime = 19;
 
-        /// <summary>Lock changes of pairs with a contact on either body, and the most boundary rows a fallback had.</summary>
+        /// <summary>
+        /// Counters for lock changes on pairs with a contact on either body, and the maximum boundary row count among
+        /// fallback solves.
+        /// </summary>
         internal const int ForestContactLockChanges = 20;
         internal const int ForestFallbackBoundaryMax = 21;
 
-        /// <summary>Ticks in the forest path's one-lane parts, see ForestRun.ClassifyTicks.</summary>
+        /// <summary>
+        /// Time in timestamp ticks spent in serial portions of the forest solver path. See ForestRun.ClassifyTicks.
+        /// </summary>
         internal const int ForestClassifyTime = 22;
         internal const int ForestDecideTime = 23;
         internal const int ForestSumsTime = 24;
@@ -127,8 +153,8 @@ namespace Unity.Physics
         internal bool IsCreated => slots != null;
 
         /// <summary>
-        /// Whether, and how, direct islands solve as a forest plus a boundary. A default cache has no forest. Set between
-        /// steps; the setting reaches every copy of the cache.
+        /// Controls whether and how direct islands are solved using a forest and a boundary block. A default cache has
+        /// no forest settings. Set this between steps; all copies of the cache refer to the same settings.
         /// </summary>
         public ForestSettings Forest
         {
@@ -143,12 +169,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The forest an island keeps between solves, or null if there is none to keep. Like <see cref="Solver"/>, an island
-        /// asks only for its own slot's, so islands solving in parallel never share one.
-        /// </summary>
-        /// <summary>
-        /// Since the cache was made: how many island solves took the forest path, how many forest-enabled solves fell back
-        /// to the sparse solver, and how many times a forest structure was built.
+        /// Returns counts since cache creation: island solves that used the forest path, solves with forests enabled
+        /// that fell back to the sparse solver, and forest structure builds.
         /// </summary>
         public void GetForestCounts(out long solves, out long fallbacks, out long builds)
         {
@@ -158,9 +180,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Milliseconds spent since the cache was made, summed over islands and substeps: sparse solves from their start
-        /// to their impulses applied, and the forest path's start (classify, factor, boundary block), its solves, and its
-        /// finish (drift, application, push-out), with the factor and boundary block of the start apart.
+        /// Returns elapsed milliseconds since cache creation, summed across islands and substeps. Sparse time covers
+        /// solving through impulse application. Forest times cover preparation (classification, factorization and
+        /// boundary construction), solving, and finishing (drift correction, impulse application and push-out).
+        /// Factorization and boundary construction times are also returned separately as portions of preparation.
         /// </summary>
         public void GetSolveTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
             out double forestFactor, out double forestBoundary)
@@ -175,12 +198,18 @@ namespace Unity.Physics
             forestBoundary = forestCounters != null ? forestCounters[ForestBoundaryTime] * scale : 0;
         }
 
-        /// <summary>Milliseconds the forest path spent settling its sections after its first solve, inside its finish.</summary>
+        /// <summary>
+        /// Returns milliseconds spent computing body impulses and loads after the initial forest solve. This time is
+        /// also included in the forest finish time.
+        /// </summary>
         public double ForestSettleMilliseconds => forestCounters != null ? forestCounters[ForestSettleTime]
             * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6) : 0;
 
-        /// <summary>Milliseconds the forest path spent aiming at the predicted drift, inside its finish.</summary>
+        /// <summary>
+        /// Returns milliseconds recorded for correcting predicted drift in the forest path. This time is also included
+        /// in the forest finish time.
+        /// </summary>
         public double ForestDriftMilliseconds => forestCounters != null ? forestCounters[ForestDriftTime]
             * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6) : 0;
@@ -240,18 +269,23 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>A forest counter by its index, for tests and benches.</summary>
+        /// <summary>
+        /// Returns a forest counter by index for tests and benchmarks.
+        /// </summary>
         internal long ForestCounter(int counter) => forestCounters != null ? forestCounters[counter] : 0;
 
-        /// <summary>A forest time counter in milliseconds.</summary>
+        /// <summary>
+        /// Returns a forest time counter converted to milliseconds.
+        /// </summary>
         internal double ForestMilliseconds(int counter) => ForestCounter(counter)
             * (Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6);
 
         /// <summary>
-        /// For diagnostics, every kept forest's tree pairs by their deflection against the lock and yield angles: bins
-        /// below half the lock angle, below it, below the yield angle, below twice it, and past it; each split by whether
-        /// a contact touches the pair (index + 5) and counted again in <paramref name="locked"/> if the pair is locked.
+        /// Builds a diagnostic histogram for tree edges in cached forests used in the current step. The five deflection
+        /// bins are below half the lock angle, below the lock angle, below the yield angle, below twice the yield
+        /// angle, and at or above twice the yield angle. Pairs with a contact on either body use the corresponding bin
+        /// at index + 5. Counts each pair in <paramref name="all"/> and each locked pair in <paramref name="locked"/>.
         /// </summary>
         internal void DeflectionHistogram(float lockAngle, float yieldAngle, long* all, long* locked)
         {
@@ -293,7 +327,10 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>The largest deflection the lock tests read after the last forest solve (a step's mean), in radians.</summary>
+        /// <summary>
+        /// Returns the most recently recorded deflection in radians, or zero if no deflection has been recorded.
+        /// This property does not compute a maximum or an average over a step.
+        /// </summary>
         public double LastDeflection => forestCounters != null ? forestCounters[ForestLastDeflection] * 1e-9 : 0;
 
         internal void NoteResidual(double residual)
@@ -318,9 +355,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Since the cache was made: sections and locked pairs summed over forest solves, structure rebuilds, lock changes,
-        /// milliseconds spent rebuilding, the largest inverse-dynamics residual in N s, and the last solve's sections and
-        /// locked pairs.
+        /// Returns statistics since cache creation: total sections and locked pairs across forest solves, structure
+        /// rebuilds, lock changes, milliseconds spent rebuilding, and the largest residual from inverse dynamics in N
+        /// s. Also returns the section and locked-pair counts from the last solve.
         /// </summary>
         public void GetSectionCounts(out long sectionSum, out long lockedSum, out long structureBuilds, out long lockChanges,
             out double structureMilliseconds, out double residual, out long lastSections, out long lastLocked)
@@ -347,8 +384,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Forgets every island's forest: its pairs, lock states and structure. An island keeps them by its first body, so a
-        /// new scene of the same shape would otherwise start with the last one's; tests that compare runs call this.
+        /// Discards every cached forest, including its pairs, lock states and structure. Forests are matched by an
+        /// island's first body, so a new scene with the same body indices could otherwise reuse the previous scene's
+        /// forest. Tests call this when comparing independent runs.
         /// </summary>
         public void ForgetForests()
         {
@@ -359,6 +397,11 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Returns the cached forest for an island, creating it if needed, or null if the island has no valid cache
+        /// slot. Like <see cref="Solver"/>, this accesses only the island's assigned slot, so islands solved in
+        /// parallel do not share a forest.
+        /// </summary>
         internal ForestIsland* ForestOf(int island)
         {
             if (slots == null)
@@ -381,8 +424,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Gives every island of a step its slot, from the first body of each. Runs on one thread before any island solves.
-        /// An island takes back the slot its first body had, and the rest take the slots longest out of use.
+        /// Assigns cache slots for the step using each island's first body as its key. Runs on one thread before any
+        /// island is solved. First reuses slots with matching keys, then assigns the remaining islands the least
+        /// recently used slots that are still available. Islands beyond the cache capacity receive no slot.
         /// </summary>
         internal void Assign(NativeArray<int> firstBodies)
         {
@@ -442,8 +486,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The solver for an island, or null if there is none to keep. Islands solve in parallel, so this creates a solver
-        /// only for the island asking, and no two islands ever share a slot.
+        /// Returns the solver for an island, creating it if needed, or null if the island has no valid cache slot. Each
+        /// island accesses only its assigned slot, so islands solved in parallel do not share a solver.
         /// </summary>
         internal SparseConstraintSolver* Solver(int island)
         {

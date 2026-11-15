@@ -3,29 +3,34 @@ using Unity.Collections.LowLevel.Unsafe;
 namespace Unity.Physics
 {
     /// <summary>
-    /// The persistent vessels of a step: what the caller compiled from its joints, handed to the simulation in
-    /// <see cref="SimulationStepInput.VesselSet"/>. A vessel is a connected group of moving bodies held together by part
-    /// joints, autostruts and struts. Its joints never become Unity Physics joints: the direct solver solves them with the
-    /// vessel kernel's own rows (<see cref="VesselEdge"/>, <see cref="VesselClosure"/>), coupled to everything else in the
-    /// island (contacts, the remaining joints) through the forest path's boundary block, and writes each edge's load back
-    /// here.
+    /// The persistent vessels that the caller compiled from its joints and supplies through
+    /// <see cref="SimulationStepInput.VesselSet"/>. A vessel is a connected group of moving bodies held together by
+    /// part joints, autostruts and struts. Its joints are represented by the vessel kernel's rows
+    /// (<see cref="VesselEdge"/>, <see cref="VesselClosure"/>), rather than Unity Physics joints. The direct solver
+    /// couples these rows to the contacts and remaining joints in the island through the forest solver's boundary
+    /// block. It writes the load on each edge back to this set.
     /// </summary>
+    ///
     /// <remarks>
-    /// The caller owns every array and keeps them alive until the step completes. Parts of a vessel are contiguous and in
-    /// parent-first order; edge i belongs to part i. <see cref="VesselEdge.Parent"/>, <see cref="VesselClosure.PartA"/> and
-    /// <see cref="VesselClosure.PartB"/> count from the vessel's first part. A body belongs to at most one vessel.
-    /// Every vessel body is dynamic; a joint to the world, a static or a kinematic body is not a vessel edge and stays a
-    /// Unity Physics joint.
+    /// The caller owns every array and must keep them alive until the step completes. Each vessel's parts occupy a
+    /// contiguous range, with parents before their children. Edge i belongs to part i. The indices in
+    /// <see cref="VesselEdge.Parent"/>, <see cref="VesselClosure.PartA"/> and <see cref="VesselClosure.PartB"/> are
+    /// relative to the vessel's first part. A body belongs to at most one vessel. All vessel bodies are dynamic. Joints
+    /// to the world, static bodies or kinematic bodies remain Unity Physics joints and are not vessel edges.
     /// <para>
-    /// A part's frame is its body's motion frame (<see cref="MotionData.WorldFromMotion"/>): its origin is the centre of
-    /// mass, and its axes are the principal axes of inertia. Edge and closure anchors, frames and rest orientations are
-    /// given in these frames. For a body whose inertia isn't rotated, the motion frame turns with the body's own frame.
+    /// A part uses its body's motion frame (<see cref="MotionData.WorldFromMotion"/>). The origin is the centre of
+    /// mass, and the axes are the principal axes of inertia. Anchors, frames and rest orientations for edges and
+    /// closures are expressed in these motion frames. If the body's inertia is not rotated, its motion frame rotates
+    /// with its body frame.
     /// </para>
+    ///
     /// <para>
-    /// Hard rows: a <see cref="VesselEdge.TwistStiffness"/> or <see cref="VesselEdge.SwingStiffness"/> of
-    /// <see cref="double.PositiveInfinity"/>, and a closure stiffness of <see cref="double.PositiveInfinity"/>, mean the axis
-    /// is held as a hard row (<see cref="VesselSolverSettings.HardPeriod"/>), as a linear edge row always is.
+    /// An axis is constrained by a hard row when <see cref="VesselEdge.TwistStiffness"/>,
+    /// <see cref="VesselEdge.SwingStiffness"/> or the corresponding closure stiffness is
+    /// <see cref="double.PositiveInfinity"/>. See <see cref="VesselSolverSettings.HardPeriod"/>. Linear rows for edges
+    /// are always hard rows.
     /// </para>
+    ///
     /// </remarks>
     public unsafe struct VesselSet
     {
@@ -34,11 +39,13 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         public VesselRecord* Vessels;
 
-        /// <summary>Each part's body, as its index among the dynamics world's bodies this step.</summary>
+        /// <summary>The index of each part's body in the dynamics world for this step.</summary>
         [NativeDisableUnsafePtrRestriction]
         public int* PartBodies;
 
-        /// <summary>One edge per part; a vessel's first part is its root, whose edge has <see cref="VesselEdge.Parent"/> -1.</summary>
+        /// <summary>
+        /// One edge per part. The first part of a vessel is its root, with <see cref="VesselEdge.Parent"/> set to -1.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public VesselEdge* Edges;
 
@@ -46,22 +53,25 @@ namespace Unity.Physics
         public VesselClosure* Closures;
 
         /// <summary>
-        /// Written by the solve, one per part: the force that the parent part applied to the child part through the edge,
-        /// and the torque about the joint point, both in world space. Each is the step's impulse over the step's time,
-        /// which is the mean over the substeps. The ratio is the larger of the force over the break force and the torque
-        /// over the break torque. A root's entry is zero.
+        /// The solver writes one load per part: the force that the parent applied to the child through the edge, and
+        /// the torque about the joint point. Both are in world space. Force and torque are calculated by dividing the
+        /// impulses accumulated over the step by the step duration, giving the mean over all substeps. The ratio is the
+        /// larger of force divided by break force and torque divided by break torque. The entry for a root is zero.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public VesselEdgeLoad* EdgeLoads;
 
         /// <summary>
-        /// Written by the solve, one per closure, as <see cref="EdgeLoads"/>: the force and torque that part A applied to
-        /// part B, in world space, with the torque about the joint point.
+        /// The solver writes one load per closure, calculated as for <see cref="EdgeLoads"/>. It contains the force and
+        /// torque that part A applied to part B, in world space, with torque measured about the joint point.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public VesselEdgeLoad* ClosureLoads;
 
-        /// <summary>Written by the solve, one per part: whether the edge was locked (folded into its parent's section) this step.</summary>
+        /// <summary>
+        /// The solver writes one value per part to indicate whether its edge was locked into the parent's section
+        /// during this step.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public bool* EdgeLocked;
 
@@ -72,8 +82,9 @@ namespace Unity.Physics
         static readonly Unity.Burst.SharedStatic<VesselSet> TestSetShared = Unity.Burst.SharedStatic<VesselSet>.GetOrCreate<TestSetKey>();
 
         /// <summary>
-        /// For tests, until the caller builds the set: a set that the step uses whenever its input has none. The test owns
-        /// the arrays and keeps them alive while it steps. Set it to default to stop.
+        /// A set for tests to use until the caller builds its own set. The simulation uses this set when no set is
+        /// supplied in the step input. The test owns the arrays and must keep them alive while stepping. Set this to
+        /// default to stop using it.
         /// </summary>
         public static VesselSet TestSet
         {
@@ -81,20 +92,26 @@ namespace Unity.Physics
             set => TestSetShared.Data = value;
         }
 
-        /// <summary>The step's set: <paramref name="input"/> if it has one, and otherwise <see cref="TestSet"/>.</summary>
+        /// <summary>
+        /// Returns <paramref name="input"/> if it contains vessels; otherwise returns <see cref="TestSet"/>.
+        /// </summary>
         internal static VesselSet OrTestSet(in VesselSet input) => input.IsCreated ? input : TestSetShared.Data;
     }
 
-    /// <summary>One vessel of a <see cref="VesselSet"/>.</summary>
+    /// <summary>Describes one vessel in a <see cref="VesselSet"/>.</summary>
     public struct VesselRecord
     {
         /// <summary>
-        /// Unique for the life of the caller and never reused, so the solver can key what it keeps per vessel (its structure,
-        /// its edges' lock states) on it. A vessel recompiled with different parts gets a new one.
+        /// An identifier that is unique for the caller's lifetime and is never reused. The solver uses it as the key
+        /// for cached vessel structure and edge lock states. Assign a new identifier when recompiling a vessel with
+        /// different parts.
         /// </summary>
         public ulong Id;
 
-        /// <summary>Changes whenever the vessel's parts, edges' parents, edge states or closures change; not for parameters.</summary>
+        /// <summary>
+        /// Changes when the parts, edge parents, edge states or closures change. Parameter changes do not change this
+        /// version.
+        /// </summary>
         public uint StructureVersion;
 
         public int FirstPart;

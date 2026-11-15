@@ -153,9 +153,9 @@ namespace Unity.Physics
             internal ulong BodyIndexASubArraySortKey => (ulong)m_BodyIndexB << 32 | m_Data;
 
             /// <summary>
-            /// Whether two pairs conflict on nothing but each other, so can run one after another on a thread in place of taking
-            /// a phase each: they are on the same two bodies, or the same dynamic body and any static one, since nothing writes
-            /// to a static body. The sorted order puts such pairs next to each other.
+            /// Whether two pairs can be processed sequentially on one thread in the same phase, rather than requiring
+            /// separate phases. They must use the same two bodies, or the same dynamic body with any static bodies.
+            /// Static bodies are never written. Sorting places these pairs next to each other.
             /// </summary>
             internal bool IsSameLink(DispatchPair other, int numDynamicBodies) => BodyIndexA == other.BodyIndexA
                 && (BodyIndexB == other.BodyIndexB || (BodyIndexB >= numDynamicBodies && other.BodyIndexB >= numDynamicBodies));
@@ -319,7 +319,9 @@ namespace Unity.Physics
             /// <summary> Work item index (buffer) where this dispatch pair's Jacobian data is located in the Jacobian stream </summary>
             public int WorkItemIndex;
 
-            /// <summary> How many constraint blocks follow in a row: a contact pair has one for each manifold. </summary>
+            /// <summary>
+            /// The number of consecutive constraint blocks. A contact pair has one block per manifold.
+            /// </summary>
             public int NumBlocks;
 
             /// <summary> Indicates whether this mapping is valid </summary>
@@ -376,8 +378,8 @@ namespace Unity.Physics
             public NativeList<int> DispatchPairIslandInfoCounts;
 
             /// <summary>
-            /// The dynamic bodies of the islands, grouped by island, with the first of each in
-            /// <see cref="FirstIslandBodyIndices"/>. An island that integrates its own substeps integrates these.
+            /// The dynamic bodies grouped by island. <see cref="FirstIslandBodyIndices"/> identifies the start of each
+            /// group. When an island integrates its own substeps, it integrates the bodies in this group.
             /// </summary>
             [NoAlias]
             public NativeList<int> IslandBodies;
@@ -386,13 +388,16 @@ namespace Unity.Physics
             [NoAlias]
             public NativeList<int> FirstIslandBodyIndices;
 
-            /// <summary> For each dynamic body, whether it is in an island. Empty if there are no islands. </summary>
+            /// <summary>
+            /// Indicates whether each dynamic body belongs to an island. The list is empty if there are no islands.
+            /// </summary>
             [NoAlias]
             public NativeList<bool> BodiesInIslands;
 
             /// <summary>
-            /// How many contacts each island has, in <see cref="DispatchPairIslandInfos"/> straight after the joints that
-            /// <see cref="DispatchPairIslandInfoCounts"/> counts, where the direct solver doesn't see them.
+            /// The number of contacts in each island. In <see cref="DispatchPairIslandInfos"/>, contacts follow the
+            /// joints counted by <see cref="DispatchPairIslandInfoCounts"/>. Keeping contacts outside that count
+            /// excludes them from the joint information read by the direct solver.
             /// </summary>
             [NoAlias]
             public NativeList<int> IslandContactCounts;
@@ -481,7 +486,8 @@ namespace Unity.Physics
                                                         // Index for this pair in the global dispatch pair array is
                                                         // IterativeSolverSchedulerInfo.FirstDispatchPairIndex + SolvePhaseInfo.FirstDispatchPairOffset.
                 internal bool ContainsDuplicateIndices; // Indicates that there are duplicate body indices across batches within this phase.
-                internal int LinkedNumDynamicBodies;    // Above zero if a link's pairs must stay in one work item: see DispatchPair.IsSameLink.
+                internal int LinkedNumDynamicBodies;    // Positive when all pairs of a link must stay in one work item.
+                                                        // See DispatchPair.IsSameLink.
             }
 
             [NoAlias]
@@ -505,7 +511,9 @@ namespace Unity.Physics
             // Total number of dispatch pairs in all phases for this scheduler info.
             internal NativeReference<int> NumDispatchPairs;
 
-            /// <summary> Each work item's first pair and count, in phases of links. </summary>
+            /// <summary>
+            /// The first pair and pair count for each work item in phases that group pairs by link.
+            /// </summary>
             [NoAlias]
             internal NativeList<int2> LinkedWorkItemRanges;
 
@@ -548,8 +556,9 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// As <see cref="GetWorkItemReadOffset(int, out int)"/>, for jobs that read the pairs, which in a phase of links
-            /// take the ranges <see cref="FindLinkedWorkItemRanges"/> set.
+            /// Returns the pair offset and count for a job that reads pairs. In phases that group pairs by link, uses
+            /// the ranges set by <see cref="FindLinkedWorkItemRanges"/>. For other phases, uses
+            /// <see cref="GetWorkItemReadOffset(int, out int)"/>.
             /// </summary>
             internal int GetLinkedWorkItemReadOffset(int workItemIndexOffset, out int pairReadCount)
             {
@@ -564,8 +573,9 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Sets every work item's range in the phases of links. It has to run before any job reads the pairs: building
-            /// Jacobians invalidates a pair without contacts while other work items are still finding where theirs start.
+            /// Sets the pair range for each work item in phases that group pairs by link. Run this before jobs read the
+            /// pairs. Otherwise, one job could invalidate a pair with no contacts while building Jacobians, while
+            /// another job is still using that pair to find the start of its range.
             /// </summary>
             internal void FindLinkedWorkItemRanges(NativeArray<DispatchPair> dispatchPairs)
             {
@@ -578,8 +588,10 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// In a phase of links, a link belongs to the work item it starts in, however far it reaches: two work items of a
-            /// phase run at once. A work item that lies wholly inside a link is left with nothing.
+            /// In a phase that groups pairs by link, assigns all pairs of a link to the work item in which the link
+            /// starts, even if they extend beyond its original range. Work items in a phase can run concurrently, so
+            /// they must not split a link. A work item whose entire range is inside another work item's link receives
+            /// no pairs.
             /// </summary>
             int FindLinkedReadOffset(int workItemIndexOffset, NativeArray<DispatchPair> dispatchPairs, out int pairReadCount)
             {
@@ -1341,7 +1353,8 @@ namespace Unity.Physics
                 NumWorkers = numWorkers
             }.Schedule(dispatchPairsHandle);
 
-            // Perform coupling detection (unless direct solver is forced on for everything or islands decide)
+            // Detect coupling unless all pairs are forced to use the direct solver or solver selection is determined
+            // per island.
             if (!stepInput.DirectSolverSettings.ForceDirectSolver && stepInput.DirectIslandSubsteps == 0)
             {
                 couplingDetectionHandle = new DetectCouplingConstraintsJob

@@ -45,28 +45,28 @@ namespace Unity.Physics
         public Solver.DirectSolverSettings DirectSolverSettings;
 
         /// <summary>
-        /// Above zero, sorts every constraint by the island it belongs to instead of by its own solver type, and solves each
-        /// island one way. An island that fits in <see cref="DispatchPairSequencer.NumIslandPhases"/> phases runs one substep
-        /// of <see cref="NumSolverIterations"/> iterations. Any other goes whole to the direct solver with this many substeps
-        /// of its own, so nothing is coupled between the solvers and the jobs of a step don't depend on what it contains.
+        /// When positive, groups constraints by island rather than by individual solver type. Each island uses a single
+        /// solver. An island that fits within <see cref="DispatchPairSequencer.NumIslandPhases"/> phases uses one
+        /// iterative substep with <see cref="NumSolverIterations"/> iterations. All other islands use the direct
+        /// solver, with this value as their substep count. This avoids coupling between the solvers and allows the
+        /// step's jobs to be scheduled without knowing which constraints it contains.
         /// </summary>
         public int DirectIslandSubsteps;
 
         /// <summary>
-        /// Lets the direct solver keep its work from one solve to the next. It belongs to the caller, and a default one means
-        /// nothing is kept.
+        /// The caller-owned cache for reusing work between direct solves. The default value disables caching.
         /// </summary>
         public DirectSolverCache DirectSolverCache;
 
         /// <summary>
-        /// Lets the island sort keep the islands it found while the solved pairs stay the same. It belongs to the caller, and
-        /// a default one means the islands are found afresh every step.
+        /// The caller-owned cache for reusing islands while the pairs being solved remain unchanged. With the default
+        /// value, islands are found again every step.
         /// </summary>
         public SolverIslandCache SolverIslandCache;
 
         /// <summary>
-        /// The caller's persistent vessels, whose joints the direct solver solves with the vessel kernel's own rows. A default
-        /// one means there are none.
+        /// The caller's persistent vessels. The direct solver solves their joints using the vessel kernel's rows. The
+        /// default value supplies no vessels.
         /// </summary>
         public VesselSet VesselSet;
 
