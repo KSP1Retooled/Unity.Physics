@@ -127,6 +127,20 @@ namespace KSP.Retooled.Physics
         public float LockFraction;
         public float YieldFraction;
 
+        /// <summary>
+        /// Whether the step has vessels. The solver solves the joints of a vessel that takes part in the step, so the
+        /// build makes no Unity Physics joints for them, see <see cref="AppendVesselUnit"/>.
+        /// </summary>
+        public bool Vessels;
+
+        /// <summary>For each unit, the vessel that it belongs to, or -1.</summary>
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        /// <summary>For each vessel, 1 when it takes part in this step.</summary>
+        [ReadOnly]
+        public NativeArray<byte> VesselActive;
+
         private PhysicsJoint pending;
         private JointForestRole role;
         private JointForestLock forestLock;
@@ -149,7 +163,11 @@ namespace KSP.Retooled.Physics
                     forestLock = UnitLock(unit);
                 }
             }
-            if (unit.Group < 0)
+            if (Vessels && UnitVessels[index] >= 0 && VesselActive[UnitVessels[index]] != 0)
+            {
+                AppendVesselUnit(unit);
+            }
+            else if (unit.Group < 0)
             {
                 Append(World->joints[unit.Joint]);
             }
@@ -274,7 +292,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>The drive on one rotation axis: the twist drive about x, and the swing drive about y and z.</summary>
-        private static NativeStore.JointAxis* AngularDrive(NativeStore.JointData* joint, int axis)
+        internal static NativeStore.JointAxis* AngularDrive(NativeStore.JointData* joint, int axis)
         {
             return NativeStore.AxisOf(joint, axis == 0 ? NativeStore.AxisAngularX : NativeStore.AxisAngularYZ);
         }
@@ -296,7 +314,7 @@ namespace KSP.Retooled.Physics
         /// <summary>An angle in radians that a merged group, holding its rotation, never turns through.</summary>
         private const float UnreachedAngle = 0.5f;
 
-        private static bool HasAxisDrive(NativeStore.JointAxis* drive)
+        internal static bool HasAxisDrive(NativeStore.JointAxis* drive)
         {
             return drive->driveMaxForce > 0.0f && (drive->driveSpring > 0.0f || drive->driveDamper > 0.0f);
         }
@@ -309,10 +327,77 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private void AppendGroup(int index)
         {
+            JointGroup group = PrepareGroup(index, out float3 anchor0, out float3 anchor1);
+            NativeStore.JointData* leader = World->joints[group.Leader];
+            if (!Begin(leader, anchor0, anchor1, new Entity { Index = index, Version = JointGroup.EntityVersion }))
+            {
+                return;
+            }
+
+            Constraint linear = Constraint.BallAndSocket(ReportEveryImpulse);
+            linear.DirectStiffnessScale = group.MemberCount;
+            Add(linear);
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (group.Stiffness[axis] > 0.0f)
+                {
+                    Constraint angular = Constraint.Twist(axis, new FloatRange(0.0f, 0.0f), ReportEveryImpulse);
+                    angular.DirectStiffnessScale = group.Stiffness[axis];
+                    Add(angular);
+                }
+            }
+
+            Flush();
+        }
+
+        /// <summary>
+        /// A unit of a vessel that takes part in this step. The solver solves it with the vessel's own rows, so it gets no
+        /// Unity Physics joint. The only exception is a joint that stops its two bodies from colliding: it keeps a joint
+        /// with no constraints, because Unity Physics reads that joint to decide which bodies collide. A group still works
+        /// out its stiffness and its members' offsets, because the members' share of the group's load is worked out from
+        /// them after the step.
+        /// </summary>
+        private void AppendVesselUnit(JointUnit unit)
+        {
+            NativeStore.JointData* leader = World->joints[unit.Joint];
+            float3 anchor0 = leader->position0;
+            float3 anchor1 = leader->position1;
+            Entity entity = new Entity { Index = (int)leader->index, Version = 1 };
+            if (unit.Group >= 0)
+            {
+                PrepareGroup(unit.Group, out anchor0, out anchor1);
+                entity = new Entity { Index = unit.Group, Version = JointGroup.EntityVersion };
+            }
+
+            if ((leader->flags & NativeStore.JointFlagCollisionEnabled) != 0)
+            {
+                return;
+            }
+
+            int indexA = BuiltIndex(leader->body1);
+            int indexB = BuiltIndex(leader->body0);
+            pending = new PhysicsJoint
+            {
+                BodyPair = new BodyIndexPair { BodyIndexA = indexA, BodyIndexB = indexB },
+                AFromJoint = new MTransform(leader->rotation1, anchor1),
+                BFromJoint = new MTransform(leader->rotation0, anchor0),
+                Entity = entity,
+                EnableCollision = false,
+            };
+            pending.Constraints.Length = 0;
+            Write(pending);
+        }
+
+        /// <summary>
+        /// Works out a group's mean anchors, its stiffness in multiples of the direct solve's cap on a rotation, and each
+        /// member's offset and stiffness, and writes them to the group and its members.
+        /// </summary>
+        private JointGroup PrepareGroup(int index, out float3 anchor0, out float3 anchor1)
+        {
             JointGroup group = Groups[index];
             NativeStore.JointData* leader = World->joints[group.Leader];
-            float3 anchor0 = float3.zero;
-            float3 anchor1 = float3.zero;
+            anchor0 = float3.zero;
+            anchor1 = float3.zero;
             for (int i = 0; i < group.MemberCount; i++)
             {
                 NativeStore.JointData* member = World->joints[Members[group.FirstMember + i].Joint];
@@ -340,26 +425,7 @@ namespace KSP.Retooled.Physics
             }
 
             Groups[index] = group;
-
-            if (!Begin(leader, anchor0, anchor1, new Entity { Index = index, Version = JointGroup.EntityVersion }))
-            {
-                return;
-            }
-
-            Constraint linear = Constraint.BallAndSocket(ReportEveryImpulse);
-            linear.DirectStiffnessScale = group.MemberCount;
-            Add(linear);
-            for (int axis = 0; axis < 3; axis++)
-            {
-                if (group.Stiffness[axis] > 0.0f)
-                {
-                    Constraint angular = Constraint.Twist(axis, new FloatRange(0.0f, 0.0f), ReportEveryImpulse);
-                    angular.DirectStiffnessScale = group.Stiffness[axis];
-                    Add(angular);
-                }
-            }
-
-            Flush();
+            return group;
         }
 
         /// <summary>

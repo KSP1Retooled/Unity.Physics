@@ -54,6 +54,11 @@ namespace KSP.Retooled.Physics
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
         private DirectSolverCache directSolverCache;
+
+        // The vessels compiled from the joints, and whether they were compiled for the current groups.
+        private VesselBuild vesselBuild;
+        private VesselSet vesselSet;
+        private bool compiled;
         private SolverIslandCache solverIslandCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -106,6 +111,7 @@ namespace KSP.Retooled.Physics
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
+            vesselBuild = VesselBuild.Create();
             solverIslandCache = SolverIslandCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -159,6 +165,7 @@ namespace KSP.Retooled.Physics
             jointLoads.Dispose();
             groupLoads.Dispose();
             directSolverCache.Dispose();
+            vesselBuild.Dispose();
             solverIslandCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -282,10 +289,23 @@ namespace KSP.Retooled.Physics
             return wheels;
         }
 
-        /// <summary>Drops the overlaps nothing will solve, then sorts what's left into islands.</summary>
-        internal JobHandle SortIslands(SimulationSingleton singleton, in SimulationStepInput input, JobHandle dependency)
+        /// <summary>The store that this state steps. For tests.</summary>
+        internal readonly NativeStore.WorldData* Store => store;
+
+        /// <summary>The vessels that the last build compiled. For tests.</summary>
+        internal readonly VesselBuild Vessels => vesselBuild;
+
+        /// <summary>The set of vessels that the last build handed to the step. For tests.</summary>
+        internal readonly VesselSet VesselSet => vesselSet;
+
+        /// <summary>
+        /// Drops the overlaps nothing will solve, then sorts what's left into islands. The island finder needs the step's
+        /// vessels, so they go into the input here.
+        /// </summary>
+        internal JobHandle SortIslands(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
             using var span = BackendMarkers.StepSchedule.Auto();
+            input.VesselSet = vesselSet;
 
             Simulation* simulation = singleton.AsSimulationPtr();
             if (input.World.NumDynamicBodies == 0)
@@ -387,7 +407,7 @@ namespace KSP.Retooled.Physics
 
             directSolverCache.Forest = new ForestSettings
             {
-                Enabled = VesselForest.Enabled,
+                Enabled = VesselForest.Enabled || VesselPipeline.Enabled,
                 BoundaryRowCap = VesselForest.BoundaryRowCap,
                 Locking = VesselForest.Locking,
                 LockAngle = VesselForest.LockAngle,
@@ -395,6 +415,7 @@ namespace KSP.Retooled.Physics
                 MinimumHoldSteps = VesselForest.MinimumHoldSteps,
             };
             input.DirectSolverCache = directSolverCache;
+            input.VesselSet = vesselSet;
             return new WarmStartJob
             {
                 WarmStarts = warmStarts,
@@ -411,9 +432,10 @@ namespace KSP.Retooled.Physics
         /// One chain of jobs, which runs beside the tree's update and the query snapshot: the events are turned beside the
         /// seeding, and summed into the loads once both are done.
         /// </remarks>
-        private JobHandle ReadJointForces(Simulation simulation, float deltaTime)
+        private JobHandle ReadJointForces(NativeStream events, float deltaTime)
         {
             const int groupsPerBatch = 16;
+            const int vesselLoadsPerBatch = 64;
 
             int jointCount = (int)store->jointCount;
             jointLoads.ResizeUninitialized(jointCount);
@@ -421,7 +443,6 @@ namespace KSP.Retooled.Physics
             UnsafeUtility.MemClear(groupLoads.GetUnsafePtr(), (long)groupLoads.Length * sizeof(JointLoad));
 
             JobHandle loaded = new SeedJointLoadsJob { World = store, Loads = jointLoads.AsArray() }.Schedule(jointCount, ParallelBatchSize);
-            NativeStream events = simulation.ImpulseEvents.EventDataStream;
             if (events.IsCreated)
             {
                 JobHandle rotated = new RotateJointImpulsesJob
@@ -438,6 +459,24 @@ namespace KSP.Retooled.Physics
                     JointLoads = jointLoads.AsArray(),
                     GroupLoads = groupLoads.AsArray(),
                 }.Schedule(JobHandle.CombineDependencies(loaded, rotated));
+            }
+
+            // The joints of the vessels raise no impulse events. The solve wrote their loads into the vessel set instead.
+            if (vesselSet.IsCreated)
+            {
+                loaded = new VesselLoadsJob
+                {
+                    Units = jointUnits.AsArray(),
+                    PartUnits = vesselBuild.PartUnits.AsArray(),
+                    ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
+                    PartIsBody0 = vesselBuild.PartIsBody0.AsArray(),
+                    UnitVessels = vesselBuild.UnitVessels.AsArray(),
+                    Active = vesselBuild.Active.AsArray(),
+                    EdgeLoads = vesselBuild.EdgeLoads.AsArray(),
+                    ClosureLoads = vesselBuild.ClosureLoads.AsArray(),
+                    JointLoads = jointLoads.AsArray(),
+                    GroupLoads = groupLoads.AsArray(),
+                }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, loaded);
             }
 
             JobHandle shared = new ShareGroupLoadsJob
@@ -459,6 +498,15 @@ namespace KSP.Retooled.Physics
                 Loads = jointLoads.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(settled);
+        }
+
+        /// <summary>
+        /// Turns the loads in the vessel set into the joints' loads, smooths them and breaks the overloaded joints, as the
+        /// end of a step does. For tests, which write the loads by hand after a step.
+        /// </summary>
+        internal void ReadVesselLoads(float deltaTime)
+        {
+            ReadJointForces(default, deltaTime).Complete();
         }
 
         /// <summary>The last stage of a step, which hands the solved world back to the store and to Unity.</summary>
@@ -502,7 +550,7 @@ namespace KSP.Retooled.Physics
             JobHandle forces;
             using (BackendMarkers.StepReadJointForces.Auto())
             {
-                forces = ReadJointForces(simulation, deltaTime);
+                forces = ReadJointForces(simulation.ImpulseEvents.EventDataStream, deltaTime);
             }
 
             // What a removed shape held wakes after the joints read who sleeps, and before the sleep and the contact report
@@ -829,10 +877,12 @@ namespace KSP.Retooled.Physics
 
                 // Nothing the groups are found from changed since the last step found them, so they stand. The build
                 // rewrites what it reads from them that depends on more than that.
-                bool forest = VesselForest.Enabled;
+                bool vessels = VesselPipeline.Enabled;
+                bool forest = VesselForest.Enabled || vessels;
                 uint topology = JointTopology.Version;
                 JobHandle groupsFound = dependency;
-                if (!grouped || topology != groupedTopology || forest != groupedForest)
+                bool regrouped = !grouped || topology != groupedTopology || forest != groupedForest;
+                if (regrouped)
                 {
                     groupsFound = new GroupJointsJob
                     {
@@ -847,6 +897,34 @@ namespace KSP.Retooled.Physics
                     grouped = true;
                     groupedTopology = topology;
                     groupedForest = forest;
+                }
+
+                // The vessels follow from the groups and roles, so they are compiled again whenever those are. The step
+                // has to know how many vessels there are when it schedules the island finder, so this runs here and now.
+                // It only happens when the topology changes.
+                if (vessels && (!compiled || regrouped))
+                {
+                    groupsFound.Complete();
+                    new CompileVesselsJob
+                    {
+                        World = store,
+                        Units = jointUnits.AsArray(),
+                        Roles = jointRoles.AsArray(),
+                        Build = vesselBuild,
+                    }.Run();
+                    compiled = true;
+                }
+                else if (!vessels && compiled)
+                {
+                    vesselBuild.Clear(0);
+                    compiled = false;
+                }
+
+                vesselSet = default;
+                if (vessels)
+                {
+                    vesselBuild.ChooseStepVessels(store, builtIndices.AsArray(), dynamicIndices.Length);
+                    vesselSet = vesselBuild.Set();
                 }
 
                 // Each unit builds a number of joints only it knows, so each writes its own run of a stream.
@@ -867,7 +945,43 @@ namespace KSP.Retooled.Physics
                     Locking = forest && VesselForest.Locking,
                     LockFraction = VesselForest.LockFraction,
                     YieldFraction = VesselForest.YieldFraction,
+                    Vessels = vesselSet.IsCreated,
+                    UnitVessels = vesselBuild.UnitVessels.AsArray(),
+                    VesselActive = vesselBuild.Active.AsArray(),
                 }.Schedule(jointUnits, JointBatchSize, allocated);
+
+                // The edges read the groups that the joints' build writes, so they wait for it.
+                JobHandle edgesFilled = emitted;
+                if (vesselSet.IsCreated)
+                {
+                    edgesFilled = new FillVesselEdgesJob
+                    {
+                        World = store,
+                        BuiltIndices = builtIndices.AsArray(),
+                        Units = jointUnits.AsDeferredJobArray(),
+                        Groups = jointGroups.AsDeferredJobArray(),
+                        Members = jointGroupMembers.AsDeferredJobArray(),
+                        PartStoreBodies = vesselBuild.PartStoreBodies.AsArray(),
+                        PartUnits = vesselBuild.PartUnits.AsArray(),
+                        PartParents = vesselBuild.PartParents.AsArray(),
+                        PartIsBody0 = vesselBuild.PartIsBody0.AsArray(),
+                        PartVesselFirst = vesselBuild.PartVesselFirst.AsArray(),
+                        PartBodies = vesselBuild.PartBodies.AsArray(),
+                        Edges = vesselBuild.Edges.AsArray(),
+                    }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, emitted);
+
+                    edgesFilled = new FillVesselClosuresJob
+                    {
+                        World = store,
+                        Units = jointUnits.AsDeferredJobArray(),
+                        Groups = jointGroups.AsDeferredJobArray(),
+                        Members = jointGroupMembers.AsDeferredJobArray(),
+                        ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
+                        ClosurePartA = vesselBuild.ClosurePartA.AsArray(),
+                        ClosurePartB = vesselBuild.ClosurePartB.AsArray(),
+                        Closures = vesselBuild.Closures.AsArray(),
+                    }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, edgesFilled);
+                }
 
                 JobHandle laidOut = new LayOutJointsJob
                 {
@@ -882,7 +996,7 @@ namespace KSP.Retooled.Physics
                     Output = world.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
                 }.Schedule(jointsWritten, CopyBatchSize, laidOut);
 
-                joints = stream.Dispose(copied);
+                joints = JobHandle.CombineDependencies(stream.Dispose(copied), edgesFilled);
             }
 
             using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();
