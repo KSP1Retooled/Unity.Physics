@@ -290,6 +290,10 @@ namespace Unity.Physics
                 angularDamping = closure->AngularDamping;
             }
 
+            // A stiffness of infinity asks for a hard row: the caller marks an axis that way when it is locked.
+            Harden(ref linearStiffness, ref linearDamping, hardLinear, dampingPerStiffness);
+            Harden(ref angularStiffness, ref angularDamping, hardAngular, dampingPerStiffness);
+
             double3x3 childRotation = Rotation(child->Orientation);
             double3x3 parentRotation = Rotation(parent->Orientation);
             double3 childPoint = child->Position + math.mul(childRotation, childAnchor);
@@ -404,6 +408,19 @@ namespace Unity.Physics
 
             (double6.Load(childRhs) + childSum).Store(childRhs);
             (double6.Load(parentRhs) + parentSum).Store(parentRhs);
+        }
+
+        /// <summary>Gives each axis whose stiffness is infinite the hard stiffness, and the damping that goes with it.</summary>
+        static void Harden(ref double3 stiffness, ref double3 damping, double hard, double dampingPerStiffness)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                if (double.IsPositiveInfinity(stiffness[i]))
+                {
+                    stiffness[i] = hard;
+                    damping[i] = hard * dampingPerStiffness;
+                }
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

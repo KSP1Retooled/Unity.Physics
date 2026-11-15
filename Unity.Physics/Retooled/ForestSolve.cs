@@ -87,12 +87,30 @@ namespace Unity.Physics
             public NativeArray<byte> BlockInSection;
 
             public int* WorldBodies;
+
+            /// <summary>Each body of the dynamics world's compact number in the island, or -1.</summary>
+            public int* CompactOfWorld;
+            public int CompactOfWorldLength;
             public MotionVelocity* MotionVelocities;
             public MotionData* MotionDatas;
             public float Timestep;
 
             /// <summary>The lanes that share the island's solve, or null.</summary>
             public SparseSolveTeam* Team;
+
+            /// <summary>
+            /// For a vessel island: its sections' velocities from the vessel's own rows and the fixed rows, before the
+            /// boundary acts. The boundary's solve starts from these rather than from rest.
+            /// </summary>
+            public NativeArray<double> BaseVelocity;
+
+            /// <summary>Whether the run solves a vessel island with the vessel kernel's own rows.</summary>
+            public bool VesselMode;
+
+            /// <summary>For a vessel island: the step's vessels and which of them the island holds.</summary>
+            public VesselSet Vessels;
+            public int* IslandVessels;
+            public int IslandVesselCount;
 
             /// <summary>How long the factor, the boundary block and any structure rebuild took, in profiler timestamp units.</summary>
             public long FactorTicks;
@@ -121,9 +139,12 @@ namespace Unity.Physics
             {
                 RowClass.Dispose();
                 BlockSections.Dispose();
-
                 RowBlock.Dispose();
-                ForestBlocks.Dispose();
+                if (ForestBlocks.IsCreated)
+                {
+                    ForestBlocks.Dispose();
+                }
+
                 Boundary.Dispose();
                 BoundaryOf.Dispose();
                 W.Dispose();
@@ -142,6 +163,11 @@ namespace Unity.Physics
                     Arm.Dispose();
                     OwnLinear.Dispose();
                     OwnAngular.Dispose();
+                }
+
+                if (BaseVelocity.IsCreated)
+                {
+                    BaseVelocity.Dispose();
                 }
 
                 if (BlockInSection.IsCreated)
@@ -495,7 +521,28 @@ namespace Unity.Physics
                 scratch.Dispose();
             }
 
-            // The boundary block, from forward substitutions along each boundary row's elimination-tree path.
+            coupled.Dispose();
+            run.FactorTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - factorStarted;
+            BuildBoundary(ref run, boundaryRows);
+            return true;
+        }
+
+        /// <summary>
+        /// The boundary block W = J_b A^-1 J_b^T + E_b over the run's boundary rows, against the factor the run's forest holds.
+        /// Each boundary row's forward substitution only walks the sections on its elimination-tree path, and two rows'
+        /// entry in W is the sum over the sections that both paths share.
+        /// </summary>
+        static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows)
+        {
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            ForestIsland* forest = run.Forest;
+            ref VesselContext context = ref forest->Context;
+            int rows = problem.RowCount;
+            int sections = forest->SectionCount;
+            float* jacobian = run.Jacobian;
+            NativeArray<byte> rowClass = run.RowClass;
+            NativeArray<int> rowBlock = run.RowBlock;
+            NativeArray<int2> blockSections = run.BlockSections;
             var boundary = new NativeArray<int>(math.max(1, boundaryRows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var boundaryOf = new NativeArray<int>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             int nb = 0;
@@ -606,14 +653,11 @@ namespace Unity.Physics
                 pathZ.Dispose();
             }
 
-            coupled.Dispose();
             run.Boundary = boundary;
             run.BoundaryOf = boundaryOf;
             run.W = w;
             run.BoundaryCount = nb;
-            run.FactorTicks = boundaryStarted - factorStarted;
             run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
-            return true;
         }
 
         static ulong BlockKey(in SparseConstraintSolver.ConstraintBlock block, bool tree)
@@ -934,8 +978,15 @@ namespace Unity.Physics
             double* work = (double*)run.Work.GetUnsafePtr();
             UnsafeUtility.MemClear(v, run.Velocity.Length * (long)sizeof(double));
 
+            // A vessel run already has the sections' velocities without the boundary, from its own rows and the fixed rows.
+            bool vesselStart = run.BaseVelocity.IsCreated;
+            if (vesselStart)
+            {
+                UnsafeUtility.MemCpy(v, run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
+            }
+
             // b = J_f^T E_f^-1 r_f, plus the known impulses of fixed rows; then the forest's own answer.
-            for (int row = 0; row < rows; row++)
+            for (int row = 0; row < rows && !vesselStart; row++)
             {
                 byte rowClass = run.RowClass[row];
                 double scale;
@@ -955,7 +1006,10 @@ namespace Unity.Physics
                 AddRow(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, scale);
             }
 
-            SolveAgainstFactor(ref run, v);
+            if (!vesselStart)
+            {
+                SolveAgainstFactor(ref run, v);
+            }
 
             // The boundary: (J_b A^-1 J_b^T + E_b) z = r_b - J_b v0, bounded.
             int nb = run.BoundaryCount;
@@ -1050,6 +1104,12 @@ namespace Unity.Physics
             long summing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             SumBodyImpulses(problem, impulses, linear, angular);
             run.BodyImpulseTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - summing;
+            if (run.VesselMode)
+            {
+                SettleVessel(ref run, problem, impulses, linear, angular, pushOut);
+                return;
+            }
+
             if (!run.MultiPart)
             {
                 return;

@@ -193,6 +193,7 @@ namespace Unity.Physics
                 JacobiansReader = jacobians.AsReader(),
                 Work = work,
                 Cache = stepInput.DirectSolverCache,
+                Vessels = stepInput.VesselSet,
             }.Schedule(jacobiansBuilt);
 
             handle = JobHandle.CombineDependencies(handle, inputDeps);
@@ -243,6 +244,7 @@ namespace Unity.Physics
                     Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
+                    IslandVessels = work.IslandVessels.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
                     StepInput = substepInput,
@@ -255,6 +257,7 @@ namespace Unity.Physics
                     Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
+                    IslandVessels = work.IslandVessels.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
                     StepInput = substepInput,
@@ -298,11 +301,22 @@ namespace Unity.Physics
             public int JointRows;
 
             /// <summary>
-            /// Whether the island's sparse solve is big enough to share among lanes. A smaller one finishes before helpers
-            /// would gain anything, and runs beside the others.
+            /// The island's vessels, as a range of <see cref="DirectIslandWork.IslandVessels"/>, and how many parts they have
+            /// together. An island with a vessel solves even when it has no rows.
             /// </summary>
-            public bool SolvesInTeam => Rows >= SharedSolveRows;
+            public int FirstVessel;
+            public int VesselCount;
+            public int VesselParts;
+
+            /// <summary>
+            /// Whether the island's solve is big enough to share among lanes. A smaller one finishes before helpers would gain
+            /// anything, and runs beside the others.
+            /// </summary>
+            public bool SolvesInTeam => Rows >= SharedSolveRows || VesselParts >= SharedSolveParts;
         }
+
+        /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
+        const int SharedSolveParts = 256;
 
         const int SharedSolveRows = 512;
 
@@ -428,17 +442,23 @@ namespace Unity.Physics
             public NativeList<DirectIsland> Islands;
             public DirectIslandBuffers Buffers;
 
+            /// <summary> Each island's vessels, as indices among the step's vessels. </summary>
+            public NativeList<int> IslandVessels;
+
             public DirectIslandWork(int substeps, Allocator allocator)
             {
                 Headers = new NativeList<IslandHeader>(allocator);
                 Islands = new NativeList<DirectIsland>(allocator);
                 Buffers = new DirectIslandBuffers(substeps, allocator);
+                IslandVessels = new NativeList<int>(allocator);
             }
 
             public JobHandle Dispose(JobHandle inputDeps)
             {
                 JobHandle buffers = new DestroyDirectIslandBuffersJob { Buffers = Buffers }.Schedule(inputDeps);
-                return JobHandle.CombineDependencies(Headers.Dispose(inputDeps), Islands.Dispose(inputDeps), buffers);
+                return JobHandle.CombineDependencies(
+                    JobHandle.CombineDependencies(Headers.Dispose(inputDeps), Islands.Dispose(inputDeps), buffers),
+                    IslandVessels.Dispose(inputDeps));
             }
         }
 
@@ -469,9 +489,40 @@ namespace Unity.Physics
 
             public DirectSolverCache Cache;
 
+            public VesselSet Vessels;
+
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
+
+                // Which vessel each dynamic body is a part of, or -1.
+                int bodyCount = Info.BodiesInIslands.Length;
+                var bodyVessel = new NativeArray<int>(Vessels.IsCreated ? bodyCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < bodyVessel.Length; i++)
+                {
+                    bodyVessel[i] = -1;
+                }
+
+                for (int v = 0; v < Vessels.VesselCount && bodyVessel.Length > 0; v++)
+                {
+                    VesselRecord vessel = Vessels.Vessels[v];
+                    for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                    {
+                        int body = Vessels.PartBodies[part];
+                        if (body >= 0 && body < bodyCount)
+                        {
+                            bodyVessel[body] = v;
+                        }
+                    }
+                }
+
+                var vesselSeen = new NativeArray<int>(Vessels.IsCreated ? Vessels.VesselCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int v = 0; v < vesselSeen.Length; v++)
+                {
+                    vesselSeen[v] = -1;
+                }
+
+                Work.IslandVessels.Clear();
                 if (Cache.IsCreated)
                 {
                     var firstBodies = new NativeArray<int>(islandCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -513,6 +564,22 @@ namespace Unity.Physics
                         headerRows->Add(GetConstraintRows(ref header));
                     }
 
+                    int firstVessel = Work.IslandVessels.Length, vesselParts = 0;
+                    if (bodyVessel.Length > 0)
+                    {
+                        int bodiesEnd = island + 1 < islandCount ? Info.FirstIslandBodyIndices[island + 1] : Info.IslandBodies.Length;
+                        for (int b = Info.FirstIslandBodyIndices[island]; b < bodiesEnd; b++)
+                        {
+                            int v = bodyVessel[Info.IslandBodies[b]];
+                            if (v >= 0 && vesselSeen[v] != island)
+                            {
+                                vesselSeen[v] = island;
+                                Work.IslandVessels.Add(v);
+                                vesselParts += Vessels.Vessels[v].PartCount;
+                            }
+                        }
+                    }
+
                     Work.Islands[island] = new DirectIsland
                     {
                         FirstHeader = firstHeader,
@@ -520,6 +587,9 @@ namespace Unity.Physics
                         SolveEnd = touchesSomething ? Work.Headers.Length : firstHeader + jointHeaders,
                         HeaderEnd = Work.Headers.Length,
                         ContactPairs = touchesSomething ? numContacts : 0,
+                        FirstVessel = firstVessel,
+                        VesselCount = Work.IslandVessels.Length - firstVessel,
+                        VesselParts = vesselParts,
                     };
                 }
 
@@ -752,6 +822,9 @@ namespace Unity.Physics
 
             public DirectIslandBuffers Work;
 
+            [ReadOnly]
+            public NativeArray<int> IslandVessels;
+
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
 
@@ -764,7 +837,7 @@ namespace Unity.Physics
             {
                 if (!Islands[islandIndex].SolvesInTeam)
                 {
-                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
+                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
                 }
             }
         }
@@ -789,6 +862,9 @@ namespace Unity.Physics
             public NativeArray<DirectIsland> Islands;
 
             public DirectIslandBuffers Work;
+
+            [ReadOnly]
+            public NativeArray<int> IslandVessels;
 
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
@@ -819,7 +895,7 @@ namespace Unity.Physics
                 {
                     if (Islands[islandIndex].SolvesInTeam)
                     {
-                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
+                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
                     }
                 }
 
@@ -831,13 +907,13 @@ namespace Unity.Physics
 
         static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
             in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
-            ref NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<int> islandVessels, ref NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int islandIndex, SparseSolveTeam* team)
         {
             DirectIsland island = islands[islandIndex];
             using (DirectSolveMarker.Auto())
             {
-                if (island.Rows > 0)
+                if (island.Rows > 0 || island.VesselCount > 0)
                 {
                     JacobianRows rows = work.Rows(island);
                     Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
@@ -846,7 +922,8 @@ namespace Unity.Physics
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
                         (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,
                         (IslandHeader*)headers.GetUnsafeReadOnlyPtr() + island.FirstHeader, work.HeaderRows->Ptr + island.FirstHeader,
-                        island.SolveEnd - island.FirstHeader, work.Recovery->Ptr + island.FirstRow);
+                        island.SolveEnd - island.FirstHeader, work.Recovery->Ptr + island.FirstRow,
+                        (int*)islandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, island.VesselCount);
                 }
             }
         }

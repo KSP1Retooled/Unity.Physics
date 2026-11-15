@@ -17,6 +17,11 @@ namespace Unity.Physics
     /// Every vessel body is dynamic; a joint to the world, a static or a kinematic body is not a vessel edge and stays a
     /// Unity Physics joint.
     /// <para>
+    /// A part's frame is its body's motion frame (<see cref="MotionData.WorldFromMotion"/>): its origin is the centre of
+    /// mass, and its axes are the principal axes of inertia. Edge and closure anchors, frames and rest orientations are
+    /// given in these frames. For a body whose inertia isn't rotated, the motion frame turns with the body's own frame.
+    /// </para>
+    /// <para>
     /// Hard rows: a <see cref="VesselEdge.TwistStiffness"/> or <see cref="VesselEdge.SwingStiffness"/> of
     /// <see cref="double.PositiveInfinity"/>, and a closure stiffness of <see cref="double.PositiveInfinity"/>, mean the axis
     /// is held as a hard row (<see cref="VesselSolverSettings.HardPeriod"/>), as a linear edge row always is.
@@ -56,6 +61,23 @@ namespace Unity.Physics
         public bool* EdgeLocked;
 
         public bool IsCreated => Vessels != null && VesselCount > 0;
+
+        struct TestSetKey { }
+
+        static readonly Unity.Burst.SharedStatic<VesselSet> TestSetShared = Unity.Burst.SharedStatic<VesselSet>.GetOrCreate<TestSetKey>();
+
+        /// <summary>
+        /// For tests, until the caller builds the set: a set that the step uses whenever its input has none. The test owns
+        /// the arrays and keeps them alive while it steps. Set it to default to stop.
+        /// </summary>
+        public static VesselSet TestSet
+        {
+            get => TestSetShared.Data;
+            set => TestSetShared.Data = value;
+        }
+
+        /// <summary>The step's set: <paramref name="input"/> if it has one, and otherwise <see cref="TestSet"/>.</summary>
+        internal static VesselSet OrTestSet(in VesselSet input) => input.IsCreated ? input : TestSetShared.Data;
     }
 
     /// <summary>One vessel of a <see cref="VesselSet"/>.</summary>

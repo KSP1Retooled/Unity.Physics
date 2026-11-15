@@ -1,0 +1,814 @@
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
+using Unity.Numerics;
+using Unity.Profiling;
+
+namespace Unity.Physics
+{
+    public static partial class Solver
+    {
+        static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Solve");
+
+        /// <summary>
+        /// The steps that a locked edge keeps its state for before it may yield on load, and that a yielding edge keeps its
+        /// state for before it may lock again. Past the edge's break strength, the edge yields at once.
+        /// </summary>
+        const int VesselHoldSteps = 10;
+
+        /// <summary>
+        /// Used when the caller leaves an edge's fractions at zero. A locked edge yields at half its break strength, and a
+        /// yielding edge locks again below a quarter of it.
+        /// </summary>
+        const double DefaultYieldFraction = 0.5;
+
+        const double DefaultRelockFraction = 0.5;
+
+        /// <summary>
+        /// Solves a direct island that holds one or more vessels. The vessels' edges and closures are solved with the vessel
+        /// kernel's own rows. Every Jacobian row of the island (contacts, and the joints that are not vessel edges) forms a
+        /// boundary block, which the solve couples to the vessels through the kernel's factor.
+        ///
+        /// Every moving body of the island is a part of the factor. A body that isn't in a vessel becomes a part on its own.
+        /// The solve works with the sections' velocities themselves rather than with changes to them, so the boundary rows'
+        /// right-hand sides get back the bodies' current rates. Afterwards, every body takes the impulse that gives it its
+        /// section's motion, and the edges' loads go to the vessel set.
+        /// </summary>
+        static unsafe void SolveVesselIsland(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+            in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
+            bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
+            bool sparseContacts, SparseSolveTeam* team, bool applyImpulses, float* impulses)
+        {
+            using ProfilerMarker.AutoScope span = VesselSolveMarker.Auto();
+
+            // An island without a kept forest (the cache is full or missing) builds one for this solve alone.
+            ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
+            bool temporary = forest == null;
+            if (temporary)
+            {
+                forest = ForestIsland.Create();
+            }
+
+            int* world = (int*)worldBodies.GetUnsafeReadOnlyPtr();
+            var run = new ForestRun
+            {
+                Forest = forest,
+                Problem = problem,
+                Bounded = bounded,
+                Headers = headers,
+                VesselMode = true,
+                Vessels = stepInput.VesselSet,
+                IslandVessels = islandVessels,
+                IslandVesselCount = islandVesselCount,
+                WorldBodies = world,
+                CompactOfWorld = (int*)compactBodies.GetUnsafeReadOnlyPtr(),
+                CompactOfWorldLength = compactBodies.Length,
+                MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                Timestep = stepInput.Timestep,
+                Team = team,
+            };
+
+            int builds = forest->StructureBuilds;
+            PrepareVesselParts(ref run, stepInput.CurrentSubstep);
+            StartVesselRun(ref run);
+            stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestSolves);
+            stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
+
+            var bodyLinear = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var linear = (float3*)bodyLinear.GetUnsafePtr();
+            var angular = (float3*)bodyAngular.GetUnsafePtr();
+            SolveForest(ref run, problem.RightHandSide, impulses);
+            SettleForest(ref run, problem, impulses, linear, angular, false);
+
+            // A row that holds a position aims at where the integrator will really take its constraint; the vessel's own rows
+            // hold their positions through their errors, which they read from the parts' poses every substep.
+            if (holdsPositions && problem.RowCount > 0)
+            {
+                var drift = new NativeArray<float>(problem.RowCount, Allocator.Temp);
+                float* driftPtr = (float*)drift.GetUnsafePtr();
+                if (AimAtPredictedDrift(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities,
+                    motionDatas, stepInput.Timestep, jacobianRows, driftPtr, team, true))
+                {
+                    for (int row = 0; row < problem.RowCount; row++)
+                    {
+                        problem.RightHandSide[row] += driftPtr[row];
+                    }
+
+                    SolveForest(ref run, problem.RightHandSide, impulses);
+                    SettleForest(ref run, problem, impulses, linear, angular, false);
+                }
+
+                drift.Dispose();
+            }
+
+            if (applyImpulses)
+            {
+                ApplySparseImpulses(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities, motionDatas,
+                    sparseContacts, team);
+                if (recovery != null)
+                {
+                    SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
+                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run);
+                }
+            }
+
+            WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
+            bodyLinear.Dispose();
+            bodyAngular.Dispose();
+            run.Dispose();
+            if (temporary)
+            {
+                ForestIsland.Destroy(forest);
+            }
+        }
+
+        /// <summary>
+        /// Lays out the island's parts: each vessel's parts in order, then each moving body that isn't in a vessel, as a part
+        /// on its own. When the island's vessels or extra bodies differ from last time, the lock states are carried over
+        /// from vessels that are still the same, and the structure is rebuilt. At a step's first substep, each edge's lock
+        /// state is tested against the load it carried over the last step.
+        /// </summary>
+        static unsafe void PrepareVesselParts(ref ForestRun run, int substep)
+        {
+            ForestIsland* forest = run.Forest;
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            VesselSet set = run.Vessels;
+            int bodies = problem.BodyCount;
+
+            // Which compact bodies are vessel parts, and the island's layout.
+            var bodyIsPart = new NativeArray<byte>(math.max(1, bodies), Allocator.Temp);
+            var signature = new NativeList<ulong>(4 + 4 * run.IslandVesselCount, Allocator.Temp);
+            signature.Add((ulong)run.IslandVesselCount);
+            int partCount = 0, closureCount = 0;
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                signature.Add(vessel.Id);
+                signature.Add(vessel.StructureVersion);
+                signature.Add(((ulong)(uint)vessel.PartCount << 32) | (uint)vessel.ClosureCount);
+                partCount += vessel.PartCount;
+                closureCount += vessel.ClosureCount;
+            }
+
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    int body = CompactOf(run, set.PartBodies[part]);
+                    if (body >= 0)
+                    {
+                        bodyIsPart[body] = 1;
+                    }
+                }
+            }
+
+            for (int body = 0; body < bodies; body++)
+            {
+                if (bodyIsPart[body] == 0)
+                {
+                    signature.Add(0x8000000000000000UL | (uint)run.WorldBodies[body]);
+                    partCount++;
+                }
+            }
+
+            bool same = forest->VesselMode && forest->VesselSignature.Length == signature.Length;
+            for (int i = 0; same && i < signature.Length; i++)
+            {
+                same = forest->VesselSignature[i] == signature[i];
+            }
+
+            bool rebuild = !same;
+            if (!same)
+            {
+                CarryVesselStates(forest, signature, run, partCount, closureCount);
+            }
+
+            // Fill this substep's parts, edges and closures.
+            forest->Parts.Resize(partCount);
+            forest->Edges.Resize(partCount);
+            forest->Closures.Resize(closureCount);
+            forest->PartBody.Resize(partCount);
+            forest->BodyPart.Resize(math.max(1, bodies));
+            for (int body = 0; body < bodies; body++)
+            {
+                forest->BodyPart[body] = -1;
+            }
+
+            int next = 0, nextClosure = 0;
+            bool firstSubstep = substep <= 0;
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                int start = next;
+                for (int k = 0; k < vessel.PartCount; k++)
+                {
+                    int setPart = vessel.FirstPart + k;
+                    int part = next++;
+                    int body = CompactOf(run, set.PartBodies[setPart]);
+                    forest->PartBody[part] = body;
+                    if (body >= 0)
+                    {
+                        forest->BodyPart[body] = part;
+                    }
+
+                    VesselEdge edge = set.Edges[setPart];
+                    edge.Parent = edge.Parent >= 0 ? start + edge.Parent : -1;
+                    if (edge.Parent >= 0 && firstSubstep && TestLock(forest, part, edge))
+                    {
+                        rebuild = true;
+                    }
+
+                    if (edge.Parent >= 0 && forest->PartLocked[part] != 0)
+                    {
+                        edge.State = VesselEdgeState.Locked;
+                    }
+                    else if (edge.State == VesselEdgeState.Locked)
+                    {
+                        edge.State = VesselEdgeState.Yielding;
+                    }
+
+                    forest->Edges[part] = edge;
+                }
+
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    VesselClosure closure = set.Closures[c];
+                    closure.PartA += start;
+                    closure.PartB += start;
+                    forest->Closures[nextClosure++] = closure;
+                }
+            }
+
+            for (int body = 0; body < bodies; body++)
+            {
+                if (bodyIsPart[body] == 0)
+                {
+                    int part = next++;
+                    forest->PartBody[part] = body;
+                    forest->BodyPart[body] = part;
+                    forest->Edges[part] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding };
+                }
+            }
+
+            for (int part = 0; part < partCount; part++)
+            {
+                forest->Parts[part] = PartOf(run, forest->PartBody[part]);
+            }
+
+            if (rebuild)
+            {
+                BuildVesselStructure(forest);
+            }
+
+            // The island numbers its bodies afresh every solve, so each body's section is found again too.
+            forest->BodySection.Resize(math.max(1, bodies));
+            for (int body = 0; body < bodies; body++)
+            {
+                int part = forest->BodyPart[body];
+                forest->BodySection[body] = part >= 0 ? forest->Structure.PartSection[part] : -1;
+            }
+
+            bodyIsPart.Dispose();
+            signature.Dispose();
+        }
+
+        /// <summary>The compact body of a body of the dynamics world, or -1 if the island doesn't have it.</summary>
+        static unsafe int CompactOf(in ForestRun run, int worldBody) =>
+            worldBody >= 0 && worldBody < run.CompactOfWorldLength ? run.CompactOfWorld[worldBody] : -1;
+
+        /// <summary>A body as a kernel part: its mass and principal inertia, and its pose and velocity in world space.</summary>
+        static unsafe VesselPart PartOf(in ForestRun run, int compact)
+        {
+            if (compact < 0)
+            {
+                return new VesselPart { Mass = 1.0, Inertia = 1.0, Orientation = new double4(0, 0, 0, 1) };
+            }
+
+            int body = run.WorldBodies[compact];
+            MotionVelocity motion = run.MotionVelocities[body];
+            RigidTransform pose = run.MotionDatas[body].WorldFromMotion;
+            return new VesselPart
+            {
+                Mass = 1.0 / math.max((double)motion.InverseMass, 1e-12),
+                Inertia = 1.0 / math.max((double3)motion.InverseInertia, 1e-12),
+                Position = pose.pos,
+                Orientation = pose.rot.value,
+                LinearVelocity = motion.LinearVelocity,
+                AngularVelocity = math.rotate(pose.rot, motion.AngularVelocity),
+            };
+        }
+
+        /// <summary>
+        /// Lays the island's parts out anew and carries over the lock state of each part whose vessel is still the same. A
+        /// new vessel's edges start locked where they may lock, which makes a new craft rigid from its first step.
+        /// </summary>
+        static unsafe void CarryVesselStates(ForestIsland* forest, NativeList<ulong> signature, in ForestRun run, int partCount,
+            int closureCount)
+        {
+            VesselSet set = run.Vessels;
+
+            // The old layout: each kept vessel's Id, version and first part.
+            var old = new NativeHashMap<ulong, int2>(math.max(1, forest->VesselPartStart.Length), Allocator.Temp);
+            if (forest->VesselMode)
+            {
+                int oldCount = forest->VesselSignature.Length > 0 ? (int)forest->VesselSignature[0] : 0;
+                for (int i = 0; i < oldCount && 3 * i + 2 < forest->VesselSignature.Length; i++)
+                {
+                    old.TryAdd(forest->VesselSignature[1 + 3 * i], new int2((int)forest->VesselSignature[2 + 3 * i], forest->VesselPartStart[i]));
+                }
+            }
+
+            var locked = new NativeArray<byte>(math.max(1, partCount), Allocator.Temp);
+            var held = new NativeArray<int>(math.max(1, partCount), Allocator.Temp);
+            var ratio = new NativeArray<float>(math.max(1, partCount), Allocator.Temp);
+            forest->VesselPartStart.Resize(run.IslandVesselCount);
+            int next = 0;
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                forest->VesselPartStart[i] = next;
+                bool kept = old.TryGetValue(vessel.Id, out int2 before) && (uint)before.x == vessel.StructureVersion;
+                for (int k = 0; k < vessel.PartCount; k++)
+                {
+                    int part = next + k;
+                    if (kept)
+                    {
+                        locked[part] = forest->PartLocked[before.y + k];
+                        held[part] = forest->PartHeld[before.y + k];
+                        ratio[part] = forest->PartRatio[before.y + k];
+                    }
+                    else
+                    {
+                        VesselEdge edge = set.Edges[vessel.FirstPart + k];
+                        locked[part] = (byte)(edge.Parent >= 0 && edge.MayLock ? 1 : 0);
+                        held[part] = VesselHoldSteps;
+                        ratio[part] = 0.0f;
+                    }
+                }
+
+                next += vessel.PartCount;
+            }
+
+            forest->PartLocked.Resize(math.max(1, partCount));
+            forest->PartHeld.Resize(math.max(1, partCount));
+            forest->PartRatio.Resize(math.max(1, partCount));
+            for (int part = 0; part < partCount; part++)
+            {
+                forest->PartLocked[part] = part < next ? locked[part] : (byte)0;
+                forest->PartHeld[part] = part < next ? held[part] : 0;
+                forest->PartRatio[part] = part < next ? ratio[part] : 0.0f;
+            }
+
+            forest->VesselSignature.Clear();
+            for (int i = 0; i < signature.Length; i++)
+            {
+                forest->VesselSignature.Add(signature[i]);
+            }
+
+            forest->VesselMode = true;
+
+            // The handed-in rows' forest must rebuild if the island ever goes back to it.
+            forest->Signature.Clear();
+            forest->Signature.Add(ulong.MaxValue);
+            old.Dispose();
+            locked.Dispose();
+            held.Dispose();
+            ratio.Dispose();
+        }
+
+        /// <summary>
+        /// Tests one edge's lock state against the load it carried over the last step, once per step, and returns whether
+        /// the state changed. A locked edge yields once its load passes its yield fraction of its break strength, and a
+        /// yielding edge locks again once its load falls below its relock fraction of that. Either way the edge first keeps
+        /// its state for <see cref="VesselHoldSteps"/>, unless the load reaches the break strength itself.
+        /// </summary>
+        static unsafe bool TestLock(ForestIsland* forest, int part, in VesselEdge edge)
+        {
+            int held = forest->PartHeld[part];
+            if (held < int.MaxValue / 2)
+            {
+                forest->PartHeld[part] = ++held;
+            }
+
+            bool locked = forest->PartLocked[part] != 0;
+            double ratio = forest->PartRatio[part];
+            double yield = edge.YieldFraction > 0.0 ? edge.YieldFraction : DefaultYieldFraction;
+            double relock = (edge.RelockFraction > 0.0 ? edge.RelockFraction : DefaultRelockFraction) * yield;
+            bool settled = held >= VesselHoldSteps;
+            bool next = locked
+                ? ratio < 1.0 && (ratio < yield || !settled)
+                : edge.MayLock && settled && ratio < relock;
+            if (!edge.MayLock)
+            {
+                next = false;
+            }
+
+            if (next == locked)
+            {
+                return false;
+            }
+
+            forest->PartLocked[part] = (byte)(next ? 1 : 0);
+            forest->PartHeld[part] = 0;
+            return true;
+        }
+
+        /// <summary>
+        /// Builds the kernel's structure for the island's parts, edges and closures, and the context that points into the
+        /// island's arrays. The kernel builds the rows itself from the parts' poses.
+        /// </summary>
+        static unsafe void BuildVesselStructure(ForestIsland* forest)
+        {
+            forest->StructureBuilds++;
+            new BuildVesselStructureJob
+            {
+                Parts = View(forest->Parts.Ptr, forest->Parts.Length),
+                Edges = View(forest->Edges.Ptr, forest->Edges.Length),
+                Closures = View(forest->Closures.Ptr, forest->Closures.Length),
+                HubClosures = 16,
+                ChunkTarget = 96,
+                MinimumDegree = true,
+                Structure = &forest->Structure,
+            }.Execute();
+
+            ref VesselStructure s = ref forest->Structure;
+            int parts = forest->Parts.Length;
+            int sections = forest->SectionCount;
+            int blocks = sections + s.Header[VesselStructure.OffDiagonalCount] + s.Header[VesselStructure.BufferBlockCount];
+            int rhs = sections + s.Header[VesselStructure.BufferRhsCount];
+            forest->Sections.Resize(sections);
+            forest->Blocks.Resize(VesselBlocks.Size * blocks);
+            forest->Inverse.Resize(VesselBlocks.Size * sections);
+            forest->Rhs.Resize(6 * rhs);
+            forest->Solution.Resize(6 * sections);
+            forest->LinkRows.Resize(math.max(1, forest->LinkCount));
+            forest->PartForce.Resize(math.max(1, parts));
+            forest->PartTorque.Resize(math.max(1, parts));
+            forest->ChildPoint.Resize(math.max(1, parts));
+            forest->SectionResidual.Resize(math.max(1, sections));
+            forest->KernelEdgeLoads.Resize(math.max(1, parts));
+            forest->KernelClosureLoads.Resize(math.max(1, forest->Closures.Length));
+            forest->NextState.Resize(math.max(1, parts));
+
+            var settings = VesselSolverSettings.Default;
+            forest->Context = new VesselContext
+            {
+                Parts = forest->Parts.Ptr,
+                Edges = forest->Edges.Ptr,
+                Closures = forest->Closures.Ptr,
+                Sections = forest->Sections.Ptr,
+                Blocks = forest->Blocks.Ptr,
+                Inverse = forest->Inverse.Ptr,
+                Rhs = forest->Rhs.Ptr,
+                Solution = forest->Solution.Ptr,
+                LinkRows = forest->LinkRows.Ptr,
+                PartForce = forest->PartForce.Ptr,
+                PartTorque = forest->PartTorque.Ptr,
+                ChildPoint = forest->ChildPoint.Ptr,
+                SectionResidual = forest->SectionResidual.Ptr,
+                EdgeLoads = forest->KernelEdgeLoads.Ptr,
+                ClosureLoads = forest->KernelClosureLoads.Ptr,
+                NextState = forest->NextState.Ptr,
+                Counters = forest->Counters.Ptr,
+                PartSection = s.PartSection.Ptr,
+                SectionPartStart = s.SectionPartStart.Ptr,
+                SectionParts = s.SectionParts.Ptr,
+                ColumnStart = s.ColumnStart.Ptr,
+                Rows = s.Rows.Ptr,
+                UpdateStart = s.UpdateStart.Ptr,
+                UpdateTarget = s.UpdateTarget.Ptr,
+                RhsTarget = s.RhsTarget.Ptr,
+                LinkStart = s.LinkStart.Ptr,
+                Links = s.Links.Ptr,
+                IncidentStart = s.IncidentStart.Ptr,
+                Incident = s.Incident.Ptr,
+                PartLink = s.PartLink.Ptr,
+                ChunkStart = s.ChunkStart.Ptr,
+                ChunkColumns = s.ChunkColumns.Ptr,
+                TopColumns = s.TopColumns.Ptr,
+                ChunkBufferStart = s.ChunkBufferStart.Ptr,
+                BufferTarget = s.BufferTarget.Ptr,
+                ChunkRhsStart = s.ChunkRhsStart.Ptr,
+                RhsBufferTarget = s.RhsBufferTarget.Ptr,
+                EliminationParent = s.EliminationParent.Ptr,
+                SectionCount = sections,
+                OffDiagonalCount = s.Header[VesselStructure.OffDiagonalCount],
+                ChunkCount = s.Header[VesselStructure.ChunkCount],
+                TopCount = s.Header[VesselStructure.TopCount],
+                MaxStructure = s.Header[VesselStructure.MaxStructure],
+                HardFrequency = 2.0 * math.PI_DBL / settings.HardPeriod,
+                HardDampingRatio = settings.HardDampingRatio,
+                Centripetal = settings.CentripetalLoads,
+            };
+
+            int locked = 0;
+            for (int part = 0; part < parts; part++)
+            {
+                locked += forest->Edges[part].Parent >= 0 && forest->Edges[part].State == VesselEdgeState.Locked ? 1 : 0;
+            }
+
+            forest->LockedPairs = locked;
+        }
+
+        /// <summary>
+        /// The parts of the run's solve before the boundary: the sections' properties, the kernel's factor and its answer
+        /// without the boundary (taking the fixed rows' known impulses in), the rows as the sections see them, and the
+        /// boundary block.
+        /// </summary>
+        static unsafe void StartVesselRun(ref ForestRun run)
+        {
+            ForestIsland* forest = run.Forest;
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            ref VesselContext context = ref forest->Context;
+            int rows = problem.RowCount;
+            int sections = forest->SectionCount;
+            context.TimeStep = run.Timestep;
+            context.FactorOnly = false;
+            context.LinkRowStart = null;
+            context.ExtraDiagonal = null;
+            context.ExtraRhs = null;
+
+            // Every row is a boundary row except the fixed ones, whose impulses are known.
+            run.RowClass = new NativeArray<byte>(math.max(1, rows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            run.RowBlock = new NativeArray<int>(math.max(1, rows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            run.BlockSections = new NativeArray<int2>(math.max(1, problem.BlockCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var coupled = new NativeArray<bool>(math.max(1, rows), Allocator.Temp);
+            for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
+            {
+                SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    coupled[row] = true;
+                }
+            }
+
+            int boundaryRows = 0;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                run.BlockSections[b] = new int2(block.BodyA >= 0 ? forest->BodySection[block.BodyA] : -1,
+                    block.BodyB >= 0 ? forest->BodySection[block.BodyB] : -1);
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    run.RowBlock[row] = b;
+                    bool fixedRow = run.Bounded && problem.Lower[row] == problem.Upper[row] && !coupled[row];
+                    run.RowClass[row] = fixedRow ? FixedRowClass : BoundaryRowClass;
+                    boundaryRows += fixedRow ? 0 : 1;
+                }
+            }
+
+            coupled.Dispose();
+
+            // The fixed rows' known impulses act on the parts like any other outside impulse.
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    if (run.RowClass[row] == FixedRowClass && problem.Lower[row] != 0.0f)
+                    {
+                        float* columns = problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                        AddPartImpulse(forest, block.BodyA, columns, problem.Lower[row]);
+                        AddPartImpulse(forest, block.BodyB, columns + 6, problem.Lower[row]);
+                    }
+                }
+            }
+
+            long factorStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            for (int s = 0; s < sections; s++)
+            {
+                context.ComputeSection(s);
+            }
+
+            VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
+            SparseSolveTeam.RunAll(run.Team, contextPtr, SparseSolveTeam.ForestFactorKind, context.ChunkCount, null);
+            var scratch = new NativeArray<double>(VesselBlocks.Size * math.max(1, context.MaxStructure), Allocator.Temp,
+                NativeArrayOptions.UninitializedMemory);
+            context.SolveTop((double*)scratch.GetUnsafePtr());
+            scratch.Dispose();
+            SparseSolveTeam.RunAll(run.Team, contextPtr, SparseSolveTeam.ForestSubstituteKind, context.ChunkCount, null);
+            run.FactorTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - factorStarted;
+
+            run.Velocity = new NativeArray<double>(6 * sections, Allocator.Temp);
+            run.Work = new NativeArray<double>(6 * sections, Allocator.Temp);
+            run.BaseVelocity = new NativeArray<double>(6 * sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            UnsafeUtility.MemCpy(run.BaseVelocity.GetUnsafePtr(), context.Solution, 6L * sections * sizeof(double));
+
+            // The rows as the sections see them: a row on a part acts on its section at the part's offset from the section's
+            // centre. The solve works with velocities rather than changes, so each boundary row's right-hand side gets the
+            // rate that its bodies have now added back.
+            long floats = SparseConstraintSolver.ColumnsPerRow * (long)rows;
+            run.SectionJacobian = new NativeArray<float>((int)math.max(1, floats), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            float* jacobian = (float*)run.SectionJacobian.GetUnsafePtr();
+            if (rows > 0)
+            {
+                UnsafeUtility.MemCpy(jacobian, problem.Jacobian, floats * sizeof(float));
+            }
+
+            run.Jacobian = jacobian;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                    double rate = TurnToSection(forest, block.BodyA, columns) + TurnToSection(forest, block.BodyB, columns + 6);
+                    if (run.RowClass[row] == BoundaryRowClass)
+                    {
+                        problem.RightHandSide[row] += (float)rate;
+                    }
+                }
+            }
+
+            BuildBoundary(ref run, boundaryRows);
+        }
+
+        /// <summary>Adds a row's known impulse to the part of one of its sides, as a force through the part's centre and a moment.</summary>
+        static unsafe void AddPartImpulse(ForestIsland* forest, int body, float* columns, float impulse)
+        {
+            if (body < 0 || forest->BodyPart[body] < 0)
+            {
+                return;
+            }
+
+            VesselPart* part = forest->Parts.Ptr + forest->BodyPart[body];
+            part->LinearImpulse += impulse * new double3(columns[0], columns[1], columns[2]);
+            part->AngularImpulse += impulse * new double3(columns[3], columns[4], columns[5]);
+        }
+
+        /// <summary>
+        /// Turns one side of a row from its body's columns to its section's (angular + r x linear, r from the section's
+        /// centre to the part's), and returns the row's rate at the body's current velocity.
+        /// </summary>
+        static unsafe double TurnToSection(ForestIsland* forest, int body, float* columns)
+        {
+            if (body < 0 || forest->BodyPart[body] < 0)
+            {
+                return 0.0;
+            }
+
+            VesselPart* part = forest->Parts.Ptr + forest->BodyPart[body];
+            VesselSection* section = forest->Sections.Ptr + forest->BodySection[body];
+            double3 linear = new double3(columns[0], columns[1], columns[2]);
+            double3 angular = new double3(columns[3], columns[4], columns[5]);
+            double rate = math.dot(linear, part->LinearVelocity) + math.dot(angular, part->AngularVelocity);
+            double3 turned = angular + math.cross(part->Position - section->Center, linear);
+            columns[3] = (float)turned.x;
+            columns[4] = (float)turned.y;
+            columns[5] = (float)turned.z;
+            return rate;
+        }
+
+        /// <summary>
+        /// After a solve of a vessel island: the kernel's rows get their impulses from the sections' new velocities, the
+        /// parts take the boundary's impulses as outside impulses, and the kernel works out every edge's load (by inverse
+        /// dynamics for the locked ones). Then every body takes the impulse that gives it its section's motion. For a
+        /// push-out, the sections start from rest and only the bodies' impulses are written.
+        /// </summary>
+        static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
+            float3* linear, float3* angular, bool pushOut)
+        {
+            ForestIsland* forest = run.Forest;
+            ref VesselContext context = ref forest->Context;
+            int sections = forest->SectionCount;
+            double* v = (double*)run.Velocity.GetUnsafePtr();
+            if (!pushOut)
+            {
+                // linear and angular hold each body's share of the boundary's and fixed rows' impulses; the fixed rows' are
+                // already among the parts' outside impulses.
+                for (int part = 0; part < forest->Parts.Length; part++)
+                {
+                    int body = forest->PartBody[part];
+                    VesselPart* p = forest->Parts.Ptr + part;
+                    p->LinearImpulse = body >= 0 ? (double3)linear[body] : 0.0;
+                    p->AngularImpulse = body >= 0 ? (double3)angular[body] : 0.0;
+                }
+
+                UnsafeUtility.MemCpy(context.Solution, v, 6L * sections * sizeof(double));
+                UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
+                for (int k = 0; k < forest->LinkCount; k++)
+                {
+                    context.LinkImpulses(k);
+                }
+
+                // The finish moves the kernel's copies of the parts, which are refilled from the bodies next substep.
+                var poses = new NativeArray<VesselPart>(forest->Parts.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                UnsafeUtility.MemCpy(poses.GetUnsafePtr(), forest->Parts.Ptr, forest->Parts.Length * (long)sizeof(VesselPart));
+                for (int s = 0; s < sections; s++)
+                {
+                    context.FinishSection(s);
+                }
+
+                UnsafeUtility.MemCpy(forest->Parts.Ptr, poses.GetUnsafeReadOnlyPtr(), forest->Parts.Length * (long)sizeof(VesselPart));
+                poses.Dispose();
+            }
+
+            double h = run.Timestep;
+            for (int part = 0; part < forest->Parts.Length; part++)
+            {
+                int body = forest->PartBody[part];
+                if (body < 0)
+                {
+                    continue;
+                }
+
+                int s = forest->BodySection[body];
+                VesselPart p = forest->Parts[part];
+                VesselSection section = forest->Sections[s];
+                double3 sectionLinear = new double3(v[6 * s], v[6 * s + 1], v[6 * s + 2]);
+                double3 sectionAngular = new double3(v[6 * s + 3], v[6 * s + 4], v[6 * s + 5]);
+                if (!pushOut && math.lengthsq(sectionAngular) < MinimumSpin * MinimumSpin)
+                {
+                    sectionAngular = 0.0;
+                }
+
+                double3 r = p.Position - section.Center;
+                double3 targetLinear;
+                if (pushOut)
+                {
+                    targetLinear = sectionLinear + math.cross(sectionAngular, r);
+                }
+                else
+                {
+                    // The part lands where the section's turn takes it, so that a locked section stays rigid.
+                    double angle = math.length(sectionAngular) * h;
+                    double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
+                        : new double4(0.0, 0.0, 0.0, 1.0);
+                    targetLinear = sectionLinear + (math.mul(VesselContext.Rotation(turn), r) - r) / h;
+                }
+
+                double3 changeLinear = pushOut ? targetLinear : targetLinear - p.LinearVelocity;
+                double3 changeAngular = pushOut ? sectionAngular : sectionAngular - p.AngularVelocity;
+                int worldBody = run.WorldBodies[body];
+                MotionVelocity motion = run.MotionVelocities[worldBody];
+                quaternion rotation = run.MotionDatas[worldBody].WorldFromMotion.rot;
+                double3 inverseInertia = math.max((double3)motion.InverseInertia, 1e-12);
+                double3 local = math.rotate(math.conjugate(rotation), (float3)changeAngular);
+                linear[body] = Flushed(changeLinear / math.max((double)motion.InverseMass, 1e-12));
+                angular[body] = Flushed((double3)math.rotate(rotation, (float3)(local / inverseInertia)));
+            }
+        }
+
+        /// <summary>
+        /// Writes the island's edges' and closures' loads to the vessel set, as the mean over the step's substeps, with their
+        /// ratios against their break strengths and whether each edge was locked. At the step's last substep, each edge's
+        /// ratio is kept for the next step's lock test.
+        /// </summary>
+        static unsafe void WriteVesselLoads(ref ForestRun run, int substep, int substeps)
+        {
+            ForestIsland* forest = run.Forest;
+            VesselSet set = run.Vessels;
+            int count = substep < 0 ? 1 : math.max(1, substeps);
+            bool first = substep <= 0;
+            bool last = substep < 0 || substep >= substeps - 1;
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                int start = forest->VesselPartStart[i];
+                for (int k = 0; k < vessel.PartCount; k++)
+                {
+                    int part = start + k;
+                    int setPart = vessel.FirstPart + k;
+                    VesselEdge edge = set.Edges[setPart];
+                    VesselEdgeLoad load = edge.Parent >= 0 ? forest->KernelEdgeLoads[part] : default;
+                    VesselEdgeLoad sum = first ? default : set.EdgeLoads[setPart];
+                    sum.Force += load.Force / count;
+                    sum.Torque += load.Torque / count;
+                    sum.Ratio = Ratio(sum, edge.BreakForce, edge.BreakTorque);
+                    set.EdgeLoads[setPart] = sum;
+                    set.EdgeLocked[setPart] = forest->Edges[part].State == VesselEdgeState.Locked;
+                    if (last)
+                    {
+                        forest->PartRatio[part] = (float)sum.Ratio;
+                    }
+                }
+            }
+
+            int nextClosure = 0;
+            for (int i = 0; i < run.IslandVesselCount; i++)
+            {
+                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                for (int c = 0; c < vessel.ClosureCount; c++)
+                {
+                    int setClosure = vessel.FirstClosure + c;
+                    VesselEdgeLoad load = forest->KernelClosureLoads[nextClosure++];
+                    VesselEdgeLoad sum = first ? default : set.ClosureLoads[setClosure];
+                    sum.Force += load.Force / count;
+                    sum.Torque += load.Torque / count;
+                    set.ClosureLoads[setClosure] = sum;
+                }
+            }
+        }
+
+        static double Ratio(in VesselEdgeLoad load, double breakForce, double breakTorque)
+        {
+            double force = breakForce > 0.0 && !double.IsInfinity(breakForce) ? math.length(load.Force) / breakForce : 0.0;
+            double torque = breakTorque > 0.0 && !double.IsInfinity(breakTorque) ? math.length(load.Torque) / breakTorque : 0.0;
+            return math.max(force, torque);
+        }
+    }
+}

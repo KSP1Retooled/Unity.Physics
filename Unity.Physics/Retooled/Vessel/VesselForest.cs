@@ -185,6 +185,26 @@ namespace Unity.Physics
 
         public int StructureBuilds;
 
+        // A vessel island's own storage: the kernel's per-link rows and per-part work arrays, and what the island keeps of
+        // its vessels from one step to the next.
+        public UnsafeList<VesselRows> LinkRows;
+        public UnsafeList<double3> PartForce;
+        public UnsafeList<double3> PartTorque;
+        public UnsafeList<double3> ChildPoint;
+        public UnsafeList<double> SectionResidual;
+        public UnsafeList<VesselEdgeLoad> KernelEdgeLoads;
+        public UnsafeList<VesselEdgeLoad> KernelClosureLoads;
+        public UnsafeList<VesselEdgeState> NextState;
+        public UnsafeList<ulong> VesselSignature;
+        public UnsafeList<int> VesselPartStart;
+        public UnsafeList<int> VesselClosureStart;
+        public UnsafeList<byte> PartLocked;
+        public UnsafeList<int> PartHeld;
+        public UnsafeList<float> PartRatio;
+
+        /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
+        public bool VesselMode;
+
         /// <summary>The locked pairs and the sections with more than one body, as of the last structure.</summary>
         public int LockedPairs;
 
@@ -230,6 +250,20 @@ namespace Unity.Physics
                 LinkRowStart = new UnsafeList<int>(16, Allocator.Persistent),
                 LinkRowList = new UnsafeList<int>(16, Allocator.Persistent),
                 Counters = new UnsafeList<int>(VesselContext.CounterCount, Allocator.Persistent),
+                LinkRows = new UnsafeList<VesselRows>(16, Allocator.Persistent),
+                PartForce = new UnsafeList<double3>(16, Allocator.Persistent),
+                PartTorque = new UnsafeList<double3>(16, Allocator.Persistent),
+                ChildPoint = new UnsafeList<double3>(16, Allocator.Persistent),
+                SectionResidual = new UnsafeList<double>(16, Allocator.Persistent),
+                KernelEdgeLoads = new UnsafeList<VesselEdgeLoad>(16, Allocator.Persistent),
+                KernelClosureLoads = new UnsafeList<VesselEdgeLoad>(16, Allocator.Persistent),
+                NextState = new UnsafeList<VesselEdgeState>(16, Allocator.Persistent),
+                VesselSignature = new UnsafeList<ulong>(16, Allocator.Persistent),
+                VesselPartStart = new UnsafeList<int>(16, Allocator.Persistent),
+                VesselClosureStart = new UnsafeList<int>(16, Allocator.Persistent),
+                PartLocked = new UnsafeList<byte>(16, Allocator.Persistent),
+                PartHeld = new UnsafeList<int>(16, Allocator.Persistent),
+                PartRatio = new UnsafeList<float>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -278,6 +312,20 @@ namespace Unity.Physics
             forest->LinkRowStart.Dispose();
             forest->LinkRowList.Dispose();
             forest->Counters.Dispose();
+            forest->LinkRows.Dispose();
+            forest->PartForce.Dispose();
+            forest->PartTorque.Dispose();
+            forest->ChildPoint.Dispose();
+            forest->SectionResidual.Dispose();
+            forest->KernelEdgeLoads.Dispose();
+            forest->KernelClosureLoads.Dispose();
+            forest->NextState.Dispose();
+            forest->VesselSignature.Dispose();
+            forest->VesselPartStart.Dispose();
+            forest->VesselClosureStart.Dispose();
+            forest->PartLocked.Dispose();
+            forest->PartHeld.Dispose();
+            forest->PartRatio.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 
