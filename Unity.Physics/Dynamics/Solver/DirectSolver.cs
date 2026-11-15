@@ -25,6 +25,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
@@ -374,21 +375,6 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>
-        /// Computes a skew-symmetric matrix A representing the cross-product of a with any other vector b,
-        /// such that
-        ///     A * b = a x b.
-        ///
-        /// See https://en.wikipedia.org/wiki/Cross_product#Conversion_to_matrix_multiplication.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static float3x3 ComputeCrossProductMatrix(float3 a)
-        {
-            return new float3x3(new float3(0, a[2], -a[1]),
-                new float3(-a[2], 0, a[0]),
-                new float3(a[1], -a[0], 0));
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static float MulSubVector3(ref Vector a, in float3 b, int row)
         {
@@ -524,7 +510,7 @@ namespace Unity.Physics
             float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that
                                                                     // we get the Hadamard product and not
                                                                     // the dot product, as desired!
-            var hatL = ComputeCrossProductMatrix(L);
+            var hatL = VectorMath.Cross(L);
 #if false
             // Use equation (2):
 
@@ -582,7 +568,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, id.c1, startColumnA);
                 SetSubVector3(J_3, id.c2, startColumnA);
 
-                var nhat_s_A = ComputeCrossProductMatrix(-s_A);
+                var nhat_s_A = VectorMath.Cross(-s_A);
                 SetSubVector3(J_1, new float3(nhat_s_A.c0[0], nhat_s_A.c1[0], nhat_s_A.c2[0]), startColumnA + 3);
                 SetSubVector3(J_2, new float3(nhat_s_A.c0[1], nhat_s_A.c1[1], nhat_s_A.c2[1]), startColumnA + 3);
                 SetSubVector3(J_3, new float3(nhat_s_A.c0[2], nhat_s_A.c1[2], nhat_s_A.c2[2]), startColumnA + 3);
@@ -600,7 +586,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, nid.c1, startColumnB);
                 SetSubVector3(J_3, nid.c2, startColumnB);
 
-                var hat_s_B = ComputeCrossProductMatrix(s_B);
+                var hat_s_B = VectorMath.Cross(s_B);
                 SetSubVector3(J_1, new float3(hat_s_B.c0[0], hat_s_B.c1[0], hat_s_B.c2[0]), startColumnB + 3);
                 SetSubVector3(J_2, new float3(hat_s_B.c0[1], hat_s_B.c1[1], hat_s_B.c2[1]), startColumnB + 3);
                 SetSubVector3(J_3, new float3(hat_s_B.c0[2], hat_s_B.c1[2], hat_s_B.c2[2]), startColumnB + 3);
@@ -1093,7 +1079,7 @@ namespace Unity.Physics
                 float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that we get
                                                                         // the Hadamard product and not the dot product,
                                                                         // as desired!
-                var hatL = ComputeCrossProductMatrix(L);
+                var hatL = VectorMath.Cross(L);
                 var stabilizationTerm = timestep * timestep * math.mul(math.mul(hatL, invI0), hatL);
                 inertiaTensor = I0 - stabilizationTerm;
                 invInertiaTensor = math.inverse(inertiaTensor);
@@ -1266,7 +1252,7 @@ namespace Unity.Physics
             var setup = new SparseSetup
             {
                 Blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp),
-                Couplings = new NativeList<SparseConstraintSolver.Coupling>(contactPairs, Allocator.Temp),
+                Couplings = new NativeList<BoundCoupling>(contactPairs, Allocator.Temp),
                 Headers = new NativeList<IntPtr>(Allocator.Temp),
                 WorldBodies = new NativeList<int>(Allocator.Temp),
                 CompactBodies = new NativeArray<int>(motionVelocities.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory),
@@ -1377,7 +1363,7 @@ namespace Unity.Physics
             SparseSolveTeam.RunAll(team, &bodySetup, SparseSolveTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
 
             NativeList<SparseConstraintSolver.ConstraintBlock> blocks = setup.Blocks;
-            NativeList<SparseConstraintSolver.Coupling> couplings = setup.Couplings;
+            NativeList<BoundCoupling> couplings = setup.Couplings;
             NativeList<IntPtr> headers = setup.Headers;
             NativeArray<int> compactBodies = setup.CompactBodies;
             bool holdsPositions = setup.HoldsPositions;
@@ -1606,7 +1592,7 @@ namespace Unity.Physics
         unsafe struct SparseSetup
         {
             public NativeList<SparseConstraintSolver.ConstraintBlock> Blocks;
-            public NativeList<SparseConstraintSolver.Coupling> Couplings;
+            public NativeList<BoundCoupling> Couplings;
 
             /// <summary>Each block's Jacobian, which stays where it is in the stream for the whole step.</summary>
             public NativeList<IntPtr> Headers;
@@ -1720,10 +1706,10 @@ namespace Unity.Physics
         }
 
         /// <summary>A contact's friction rows, which follow its normal rows and are bounded by them.</summary>
-        static SparseConstraintSolver.Coupling FrictionCoupling(in JacobianSummary summary, int firstRow)
+        static BoundCoupling FrictionCoupling(in JacobianSummary summary, int firstRow)
         {
             int normals = summary.Rows - 3;
-            return new SparseConstraintSolver.Coupling
+            return new BoundCoupling
             {
                 FirstRow = firstRow + normals,
                 RowCount = 3,
@@ -1765,7 +1751,7 @@ namespace Unity.Physics
 
             public SparseConstraintSolver.ConstraintBlock* Blocks;
             public IntPtr* HeaderPointers;
-            public SparseConstraintSolver.Coupling* Couplings;
+            public BoundCoupling* Couplings;
         }
 
         internal static unsafe void SummarizeJacobiansTask(void* context, int task)
@@ -2137,7 +2123,7 @@ namespace Unity.Physics
 
             for (int coupling = 0; coupling < problem.CouplingCount; coupling++)
             {
-                SparseConstraintSolver.Coupling friction = problem.Couplings[coupling];
+                BoundCoupling friction = problem.Couplings[coupling];
                 for (int row = friction.FirstRow; row < friction.FirstRow + friction.RowCount; row++)
                 {
                     lower[row] = 0.0f;

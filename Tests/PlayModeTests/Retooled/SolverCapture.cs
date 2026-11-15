@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics;
+using Unity.Physics.Numerics.Retooled;
 using UnityEditor;
 using UnityEngine;
 
@@ -55,7 +56,7 @@ namespace KSP.Retooled.Physics.Tests
             public float[] Lower;
             public float[] Upper;
             public byte[] InitialStates;
-            public SparseConstraintSolver.Coupling[] Couplings;
+            public BoundCoupling[] Couplings;
             public float[] Impulses;
             public bool Bounded;
 
@@ -85,7 +86,7 @@ namespace KSP.Retooled.Physics.Tests
                 Lower = new float[rowCount],
                 Upper = new float[rowCount],
                 InitialStates = new byte[rowCount],
-                Couplings = new SparseConstraintSolver.Coupling[couplingCount],
+                Couplings = new BoundCoupling[couplingCount],
                 Impulses = new float[rowCount],
             };
 
@@ -145,7 +146,7 @@ namespace KSP.Retooled.Physics.Tests
             WriteBytes(writer, problem->Lower, rows * sizeof(float));
             WriteBytes(writer, problem->Upper, rows * sizeof(float));
             WriteBytes(writer, problem->InitialStates, rows);
-            WriteBytes(writer, problem->Couplings, problem->CouplingCount * sizeof(SparseConstraintSolver.Coupling));
+            WriteBytes(writer, problem->Couplings, problem->CouplingCount * sizeof(BoundCoupling));
             WriteBytes(writer, impulses, rows * sizeof(float));
         }
 

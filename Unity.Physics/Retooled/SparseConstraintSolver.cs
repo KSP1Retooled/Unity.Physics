@@ -47,7 +47,6 @@ namespace Unity.Physics
         /// use the larger of this value and the absolute tolerance to decide whether to solve again.
         /// </summary>
         const float CouplingTolerance = 1e-3f;
-        const double SmallestPivot = 1e-30;
         const int InitialCapacity = 16;
 
         /// <summary>The allowed residual after refinement, measured in m/s or rad/s at any body or free row.</summary>
@@ -108,30 +107,7 @@ namespace Unity.Physics
             /// <summary>
             /// Specifies rows whose bounds depend on other rows' impulses, or null if there are none.
             /// </summary>
-            public Coupling* Couplings;
-        }
-
-        /// <summary>
-        /// Describes rows whose problem bounds are widened by <see cref="Factor"/> times the nonnegative total source
-        /// impulse. For contact friction, the source is the normal impulse. The total includes the impulses computed
-        /// for the source rows plus <see cref="HeldSourceImpulse"/>. Both normal and friction impulses count over the
-        /// whole step. A friction row's problem bounds are therefore the negative of its earlier impulse in that step.
-        /// If the total normal impulse is zero, the total friction impulse for the step is also zero.
-        /// </summary>
-        public struct Coupling
-        {
-            public int FirstRow;
-            public int RowCount;
-            public int FirstSourceRow;
-            public int SourceRowCount;
-            public float Factor;
-
-            /// <summary>
-            /// The source impulse already applied before this solve, either through warm starting or in an earlier
-            /// substep of the same step. This impulse contributes to the coupled bounds along with the impulse computed
-            /// by this solve.
-            /// </summary>
-            public float HeldSourceImpulse;
+            public BoundCoupling* Couplings;
         }
 
         /// <summary>
@@ -484,13 +460,13 @@ namespace Unity.Physics
                 bool keepResidual = residualHeld && factored;
                 if (keepResidual)
                 {
-                    AddScaled(correction.Ptr, right.Ptr, -1.0, correction.Length);
+                    DenseKernels.AddScaled(correction.Ptr, right.Ptr, -1.0, correction.Length);
                 }
 
                 AssembleRightHandSide(problem);
                 if (keepResidual)
                 {
-                    AddScaled(correction.Ptr, right.Ptr, 1.0, correction.Length);
+                    DenseKernels.AddScaled(correction.Ptr, right.Ptr, 1.0, correction.Length);
                 }
 
                 statistics.AssembleTime += Lap(ref started);
@@ -652,7 +628,7 @@ namespace Unity.Physics
             coupled.Resize(problem.RowCount, NativeArrayOptions.ClearMemory);
             for (int i = 0; bounded && i < problem.CouplingCount; i++)
             {
-                Coupling coupling = problem.Couplings[i];
+                BoundCoupling coupling = problem.Couplings[i];
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
                     coupled[row] = true;
@@ -700,7 +676,7 @@ namespace Unity.Physics
             bool moved = false;
             for (int i = 0; i < problem.CouplingCount; i++)
             {
-                Coupling coupling = problem.Couplings[i];
+                BoundCoupling coupling = problem.Couplings[i];
                 float sum = coupling.HeldSourceImpulse;
                 for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
                 {
@@ -1715,50 +1691,18 @@ namespace Unity.Physics
             int size = node.Size;
             double* diagonal = values + node.Diagonal;
             double* inverse = inverseDiagonal.Ptr + node.Start;
-            CholeskyInPlace(diagonal, inverse, size, node.Sign);
+            DenseKernels.CholeskyInPlace(diagonal, inverse, size, node.Sign);
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
             for (int i = 0; i < node.NeighbourCount; i++)
             {
-                SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
+                DenseKernels.SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
             }
 
             if (size == double6x6.Size)
             {
-                InvertTriangle(diagonal, inverse);
+                DenseKernels.InvertTriangle(diagonal, inverse);
             }
-        }
-
-        /// <summary>
-        /// Replaces a factored 6x6 diagonal block with its full inverse. <paramref name="inverse"/> contains the
-        /// reciprocals of its diagonal entries. Triangular substitution computes each unknown after the previous one,
-        /// causing a chain of dependencies at every node along a tree branch. Multiplication by the full inverse
-        /// computes all six together.
-        /// </summary>
-        static void InvertTriangle(double* c, double* inverse)
-        {
-            const int size = double6x6.Size;
-            double* result = stackalloc double[size * size];
-            for (int column = 0; column < size; column++)
-            {
-                for (int row = 0; row < column; row++)
-                {
-                    result[row * size + column] = 0.0;
-                }
-
-                for (int row = column; row < size; row++)
-                {
-                    double sum = row == column ? 1.0 : 0.0;
-                    for (int j = column; j < row; j++)
-                    {
-                        sum = MathUtil.Fma(-c[row * size + j], result[j * size + column], sum);
-                    }
-
-                    result[row * size + column] = sum * inverse[row];
-                }
-            }
-
-            UnsafeUtility.MemCpy(c, result, size * size * sizeof(double));
         }
 
         /// <summary>
@@ -1775,7 +1719,7 @@ namespace Unity.Physics
             {
                 Node first = nodes[column[i].Node];
                 double* firstBlock = values + column[i].Offset;
-                Update(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
+                DenseKernels.SubtractProductTranspose(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
 
                 // Elimination connected the first neighbour to every later neighbour in the same order, so a single
                 // pass finds all the blocks.
@@ -1789,157 +1733,8 @@ namespace Unity.Physics
                     }
 
                     int laterSize = nodes[column[j].Node].Size;
-                    Update(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
+                    DenseKernels.SubtractProductTranspose(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
                 }
-            }
-        }
-
-        /// <summary>
-        /// Factors the lower half of a block in place and writes the reciprocal of each diagonal entry to <paramref
-        /// name="inverse"/>. Later columns multiply by these reciprocals. Using division instead would delay the sum
-        /// for the next column.
-        /// </summary>
-        static void CholeskyInPlace(double* a, double* inverse, int size, double sign)
-        {
-            for (int row = 0; row < size; row++)
-            {
-                double* r = a + row * size;
-                for (int column = 0; column < row; column++)
-                {
-                    double sum = sign * r[column] - MathUtil.ArrayProductSum(r, a + column * size, column);
-                    r[column] = sum * inverse[column];
-                }
-
-                double pivot = sign * r[row] - MathUtil.ArrayProductSum(r, r, row);
-                r[row] = math.sqrt(math.max(pivot, SmallestPivot));
-                inverse[row] = 1.0 / r[row];
-            }
-        }
-
-        /// <summary>
-        /// Multiplies each row of the block by C^-t in place. Uses the reciprocals of C's diagonal entries rather than
-        /// division, which would delay the sum for the next column.
-        /// </summary>
-        static void SolveAgainstTranspose(double* block, int rows, double* c, double* inverse, int size)
-        {
-            for (int row = 0; row < rows; row++)
-            {
-                double* x = block + row * size;
-                for (int column = 0; column < size; column++)
-                {
-                    double sum = x[column] - MathUtil.ArrayProductSum(x, c + column * size, column);
-
-                    x[column] = sum * inverse[column];
-                }
-            }
-        }
-
-        /// <summary>
-        /// Computes target -= sign * left * right^t, updating four entries of a row at a time. Each entry is a dot
-        /// product of two rows, so both rows are read contiguously.
-        /// </summary>
-        static void Update(double* target, int rows, int columns, double* left, double* right, int inner, double sign, bool lowerOnly)
-        {
-            for (int row = 0; row < rows; row++)
-            {
-                double* l = left + row * inner;
-                double* into = target + row * columns;
-                int last = lowerOnly ? row + 1 : columns;
-                int column = 0;
-
-                // A group of entries may extend past the diagonal into the unused upper half. This allows short rows of
-                // a diagonal block to use all vector lanes.
-                for (; column < last && column + 4 <= columns; column += 4)
-                {
-                    double* r = right + column * inner;
-                    double4 sum = ProductSums(l, r, r + inner, r + 2 * inner, r + 3 * inner, inner);
-                    *(double4*)(into + column) -= sign * sum;
-                }
-
-                for (; column < last; column++)
-                {
-                    into[column] -= sign * MathUtil.ArrayProductSum(l, right + column * inner, inner);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Computes target -= sign * block * x for a row-major block with the given row count and <paramref
-        /// name="inner"/> columns. Processes four rows at a time.
-        /// </summary>
-        internal static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
-        {
-            int row = 0;
-            for (; row + 4 <= rows; row += 4)
-            {
-                double* b = block + row * inner;
-                double4 sum = ProductSums(x, b, b + inner, b + 2 * inner, b + 3 * inner, inner);
-                *(double4*)(target + row) -= sign * sum;
-            }
-
-            for (; row < rows; row++)
-            {
-                target[row] -= sign * MathUtil.ArrayProductSum(block + row * inner, x, inner);
-            }
-        }
-
-        /// <summary>
-        /// Computes dot products of <paramref name="shared"/> with four other vectors of the same length, returning one
-        /// product in each lane. Reads each vector contiguously and reuses each load of the shared vector in all four
-        /// products.
-        /// </summary>
-        static double4 ProductSums(double* shared, double* b0, double* b1, double* b2, double* b3, int count)
-        {
-            double4 s0 = 0.0;
-            double4 s1 = 0.0;
-            double4 s2 = 0.0;
-            double4 s3 = 0.0;
-            int k = 0;
-            for (; k + 4 <= count; k += 4)
-            {
-                double4 a = *(double4*)(shared + k);
-                s0 = MathUtil.Fma(*(double4*)(b0 + k), a, s0);
-                s1 = MathUtil.Fma(*(double4*)(b1 + k), a, s1);
-                s2 = MathUtil.Fma(*(double4*)(b2 + k), a, s2);
-                s3 = MathUtil.Fma(*(double4*)(b3 + k), a, s3);
-            }
-
-            // Use a vector for the remaining two entries, which occur with a body's six columns.
-            if (k + 2 <= count)
-            {
-                double2 a = *(double2*)(shared + k);
-                s0.xy = MathUtil.Fma(*(double2*)(b0 + k), a, s0.xy);
-                s1.xy = MathUtil.Fma(*(double2*)(b1 + k), a, s1.xy);
-                s2.xy = MathUtil.Fma(*(double2*)(b2 + k), a, s2.xy);
-                s3.xy = MathUtil.Fma(*(double2*)(b3 + k), a, s3.xy);
-                k += 2;
-            }
-
-            // Each accumulator contains partial sums for one vector. Transpose the accumulators into rows, then add the
-            // columns to obtain each vector's total in a separate lane.
-            double4x4 partial = math.transpose(new double4x4(s0, s1, s2, s3));
-            double4 sum = (partial.c0 + partial.c1) + (partial.c2 + partial.c3);
-
-            if (k < count)
-            {
-                sum = MathUtil.Fma(new double4(b0[k], b1[k], b2[k], b3[k]), shared[k], sum);
-            }
-
-            return sum;
-        }
-
-        /// <summary>Computes into += scale * from over <paramref name="count"/> entries.</summary>
-        internal static void AddScaled(double* into, double* from, double scale, int count)
-        {
-            int k = 0;
-            for (; k + 4 <= count; k += 4)
-            {
-                *(double4*)(into + k) = MathUtil.Fma(scale, *(double4*)(from + k), *(double4*)(into + k));
-            }
-
-            for (; k < count; k++)
-            {
-                into[k] = MathUtil.Fma(scale, from[k], into[k]);
             }
         }
 
@@ -2037,7 +1832,7 @@ namespace Unity.Physics
                 WaitUntilReady(sourceIndex, forwardStamp);
                 Node source = nodes[sourceIndex];
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + update.y].Offset;
-                Owe(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+                DenseKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
             }
 
             // Then gather contributions from earlier top nodes. Their answers already include the node sign that serial
@@ -2048,7 +1843,7 @@ namespace Unity.Physics
                 WaitUntilReady(row.x, forwardStamp);
                 Node source = nodes[row.x];
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + row.y].Offset;
-                Owe(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+                DenseKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
             }
 
             if (six)
@@ -2058,22 +1853,6 @@ namespace Unity.Physics
 
             SubstituteForward(node, x, 0);
             Volatile.Write(ref nodeReady.Ptr[index], forwardStamp);
-        }
-
-        /// <summary>
-        /// Computes into -= block * source. If <paramref name="six"/> is true and the block is 6x6, accumulates the
-        /// product in <paramref name="owed"/> for the caller to subtract from <paramref name="into"/> at the end.
-        /// Otherwise, subtracts the product immediately.
-        /// </summary>
-        static void Owe(ref double6 owed, bool six, double* into, double* block, double* source, int rows, int inner)
-        {
-            if (six && inner == double6x6.Size)
-            {
-                owed += ((double6x6*)block)->Mul(double6.Load(source));
-                return;
-            }
-
-            SubtractProduct(into, block, source, rows, inner, 1.0);
         }
 
         /// <summary>
@@ -2129,7 +1908,7 @@ namespace Unity.Physics
                     }
                     else
                     {
-                        SubtractProduct(into, values + column[i].Offset, own, other.Size, size, node.Sign);
+                        DenseKernels.SubtractProduct(into, values + column[i].Offset, own, other.Size, size, node.Sign);
                     }
                 }
 
@@ -2147,41 +1926,12 @@ namespace Unity.Physics
             for (int i = 0; i < endNeighbour; i++)
             {
                 Node other = nodes[column[i].Node];
-                SubtractProduct(x + other.Start, values + column[i].Offset, own, other.Size, size, node.Sign);
+                DenseKernels.SubtractProduct(x + other.Start, values + column[i].Offset, own, other.Size, size, node.Sign);
             }
 
             for (int row = 0; row < size; row++)
             {
                 own[row] *= node.Sign;
-            }
-        }
-
-        /// <summary>Solves C y = own in place for a diagonal block that was not inverted.</summary>
-        static void SolveLower(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = 0; row < size; row++)
-            {
-                double sum = own[row];
-                for (int j = 0; j < row; j++)
-                {
-                    sum = MathUtil.Fma(-c[row * size + j], own[j], sum);
-                }
-
-                own[row] = sum * inverse[row];
-            }
-        }
-
-        /// <summary>Solves C^t y = own in place for a diagonal block that was not inverted.</summary>
-        static void SolveUpper(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = size - 1; row >= 0; row--)
-            {
-                double answer = own[row] * inverse[row];
-                own[row] = answer;
-                for (int j = 0; j < row; j++)
-                {
-                    own[j] = MathUtil.Fma(-c[row * size + j], answer, own[j]);
-                }
             }
         }
 
@@ -2215,7 +1965,7 @@ namespace Unity.Physics
                     sum.Store(own);
                     for (int row = 0; row < other.Size; row++)
                     {
-                        AddScaled(own, block + row * size, -node.Sign * source[row], size);
+                        DenseKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
                     }
 
                     sum = double6.Load(own);
@@ -2232,7 +1982,7 @@ namespace Unity.Physics
                 double* source = x + other.Start;
                 for (int row = 0; row < other.Size; row++)
                 {
-                    AddScaled(own, block + row * size, -node.Sign * source[row], size);
+                    DenseKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
                 }
             }
 
@@ -2243,7 +1993,7 @@ namespace Unity.Physics
             {
                 double answer = own[row] * inverse[row];
                 own[row] = answer;
-                AddScaled(own, c + row * size, -answer, row);
+                DenseKernels.AddScaled(own, c + row * size, -answer, row);
             }
         }
 
@@ -2350,70 +2100,6 @@ namespace Unity.Physics
         static double6 Columns(float* columns)
         {
             return new double6(new double4(*(float4*)columns), new double2(*(float2*)(columns + 4)));
-        }
-
-        /// <summary>Stores priorities in a binary heap with the smallest priority first.</summary>
-        struct MinHeap : IDisposable
-        {
-            NativeList<long> items;
-
-            public MinHeap(int capacity, Allocator allocator)
-            {
-                items = new NativeList<long>(capacity, allocator);
-            }
-
-            public void Dispose()
-            {
-                items.Dispose();
-            }
-
-            public void Push(long item)
-            {
-                items.Add(item);
-                int child = items.Length - 1;
-                while (child > 0)
-                {
-                    int parent = (child - 1) / 2;
-                    if (items[parent] <= items[child])
-                    {
-                        break;
-                    }
-
-                    (items[parent], items[child]) = (items[child], items[parent]);
-                    child = parent;
-                }
-            }
-
-            public long Pop()
-            {
-                long top = items[0];
-                items[0] = items[items.Length - 1];
-                items.Length--;
-                int parent = 0;
-                while (true)
-                {
-                    int left = parent * 2 + 1;
-                    int right = left + 1;
-                    int smallest = parent;
-                    if (left < items.Length && items[left] < items[smallest])
-                    {
-                        smallest = left;
-                    }
-
-                    if (right < items.Length && items[right] < items[smallest])
-                    {
-                        smallest = right;
-                    }
-
-                    if (smallest == parent)
-                    {
-                        return top;
-                    }
-
-                    (items[parent], items[smallest]) = (items[smallest], items[parent]);
-                    parent = smallest;
-                }
-            }
         }
     }
 }

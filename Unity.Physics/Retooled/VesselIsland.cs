@@ -563,7 +563,7 @@ namespace Unity.Physics
             var coupled = new NativeArray<bool>(math.max(1, rows), Allocator.Temp);
             for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
             {
-                SparseConstraintSolver.Coupling coupling = problem.Couplings[c];
+                BoundCoupling coupling = problem.Couplings[c];
                 for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
                 {
                     coupled[row] = true;
@@ -844,7 +844,7 @@ namespace Unity.Physics
                 double angle = math.length(sectionAngular) * h;
                 double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
                     : new double4(0.0, 0.0, 0.0, 1.0);
-                targetLinear = sectionLinear + (math.mul(VesselContext.Rotation(turn), r) - r) / h;
+                targetLinear = sectionLinear + (math.mul(VectorMath.Rotation(turn), r) - r) / h;
             }
 
             double3 changeLinear = pushOut ? targetLinear : targetLinear - p.LinearVelocity;
@@ -854,8 +854,8 @@ namespace Unity.Physics
             quaternion rotation = run.MotionDatas[worldBody].WorldFromMotion.rot;
             double3 inverseInertia = math.max((double3)motion.InverseInertia, 1e-12);
             double3 local = math.rotate(math.conjugate(rotation), (float3)changeAngular);
-            linear[body] = Flushed(changeLinear / math.max((double)motion.InverseMass, 1e-12));
-            angular[body] = Flushed((double3)math.rotate(rotation, (float3)(local / inverseInertia)));
+            linear[body] = VectorMath.Flushed(changeLinear / math.max((double)motion.InverseMass, 1e-12));
+            angular[body] = VectorMath.Flushed((double3)math.rotate(rotation, (float3)(local / inverseInertia)));
         }
 
         /// <summary>
