@@ -8,19 +8,23 @@ using Unity.Transforms;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Moves bodies' components between the bodies themselves and entities. A world can only exist once Entities has
-    /// started, and bodies exist from the first scene, so until a world binds a body holds its components in its
-    /// <see cref="NativeStore.BodyHome"/>. Nothing else cares which it is: a row's pointers lead to the components either way.
+    /// Moves body components between storage in the body records and storage in entities. An Entities world cannot
+    /// exist until Entities has started, but bodies exist from the first scene. Until a world is bound, each body
+    /// stores its components in its <see cref="NativeStore.BodyHome"/>. Other code uses the row's component pointers to
+    /// access the components in either location.
     /// </summary>
     /// <remarks>
-    /// Rows go through the entity's chunk directly, because a craft sends tens of thousands of commands a frame, and only
-    /// look the entity up again when something outside this file restructured body entities. The structural changes made
-    /// here leave every row current themselves: a created entity moves nothing, and a destroyed one is replaced in its
-    /// chunk by the chunk's last entity, whose row takes over the pointers. Those writes don't bump a chunk's change
-    /// version. A job that writes these components has to finish before its system's update ends.
+    /// Commands access components directly in the entity's chunk through the row's pointers. A craft sends tens of
+    /// thousands of commands per frame, so the entity is looked up again only after structural changes made outside
+    /// this file. Structural changes made here preserve the validity of pointers that were already current. Creating an
+    /// entity does not move other entities. Destroying one moves the chunk's last entity into the vacated slot, and
+    /// this code updates that entity's row to use the pointers for that slot. Writes through these pointers do not
+    /// increment the chunk's change version. A job that writes these components must finish before its system's update
+    /// ends.
     ///
-    /// Unity sends some commands from job workers, and only the main thread may use the EntityManager, so a worker that
-    /// finds a row stale reads it as it is. That can only happen between a foreign restructure and the next step.
+    /// Unity sends some commands from worker threads, but only the main thread may use EntityManager. If a worker
+    /// encounters stale pointers in a row, it uses the row without refreshing them. This can happen only after an
+    /// external structural change and before the next step.
     /// </remarks>
     internal static unsafe class BodyEntities
     {
@@ -31,8 +35,9 @@ namespace KSP.Retooled.Physics
             public bool Bound;
 
             /// <summary>
-            /// An order version at which every row was current. Only structural changes made here move the version on
-            /// from it, so while it matches, no row needs a look.
+            /// Records the order version for which all rows were known to have current pointers. Structural changes
+            /// made here update this version only if all rows were already current. If it matches the current order
+            /// version, no row needs to be refreshed.
             /// </summary>
             public int CleanVersion;
         }
@@ -43,7 +48,10 @@ namespace KSP.Retooled.Physics
 
         internal static bool Bound => Current.Data.Bound;
 
-        /// <summary>Moves every body onto an entity in <paramref name="manager"/>'s world, as new bodies will be until <see cref="Unbind"/>.</summary>
+        /// <summary>
+        /// Moves every body's components to an entity in <paramref name="manager"/>'s world. New bodies also use
+        /// entities in that world until <see cref="Unbind"/> is called.
+        /// </summary>
         internal static void Bind(EntityManager manager)
         {
             ref Binding binding = ref Current.Data;
@@ -76,10 +84,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves every body back onto itself. The entities go, so that a later bind doesn't leave them behind. The world
-        /// is usually being disposed, so whatever Entities refuses on the way, no row may still lead into it afterwards:
-        /// Unity's shutdown sends shape and body commands after the world is gone, and a row reaching a disposed
-        /// EntityManager from one of them takes the process down with the lock file held.
+        /// Moves every body's components back into its body record and destroys the entities so that a later bind does
+        /// not leave them behind. The world is usually being disposed. Even if Entities throws during cleanup, every
+        /// row must point outside that world afterwards. Unity sends shape and body commands during shutdown after the
+        /// world is gone. If one of those commands accesses a disposed EntityManager through a row, the process can
+        /// crash while still holding the lock file.
         /// </summary>
         internal static void Unbind()
         {
@@ -111,7 +120,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Puts a body on an entity if a world is bound.</summary>
+        /// <summary>Moves a body's components to an entity if an Entities world is bound.</summary>
         internal static void Adopt(NativeStore.BodyData* hot)
         {
             if (!Current.Data.Bound)
@@ -121,7 +130,8 @@ namespace KSP.Retooled.Physics
 
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AdoptBody.Auto();
 
-            // A created entity moves no other, so rows that were all current stay so, and stale ones stay stale.
+            // Creating an entity does not move any other entity. Existing pointers remain current if they were already
+            // current, but stale pointers still need to be refreshed.
             bool clean = Clean();
             Place(hot);
             if (clean)
@@ -149,7 +159,7 @@ namespace KSP.Retooled.Physics
             *hot->collider = home->collider;
         }
 
-        /// <summary>Takes a body off its entity, if it has one, keeping its state.</summary>
+        /// <summary>Copies a body's state back to its body record and destroys its entity, if it has one.</summary>
         internal static void Release(NativeStore.BodyData* hot)
         {
             if (hot->entity == Entity.Null)
@@ -191,7 +201,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Points a row home without its entity's state, for a world that can't give it back.</summary>
+        /// <summary>
+        /// Points a row at the body's own component storage without copying state from its entity. Use this when the
+        /// Entities world can no longer provide that state.
+        /// </summary>
         private static void Abandon(NativeStore.BodyData* hot)
         {
             if (hot->entity == Entity.Null)
@@ -204,8 +217,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives the pointers of a destroyed entity's slot to the row of the entity Entities moved into it, which is the one
-        /// that was last in the chunk.
+        /// Updates the row for the entity that Entities moved into a destroyed entity's slot. That entity was the last
+        /// one in the chunk. Its row now uses the component pointers for the vacated slot.
         /// </summary>
         private static void HandOver(EntityStorageInfo slot, NativeStore.BodyData* vacated)
         {
@@ -234,18 +247,23 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The order version of the body archetype: it moves when body entities are created, destroyed or given other
-        /// components, and other archetypes don't move it.
+        /// Returns the component order version for BodyTarget, which is used to track structural changes to body
+        /// entities. Creating or destroying entities with BodyTarget, or changing their archetypes, changes this
+        /// version. Structural changes to entities without BodyTarget do not affect it.
         /// </summary>
         private static int Version()
         {
             return Current.Data.Manager.GetComponentOrderVersion<BodyTarget>();
         }
 
-        /// <summary>Makes a row's pointers current, if its body has an entity. Only the main thread can, as the remarks say.</summary>
+        /// <summary>
+        /// Refreshes a row's component pointers if its body has an entity. Only the main thread can refresh these
+        /// pointers, as described in the class remarks.
+        /// </summary>
         internal static void Refresh(NativeStore.BodyData* hot)
         {
-            // A row without an entity is always current, and the jobs ask about rows very often.
+            // A row without an entity always has current pointers. Check this first because jobs call this method
+            // frequently.
             if (hot->entity == Entity.Null)
             {
                 return;
@@ -266,8 +284,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Readies a world's rows for jobs, which read through their pointers and can't refresh them. No structural change
-        /// can happen until the jobs finish, because they run inside a step that blocks the main thread.
+        /// Refreshes a world's rows before jobs use their component pointers. The jobs cannot refresh these pointers
+        /// themselves. They run within a step that blocks the main thread, so no structural changes can occur until the
+        /// jobs finish.
         /// </summary>
         internal static void PrepareForJobs(NativeStore.WorldData* world)
         {
@@ -277,9 +296,10 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            // Query builds arrive in the middle of system updates, so this can't be CompleteAllTrackedJobs, which also
-            // invalidates the type handles those systems are holding. It leaves out the components other packages share,
-            // whose dependencies can reach jobs that have nothing to do with bodies.
+            // Query worlds can be built during system updates. Do not use CompleteAllTrackedJobs here, because it also
+            // invalidates the type handles that those systems are using. Complete dependencies only for components
+            // specific to bodies. Dependencies for components shared with other packages may include jobs unrelated to
+            // bodies.
             ref EntityManager manager = ref binding.Manager;
             manager.CompleteDependencyBeforeRW<BodyMass>();
             manager.CompleteDependencyBeforeRW<BodyLimits>();
@@ -287,8 +307,8 @@ namespace KSP.Retooled.Physics
             manager.CompleteDependencyBeforeRW<BodyForces>();
             manager.CompleteDependencyBeforeRW<BodyTarget>();
 
-            // Nothing in this loop moves an entity, so the version holds throughout it, and while the bodies' archetype is
-            // clean no row needs anything.
+            // Nothing in the loop below moves an entity, so the order version stays the same throughout the loop. If
+            // all rows are already current for this version, none need to be refreshed.
             int version = Version();
             if (binding.CleanVersion == version)
             {
@@ -320,7 +340,8 @@ namespace KSP.Retooled.Physics
             hot->target = Pointer(manager.GetComponentDataRW<BodyTarget>(entity));
             hot->collider = Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity));
 
-            // Last, so that a worker never sees a current version with old pointers.
+            // Update the version last so that a worker cannot see a current version before the new pointers have been
+            // stored.
             hot->orderVersion = Version();
         }
 
@@ -332,8 +353,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The body a body entity belongs to, which finds its row when Entities moves the entity: the record stays put and
-    /// knows the row's index.
+    /// Identifies the body that owns an entity. When Entities moves the entity, this component provides access to the
+    /// body's row. The body record remains at the same address and stores the row's index.
     /// </summary>
     internal unsafe struct BodyOwner : IComponentData
     {
