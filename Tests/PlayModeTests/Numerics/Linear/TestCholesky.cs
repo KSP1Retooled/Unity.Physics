@@ -265,6 +265,7 @@ namespace Unity.Numerics.Linear.Tests
         }
 
         [Test, Performance]
+        [Explicit("A benchmark, about 3 s for the 8 sizes. The 500x500 tests in this class check the same factorization")]
         public void Cholesky_DecomposeRandom_Performance([Values(50, 100, 200, 300, 400, 500, 750, 1000)] int dimension)
         {
             if (dimension > 10 && !BurstHelper.IsBurstEnabled())
@@ -296,6 +297,7 @@ namespace Unity.Numerics.Linear.Tests
         }
 
         [Test, Performance]
+        [Explicit("A benchmark, about 3 s for the 8 sizes. The 500x500 tests in this class check the same factorization")]
         public void Cholesky_DecomposeRandomAndSolve_Performance([Values(50, 100, 200, 300, 400, 500, 750, 1000)] int dimension)
         {
             if (dimension > 10 && !BurstHelper.IsBurstEnabled())
