@@ -8,43 +8,50 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Decides whether the static tree has to be built again, or can be moved instead. KSP's floating origin moves every static
-    /// by the same offset, often every frame, and building the tree again costs a bounding box of every static. When the statics
-    /// only moved, nearly all of them by one offset, this moves the tree's bounds and writes 0 to <see cref="Rebuild"/>;
-    /// otherwise it writes 1.
+    /// Determines whether to rebuild the static tree or move its bounds. KSP's floating origin moves every static body
+    /// by the same offset, often every frame. Rebuilding the tree requires calculating a bounding box for every static
+    /// body. If the bodies have only moved and nearly all share one offset, this job moves the tree's bounds and writes
+    /// 0 to <see cref="Rebuild"/>. Otherwise it writes 1.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Unity works each static's world pose out in floats, under parents that may be a planet's width away, so the statics
-    /// don't all move by exactly the offset: a terrain collider under a planet's centre 600 km off misses it by centimetres.
-    /// Each node's bounds grow by the furthest any static below it missed, plus the rounding of the move, which keeps every
-    /// static inside its bounds. Each move starts from the bounds as built, so the rounding of the moves doesn't add up.
+    /// Unity calculates each static body's world pose using floats. A parent transform may be a planet's width away, so
+    /// floating-point rounding prevents all bodies from moving by exactly the same offset. For example, a terrain
+    /// collider parented to a planet's centre 600 km away can deviate by centimetres. This job expands each node's
+    /// bounds to cover the largest deviation among the bodies below it, plus rounding during movement. This keeps every
+    /// static body within its bounds. Each move uses the original bounds from the last build, so rounding errors do not
+    /// accumulate across moves.
     /// </para>
     /// <para>
-    /// Some statics move their own way, turning or moving with parents of their own. Each of those, and each static that drifts too far
-    /// from the offset, gets a bounding box at its new pose, and the nodes above it are fitted around their children again.
-    /// Once too many statics need that, building the tree again is the better deal.
+    /// Some static bodies move independently because they rotate or follow their own parent transforms. For each such
+    /// body, and each body that deviates too far from the common offset, this job recalculates the bounding box at the
+    /// new pose. It then fits the bounds of ancestor nodes around their children again. If too many bodies require this
+    /// work, rebuilding the tree is cheaper.
     /// </para>
     /// </remarks>
     [BurstCompile]
     internal unsafe struct ShiftStaticTreeJob : IJob
     {
         /// <summary>
-        /// The most statics a move fits one by one. Fitting one costs a bounding box and a walk up the tree, where building
-        /// the tree again costs a box for every static and sorting them all, so a quarter of them is still the better deal.
-        /// In flight about a hundred of KSP's statics move their own way every frame.
+        /// Limits how many static bodies can have their bounds fitted individually during a move. Fitting one body
+        /// requires calculating its bounding box and walking up the tree. Rebuilding requires calculating boxes for all
+        /// static bodies and sorting them, so fitting up to a quarter of them is still cheaper. The limit is at least
+        /// 64 bodies. During flight, about a hundred of KSP's static bodies move independently every frame.
         /// </summary>
         private readonly int MaxStrays => math.max(64, StaticBodies.Length / 4);
 
-        /// <summary>How far a static may miss the offset, in metres, before it is fitted on its own.</summary>
+        /// <summary>
+        /// Specifies how far a static body can deviate from the common offset, in metres, before its bounds must be
+        /// fitted individually.
+        /// </summary>
         private const float MaxMiss = 1.0f;
 
-        /// <summary>The built statics this build, the anchor last.</summary>
+        /// <summary>Contains the static bodies for the current build, with the anchor body last.</summary>
         [ReadOnly]
         public NativeArray<RigidBody> StaticBodies;
 
-        // The static tree's lists. Taken without their safety handles, because the tree's build jobs, scheduled after this
-        // one, ask for the same lists as arrays on the main thread.
+        // Access the lists for the static tree without safety handles. The jobs that build the tree are scheduled after
+        // this job, and scheduling them requires accessing the same lists as arrays on the main thread.
         [NativeDisableUnsafePtrRestriction]
         public UnsafeList<BoundingVolumeHierarchy.Node>* Nodes;
 
@@ -57,26 +64,33 @@ namespace KSP.Retooled.Physics
         public NativeStore.BodyData* Store;
 
         /// <summary>
-        /// The bodies whose colliders this build's refresh built: new bodies, and bodies whose shapes changed. A static among
-        /// them may have changed in ways its pose and collider pointer don't show, such as its filter, and a collider freed
-        /// since the tree was built can come back at the same address. A build without a refresh passes the last refresh's,
-        /// which at worst builds the tree again for nothing.
+        /// Lists the bodies whose colliders were rebuilt during the refresh for this build: new bodies and bodies whose
+        /// shapes changed. A static body's collider may have changed in ways that its pose and pointer do not reveal,
+        /// such as a change to its filter. A collider freed since the tree was built may also be replaced by another at
+        /// the same address. A build that does not refresh colliders uses the list from the last refresh. This may
+        /// cause an unnecessary rebuild of the tree, but is otherwise safe.
         /// </summary>
         [ReadOnly]
         [NativeDisableContainerSafetyRestriction]
         public NativeList<ColliderBuilder.Work> Refreshed;
 
-        /// <summary>False when the tree may not have been built from the held statics, such as after a build that failed.</summary>
+        /// <summary>
+        /// Indicates whether the tree was built from the saved static bodies. This is false after a failed build, for
+        /// example.
+        /// </summary>
         public bool TreeMatchesHeld;
 
-        /// <summary>What the tree's build adds around each static's bounding box.</summary>
+        /// <summary>Specifies the margin added around each static body's bounding box when building the tree.</summary>
         public float Margin;
 
-        /// <summary>What the static tree's build jobs read. Only this job writes it, and they wait for it.</summary>
+        /// <summary>
+        /// Tells the jobs that build the static tree whether a rebuild is needed. Only this job writes the value, and
+        /// those jobs wait for this job to finish.
+        /// </summary>
         [NativeDisableContainerSafetyRestriction]
         public NativeReference<int> Rebuild;
 
-        /// <summary>A static as the tree was built from it.</summary>
+        /// <summary>Records a static body as it was when the tree was built.</summary>
         internal struct TreeStatic
         {
             public RigidTransform WorldFromBody;
@@ -84,35 +98,44 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// What the job keeps between builds. The world's step state owns it. Only this job touches it, and each build waits
-        /// for the last, so it does without safety handles, like the tree's lists.
+        /// Stores data that this job retains between builds. The world's step state owns the data, but only this job
+        /// accesses it. Each build waits for the previous build, so these containers do not need safety handles, just
+        /// as the lists for the tree do not.
         /// </summary>
         internal struct ShiftState
         {
-            /// <summary>The statics the tree was last built from, in the order of the built statics.</summary>
+            /// <summary>
+            /// Stores the static bodies used for the last tree build, in the same order as the built static bodies.
+            /// </summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeList<TreeStatic> Held;
 
-            /// <summary>The tree's node bounds and mesh bounds as built, once a move has copied them.</summary>
+            /// <summary>
+            /// Stores the original bounds of tree nodes and meshes after they have been copied for a move.
+            /// </summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeList<FourTransposedAabbs> BuiltNodes;
 
             [NativeDisableContainerSafetyRestriction]
             public NativeList<FourTransposedAabbs> BuiltMeshes;
 
-            /// <summary>The nodes reachable from the root, each after its parent.</summary>
+            /// <summary>Lists the nodes reachable from the root, with each node after its parent.</summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeList<int> Reached;
 
-            /// <summary>For each node, the slot in its parent that holds it, as node * 4 + slot; -1 for the root.</summary>
+            /// <summary>
+            /// Stores the slot for each node in its parent as parent node * 4 + slot. The root has the value -1.
+            /// </summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeList<int> SlotOfNode;
 
-            /// <summary>For each static, the leaf slot that holds it, as node * 4 + slot.</summary>
+            /// <summary>Stores the leaf slot for each static body as node * 4 + slot.</summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeList<int> SlotOfStatic;
 
-            /// <summary>1 once the tree as built is copied, 0 while the copies are stale.</summary>
+            /// <summary>
+            /// Contains 1 once the original tree bounds have been copied, or 0 while those copies are stale.
+            /// </summary>
             [NativeDisableContainerSafetyRestriction]
             public NativeReference<int> Copied;
 
@@ -185,9 +208,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The offset that moved most statics since the tree was built, how far each of those missed it, and the statics that
-        /// moved some other way. False if a collider changed, or too many statics stray. Statics without a collider never
-        /// touch anything, so they don't count.
+        /// Finds the common offset of most static bodies since the tree was built. Records how far each body deviated
+        /// from that offset and lists bodies that moved differently. Returns false if a collider pointer changed or too
+        /// many bodies moved differently. Bodies without colliders cannot collide with anything, so they are excluded
+        /// from the movement checks.
         /// </summary>
         private readonly bool FindOffset(NativeList<int> strays, NativeArray<float> misses, out float3 offset)
         {
@@ -202,7 +226,8 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            // Try the moves of a few statics spread through the list, in case the first one tried strays itself.
+            // Try offsets from a few static bodies spread through the list. The first body tried may itself have moved
+            // independently of the others.
             const int Candidates = 4;
             for (int candidate = 0; candidate < Candidates; candidate++)
             {
@@ -224,14 +249,16 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Sorts the statics into those that moved by the offset, with how far each missed it, and strays. False as soon as
-        /// there are too many strays.
+        /// Separates static bodies into those that followed the common offset and those that need their bounds fitted
+        /// individually. Records how far each body in the first group deviated from the offset. Returns false as soon
+        /// as too many bodies need individual fitting.
         /// </summary>
         private readonly bool Sort(RigidBody* bodies, TreeStatic* held, double3 moved, double3 offset, NativeList<int> strays, NativeArray<float> misses)
         {
             strays.Clear();
 
-            // The offset itself rounds to a float, which every static misses by as well.
+            // Converting the offset to a float adds rounding error. Include that error in the deviation for every
+            // static body.
             double rounding = math.cmax(math.abs(offset - moved));
             for (int i = 0; i < StaticBodies.Length; i++)
             {
@@ -240,7 +267,7 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                // Differences of floats are exact in doubles.
+                // Subtract float positions in double precision to avoid rounding the difference to float precision.
                 double missed = math.cmax(math.abs((double3)bodies[i].WorldFromBody.pos - held[i].WorldFromBody.pos - moved));
                 if (missed > MaxMiss || math.any(bodies[i].WorldFromBody.rot.value != held[i].WorldFromBody.rot.value))
                 {
@@ -275,9 +302,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Copies the tree as built, which every move starts from until the next build, and maps where each node and static
-        /// sits in it. A tree built on several threads leaves gaps between its branches, and the nodes in them hold anything
-        /// at all, so only the nodes reachable from the root count. False if a static is missing from the leaves.
+        /// Copies the original tree bounds and records where each node and static body is stored. Every move uses these
+        /// original bounds until the next rebuild. Building a tree on several threads leaves gaps between branches.
+        /// Nodes in those gaps may contain arbitrary data, so only nodes reachable from the root are used. Returns
+        /// false if a static body with a collider is missing from the leaves.
         /// </summary>
         private bool CopyBuiltTree()
         {
@@ -347,15 +375,18 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves the reachable nodes and every body's mesh bounds from where they were built. Each node grows by the most any
-        /// static below it missed the offset, plus its own rounding. A node's bounds hold its children's, so both of those are
-        /// at least its children's, and it still holds them once all moved.
+        /// Moves the bounds of reachable nodes and the mesh bounds for every body from their original positions when
+        /// the tree was built. Each node's bounds are expanded to cover deviations from the common offset and rounding
+        /// during movement. Expansion propagates from children to parents. A parent's original bounds enclose its
+        /// children's bounds, so its rounding allowance is at least as large as theirs. The expanded bounds therefore
+        /// still enclose the children after movement.
         /// </summary>
         private readonly void MoveBounds(float3 offset, NativeArray<float> misses)
         {
             float distance = math.cmax(math.abs(offset)) + MaxMiss;
 
-            // Children come after their parents, so going backwards finds each node's children done.
+            // Children appear after their parents in the list. Process the list backwards so that each child is
+            // processed before its parent.
             var growths = new NativeArray<float>(Nodes->Length, Allocator.Temp);
             for (int r = State.Reached.Length - 1; r >= 0; r--)
             {
@@ -404,8 +435,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Twice the most that moving a bound of this size rounds it by: once adding the growth to the offset, once adding
-        /// that to the bound. Far from the origin a float's step is large, and so is this.
+        /// Returns twice the maximum rounding error when moving a bound of this size. Rounding occurs when adding the
+        /// expansion to the offset and again when adding that result to the bound. Floating-point values are spaced
+        /// further apart far from the origin, so the allowance grows with distance.
         /// </summary>
         private static float Rounding(float largest, float distance)
         {
@@ -426,8 +458,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives each stray its bounding box at its new pose, as the tree's build would, then fits each node above it around
-        /// its children. Fitting reads the children as they are, so strays that share a node see each other's boxes.
+        /// Recalculates the bounding box at the current pose for each body that moved differently, using the same
+        /// calculation as a tree build. Then fits the bounds of its ancestors around their children. Each fit reads the
+        /// current child bounds, so updates for bodies with a shared ancestor include the boxes that were already
+        /// recalculated.
         /// </summary>
         private readonly void FitStrays(NativeList<int> strays)
         {
@@ -447,7 +481,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Holds the statics the tree is about to be built from.</summary>
+        /// <summary>Saves the static bodies that will be used to build the tree.</summary>
         private void Hold()
         {
             State.Held.ResizeUninitialized(StaticBodies.Length);

@@ -13,14 +13,15 @@ using UnityEditor;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Connects the managed core to the plugin. The plugin's store outlives a domain reload and everything managed holds
-    /// can be rebuilt from it, so a reload is a detach, which frees managed state, followed by an attach. Until then the
-    /// plugin answers with no simulation and no hits, and every command that needs the core is a no-op answering zero. A
-    /// detach also brings bodies back from their entities, because those don't outlive a domain.
+    /// Connects the managed core to the plugin. The plugin's store survives a domain reload, and all managed state can
+    /// be rebuilt from it. A reload therefore detaches the core to free managed state, then attaches it again. While
+    /// the core is detached, the plugin performs no simulation and reports no hits. Commands that require the core do
+    /// nothing and return zero. Detaching also moves body components back from entities, because the entities do not
+    /// survive the domain reload.
     /// </summary>
     /// <remarks>
-    /// The player runs on Mono, so the callbacks are delegates kept alive in statics and marked for reverse P/Invoke.
-    /// Nothing may throw across the native boundary, which is why each entry point ends the exception here.
+    /// The player runs on Mono, so callbacks use delegates that are kept alive in static fields and marked for reverse
+    /// P/Invoke. Exceptions must not cross the native boundary, so each entry point catches them here.
     /// </remarks>
     public static unsafe class BackendHost
     {
@@ -49,29 +50,47 @@ namespace KSP.Retooled.Physics
         private static long managedSteps;
 
         /// <summary>
-        /// Bodies a force job has handled in its Mono form, which it runs until the async Burst compile has delivered it.
+        /// Counts bodies processed by the Mono version of the force job. The job runs in Mono until asynchronous Burst
+        /// compilation finishes.
         /// </summary>
         public static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
 
-        /// <summary>Queries that ran in Mono, which they do until the async Burst compile has delivered the query functions.</summary>
+        /// <summary>
+        /// Counts queries that ran in Mono while the query functions were waiting for asynchronous Burst compilation.
+        /// </summary>
         public static long ManagedQueries => Interlocked.Read(ref managedQueries);
 
-        /// <summary>Mesh cooks that ran in Mono, which they do until the async Burst compile has delivered the cook function.</summary>
+        /// <summary>
+        /// Counts mesh cooks that ran in Mono while the cook function was waiting for asynchronous Burst compilation.
+        /// </summary>
         public static long ManagedCooks => Interlocked.Read(ref managedCooks);
 
-        /// <summary>Body, shape, world and joint commands that ran in Mono, which they do until the async Burst compile has delivered their kernels.</summary>
+        /// <summary>
+        /// Counts body, shape, world, joint and vehicle commands that ran in Mono while their kernels were waiting for
+        /// asynchronous Burst compilation.
+        /// </summary>
         public static long ManagedCommands => Interlocked.Read(ref managedCommands);
 
-        /// <summary>Steps and query world builds that ran in Mono, which they do until the async Burst compile has delivered the step.</summary>
+        /// <summary>
+        /// Counts steps and query world builds that ran in Mono while the step functions were waiting for asynchronous
+        /// Burst compilation.
+        /// </summary>
         public static long ManagedSteps => Interlocked.Read(ref managedSteps);
 
-        /// <summary>The managed id of the thread that last ran a step, 0 before the first one.</summary>
+        /// <summary>
+        /// Records the managed ID of the thread that most recently ran a step. The value is zero before the first step.
+        /// </summary>
         public static int LastStepThreadId { get; private set; }
 
-        /// <summary>Steps run since this domain attached.</summary>
+        /// <summary>
+        /// Counts steps that have run in this domain. Detaching and attaching again within the same domain does not
+        /// reset the count.
+        /// </summary>
         public static long StepCount { get; private set; }
 
-        /// <summary>The thread that attached, which is the main thread in every path that attaches.</summary>
+        /// <summary>
+        /// Records the thread that attached the core. All paths that attach the core run on the main thread.
+        /// </summary>
         public static int MainThreadId { get; private set; }
 
 #if UNITY_EDITOR
@@ -95,7 +114,8 @@ namespace KSP.Retooled.Physics
             if (BackendInfo.IsRetooled)
             {
 #if !UNITY_EDITOR
-                // In the editor this also fires on leaving play mode, when edit mode still needs the core.
+                // Application.quitting also fires when leaving play mode in the editor. Do not detach then, because
+                // edit mode still needs the core.
                 Application.quitting += Detach;
 #endif
                 Attach();
@@ -166,7 +186,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Puts bodies on entities in <paramref name="world"/>, unless they already have a world.</summary>
+        /// <summary>
+        /// Moves body components to entities in <paramref name="world"/>, unless an Entities world is already bound.
+        /// </summary>
         internal static void BindWorld(World world)
         {
             if (entityWorld != null || !BackendInfo.IsRetooled)
@@ -181,7 +203,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Takes bodies back from <paramref name="world"/>, which is going away, if they are on it.</summary>
+        /// <summary>
+        /// Moves body components back from <paramref name="world"/> before it is disposed, if that world is bound.
+        /// </summary>
         internal static void UnbindWorld(World world)
         {
             if (entityWorld != world)
@@ -222,8 +246,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Asks Burst for the function once per domain. Burst compiles in the background and hands back a stub that runs
-        /// the method in Mono until the compile lands, or for good if Burst is off.
+        /// Requests the function pointer from Burst once per domain. Burst compiles the method in the background. The
+        /// returned pointer initially refers to a stub that runs the method in Mono until compilation finishes. If
+        /// Burst is disabled, the stub continues running in Mono.
         /// </summary>
         private static IntPtr QueryFunction()
         {
@@ -306,9 +331,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Brings the query world up to date with everything the main thread has done. Workers can't rebuild it and read
-        /// the last one published, so main-thread code calls this between moving things and scheduling query jobs, after
-        /// any Physics.SyncTransforms. A step and a main-thread query already do the same. Main thread only.
+        /// Updates the query worlds to include all changes made on the main thread. Workers cannot rebuild a query
+        /// world, so they read the last published version. Main-thread code calls this after moving objects and before
+        /// scheduling query jobs, following any Physics.SyncTransforms call. Simulation steps and main-thread queries
+        /// already perform this update. Call this method on the main thread only.
         /// </summary>
         public static void SyncQueryWorlds()
         {
@@ -329,7 +355,7 @@ namespace KSP.Retooled.Physics
 
         private static WorldState StateOf(NativeStore.WorldData* world)
         {
-            // Each world's own lock is held here, but queries on different worlds can run side by side.
+            // The caller holds the lock for this world. Queries on different worlds can still run concurrently.
             lock (Worlds)
             {
                 IntPtr key = (IntPtr)world;
