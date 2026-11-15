@@ -1,7 +1,7 @@
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Numerics;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 
 namespace Unity.Physics

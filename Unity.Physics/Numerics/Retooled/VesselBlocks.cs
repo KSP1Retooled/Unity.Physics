@@ -1,15 +1,14 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
-using Unity.Numerics;
 
-namespace Unity.Physics
+namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>
     /// The 6x6 block arithmetic of the section solver. A block is 36 doubles stored row by row, the layout of
     /// <see cref="double6x6"/>. Every product is written as rows of the result built from one row of the right-hand matrix
     /// scaled by one element of the left, which keeps each step a broadcast and a fused multiply-add on whole rows.
     /// </summary>
-    internal static unsafe class VesselBlocks
+    public static unsafe class VesselBlocks
     {
         public const int Size = 36;
 

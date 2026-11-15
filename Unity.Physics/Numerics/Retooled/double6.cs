@@ -1,9 +1,9 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
-namespace Unity.Numerics
+namespace Unity.Physics.Numerics.Retooled
 {
-    internal unsafe struct double6
+    public unsafe struct double6
     {
         public double4 Low;
         public double2 High;
