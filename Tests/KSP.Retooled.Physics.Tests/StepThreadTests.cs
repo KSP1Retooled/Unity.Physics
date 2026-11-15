@@ -70,6 +70,12 @@ namespace KSP.Retooled.Physics.Tests
         /// as while asynchronous compilation is in progress, and compiled jobs enabled again while the scene is
         /// running. Yields between steps so that the editor can update and background compilation can finish. After a
         /// cold start without Library/BurstCache, the log shows when the first phase stopped using Mono.
+        /// <para>
+        /// The first phase ends as soon as one whole step runs without Mono jobs, because from then on the step is in
+        /// the same state as the last phase. The middle phase ends after its first step that ran Mono jobs, because
+        /// that is all that the test checks about it. Each step in the middle phase takes several seconds in Mono. Both
+        /// phases still stop after PhaseSeconds if that point never comes. The last phase always runs for PhaseSeconds.
+        /// </para>
         /// </summary>
         [UnityTest]
         [Category("Slow")]
@@ -97,14 +103,21 @@ namespace KSP.Retooled.Physics.Tests
                     int steps = 0;
                     while (watch.Elapsed.TotalSeconds < PhaseSeconds)
                     {
+                        long monoBeforeStep = BackendHost.ManagedJobRuns;
                         Stopwatch step = Stopwatch.StartNew();
                         UnityEngine.Physics.Simulate(Step);
                         slowest = System.Math.Max(slowest, step.Elapsed.TotalMilliseconds);
                         steps++;
+                        bool stepRanMono = BackendHost.ManagedJobRuns != monoBeforeStep;
                         if (steps % 100 == 1)
                         {
                             Debug.Log($"[RetooledPhysics] {phases[phase]}: step {steps} at {watch.Elapsed.TotalSeconds:F1} s, " +
                                 $"{step.Elapsed.TotalMilliseconds:F2} ms, Mono job runs {BackendHost.ManagedJobRuns - monoBefore}");
+                        }
+
+                        if ((phase == 0 && !stepRanMono) || (phase == 1 && stepRanMono))
+                        {
+                            break;
                         }
 
                         yield return null;
