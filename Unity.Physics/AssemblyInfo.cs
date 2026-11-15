@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("KSP.Retooled.Physics")]
+[assembly: InternalsVisibleTo("KSP.Retooled.Physics.Tests")]
 [assembly: InternalsVisibleTo("Unity.Physics.Editor")]
 [assembly: InternalsVisibleTo("Unity.Physics.Hybrid")]
 [assembly: InternalsVisibleTo("Unity.Physics.Runtime.Tests")]
