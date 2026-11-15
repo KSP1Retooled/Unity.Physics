@@ -8,12 +8,15 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Wakes the sleeping bodies a step's contacts reach, before the solver sees them, so that a sleeping body is pushed by
-    /// the step that hits it rather than stopping what hit it like a wall. Waking spreads through touching bodies and joints,
-    /// as it does through a PhysX island, and a sleeping body's contact with something at rest wakes nothing.
-    ///
-    /// It reads the manifolds from <see cref="ReadContactsJob"/>'s buckets rather than waiting for them to be merged, since
-    /// the Jacobians wait for this job and nothing else on their way needs the merged list.
+    /// Wakes sleeping bodies reached through contacts during this step, before the solver runs. This lets a body
+    /// respond to an impact during the same step instead of acting like a wall that stops the body that hit it. Bodies
+    /// wake through chains of contacts and joints, as they do within a PhysX island. Contact with a body at rest does
+    /// not wake a sleeping body.
+    /// <para>
+    /// This job reads manifolds directly from the buckets produced by <see cref="ReadContactsJob"/> instead of waiting
+    /// for them to be merged. Jacobian construction waits for this job, and no other dependency before that
+    /// construction needs the merged list.
+    /// </para>
     /// </summary>
     [BurstCompile]
     internal unsafe struct WakeTouchedBodiesJob : IJob
@@ -21,7 +24,7 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
-        /// <summary>How many of the buckets this step filled.</summary>
+        /// <summary>Counts the buckets filled during this step.</summary>
         [ReadOnly]
         public NativeReference<int> Filled;
 
@@ -37,7 +40,8 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
-            // The joints spread waking as the step began, so only a contact can start any here.
+            // Bodies connected by joints were already woken at the start of the step. Here, only a contact can cause
+            // another body to start waking.
             bool wakes = false;
             for (int bucket = 0; bucket < Filled.Value; bucket++)
             {
@@ -84,7 +88,9 @@ namespace KSP.Retooled.Physics
             return woke;
         }
 
-        /// <summary>Whether a contact between two bodies wakes either, as the contacts stood when they were read.</summary>
+        /// <summary>
+        /// Returns whether a contact can wake either body, using their states when the contacts were read.
+        /// </summary>
         internal static bool Wakes(NativeStore.BodyData* a, NativeStore.BodyData* b)
         {
             bool sleepingA = (a->flags & NativeStore.BodyFlags.Sleeping) != 0;
@@ -114,7 +120,10 @@ namespace KSP.Retooled.Physics
             return (body->flags & NativeStore.BodyFlags.Kinematic) == 0 || (body->flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
         }
 
-        /// <summary>A body built asleep has infinite mass, and the solver reads a motion's mass only after this job.</summary>
+        /// <summary>
+        /// Restores mass and inertia for bodies that have woken. Sleeping bodies were built with infinite mass. The
+        /// solver does not read their motion masses until after this job.
+        /// </summary>
         private void ReleaseWokenMotions()
         {
             for (int i = 0; i < DynamicIndices.Length; i++)
@@ -131,16 +140,19 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// PhysX's sleep rule, on what the step just solved. A body's wake counter runs down while its mass-normalized kinetic
-    /// energy stays under its threshold and is topped up when it doesn't, and bodies sleep island by island: a body only
-    /// sleeps once every body connected to it by contacts and joints has run out. Statics and kinematics don't connect
-    /// bodies into an island, because they don't pass motion from one body to another.
-    ///
-    /// <see cref="SleepContactsJob"/> joins the bodies through their contacts as soon as the solve ends, because the contact
-    /// report sorts the manifolds later. This joins them through their joints once the step has broken the ones it breaks,
-    /// and only lists the bodies that fall asleep, for <see cref="FallAsleepJob"/>, because the contact report still has to
-    /// see them awake. A body only sleeps once its counter has run out, so while every counter <see cref="UpdateWakeCountersJob"/>
-    /// left is above zero, every island stays awake and nothing needs joining.
+    /// Applies the PhysX sleep rule to the bodies after solving. A body's wake counter decreases while its kinetic
+    /// energy, normalized by mass, stays below the threshold. The counter is increased when the energy reaches or
+    /// exceeds the threshold. Bodies fall asleep as a whole island: every body connected through contacts and joints
+    /// must have a counter of zero. Static and kinematic bodies do not connect dynamic bodies into an island, because
+    /// they do not transfer motion between those bodies.
+    /// <para>
+    /// <see cref="SleepContactsJob"/> connects bodies through contacts as soon as solving ends, before the contact
+    /// report sorts the manifolds. This job then connects them through joints, after joints that broke during the step
+    /// have been processed. It lists the bodies that should fall asleep for <see cref="FallAsleepJob"/> to process
+    /// later. They must remain awake until the contact report has read them. If every counter left by <see
+    /// cref="UpdateWakeCountersJob"/> is above zero, every island stays awake, so there is no need to connect bodies
+    /// into islands.
+    /// </para>
     /// </summary>
     [BurstCompile]
     internal unsafe struct SleepJob : IJob
@@ -152,7 +164,10 @@ namespace KSP.Retooled.Physics
 
         public NativeList<int> Falling;
 
-        /// <summary>Non-zero once a solved body's counter has run out this step, cleared here for the next.</summary>
+        /// <summary>
+        /// Has a non-zero value once a solved body's counter reaches zero during this step. This job clears the value
+        /// for the next step.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public int* RunOut;
 
@@ -221,8 +236,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The part of <see cref="SleepJob"/> that is each body's own: running its wake counter down or topping it up, and
-    /// noting when one runs out, which is the only way an island can fall asleep.
+    /// Updates the wake counter for each body as part of <see cref="SleepJob"/>. It decreases or increases the counter
+    /// and records whether any counter reaches zero. An island can fall asleep only if a counter has reached zero.
     /// </summary>
     [BurstCompile]
     internal unsafe struct UpdateWakeCountersJob : IJobParallelFor
@@ -257,10 +272,13 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The counter runs free for its first half, so a body caught at the top of a bounce isn't judged. After that it sums
-        /// velocities rather than taking the step's own, which lets jitter around nothing cancel out while a slow steady drift
-        /// adds up and keeps the body awake however small it is. PhysX raises the threshold with the contacts of a body touching
-        /// something still, which lets a pile settle.
+        /// The counter decreases without an energy check until it drops below half its reset value or below the
+        /// duration of one step. This avoids testing energy while a body is briefly still at the top of a bounce. After
+        /// that, energy is calculated from velocities summed across steps, rather than from the current step alone.
+        /// Jitter around zero cancels out, while a steady drift accumulates and keeps the body awake, however slow the
+        /// drift is. As in PhysX, the threshold increases with the contact count when the body touches a body that is
+        /// not solved. This helps piles settle. Static and kinematic bodies, including moving kinematic bodies, are not
+        /// solved.
         /// </summary>
         private void UpdateWakeCounter(NativeStore.BodyData* body, int contacts)
         {
@@ -296,8 +314,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The contacts' part of <see cref="SleepJob"/>: joins the solved bodies that touch, and counts each body's contact
-    /// points and whether it touches something that doesn't move.
+    /// Processes contacts for <see cref="SleepJob"/>. It connects solved bodies that touch and counts each body's
+    /// contact points. It also records whether each body touches a body that is not solved, including a static or
+    /// kinematic body.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SleepContactsJob : IJob
@@ -306,7 +325,8 @@ namespace KSP.Retooled.Physics
         public NativeStore.WorldData* World;
 
         /// <summary>
-        /// Read beside <see cref="ReadImpulsesJob"/>, which writes only the impulses, a field this job doesn't read.
+        /// This list is read while <see cref="ReadImpulsesJob"/> runs. That job writes only the impulse fields, which
+        /// this job does not read.
         /// </summary>
         [ReadOnly]
         [NativeDisableContainerSafetyRestriction]
@@ -354,7 +374,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Puts to sleep the bodies <see cref="SleepJob"/> listed, stopping them where they are.</summary>
+    /// <summary>
+    /// Puts the bodies listed by <see cref="SleepJob"/> to sleep and stops them at their current positions.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct FallAsleepJob : IJob
     {

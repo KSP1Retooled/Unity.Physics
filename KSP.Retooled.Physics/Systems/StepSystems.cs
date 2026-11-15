@@ -9,12 +9,12 @@ using Unity.Physics.Systems;
 
 namespace KSP.Retooled.Systems.Physics;
 
-// The stages of a step that aren't the simulation's own, each in the group that puts it in the right place around
-// Unity.Physics' systems. They write PhysicsCollider so that the simulation's job dependencies pass through them too: that
-// is the component those systems chain their jobs on. Bodies live on entities, but a step works from the store's rows, which
-// is why none of these query them.
+// These systems run the stages of a step that Unity.Physics does not provide. Each belongs to a group that places it
+// before or after the appropriate Unity.Physics systems. They register write access to PhysicsCollider so that their
+// jobs participate in the simulation's dependencies. The Unity.Physics systems use that component to chain their jobs.
+// Bodies are stored on entities, but these systems use the rows in the store instead of querying those entities.
 
-/// <summary>Integrates what was applied to bodies since the last step.</summary>
+/// <summary>Integrates the forces and changes in velocity applied to bodies since the last step.</summary>
 [BurstCompile]
 [UpdateInGroup(typeof(BeforePhysicsSystemGroup))]
 internal partial struct ApplyForcesSystem : ISystem
@@ -26,7 +26,9 @@ internal partial struct ApplyForcesSystem : ISystem
     }
 }
 
-/// <summary>Stands in for <see cref="BuildPhysicsWorld"/>, building the world from the store instead of from a query.</summary>
+/// <summary>
+/// Replaces <see cref="BuildPhysicsWorld"/> and builds the world from the store instead of an entity query.
+/// </summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsInitializeGroup))]
 [CreateAfter(typeof(BuildPhysicsWorld))]
@@ -36,8 +38,9 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
     private EntityQuery settings;
     private EntityQuery worlds;
 
-    // Held rather than read from BuildPhysicsWorldData each step: a query on that component would register this system's
-    // jobs against it, and the stock systems that read it through the EntityManager would then wait for the whole build.
+    // Keep this reference instead of reading BuildPhysicsWorldData each step. Querying that component would register
+    // this system's jobs as dependencies for it. Stock systems that read it through EntityManager would then have to
+    // wait for the entire build.
     private NativeReference<int> staticsChanged;
 
     public void OnCreate(ref SystemState state)
@@ -73,7 +76,9 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
     }
 }
 
-/// <summary>Sorts the broadphase's pairs into islands, once it has dropped those that won't be solved.</summary>
+/// <summary>
+/// Sorts the pairs from the broadphase into islands after pairs that will not be solved have been removed.
+/// </summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsCreateBodyPairsGroup), OrderLast = true)]
 internal unsafe partial struct SortIslandsSystem : ISystem
@@ -99,7 +104,9 @@ internal unsafe partial struct SortIslandsSystem : ISystem
     }
 }
 
-/// <summary>Reads the contacts between the narrow phase and the Jacobians built from them.</summary>
+/// <summary>
+/// Reads contacts after the narrow phase has generated them and before Jacobians are built from them.
+/// </summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsCreateJacobiansGroup), OrderFirst = true)]
 internal unsafe partial struct ReadContactsSystem : ISystem
@@ -122,7 +129,7 @@ internal unsafe partial struct ReadContactsSystem : ISystem
     }
 }
 
-/// <summary>Warm starts the Jacobians.</summary>
+/// <summary>Initializes the Jacobians with cached impulses to warm start the solver.</summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsSolveAndIntegrateGroup), OrderFirst = true)]
 internal unsafe partial struct PrepareSolveSystem : ISystem
@@ -148,7 +155,7 @@ internal unsafe partial struct PrepareSolveSystem : ISystem
     }
 }
 
-/// <summary>Stands in for <see cref="ExportPhysicsWorld"/>, writing the solved world back to the store.</summary>
+/// <summary>Replaces <see cref="ExportPhysicsWorld"/> and writes the solved world back to the store.</summary>
 [BurstCompile]
 [UpdateInGroup(typeof(PhysicsSystemGroup))]
 [UpdateAfter(typeof(PhysicsSimulationGroup))]

@@ -2,15 +2,20 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>Which physics backend this run selected in the project's DynamicsManager settings.</summary>
+    /// <summary>Reports the physics backend selected for this run in the project's DynamicsManager settings.</summary>
     public static class BackendInfo
     {
-        /// <summary>The integration id of the Unity Physics backend, "RTPH", the value of m_CurrentBackendId that selects it.</summary>
+        /// <summary>
+        /// Defines the integration id of the Unity Physics backend, "RTPH". Setting m_CurrentBackendId to this value
+        /// selects that backend.
+        /// </summary>
         public const uint RetooledId = 0x52545048;
 
         public static bool IsRetooled => UnityEngine.Physics.GetCurrentIntegrationInfo().id == RetooledId;
 
-        /// <summary>The one line that tells which backend a log came from.</summary>
+        /// <summary>
+        /// Logs one line that identifies the selected backend, so that readers can tell which backend produced the log.
+        /// </summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void LogSelection()
         {

@@ -11,31 +11,36 @@ using PhysicsJoint = Unity.Physics.Joint;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Drives every WheelCollider for one step, as PhysX's vehicle update does before it simulates: each wheel casts down
-    /// its suspension from the body's pose at the start of the step and pushes the body, and whatever dynamic body it stands
-    /// on, apart along the ground's normal. It runs on the built world, after the bodies' velocities and the broadphase, and
-    /// before anything solves. One job for all of them, because a wheel can push a body another wheel pushes too.
+    /// Updates every WheelCollider for one step, as PhysX does in its vehicle update before simulation. For each wheel,
+    /// the job casts a ray down the suspension from the body's pose at the start of the step. It applies equal and
+    /// opposite impulses to the vehicle body and any dynamic body beneath the wheel, along the ground normal. This job
+    /// uses the built world after velocities and the broadphase have been prepared, and before the solver runs. All
+    /// wheels are updated in one job because several wheels may push the same body.
     /// </summary>
     /// <remarks>
-    /// The suspension force is <c>max(sprungMass * g + spring * jounce, 0) + damper * jounceSpeed</c>, with the jounce
-    /// measured up from the rest position Unity sets through the target position. That is the force KSP's VehiclePhysics
-    /// assumes when it picks a target position to cancel the sprung weight and reads its damping back out of the hit's
-    /// force. As in PhysX only the spring stops at zero: an extending damper pulls the body down, which keeps a landing
-    /// aircraft on its wheels. Tyre friction is left to the game, which sets every curve's stiffness to zero.
-    ///
-    /// A suspension stops at its full compression, and what more the body asks of it is held by a limit the solver keeps,
-    /// between the body and the world, as PhysX holds it. The limit joins the step the suspension would bottom out in, at
-    /// the stop itself, so the solver stops the body there; a limit that only pushes the body back out once it is past
-    /// leaves it rising at the speed it was pushed with. The hit's force leaves the limit out, so a wheel that bottoms out
-    /// reports no more than the spring gives, which is what the game's tyres grip with.
+    /// The suspension force is <c>max(sprungMass * g + spring * jounce, 0) + damper * jounceSpeed</c>. Jounce is
+    /// measured upward from the rest position that Unity sets through the target position. KSP's VehiclePhysics assumes
+    /// this formula when it selects a target position to cancel the weight supported by the suspension. It also uses
+    /// the reported hit force to recover the damping contribution. As in PhysX, only the spring contribution is clamped
+    /// to zero. An extending damper pulls the body down, which helps keep a landing aircraft on its wheels. The game
+    /// handles tyre friction and sets the stiffness of every friction curve to zero.
+    /// <para>
+    /// The suspension cannot compress beyond its stop. As in PhysX, a constraint between the body and the world
+    /// prevents further compression. The constraint is added during the step in which the suspension would reach the
+    /// stop, so that the solver stops the body there. If the constraint only corrected the body after it passed the
+    /// stop, the resulting push would leave the body moving upward. The reported hit force includes the spring and
+    /// damper contributions but excludes the force from this constraint. The game uses that reported force to calculate
+    /// tyre grip.
+    /// </para>
     /// </remarks>
     [BurstCompile]
     internal unsafe struct WheelJob : IJob
     {
-        // A slip angle's speed along the wheel is padded by this, so a wheel that is barely rolling gets a finite angle.
+        // This value is added to the speed along the wheel when calculating the slip angle. It keeps the angle finite
+        // when the wheel is barely rolling.
         private const float SlipSpeedPadding = 1.0f;
 
-        // The same for the wheel's own surface speed in the rolling slip.
+        // This value is added to the speed of the wheel surface when calculating rolling slip, for the same reason.
         private const float RollSpeedPadding = 0.1f;
 
         [NativeDisableUnsafePtrRestriction]
@@ -55,10 +60,16 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<int> BuiltIndices;
 
-        /// <summary>The step's joints, which the limits of bottomed out suspensions join for this step only.</summary>
+        /// <summary>
+        /// Stores the joints for this step. Constraints that prevent suspensions from compressing past their stops are
+        /// added here for this step only.
+        /// </summary>
         public NativeList<PhysicsJoint> Joints;
 
-        /// <summary>The built world's static body at the origin that stands for the world in a joint.</summary>
+        /// <summary>
+        /// Identifies the static body at the origin of the built world. Joints use this body to represent an attachment
+        /// to the world.
+        /// </summary>
         public int AnchorIndex;
 
         public float DeltaTime;
@@ -102,7 +113,8 @@ namespace KSP.Retooled.Physics
 
                 DriveWheel(vehicle, wheel, row, built, pose, centreOfMass, up, gravity, pushed);
 
-                // A driven wheel keeps its body awake, as in PhysX, which the game relies on with a token motor torque.
+                // A body with a driven wheel stays awake, as in PhysX. The game relies on this by applying a small
+                // motor torque.
                 if (wheel->motorTorque != 0.0f)
                 {
                     body->sleep->WakeCounter = math.max(body->sleep->WakeCounter, StoreOps.WakeCounterReset);
@@ -140,10 +152,11 @@ namespace KSP.Retooled.Physics
             RaycastHit hit = collector.Closest;
             float reach = suspension.maxCompression - (hit.Fraction * length - radius);
             float jounce = math.clamp(reach, -suspension.maxDroop, suspension.maxCompression);
-            // The damper works on how fast the body closes on the ground at the start of the step, along the ground's normal,
-            // so that rolling across it counts for nothing however the body leans. A rate taken from the jounce two steps apart
-            // also counts the solver pulling joints back into place as suspension travel, which on a light wheel part hanging
-            // off a heavy body sets the suspension bouncing.
+            // Damping is calculated from the speed at which the body approaches the ground at the start of the step,
+            // measured along the ground normal. Motion across the ground therefore does not contribute, regardless of
+            // the body's tilt. Calculating the rate from the difference in jounce between steps would also count the
+            // solver's corrections to joint positions as suspension travel. That can cause bouncing when a light part
+            // with a wheel is attached to a heavy body.
             float3 normal = hit.SurfaceNormal;
             float3 own = vehicle->startLinear + math.cross(vehicle->startAngular, hit.Position - centreOfMass);
             float3 contactVelocity = own - VelocityAt(hit.RigidBodyIndex, hit.Position);
@@ -151,7 +164,8 @@ namespace KSP.Retooled.Physics
             bool bottomingOut = reach + math.max(jounceSpeed, 0.0f) * DeltaTime > suspension.maxCompression;
             if (reach > suspension.maxCompression)
             {
-                // Past the stop the spring travels no further, so the damper only sees what travel was left of it.
+                // The spring cannot travel beyond the stop. Limit the compression speed used for damping to the travel
+                // that remained before this step.
                 jounceSpeed = math.min(jounceSpeed, (suspension.maxCompression - wheel->jounce) / DeltaTime);
             }
 
@@ -201,15 +215,16 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Keeps the top of the suspension at least a wheel's radius above the ground along the suspension, which is where
-        /// it sits at full compression, with a one-sided limit against the world. <paramref name="excess"/> is how far past
-        /// that the body already is, and less than zero while it still has that much travel left.
+        /// Adds a one-sided constraint between the body and the world to prevent compression past the suspension stop.
+        /// At full compression, the top of the suspension is one wheel radius above the ground, measured along the
+        /// suspension axis. <paramref name="excess"/> is the distance that the body has moved past this position. A
+        /// negative value means that this much travel remains.
         /// </summary>
         /// <remarks>
-        /// The limit works along the ground's normal. A bottomed-out wheel bears on the ground like any contact, and along a
-        /// leaning suspension a body rolling over the ground would close on the world anchor or leave it at a share of its
-        /// speed: an aircraft touching down nose up at 100 m/s would be thrown off the runway, and one nose down would sink
-        /// through the stop.
+        /// The constraint acts along the ground normal, as a contact does when a wheel reaches full compression. If it
+        /// acted along a tilted suspension instead, motion across the ground would move the body toward or away from
+        /// the world anchor at a fraction of its forward speed. An aircraft landing nose up at 100 m/s would be thrown
+        /// off the runway. An aircraft landing nose down would sink past the stop.
         /// </remarks>
         private void HoldAtFullCompression(int built, RigidTransform pose, float3 top, float3 up, float3 normal, float excess)
         {
@@ -229,8 +244,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Turns the wheel under its motor, brake and damping. Nothing couples the spin to the ground, because the game
-        /// turns tyre friction off and works out its wheels' speeds itself.
+        /// Updates wheel rotation using motor torque, brake torque, and damping. Rotation is not coupled to the ground
+        /// because the game disables tyre friction and calculates wheel speeds itself.
         /// </summary>
         private void Spin(NativeStore.WheelSlot* wheel)
         {
@@ -242,7 +257,10 @@ namespace KSP.Retooled.Physics
             wheel->rotationAngle = math.fmod(wheel->rotationAngle + speed * DeltaTime, 2.0f * math.PI);
         }
 
-        /// <summary>How fast a point of a built body moves. Static bodies, which come after the moving ones, stand still.</summary>
+        /// <summary>
+        /// Returns the velocity at a point on a body in the built world. Static bodies have zero velocity and are
+        /// stored after the moving bodies.
+        /// </summary>
         private float3 VelocityAt(int built, float3 point)
         {
             if (built >= MotionVelocities.Length)
@@ -268,8 +286,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The nearest hit a wheel stands on: not its own body, nor a trigger, a shape queries can't see, a layer the wheel
-    /// doesn't collide with, a pair Physics.IgnoreCollision switched off, or the back of a polygon.
+    /// Collects the nearest hit that can support a wheel. It excludes the wheel's own body, triggers, shapes that are
+    /// hidden from queries, and layers that do not collide with the wheel. It also excludes pairs disabled by
+    /// Physics.IgnoreCollision and hits on the back of a polygon.
     /// </summary>
     internal unsafe struct WheelRayCollector : ICollector<RaycastHit>
     {

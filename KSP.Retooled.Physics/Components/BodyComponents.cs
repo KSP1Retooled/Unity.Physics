@@ -3,22 +3,23 @@ using Unity.Mathematics;
 
 namespace KSP.Retooled.Components.Physics;
 
-// A rigid body's entity holds Unity.Physics' and Unity.Transforms' components where they say what a Rigidbody needs. These
-// hold what they can't. All vectors are world space unless named local.
+// A rigid body's entity uses components from Unity.Physics and Unity.Transforms for the Rigidbody data that they can
+// represent. The components below store the remaining data. All vectors are in world space unless their names specify
+// local space.
 
 /// <summary>
-/// The mass and inertia that a Rigidbody hands back, which inverting PhysicsMass wouldn't return exactly, and which can't
-/// be recovered from a body that has inverses of zero.
+/// Stores the mass and inertia returned by a Rigidbody. Inverting PhysicsMass would not recover these values exactly.
+/// They cannot be recovered at all when the inverse values are zero.
 /// </summary>
 public struct BodyMass : IComponentData
 {
     public float Mass;
 
-    /// <summary>Principal moments of inertia, in the frame that PhysicsMass.Transform gives.</summary>
+    /// <summary>Stores the principal moments of inertia in the frame specified by PhysicsMass.Transform.</summary>
     public float3 Inertia;
 }
 
-/// <summary>The most motion a rigid body may have.</summary>
+/// <summary>Defines the limits on the velocity of a rigid body.</summary>
 public struct BodyLimits : IComponentData
 {
     public float MaxLinearVelocity;
@@ -26,51 +27,55 @@ public struct BodyLimits : IComponentData
     public float MaxDepenetrationVelocity;
 }
 
-/// <summary>How close a rigid body is to going to sleep.</summary>
+/// <summary>Tracks how close a rigid body is to falling asleep.</summary>
 public struct BodySleep : IComponentData
 {
     public float WakeCounter;
     public float Threshold;
 
-    /// <summary>The velocity summed since the body last showed enough energy to stay awake.</summary>
+    /// <summary>Stores the sum of linear velocities since the body last had enough energy to stay awake.</summary>
     public float3 LinearSum;
 
-    /// <summary>As <see cref="LinearSum"/>, in the inertia frame.</summary>
+    /// <summary>
+    /// Stores the sum of angular velocities in the inertia frame, over the same period as <see cref="LinearSum"/>.
+    /// </summary>
     public float3 AngularSum;
 }
 
 /// <summary>
-/// What has been applied to a rigid body since the last step, which zeroes it. Each ForceMode integrates differently, so
-/// each has its own fields.
+/// Accumulates forces, torques, and changes in velocity applied to a rigid body between steps. The accumulated values
+/// are cleared during the step. Each ForceMode has its own fields because each mode requires a different calculation.
 /// </summary>
 public struct BodyForces : IComponentData
 {
-    /// <summary>ForceMode.Force, in newtons. The step scales it by dt / mass.</summary>
+    /// <summary>Stores ForceMode.Force in newtons. During the step, it is scaled by dt / mass.</summary>
     public float3 Force;
 
-    /// <summary>ForceMode.Force, in newton metres. The step scales it by dt / inertia.</summary>
+    /// <summary>Stores ForceMode.Force in newton metres. During the step, it is scaled by dt / inertia.</summary>
     public float3 Torque;
 
-    /// <summary>ForceMode.Acceleration, in m/s². The step scales it by dt.</summary>
+    /// <summary>Stores ForceMode.Acceleration in m/s². During the step, it is scaled by dt.</summary>
     public float3 Acceleration;
 
-    /// <summary>ForceMode.Acceleration, in rad/s². The step scales it by dt.</summary>
+    /// <summary>Stores ForceMode.Acceleration in rad/s². During the step, it is scaled by dt.</summary>
     public float3 AngularAcceleration;
 
-    /// <summary>ForceMode.Impulse, in newton seconds. The step scales it by 1 / mass.</summary>
+    /// <summary>Stores ForceMode.Impulse in newton seconds. During the step, it is scaled by 1 / mass.</summary>
     public float3 Impulse;
 
-    /// <summary>ForceMode.Impulse, in newton metre seconds. The step scales it by 1 / inertia.</summary>
+    /// <summary>
+    /// Stores ForceMode.Impulse in newton metre seconds. During the step, it is scaled by 1 / inertia.
+    /// </summary>
     public float3 AngularImpulse;
 
-    /// <summary>ForceMode.VelocityChange, in m/s.</summary>
+    /// <summary>Stores ForceMode.VelocityChange in m/s.</summary>
     public float3 VelocityChange;
 
-    /// <summary>ForceMode.VelocityChange, in rad/s.</summary>
+    /// <summary>Stores ForceMode.VelocityChange in rad/s.</summary>
     public float3 AngularVelocityChange;
 }
 
-/// <summary>Where a kinematic rigid body has been told to move by the next step.</summary>
+/// <summary>Stores the pose that a kinematic rigid body should reach by the next step.</summary>
 public struct BodyTarget : IComponentData
 {
     public quaternion Rotation;

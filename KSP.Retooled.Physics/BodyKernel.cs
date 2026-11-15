@@ -6,7 +6,10 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>The plugin API's body commands, by the id Body.cpp passes. Attach checks the count against the plugin's.</summary>
+    /// <summary>
+    /// Defines the plugin API's body commands using the ids passed by Body.cpp. Attach checks that the number of
+    /// commands matches the plugin's count.
+    /// </summary>
     internal enum BodyCommand : uint
     {
         Invalid = 0,
@@ -67,13 +70,14 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Everything a body command does. The accumulated forces and torques it collects are consumed by the step in
-    /// <see cref="ApplyForcesJob"/>.
+    /// Implements body commands. Forces and torques accumulate here until <see cref="ApplyForcesJob"/> applies them
+    /// during the next step.
     /// </summary>
     /// <remarks>
-    /// As with the query functions, the plugin holds a Burst function pointer, and until the async compile delivers it is a
-    /// stub running the same code in Mono. Body commands arrive outside a step, mostly on the main thread: Unity reads poses
-    /// from job workers too, which read rows as <see cref="BodyEntities"/> left them.
+    /// The plugin stores a Burst function pointer, as it does for query functions. Until asynchronous compilation
+    /// finishes, that pointer refers to a stub that runs the same code in Mono. Body commands arrive outside a step,
+    /// mostly on the main thread. Unity also reads poses from worker threads. Those workers read the rows in the state
+    /// that <see cref="BodyEntities"/> left them.
     /// </remarks>
     [BurstCompile]
     internal static unsafe class BodyKernel
@@ -103,7 +107,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst omits this method, so it runs only in Mono. The Mono version must catch the exception here.
+        /// </summary>
         [BurstDiscard]
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
         {
@@ -283,7 +289,8 @@ namespace KSP.Retooled.Physics
                     a->rotation = hasTarget ? hot->target->Rotation : hot->pose->Rotation;
                     break;
                 case BodyCommand.Sleep:
-                    // A sleeping body doesn't step, so a target kept here would land when it next wakes.
+                    // Sleeping bodies are not stepped. Clear the target here so that it is not applied when the body
+                    // next wakes.
                     hot->flags |= NativeStore.BodyFlags.Sleeping;
                     hot->flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
                     hot->sleep->WakeCounter = 0.0f;
@@ -347,8 +354,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity poses every body under a transform that moved, most of them where they already were, and a static body that
-        /// moves has the static tree built again.
+        /// Unity sets the pose of every body beneath a transform that moved. Most of those bodies are already at the
+        /// supplied pose. Moving a static body requires rebuilding the static tree.
         /// </summary>
         private static void SetPose(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
@@ -383,22 +390,23 @@ namespace KSP.Retooled.Physics
                 hot->flags &= ~bits;
             }
 
-            // Only a simulated kinematic body reaches a target, and the step skips the rest, so one left here would land later.
+            // Only simulated kinematic bodies move to their targets during a step. Clear the target for other bodies so
+            // that it is not applied later.
             const NativeStore.BodyFlags followsTargets = NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Simulated;
             if ((hot->flags & followsTargets) != followsTargets)
             {
                 hot->flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
             }
 
-            // Unity sets flags far more often than it changes them. A body that stops being static leaves the static tree
-            // as surely as one that starts.
+            // Unity sets flags far more often than their values change. The static tree needs to be updated both when a
+            // body becomes static and when it stops being static.
             if (hot->flags != before)
             {
                 StoreOps.MarkPoseChanged(body, before | hot->flags);
             }
 
-            // Whether a body moves decides where its joints sit in the vessel forest, and whether it is simulated where its
-            // joints' bodies are built.
+            // Whether a body moves determines the position of its joints in the vessel forest. Whether it is simulated
+            // determines where the bodies for its joints are built.
             if (((hot->flags ^ before) & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Simulated)) != 0)
             {
                 JointTopology.Changed();
@@ -406,8 +414,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity gives a static body's shape a world-space pose here and in SetPose, unlike a dynamic body's, whatever the plugin
-        /// API's comments say. The store keeps every shape relative to its body.
+        /// Unity supplies world-space poses for static bodies' shapes here and in SetPose. It supplies local poses for
+        /// dynamic bodies' shapes, despite the comments in the plugin API. The store keeps every shape's pose relative
+        /// to its body.
         /// </summary>
         internal static void StoreStaticShapePose(NativeStore.ShapeData* shape, NativeStore.BodyData* body, float3 worldPosition, quaternion worldRotation)
         {
@@ -420,7 +429,8 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AttachShape.Auto();
 
-            // A shape has one owner, and the old owner's entry would dangle once the shape is destroyed.
+            // A shape has one owner. If its entry remained with the old owner, that entry would point to freed memory
+            // after the shape was destroyed.
             NativeStore.Shape* shape = (NativeStore.Shape*)a->pointer;
             if (shape == null)
             {
@@ -519,8 +529,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Rotates a symmetric matrix until it is diagonal, by cyclic Jacobi, collecting the rotation in
-        /// <paramref name="axes"/>, whose columns end up as the eigenvectors. Both index as [row * 3 + column].
+        /// Uses the cyclic Jacobi method to rotate a symmetric matrix until it is diagonal. The accumulated rotation is
+        /// stored in <paramref name="axes"/>, whose columns become the eigenvectors. Both arrays use the index [row * 3
+        /// + column].
         /// </summary>
         private static void Diagonalize(double* a, double* axes)
         {
@@ -625,7 +636,10 @@ namespace KSP.Retooled.Physics
             return shape->localPosition + math.rotate(shape->localRotation, localCenter);
         }
 
-        /// <summary>Distributes the body's mass over its non-trigger shapes by volume, as PhysX's updateMassAndInertia does.</summary>
+        /// <summary>
+        /// Distributes the body's mass among its shapes in proportion to their volumes, excluding triggers. This
+        /// follows PhysX's updateMassAndInertia.
+        /// </summary>
         private static void RecomputeMassProperties(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RecomputeMassProperties.Auto();
@@ -639,7 +653,8 @@ namespace KSP.Retooled.Physics
             {
                 NativeStore.ShapeData* shape = body->shapes[i];
 
-                // PhysX can't integrate a triangle mesh, and gives up on the whole body. Only a kinematic body can carry one.
+                // PhysX cannot calculate mass properties for a triangle mesh and rejects the calculation for the whole
+                // body. A moving body with a triangle mesh must be kinematic.
                 if (shape->geometryType == NativeStore.GeometryTriangleMesh)
                 {
                     totalVolume = 0.0f;
@@ -688,7 +703,8 @@ namespace KSP.Retooled.Physics
 
             Diagonalize(tensor, principalAxes);
 
-            // Eigenvectors may come out left-handed, and a quaternion can only express a proper rotation.
+            // The calculated eigenvectors may form a left-handed basis. A quaternion can represent only a proper
+            // rotation.
             double determinant = principalAxes[0] * (principalAxes[4] * principalAxes[8] - principalAxes[5] * principalAxes[7])
                 - principalAxes[1] * (principalAxes[3] * principalAxes[8] - principalAxes[5] * principalAxes[6])
                 + principalAxes[2] * (principalAxes[3] * principalAxes[7] - principalAxes[4] * principalAxes[6]);
@@ -710,7 +726,10 @@ namespace KSP.Retooled.Physics
             return !isTrigger && hasMass;
         }
 
-        /// <summary>Adds a shape of the given mass to a tensor about the body's centre of mass: its own inertia rotated into the body's frame, and the parallel axis term.</summary>
+        /// <summary>
+        /// Adds the contribution of a shape with the given mass to the inertia tensor about the body's centre of mass.
+        /// This includes the shape's inertia rotated into the body's frame and the parallel axis term.
+        /// </summary>
         private static void AddToTensor(double* tensor, NativeStore.ShapeData* shape, double mass, float3 offset, float3x3 inertiaPerUnitMass)
         {
             float3x3 axes = new float3x3(shape->localRotation);
@@ -739,7 +758,10 @@ namespace KSP.Retooled.Physics
             return hot->forces->Force + hot->forces->Acceleration * hot->bodyMass->Mass + hot->forces->Impulse * perStep + hot->forces->VelocityChange * hot->bodyMass->Mass * perStep;
         }
 
-        /// <summary>Acceleration and velocity-change torques go through the principal axes, because they carry no inertia of their own.</summary>
+        /// <summary>
+        /// Converts angular acceleration or a change in angular velocity into torque using the principal axes and
+        /// moments of inertia. These inputs do not include the effect of inertia.
+        /// </summary>
         private static float3 ApplyInertia(NativeStore.BodyData* hot, float3 angular)
         {
             quaternion rotation = math.mul(hot->pose->Rotation, hot->mass->Transform.rot);
@@ -788,7 +810,8 @@ namespace KSP.Retooled.Physics
 
         private static void SetKinematicTarget(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
-            // The step skips a body that isn't simulated, so it could only ever reach this target by a later teleport.
+            // Bodies that are not simulated are skipped during the step. Ignore their targets here so that a stored
+            // target cannot cause a teleport later.
             if ((hot->flags & NativeStore.BodyFlags.Simulated) != 0)
             {
                 hot->target->Position = a->position;
