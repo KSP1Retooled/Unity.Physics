@@ -1371,7 +1371,6 @@ namespace Unity.Physics
             NativeArray<int> compactBodies = setup.CompactBodies;
             bool holdsPositions = setup.HoldsPositions;
 
-            var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var problem = new SparseConstraintSolver.Problem
             {
                 BodyCount = bodies.Length,
@@ -1390,6 +1389,83 @@ namespace Unity.Physics
             };
             SparseSetupMarker.End();
 
+            var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            float* impulsesPtr = (float*)impulses.GetUnsafePtr();
+
+            // A forest island solves its forest joints' rows structurally and the rest as a boundary block against them.
+            ForestSettings forestSettings = stepInput.DirectSolverCache.Forest;
+            if (forestSettings.Enabled && headers.Length == blocks.Length && blocks.Length > 0)
+            {
+                ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
+                int builds = forest != null ? forest->Builds : 0;
+                ForestRun run = default;
+                bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
+                    forest, forestSettings.BoundaryRowCap, team, out run);
+                stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
+                if (forest != null && forest->Builds != builds)
+                {
+                    stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestBuilds);
+                }
+
+                if (started)
+                {
+                    SolveForest(ref run, problem.RightHandSide, impulsesPtr);
+                    var bodyLinear = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var bodyAngular = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var linearPtr = (float3*)bodyLinear.GetUnsafePtr();
+                    var angularPtr = (float3*)bodyAngular.GetUnsafePtr();
+                    if (holdsPositions)
+                    {
+                        var forestDrift = new NativeArray<float>(rows, Allocator.Temp);
+                        float* forestDriftPtr = (float*)forestDrift.GetUnsafePtr();
+                        SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
+                        if (AimAtPredictedDrift(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
+                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team))
+                        {
+                            for (int row = 0; row < rows; row++)
+                            {
+                                rhs[row] += forestDrift[row];
+                            }
+
+                            SolveForest(ref run, problem.RightHandSide, impulsesPtr);
+                        }
+
+                        forestDrift.Dispose();
+                    }
+
+                    run.Dispose();
+                    if (applyImpulses)
+                    {
+                        SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
+                        ApplySparseImpulses(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
+                            motionVelocities, motionDatas, contactPairs > 0, team);
+                        if (recovery != null)
+                        {
+                            SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                                motionVelocities, motionDatas, stepInput.Timestep,
+                                math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
+                        }
+                    }
+
+                    bodyLinear.Dispose();
+                    bodyAngular.Dispose();
+                    SparseProblemObserver.Report(&problem, impulsesPtr, bounded);
+                    for (int row = 0; row < rows; row++)
+                    {
+                        rhs[row] = impulses[row];
+                    }
+
+                    bodies.Dispose();
+                    blocks.Dispose();
+                    couplings.Dispose();
+                    headers.Dispose();
+                    compactBodies.Dispose();
+                    setup.WorldBodies.Dispose();
+                    impulses.Dispose();
+                    return;
+                }
+            }
+
             SparseConstraintSolver* kept = stepInput.DirectSolverCache.Solver(islandIndex);
             var temporary = default(SparseConstraintSolver);
             if (kept == null)
@@ -1400,13 +1476,12 @@ namespace Unity.Physics
 
             // The team lives for one substep, and a kept solver for many.
             kept->Team = team;
-            float* impulsesPtr = (float*)impulses.GetUnsafePtr();
             kept->Solve(problem, impulsesPtr, bounded);
 
             var drift = new NativeArray<float>(rows, Allocator.Temp);
             float* driftPtr = (float*)drift.GetUnsafePtr();
-            if (holdsPositions && AimAtPredictedDrift(problem, kept, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
-                stepInput.Timestep, jacobianRows, driftPtr, team)
+            if (holdsPositions && AimAtPredictedDrift(problem, kept, null, null, compactBodies, headers, impulsesPtr, motionVelocities,
+                motionDatas, stepInput.Timestep, jacobianRows, driftPtr, team)
                 && !kept->SolveChange(problem, driftPtr, impulsesPtr))
             {
                 for (int row = 0; row < rows; row++)
@@ -1420,7 +1495,7 @@ namespace Unity.Physics
             drift.Dispose();
             if (applyImpulses)
             {
-                ApplySparseImpulses(problem, kept, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
+                ApplySparseImpulses(problem, kept, null, null, compactBodies, headers, impulsesPtr, motionVelocities, motionDatas,
                     contactPairs > 0, team);
                 if (recovery != null)
                 {
@@ -1720,7 +1795,7 @@ namespace Unity.Physics
         /// would throw the craft apart.
         /// </summary>
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
-            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
+            float3* bodyLinear, float3* bodyAngular, in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
             in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team)
         {
@@ -1736,7 +1811,17 @@ namespace Unity.Physics
                     continue;
                 }
 
-                solver->BodyImpulse(problem, impulses, compact, out float3 linear, out float3 angular);
+                float3 linear, angular;
+                if (solver != null)
+                {
+                    solver->BodyImpulse(problem, impulses, compact, out linear, out angular);
+                }
+                else
+                {
+                    linear = bodyLinear[compact];
+                    angular = bodyAngular[compact];
+                }
+
                 MotionVelocity velocity = solved[body];
                 velocity.ApplyLinearImpulse(linear);
                 velocity.ApplyAngularImpulse(math.rotate(math.conjugate(motionDatas[body].WorldFromMotion.rot), angular));
@@ -1829,7 +1914,7 @@ namespace Unity.Physics
         /// read. Neither writes what another body or Jacobian does, so both split among a team's lanes.
         /// </summary>
         static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
-            in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
+            float3* bodyLinear, float3* bodyAngular, in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, bool sparseContacts,
             SparseSolveTeam* team)
         {
@@ -1848,6 +1933,8 @@ namespace Unity.Physics
             {
                 Problem = problem,
                 Solver = solver,
+                BodyLinear = bodyLinear,
+                BodyAngular = bodyAngular,
                 Impulses = impulses,
                 Headers = (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(),
                 WorldBodies = (int*)worldBodies.GetUnsafeReadOnlyPtr(),
@@ -2024,6 +2111,10 @@ namespace Unity.Physics
         {
             public SparseConstraintSolver.Problem Problem;
             public SparseConstraintSolver* Solver;
+
+            /// <summary>Each body's impulse, for an application without a solver to ask.</summary>
+            public float3* BodyLinear;
+            public float3* BodyAngular;
             public float* Impulses;
             public JacobianHeader** Headers;
             public int* WorldBodies;
@@ -2045,8 +2136,17 @@ namespace Unity.Physics
                 for (int compact = task * BodiesPerApplyTask; compact < end; compact++)
                 {
                     int body = application->WorldBodies[compact];
-                    application->Solver->BodyImpulse(application->Problem, application->Impulses, compact, out float3 linear,
-                        out float3 angular);
+                    float3 linear, angular;
+                    if (application->Solver != null)
+                    {
+                        application->Solver->BodyImpulse(application->Problem, application->Impulses, compact, out linear, out angular);
+                    }
+                    else
+                    {
+                        linear = application->BodyLinear[compact];
+                        angular = application->BodyAngular[compact];
+                    }
+
                     ref MotionVelocity velocity = ref application->MotionVelocities[body];
                     velocity.ApplyLinearImpulse(linear);
 

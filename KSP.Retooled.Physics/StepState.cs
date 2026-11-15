@@ -41,6 +41,7 @@ namespace KSP.Retooled.Physics
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
+        private NativeList<JointForestRole> jointRoles;
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
         private DirectSolverCache directSolverCache;
@@ -89,6 +90,7 @@ namespace KSP.Retooled.Physics
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
+            jointRoles = new NativeList<JointForestRole>(Allocator.Persistent);
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -138,6 +140,7 @@ namespace KSP.Retooled.Physics
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
+            jointRoles.Dispose();
             jointLoads.Dispose();
             groupLoads.Dispose();
             directSolverCache.Dispose();
@@ -166,6 +169,9 @@ namespace KSP.Retooled.Physics
             knownBodyPairs.Dispose();
             learnedBodyPairs.Dispose();
         }
+
+        /// <summary>The direct solver's cache, which counts the forest's solves.</summary>
+        internal readonly DirectSolverCache DirectSolverCache => directSolverCache;
 
         /// <summary>The built world, which the simulation's systems step.</summary>
         internal readonly PhysicsWorld World => world;
@@ -360,6 +366,11 @@ namespace KSP.Retooled.Physics
         {
             using var span = BackendMarkers.StepSchedule.Auto();
 
+            directSolverCache.Forest = new ForestSettings
+            {
+                Enabled = VesselForest.Enabled,
+                BoundaryRowCap = VesselForest.BoundaryRowCap,
+            };
             input.DirectSolverCache = directSolverCache;
             return new WarmStartJob
             {
@@ -784,6 +795,8 @@ namespace KSP.Retooled.Physics
                     Groups = jointGroups,
                     Members = jointGroupMembers,
                     Units = jointUnits,
+                    Roles = jointRoles,
+                    Forest = VesselForest.Enabled,
                 }.Schedule(dependency);
 
                 // Each unit builds a number of joints only it knows, so each writes its own run of a stream.
@@ -799,6 +812,7 @@ namespace KSP.Retooled.Physics
                     DynamicCount = dynamicIndices.Length,
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
+                    Roles = jointRoles.AsDeferredJobArray(),
                 }.Schedule(jointUnits, JointBatchSize, allocated);
 
                 JobHandle gathered = new GatherJointsJob

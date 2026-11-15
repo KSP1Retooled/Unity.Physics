@@ -102,7 +102,12 @@ namespace KSP.Retooled.Physics
         public int AnchorIndex;
         public float DeltaTime;
 
+        /// <summary>Each unit's place in the vessel forest, see <see cref="GroupJointsJob"/>.</summary>
+        [ReadOnly]
+        public NativeArray<JointForestRole> Roles;
+
         private PhysicsJoint pending;
+        private JointForestRole role;
         private int pendingCount;
         private bool emitted;
 
@@ -110,6 +115,7 @@ namespace KSP.Retooled.Physics
         {
             Output.BeginForEachIndex(index);
             JointUnit unit = Units[index];
+            role = Roles[index];
             if (unit.Group < 0)
             {
                 Append(World->joints[unit.Joint]);
@@ -376,6 +382,7 @@ namespace KSP.Retooled.Physics
                 BFromJoint = new MTransform(joint->rotation0, anchor0),
                 Entity = entity,
                 EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
+                ForestRole = role,
             };
             pendingCount = 0;
             emitted = false;
@@ -724,6 +731,11 @@ namespace KSP.Retooled.Physics
         public NativeList<JointGroupMember> Members;
         public NativeList<JointUnit> Units;
 
+        /// <summary>Each unit's place in the vessel forest, or None for every unit when the forest is off.</summary>
+        public NativeList<JointForestRole> Roles;
+
+        public bool Forest;
+
         public void Execute()
         {
             Units.Clear();
@@ -736,6 +748,79 @@ namespace KSP.Retooled.Physics
                     Units.Add(new JointUnit { Joint = i, Group = group });
                 }
             }
+
+            FindForest();
+        }
+
+        /// <summary>
+        /// The vessel forest's spanning trees, by Kruskal over the units that hold their bodies as a part joint does
+        /// (<see cref="BuildJointsJob.Mergeable"/>) in the store's order, which puts part joints before the struts added
+        /// after them: a unit that joins two trees is a tree edge, and one whose bodies are already in one tree closes a
+        /// loop. A unit held by something that doesn't move only touches one body, so it is an edge that joins nothing.
+        /// Everything else is no part of the forest. Linear in the joints, like the grouping beside it.
+        /// </summary>
+        private void FindForest()
+        {
+            Roles.ResizeUninitialized(Units.Length);
+            if (!Forest)
+            {
+                for (int u = 0; u < Units.Length; u++)
+                {
+                    Roles[u] = JointForestRole.None;
+                }
+
+                return;
+            }
+
+            int bodyCount = (int)World->bodyCount;
+            var root = new NativeArray<int>(bodyCount, Allocator.Temp);
+            for (int i = 0; i < bodyCount; i++)
+            {
+                root[i] = i;
+            }
+
+            for (int u = 0; u < Units.Length; u++)
+            {
+                NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                if (!BuildJointsJob.Mergeable(joint))
+                {
+                    Roles[u] = JointForestRole.None;
+                    continue;
+                }
+
+                if (Immobile(joint->body0) || Immobile(joint->body1))
+                {
+                    Roles[u] = JointForestRole.Tree;
+                    continue;
+                }
+
+                int a = Find(root, (int)joint->body0->index), b = Find(root, (int)joint->body1->index);
+                if (a == b)
+                {
+                    Roles[u] = JointForestRole.Closure;
+                    continue;
+                }
+
+                root[a] = b;
+                Roles[u] = JointForestRole.Tree;
+            }
+        }
+
+        private static bool Immobile(NativeStore.Body* body)
+        {
+            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
+            return body == null || (StoreOps.Hot(body)->flags & immobile) != 0;
+        }
+
+        private static int Find(NativeArray<int> root, int v)
+        {
+            while (root[v] != v)
+            {
+                root[v] = root[root[v]];
+                v = root[v];
+            }
+
+            return v;
         }
 
         /// <summary>

@@ -648,6 +648,13 @@ namespace Unity.Physics
         public byte Version;
 
         /// <summary>
+        /// How the direct solve may treat the joint: <see cref="JointForestRole.None"/> for a row like any other, or a tree
+        /// edge or a closure of the vessel forest, whose unbounded rows it eliminates structurally (see
+        /// <see cref="ForestSettings"/>). Whoever builds the joints decides; a joint that isn't a forest joint keeps None.
+        /// </summary>
+        public JointForestRole ForestRole;
+
+        /// <summary>
         /// The entity that contained the component which created this joint Note, this isn't necessarily
         /// an entity with a rigid body, as a pair of bodies can have an arbitrary number of constraints,
         /// but only one instance of a particular component type per entity.

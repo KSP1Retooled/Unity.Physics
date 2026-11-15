@@ -41,6 +41,11 @@ namespace Unity.Physics
         /// <summary>One phase of an iteration of the iteratively solved pairs, whose context is that phase's job.</summary>
         public const int IterativePhaseKind = -6;
 
+        /// <summary>A vessel forest's factor by chunks, its forward substitution by chunks, and its backward one.</summary>
+        public const int ForestFactorKind = -7;
+        public const int ForestForwardKind = -8;
+        public const int ForestSubstituteKind = -9;
+
         struct Stage
         {
             public void* Context;
@@ -230,6 +235,18 @@ namespace Unity.Physics
             else if (stage.Kind == IterativePhaseKind)
             {
                 Solver.IterativePhaseTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestFactorKind)
+            {
+                Solver.ForestFactorTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestForwardKind)
+            {
+                ((VesselContext*)stage.Context)->ForwardChunk(task);
+            }
+            else if (stage.Kind == ForestSubstituteKind)
+            {
+                ((VesselContext*)stage.Context)->SubstituteChunk(task);
             }
             else
             {

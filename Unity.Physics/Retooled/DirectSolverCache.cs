@@ -22,6 +22,9 @@ namespace Unity.Physics
         {
             public SparseConstraintSolver Solver;
 
+            /// <summary>The island's vessel forest, or null until a forest solve first asks for one.</summary>
+            public ForestIsland* Forest;
+
             /// <summary>The first body of the island the solver last solved, or -1 if it has never solved one.</summary>
             public int Key;
 
@@ -44,6 +47,16 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         long* step;
 
+        [NativeDisableUnsafePtrRestriction]
+        ForestSettings* forestSettings;
+
+        [NativeDisableUnsafePtrRestriction]
+        long* forestCounters;
+
+        internal const int ForestSolves = 0;
+        internal const int ForestFallbacks = 1;
+        internal const int ForestBuilds = 2;
+
         public static DirectSolverCache Create()
         {
             var cache = new DirectSolverCache
@@ -51,7 +64,13 @@ namespace Unity.Physics
                 slots = (Slot*)UnsafeUtility.MallocTracked(Capacity * sizeof(Slot), UnsafeUtility.AlignOf<Slot>(), Allocator.Persistent, 0),
                 slotOfIsland = UnsafeList<int>.Create(Capacity, Allocator.Persistent),
                 step = (long*)UnsafeUtility.MallocTracked(sizeof(long), UnsafeUtility.AlignOf<long>(), Allocator.Persistent, 0),
+                forestSettings = (ForestSettings*)UnsafeUtility.MallocTracked(sizeof(ForestSettings), UnsafeUtility.AlignOf<ForestSettings>(),
+                    Allocator.Persistent, 0),
             };
+
+            *cache.forestSettings = ForestSettings.Default;
+            cache.forestCounters = (long*)UnsafeUtility.MallocTracked(3 * sizeof(long), UnsafeUtility.AlignOf<long>(), Allocator.Persistent, 0);
+            UnsafeUtility.MemClear(cache.forestCounters, 3 * sizeof(long));
 
             UnsafeUtility.MemClear(cache.slots, Capacity * sizeof(Slot));
             for (int slot = 0; slot < Capacity; slot++)
@@ -65,6 +84,66 @@ namespace Unity.Physics
         }
 
         internal bool IsCreated => slots != null;
+
+        /// <summary>
+        /// Whether, and how, direct islands solve as a forest plus a boundary. A default cache has no forest. Set between
+        /// steps; the setting reaches every copy of the cache.
+        /// </summary>
+        public ForestSettings Forest
+        {
+            get => forestSettings != null ? *forestSettings : default;
+            set
+            {
+                if (forestSettings != null)
+                {
+                    *forestSettings = value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The forest an island keeps between solves, or null if there is none to keep. Like <see cref="Solver"/>, an island
+        /// asks only for its own slot's, so islands solving in parallel never share one.
+        /// </summary>
+        /// <summary>
+        /// Since the cache was made: how many island solves took the forest path, how many forest-enabled solves fell back
+        /// to the sparse solver, and how many times a forest structure was built.
+        /// </summary>
+        public void GetForestCounts(out long solves, out long fallbacks, out long builds)
+        {
+            solves = forestCounters != null ? forestCounters[ForestSolves] : 0;
+            fallbacks = forestCounters != null ? forestCounters[ForestFallbacks] : 0;
+            builds = forestCounters != null ? forestCounters[ForestBuilds] : 0;
+        }
+
+        internal void CountForest(int counter)
+        {
+            if (forestCounters != null)
+            {
+                System.Threading.Interlocked.Increment(ref forestCounters[counter]);
+            }
+        }
+
+        internal ForestIsland* ForestOf(int island)
+        {
+            if (slots == null)
+            {
+                return null;
+            }
+
+            int slot = slotOfIsland->Length > 0 ? (island < slotOfIsland->Length ? (*slotOfIsland)[island] : -1) : island;
+            if (slot < 0 || slot >= Capacity)
+            {
+                return null;
+            }
+
+            if (slots[slot].Forest == null)
+            {
+                slots[slot].Forest = ForestIsland.Create();
+            }
+
+            return slots[slot].Forest;
+        }
 
         /// <summary>
         /// Gives every island of a step its slot, from the first body of each. Runs on one thread before any island solves.
@@ -166,7 +245,14 @@ namespace Unity.Physics
                 {
                     slots[slot].Solver.Dispose();
                 }
+
+                ForestIsland.Destroy(slots[slot].Forest);
             }
+
+            UnsafeUtility.FreeTracked(forestSettings, Allocator.Persistent);
+            UnsafeUtility.FreeTracked(forestCounters, Allocator.Persistent);
+            forestSettings = null;
+            forestCounters = null;
 
             UnsafeUtility.FreeTracked(slots, Allocator.Persistent);
             UnsafeUtility.FreeTracked(step, Allocator.Persistent);

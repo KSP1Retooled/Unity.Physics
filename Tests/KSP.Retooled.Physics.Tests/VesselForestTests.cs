@@ -1,0 +1,163 @@
+using System.Collections.Generic;
+using NUnit.Framework;
+using UnityEngine;
+
+namespace KSP.Retooled.Physics.Tests
+{
+    /// <summary>
+    /// The forest path of the direct solve against the sparse path it replaces: the same scene stepped both ways moves the
+    /// same, the forest path really runs, and it gives way to the sparse path where its boundary would be too big.
+    /// </summary>
+    public class VesselForestTests : PhysicsScene
+    {
+        private const int Parts = 12;
+        private const float PartHeight = 2.0f;
+        private const float PartMass = 4.0f;
+
+        private bool wasEnabled;
+        private int wasCap;
+
+        [SetUp]
+        public void RememberSwitch()
+        {
+            if (!BackendInfo.IsRetooled)
+            {
+                Assert.Ignore("The forest is part of the Unity Physics backend.");
+            }
+
+            wasEnabled = VesselForest.Enabled;
+            wasCap = VesselForest.BoundaryRowCap;
+        }
+
+        [TearDown]
+        public void RestoreSwitch()
+        {
+            VesselForest.Enabled = wasEnabled;
+            VesselForest.BoundaryRowCap = wasCap;
+        }
+
+        /// <summary>A stock part joint: limits far away, drives doing the holding, three of them over a stack node.</summary>
+        private static void StackJoint(Rigidbody host, Rigidbody target, Vector3 node)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                Vector3 anchor = node + Quaternion.AngleAxis(120.0f * i, Vector3.up) * new Vector3(0.5f, 0.0f, 0.0f);
+                ConfigurableJoint joint = host.gameObject.AddComponent<ConfigurableJoint>();
+                joint.connectedBody = target;
+                joint.autoConfigureConnectedAnchor = false;
+                joint.anchor = host.transform.InverseTransformPoint(anchor);
+                joint.connectedAnchor = target != null ? target.transform.InverseTransformPoint(anchor) : anchor;
+                joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+                joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
+                joint.linearLimit = new SoftJointLimit { limit = 1.0f };
+                joint.highAngularXLimit = new SoftJointLimit { limit = 177.0f };
+                joint.lowAngularXLimit = new SoftJointLimit { limit = -177.0f };
+                joint.angularYLimit = new SoftJointLimit { limit = 177.0f };
+                joint.angularZLimit = new SoftJointLimit { limit = 177.0f };
+                joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = 1e20f, maximumForce = 1e20f };
+                joint.rotationDriveMode = RotationDriveMode.XYAndZ;
+                joint.angularXDrive = joint.angularYZDrive = new JointDrive { positionSpring = 20000.0f, maximumForce = 1e20f };
+            }
+        }
+
+        /// <summary>A column of parts, the top one hung from the world or the bottom one standing on the ground.</summary>
+        private List<Rigidbody> Column(bool standing)
+        {
+            var bodies = new List<Rigidbody>();
+            float bottom = standing ? 0.5f : 5.0f;
+            for (int i = 0; i < Parts; i++)
+            {
+                Rigidbody body = Box(new Vector3(0.0f, bottom + PartHeight * (i + 0.5f), 0.0f), new Vector3(1.0f, PartHeight, 1.0f))
+                    .AddComponent<Rigidbody>();
+                body.mass = PartMass;
+                bodies.Add(body);
+                if (i > 0)
+                {
+                    StackJoint(body, bodies[i - 1], new Vector3(0.0f, bottom + PartHeight * i, 0.0f));
+                }
+            }
+
+            if (!standing)
+            {
+                StackJoint(bodies[Parts - 1], null, new Vector3(0.0f, bottom + PartHeight * Parts, 0.0f));
+            }
+
+            return bodies;
+        }
+
+        /// <summary>Builds the scene, swings it, and returns every part's position after a few seconds.</summary>
+        private Vector3[] Run(bool forest, bool standing, int steps)
+        {
+            TearDownScene();
+            SetUpScene();
+            VesselForest.Enabled = forest;
+            if (standing)
+            {
+                Ground();
+            }
+
+            List<Rigidbody> bodies = Column(standing);
+            bodies[standing ? Parts - 1 : 0].linearVelocity = new Vector3(1.0f, 0.0f, 0.5f);
+            Simulate(steps);
+            var positions = new Vector3[Parts];
+            for (int i = 0; i < Parts; i++)
+            {
+                positions[i] = bodies[i].position;
+            }
+
+            return positions;
+        }
+
+        private static float Largest(Vector3[] a, Vector3[] b)
+        {
+            float largest = 0.0f;
+            for (int i = 0; i < a.Length; i++)
+            {
+                largest = Mathf.Max(largest, (a[i] - b[i]).magnitude);
+            }
+
+            return largest;
+        }
+
+        [Test]
+        public void AHangingColumnSwingsAsOnTheSparsePath()
+        {
+            Vector3[] sparse = Run(false, false, 100);
+            VesselForest.GetCounts(out long solvesBefore, out _, out _);
+            Vector3[] forest = Run(true, false, 100);
+            VesselForest.GetCounts(out long solves, out long fallbacks, out long builds);
+            float difference = Largest(sparse, forest);
+            Debug.Log($"[VesselForestTests] hanging: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
+                $"largest difference {difference:E2} m, bottom moved {(sparse[0] - new Vector3(0, 6, 0)).magnitude:F3} m");
+            Assert.Greater(solves, solvesBefore, "the forest path never ran");
+            Assert.Less(difference, 1e-3f);
+        }
+
+        [Test]
+        public void AStandingColumnRocksAsOnTheSparsePath()
+        {
+            Vector3[] sparse = Run(false, true, 100);
+            VesselForest.GetCounts(out long solvesBefore, out _, out _);
+            Vector3[] forest = Run(true, true, 100);
+            VesselForest.GetCounts(out long solves, out long fallbacks, out long builds);
+            float difference = Largest(sparse, forest);
+            Debug.Log($"[VesselForestTests] standing: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
+                $"largest difference {difference:E2} m, top at {sparse[Parts - 1]:F3}");
+            Assert.Greater(solves, solvesBefore, "the forest path never ran");
+            Assert.Less(difference, 1e-2f);
+        }
+
+        [Test]
+        public void ATooBigBoundaryFallsBackToTheSparsePath()
+        {
+            VesselForest.BoundaryRowCap = 1;
+            VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
+            Vector3[] capped = Run(true, true, 20);
+            VesselForest.GetCounts(out long solves, out long fallbacks, out _);
+            VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
+            Vector3[] sparse = Run(false, true, 20);
+            Assert.Greater(fallbacks, fallbacksBefore);
+            Assert.Less(Largest(sparse, capped), 1e-4f);
+        }
+    }
+}

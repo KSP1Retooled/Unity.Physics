@@ -850,6 +850,10 @@ namespace Unity.Physics
 
                     // Write size before every jacobian
                     JacobianFlags jacFlags = constraint.ShouldRaiseImpulseEvents ? JacobianFlags.EnableImpulseEvents : 0;
+                    if (joint.ForestRole != JointForestRole.None)
+                    {
+                        jacFlags |= JacobianFlags.ForestRow | (joint.ForestRole == JointForestRole.Tree ? JacobianFlags.ForestTree : 0);
+                    }
                     int jacobianSize = JacobianHeader.CalculateJointSize(jacType, jacFlags, solverTypeOverride);
                     jacobianWriter.Write(jacobianSize);
 

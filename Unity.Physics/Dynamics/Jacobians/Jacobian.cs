@@ -67,6 +67,15 @@ namespace Unity.Physics
         /// <summary>   A binary constant representing the enable impulse events options. Apples only to joint jacobian. </summary>
         EnableImpulseEvents = 1 << 5,
 
+        /// <summary>
+        /// The joint holds its bodies as a vessel's part joint does, so the direct solve may take its unbounded rows into
+        /// the vessel forest (see <see cref="Joint.ForestRole"/>). Applies only to joint Jacobians.
+        /// </summary>
+        ForestRow = 1 << 3,
+
+        /// <summary> With <see cref="ForestRow"/>, the joint is an edge of the forest's spanning tree rather than a closure. </summary>
+        ForestTree = 1 << 4,
+
         /// <summary>   A binary constant representing the user flag. Applies to all jacobians. </summary>
         UserFlag0 = 1 << 2,
     }

@@ -131,6 +131,12 @@ namespace Unity.Physics
         public double HardDampingRatio;
         public bool Centripetal;
 
+        /// <summary>
+        /// The top job stops once its columns are eliminated: the caller only wants the factor, and solves against it with
+        /// <see cref="Solve"/>.
+        /// </summary>
+        public bool FactorOnly;
+
         /// <summary>Counter slots: whether any edge changes state, and how many pivots had to be clamped.</summary>
         public const int StateChanged = 0;
 
@@ -591,6 +597,11 @@ namespace Unity.Physics
                 EliminateColumn(s, scratch);
             }
 
+            if (FactorOnly)
+            {
+                return;
+            }
+
             for (int k = TopCount - 1; k >= 0; k--)
             {
                 SubstituteColumn(TopColumns[k]);
@@ -603,6 +614,58 @@ namespace Unity.Physics
                 {
                     LinkImpulses(l);
                 }
+            }
+        }
+
+        /// <summary>
+        /// A chunk's share of a forward substitution of <see cref="Rhs"/> against the current factor, without factoring:
+        /// what the elimination does to the right-hand side, with a chunk's updates of the top sent to its buffers.
+        /// </summary>
+        public void ForwardChunk(int chunk)
+        {
+            for (int b = ChunkRhsStart[chunk]; b < ChunkRhsStart[chunk + 1]; b++)
+            {
+                default(double6).Store(Rhs + 6 * (SectionCount + b));
+            }
+
+            for (int k = ChunkStart[chunk]; k < ChunkStart[chunk + 1]; k++)
+            {
+                ForwardColumn(ChunkColumns[k]);
+            }
+        }
+
+        void ForwardColumn(int s)
+        {
+            double6 y = double6.Load(Rhs + 6 * s);
+            int start = ColumnStart[s];
+            for (int e = start; e < ColumnStart[s + 1]; e++)
+            {
+                double* to = Rhs + 6 * RhsTarget[e];
+                (double6.Load(to) - ((double6x6*)(Blocks + VesselBlocks.Size * (SectionCount + e)))->TransposeMul(y)).Store(to);
+            }
+        }
+
+        /// <summary>
+        /// The top's part of a substitution after <see cref="ForwardChunk"/>: the chunks' buffered shares, the top's
+        /// forward and backward substitution. <see cref="SubstituteChunk"/> then finishes each chunk into <see cref="Solution"/>.
+        /// </summary>
+        public void SubstituteTop()
+        {
+            int rhsBuffers = ChunkRhsStart[ChunkCount];
+            for (int b = 0; b < rhsBuffers; b++)
+            {
+                double* to = Rhs + 6 * RhsBufferTarget[b];
+                (double6.Load(to) + double6.Load(Rhs + 6 * (SectionCount + b))).Store(to);
+            }
+
+            for (int k = 0; k < TopCount; k++)
+            {
+                ForwardColumn(TopColumns[k]);
+            }
+
+            for (int k = TopCount - 1; k >= 0; k--)
+            {
+                SubstituteColumn(TopColumns[k]);
             }
         }
 

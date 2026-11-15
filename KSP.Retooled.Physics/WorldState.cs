@@ -23,6 +23,7 @@ namespace KSP.Retooled.Physics
 
         internal WorldState(NativeStore.WorldData* store)
         {
+            VesselForest.Initialize();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StepState*)UnsafeUtility.MallocTracked(sizeof(StepState), UnsafeUtility.AlignOf<StepState>(), Allocator.Persistent, 0);
             *state = new StepState(store, NativeStore.RetooledPhysics_Globals(), query);
