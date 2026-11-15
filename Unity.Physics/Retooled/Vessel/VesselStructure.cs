@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Physics.Numerics.Retooled;
 
 namespace Unity.Physics
 {
@@ -388,7 +389,7 @@ namespace Unity.Physics
             if (MinimumDegree)
             {
                 order.Clear();
-                MinimumDegreeOrder(labelCount, adjacency, adjacencyStart, order);
+                SparseSymbolic.MinimumDegreeOrder(labelCount, adjacency, adjacencyStart, order);
             }
 
             // The symbolic factor in that order gives the elimination tree. A postorder of that tree eliminates the same
@@ -399,7 +400,8 @@ namespace Unity.Physics
             var firstChild = new NativeArray<int>(labelCount, Allocator.Temp);
             var nextSibling = new NativeArray<int>(labelCount, Allocator.Temp);
             var rows = new NativeList<int>(labelCount * 2, Allocator.Temp);
-            Symbolic(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf, firstChild, nextSibling);
+            SparseSymbolic.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+                firstChild, nextSibling);
 
             var postorder = new NativeList<int>(labelCount, Allocator.Temp);
             for (int r = 0; r < labelCount; r++)
@@ -433,7 +435,8 @@ namespace Unity.Physics
             }
 
             rows.Clear();
-            Symbolic(postorder, position, adjacency, adjacencyStart, columnStart, rows, parentOf, firstChild, nextSibling);
+            SparseSymbolic.FactorStructure(postorder, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+                firstChild, nextSibling);
             int sectionCount = labelCount;
             int offDiagonal = rows.Length;
             int fillCount = offDiagonal - (links.Length > 0 ? CountDistinctPairs(links, position) : 0);
@@ -778,145 +781,6 @@ namespace Unity.Physics
             return -1;
         }
 
-        /// <summary>
-        /// A minimum-degree order of the section graph: repeatedly eliminate the section with the fewest live
-        /// neighbours, joining its neighbours to each other as its elimination would. On a tree it takes leaves first, as
-        /// the postorder does; with closures it keeps a strut from filling the whole tree path between its ends, and
-        /// leaves hubs for last by itself.
-        /// </summary>
-        static void MinimumDegreeOrder(int count, NativeArray<int> adjacency, NativeArray<int> adjacencyStart,
-            NativeList<int> order)
-        {
-            var neighbours = new NativeArray<UnsafeList<int>>(count, Allocator.Temp);
-            var heap = new NativeList<long>(count * 2, Allocator.Temp);
-            for (int v = 0; v < count; v++)
-            {
-                var list = new UnsafeList<int>(adjacencyStart[v + 1] - adjacencyStart[v], Allocator.Temp);
-                for (int e = adjacencyStart[v]; e < adjacencyStart[v + 1]; e++)
-                {
-                    int w = adjacency[e];
-                    if (w != v && !Contains(list, w))
-                    {
-                        list.Add(w);
-                    }
-                }
-
-                neighbours[v] = list;
-                Push(heap, ((long)list.Length << 32) | (uint)v);
-            }
-
-            var eliminated = new NativeArray<bool>(count, Allocator.Temp);
-            while (heap.Length > 0)
-            {
-                long key = Pop(heap);
-                int v = (int)(key & 0xffffffff);
-                int degree = (int)(key >> 32);
-                if (eliminated[v] || neighbours[v].Length != degree)
-                {
-                    continue;
-                }
-
-                eliminated[v] = true;
-                order.Add(v);
-                UnsafeList<int> around = neighbours[v];
-                for (int i = 0; i < around.Length; i++)
-                {
-                    int a = around[i];
-                    UnsafeList<int> list = neighbours[a];
-                    int at = IndexOf(list, v);
-                    list.RemoveAtSwapBack(at);
-                    for (int j = 0; j < around.Length; j++)
-                    {
-                        int b = around[j];
-                        if (b != a && !Contains(list, b))
-                        {
-                            list.Add(b);
-                        }
-                    }
-
-                    neighbours[a] = list;
-                }
-
-                for (int i = 0; i < around.Length; i++)
-                {
-                    int a = around[i];
-                    Push(heap, ((long)neighbours[a].Length << 32) | (uint)a);
-                }
-            }
-        }
-
-        static bool Contains(UnsafeList<int> list, int value) => IndexOf(list, value) >= 0;
-
-        static int IndexOf(UnsafeList<int> list, int value)
-        {
-            for (int i = 0; i < list.Length; i++)
-            {
-                if (list[i] == value)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        static void Push(NativeList<long> heap, long key)
-        {
-            heap.Add(key);
-            int i = heap.Length - 1;
-            while (i > 0)
-            {
-                int parent = (i - 1) >> 1;
-                if (heap[parent] <= key)
-                {
-                    break;
-                }
-
-                heap[i] = heap[parent];
-                i = parent;
-            }
-
-            heap[i] = key;
-        }
-
-        static long Pop(NativeList<long> heap)
-        {
-            long top = heap[0];
-            long last = heap[heap.Length - 1];
-            heap.RemoveAt(heap.Length - 1);
-            int count = heap.Length;
-            if (count == 0)
-            {
-                return top;
-            }
-
-            int i = 0;
-            while (true)
-            {
-                int child = 2 * i + 1;
-                if (child >= count)
-                {
-                    break;
-                }
-
-                if (child + 1 < count && heap[child + 1] < heap[child])
-                {
-                    child++;
-                }
-
-                if (heap[child] >= last)
-                {
-                    break;
-                }
-
-                heap[i] = heap[child];
-                i = child;
-            }
-
-            heap[i] = last;
-            return top;
-        }
-
         static int CountDistinctPairs(NativeList<LabelLink> links, NativeArray<int> position)
         {
             var pairs = new NativeHashSet<long>(links.Length, Allocator.Temp);
@@ -933,72 +797,6 @@ namespace Unity.Physics
         {
             to.Clear();
             to.AddRange(from.GetUnsafeReadOnlyPtr(), from.Length);
-        }
-
-        /// <summary>
-        /// The block structure of the factor in the given order: column j's rows are its later neighbours and its
-        /// elimination-tree children's rows below j. Fills the position of each label, the columns, and the tree.
-        /// </summary>
-        static void Symbolic(NativeList<int> order, NativeArray<int> position, NativeArray<int> adjacency,
-            NativeArray<int> adjacencyStart, NativeArray<int> columnStart, NativeList<int> rows, NativeArray<int> parentOf,
-            NativeArray<int> firstChild, NativeArray<int> nextSibling)
-        {
-            int count = order.Length;
-            for (int j = 0; j < count; j++)
-            {
-                position[order[j]] = j;
-                firstChild[j] = -1;
-                nextSibling[j] = -1;
-            }
-
-            var mark = new NativeArray<int>(count, Allocator.Temp);
-            for (int j = 0; j < count; j++)
-            {
-                mark[j] = -1;
-            }
-
-            var column = new NativeList<int>(Allocator.Temp);
-            for (int j = 0; j < count; j++)
-            {
-                // Set first: the previous column's rows end here, and a child just below j reads them below.
-                columnStart[j] = rows.Length;
-                column.Clear();
-                int label = order[j];
-                for (int e = adjacencyStart[label]; e < adjacencyStart[label + 1]; e++)
-                {
-                    int r = position[adjacency[e]];
-                    if (r > j && mark[r] != j)
-                    {
-                        mark[r] = j;
-                        column.Add(r);
-                    }
-                }
-
-                for (int child = firstChild[j]; child >= 0; child = nextSibling[child])
-                {
-                    for (int e = columnStart[child]; e < columnStart[child + 1]; e++)
-                    {
-                        int r = rows[e];
-                        if (r > j && mark[r] != j)
-                        {
-                            mark[r] = j;
-                            column.Add(r);
-                        }
-                    }
-                }
-
-                column.Sort();
-                rows.AddRange(column.AsArray());
-                int parent = column.Length > 0 ? column[0] : -1;
-                parentOf[j] = parent;
-                if (parent >= 0)
-                {
-                    nextSibling[j] = firstChild[parent];
-                    firstChild[parent] = j;
-                }
-            }
-
-            columnStart[count] = rows.Length;
         }
     }
 }
