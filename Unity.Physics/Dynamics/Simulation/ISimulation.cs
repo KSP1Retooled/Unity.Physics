@@ -64,6 +64,12 @@ namespace Unity.Physics
         /// </summary>
         public SolverIslandCache SolverIslandCache;
 
+        /// <summary>
+        /// The caller's persistent vessels, whose joints the direct solver solves with the vessel kernel's own rows. A default
+        /// one means there are none.
+        /// </summary>
+        public VesselSet VesselSet;
+
         /// <summary>   Maximum relative velocity that can be produced when separating intersecting dynamic rigid bodies. </summary>
         public float MaxDynamicDepenetrationVelocity;
 
