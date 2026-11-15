@@ -291,6 +291,16 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// How far apart a contact point's surfaces can be and still get a row. Every point the narrowphase finds is within its
+        /// reach, the collision tolerance plus how far the bodies can move in the step, and a point not yet touching is a
+        /// speculative contact: its row lets the bodies close the gap and no more. A cut nearer than the narrowphase's reach
+        /// drops exactly the points a fast body needs, so one that crosses the cut in a step passes through what it hits.
+        /// A kilometre is more than anything moves in a step, and far less than the distance the backend writes over points it
+        /// finds out of reach, so that those still get no row.
+        /// </summary>
+        internal const float ContactRowReach = 1000.0f;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static int GetConstraintRows(ref JacobianHeader header)
         {
@@ -314,9 +324,7 @@ namespace Unity.Physics
                         ref var contactAngularJac = ref header.AccessAngularJacobian(i);
                         var contactDistance = contactAngularJac.ContactDistance;
 
-                        // contact is active if it is penetrating (signed distance is negative)
-                        const float kCollisionTolerance = 0.1f; // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
-                        activeNormalConstraints += math.select(1, 0, contactDistance > kCollisionTolerance);
+                        activeNormalConstraints += math.select(1, 0, contactDistance > ContactRowReach);
                     }
                     // Note: we only add friction rows if the friction coefficient is larger zero and if there are any
                     // active normal contact constraints.
@@ -1966,9 +1974,6 @@ namespace Unity.Physics
             in NativeList<int> worldBodies, MotionData* datas, in NativeArray<float3> linears, in NativeArray<float3> spins,
             float duration)
         {
-            // Rows are built for the points within this, in order; see the contact rows of BuildJacobianRows.
-            const float kCollisionTolerance = 0.1f;
-
             for (int block = 0; block < problem.BlockCount; block++)
             {
                 ref JacobianHeader header = ref *headers[block];
@@ -1982,8 +1987,9 @@ namespace Unity.Physics
                 int points = header.AccessBaseJacobian<ContactJacobian>().BaseJacobian.NumContacts;
                 for (int i = 0; i < points; i++)
                 {
+                    // Rows are built for the points within reach, in order; see the contact rows of BuildJacobianRows.
                     ref ContactJacAngAndVelToReachCp point = ref header.AccessAngularJacobian(i);
-                    if (point.ContactDistance > kCollisionTolerance)
+                    if (point.ContactDistance > ContactRowReach)
                     {
                         continue;
                     }
@@ -2141,9 +2147,6 @@ namespace Unity.Physics
                 stepInput.Timestep);
 
             JacobianHeader.DirectSolverRegularizationData jointRegularizationData = default;
-
-            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
-            const float kCollisionTolerance = 0.1f;
 
                             int ixBodyA = header.BodyPair.BodyIndexA;
                             int ixBodyB = header.BodyPair.BodyIndexB;
@@ -2924,7 +2927,7 @@ namespace Unity.Physics
                                         ref var contactAngularJac = ref header.AccessAngularJacobian(i);
                                         var contactDistance = contactAngularJac.ContactDistance;
 
-                                        if (contactDistance > kCollisionTolerance)
+                                        if (contactDistance > ContactRowReach)
                                         {
                                             // skip inactive contacts
                                             continue;
@@ -2976,7 +2979,7 @@ namespace Unity.Physics
                                         float epsilon = contactViscoelasticEpsilon;
 #if DIRECT_SOLVER_UNDAMPED_PREDICTIVE_CONTACTS
                                         // moderate tolerance (10% of full tolerance)
-                                        if (contactDistance > 0.1f * kCollisionTolerance)
+                                        if (contactDistance > 0.01f)
                                         {
                                             // if no touch yet, don't use damping to prevent slowdown during approach
                                             JacobianUtilities.ComputeDirectSolverElasticRegularizationTerms(out epsilon, out gamma,
@@ -3294,13 +3297,10 @@ namespace Unity.Physics
         /// </summary>
         static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows, bool sparseContacts)
         {
-            // @todo direct solver (DOTS-11069): use CollisionWorld.CollisionTolerance
-            const float kCollisionTolerance = 0.1f;
-
             // Collect collision or joint impulses for later event exports
             if (header.Type == JacobianType.Contact && sparseContacts)
             {
-                HandOverContactImpulses(ref header, lambda, kCollisionTolerance);
+                HandOverContactImpulses(ref header, lambda, ContactRowReach);
             }
             else if (header.Type == JacobianType.Contact &&
                 (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
@@ -3313,7 +3313,7 @@ namespace Unity.Physics
                 {
                     ref var contactAngularJac = ref header.AccessAngularJacobian(i);
                     var contactDistance = contactAngularJac.ContactDistance;
-                    if (contactDistance <= kCollisionTolerance)
+                    if (contactDistance <= ContactRowReach)
                     {
                         sumNormalImpulses += lambda[normalRow++];
                     }

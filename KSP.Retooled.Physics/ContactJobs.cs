@@ -311,7 +311,8 @@ namespace KSP.Retooled.Physics
         private const float FrictionOffsetThreshold = 0.025f;
 
         // How far apart the solver is told a point is that can't reach its polygon this step. Unity Physics then lets the
-        // bodies close by more than they can move, and the direct solver gives the point no row.
+        // bodies close by more than they can move, and the direct solver gives the point no row, as it must stay beyond
+        // Solver.ContactRowReach.
         private const float OutOfReach = 1.0e6f;
 
         /// <summary>A static mesh's polygon in world space, and the motion of the body against it.</summary>
@@ -823,9 +824,11 @@ namespace KSP.Retooled.Physics
         // Less than all of it, because a manifold with nothing left to add raises no event and would start cold next step.
         internal const float Fraction = 0.95f;
 
-        // The direct solver gives a point a row only within its collision tolerance, in metres, and a row is what takes back
-        // a warm start the contact doesn't need. A farther point's warm start would push the bodies apart with nothing to
-        // take it back, and the push would feed the next step's warm start, so a crash throws its wreckage ever faster.
+        // Only points this near, in metres, take a share of the warm start: the impulse belongs to the points that touched.
+        // Every one of them must have a row, since a row is what takes back a warm start the contact doesn't need, and a
+        // point's warm start with nothing to take it back would push the bodies apart and feed the next step's warm start,
+        // so a crash would throw its wreckage ever faster. The direct solver's rows reach Solver.ContactRowReach, which must
+        // stay at least this.
         private const float FarthestPoint = 0.1f;
 
         [ReadOnly]
