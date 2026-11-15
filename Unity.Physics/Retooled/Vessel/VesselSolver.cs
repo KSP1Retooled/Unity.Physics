@@ -270,7 +270,7 @@ namespace Unity.Physics
 
                 if (edge.State == VesselEdgeState.Locked && NextState[i] == VesselEdgeState.Yielding)
                 {
-                    edge.Rest = VesselContext.Multiply(VesselContext.Conjugate(m_Parts[edge.Parent].Orientation), m_Parts[i].Orientation);
+                    edge.Rest = VectorMath.MultiplyQuaternions(VectorMath.ConjugateQuaternion(m_Parts[edge.Parent].Orientation), m_Parts[i].Orientation);
                 }
 
                 edge.State = NextState[i];

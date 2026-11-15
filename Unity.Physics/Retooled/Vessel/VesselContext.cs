@@ -173,8 +173,8 @@ namespace Unity.Physics
             {
                 VesselPart* part = Parts + SectionParts[k];
                 double3 r = part->Position - center;
-                double3x3 world = WorldInertia(part->Orientation, part->Inertia);
-                inertia += world + part->Mass * (math.dot(r, r) * double3x3.identity - Outer(r, r));
+                double3x3 world = VectorMath.RotateDiagonal(part->Orientation, part->Inertia);
+                inertia += world + part->Mass * (math.dot(r, r) * double3x3.identity - VectorMath.Outer(r, r));
                 angularMomentum += math.mul(world, part->AngularVelocity) + part->Mass * math.cross(r, part->LinearVelocity);
                 angularImpulse += part->AngularImpulse + math.cross(r, part->LinearImpulse);
             }
@@ -215,8 +215,8 @@ namespace Unity.Physics
             }
 
             double* rhs = Rhs + 6 * s;
-            Store(rhs, section->Mass * section->LinearVelocity + section->LinearImpulse);
-            Store(rhs + 3, math.mul(section->Inertia, section->AngularVelocity) + section->AngularImpulse);
+            VectorMath.Store3(rhs, section->Mass * section->LinearVelocity + section->LinearImpulse);
+            VectorMath.Store3(rhs + 3, math.mul(section->Inertia, section->AngularVelocity) + section->AngularImpulse);
             if (ExtraRhs != null)
             {
                 (double6.Load(rhs) + double6.Load(ExtraRhs + 6 * s)).Store(rhs);
@@ -254,7 +254,8 @@ namespace Unity.Physics
             // Hard rows take their stiffness from the two sections' reduced mass and inertia, at the hard period.
             double omega = HardFrequency;
             double hardLinear = omega * omega / (1.0 / childSection->Mass + 1.0 / parentSection->Mass);
-            double hardAngular = omega * omega / ((Trace(childSection->InverseInertia) + Trace(parentSection->InverseInertia)) / 3.0);
+            double hardAngular = omega * omega / ((VectorMath.Trace(childSection->InverseInertia)
+                + VectorMath.Trace(parentSection->InverseInertia)) / 3.0);
             double dampingPerStiffness = 2.0 * HardDampingRatio / omega;
             if (link->Edge >= 0)
             {
@@ -294,8 +295,8 @@ namespace Unity.Physics
             Harden(ref linearStiffness, ref linearDamping, hardLinear, dampingPerStiffness);
             Harden(ref angularStiffness, ref angularDamping, hardAngular, dampingPerStiffness);
 
-            double3x3 childRotation = Rotation(child->Orientation);
-            double3x3 parentRotation = Rotation(parent->Orientation);
+            double3x3 childRotation = VectorMath.Rotation(child->Orientation);
+            double3x3 parentRotation = VectorMath.Rotation(parent->Orientation);
             double3 childPoint = child->Position + math.mul(childRotation, childAnchor);
             double3 parentPoint = parent->Position + math.mul(parentRotation, parentAnchor);
             double3x3 axes = math.mul(parentRotation, frame);
@@ -304,7 +305,9 @@ namespace Unity.Physics
 
             // The rotation from rest, as a vector in world: twice the vector part of (conj(parent) child) conj(rest),
             // taken the short way round.
-            double4 error = Multiply(Multiply(Conjugate(parent->Orientation), child->Orientation), Conjugate(rest));
+            double4 error = VectorMath.MultiplyQuaternions(
+                VectorMath.MultiplyQuaternions(VectorMath.ConjugateQuaternion(parent->Orientation), child->Orientation),
+                VectorMath.ConjugateQuaternion(rest));
             double3 rotation = (error.w < 0.0 ? -2.0 : 2.0) * error.xyz;
             double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
             double3 angularError = math.mul(math.transpose(axes), math.mul(parentRotation, rotation));
@@ -325,10 +328,10 @@ namespace Unity.Physics
 
             // J^T W J in 3x3 pieces. With U the axes, the child's linear rows are [U^T, -U^T X] for X the cross-product
             // matrix of its arm, its angular rows [0, U^T]; the parent's are the negatives with its own arm.
-            double3x3 linear = Weighted(axes, rows.LinearWeight);
-            double3x3 angular = Weighted(axes, rows.AngularWeight);
-            double3x3 childCross = Cross(childArm);
-            double3x3 parentCross = Cross(parentArm);
+            double3x3 linear = VectorMath.Weighted(axes, rows.LinearWeight);
+            double3x3 angular = VectorMath.Weighted(axes, rows.AngularWeight);
+            double3x3 childCross = VectorMath.Cross(childArm);
+            double3x3 parentCross = VectorMath.Cross(parentArm);
             double3x3 linearChild = math.mul(linear, childCross);
             double3x3 linearParent = math.mul(linear, parentCross);
             double3x3 childLinear = math.mul(childCross, linear);
@@ -369,10 +372,10 @@ namespace Unity.Physics
             double3 torque = math.mul(axes, rows.AngularBias);
             double* childRhs = Rhs + 6 * (childLower ? link->Lower : link->UpperRhs);
             double* parentRhs = Rhs + 6 * (childLower ? link->UpperRhs : link->Lower);
-            Add(childRhs, -force);
-            Add(childRhs + 3, -(math.cross(childArm, force) + torque));
-            Add(parentRhs, force);
-            Add(parentRhs + 3, math.cross(parentArm, force) + torque);
+            VectorMath.Add3(childRhs, -force);
+            VectorMath.Add3(childRhs + 3, -(math.cross(childArm, force) + torque));
+            VectorMath.Add3(parentRhs, force);
+            VectorMath.Add3(parentRhs + 3, math.cross(parentArm, force) + torque);
         }
 
         /// <summary>
@@ -394,13 +397,13 @@ namespace Unity.Physics
                 int entry = LinkRowList[e];
                 int row = entry >> 1;
                 float* columns = RowJacobian + 12L * row;
-                double6 a = LoadRow(columns), b = LoadRow(columns + 6);
+                double6 a = BlockRows.Load(columns), b = BlockRows.Load(columns + 6);
                 double6 child = (entry & 1) != 0 ? b : a;
                 double6 parent = (entry & 1) != 0 ? a : b;
                 double weight = 1.0 / RowEpsilon[row];
-                AddOuter(childBlock, weight, child, child);
-                AddOuter(parentBlock, weight, parent, parent);
-                AddOuter(coupling, weight, childLower ? child : parent, childLower ? parent : child);
+                VesselBlocks.AddOuter(childBlock, weight, child, child);
+                VesselBlocks.AddOuter(parentBlock, weight, parent, parent);
+                VesselBlocks.AddOuter(coupling, weight, childLower ? child : parent, childLower ? parent : child);
                 double drive = weight * RowRhs[row];
                 childSum += drive * child;
                 parentSum += drive * parent;
@@ -420,21 +423,6 @@ namespace Unity.Physics
                     stiffness[i] = hard;
                     damping[i] = hard * dampingPerStiffness;
                 }
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double6 LoadRow(float* columns) => new double6(
-            new double4(columns[0], columns[1], columns[2], columns[3]), new double2(columns[4], columns[5]));
-
-        /// <summary>block += w a b^T.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void AddOuter(double* block, double weight, double6 a, double6 b)
-        {
-            for (int r = 0; r < 6; r++)
-            {
-                double scale = weight * a[r];
-                (double6.Load(block + 6 * r) + scale * b).Store(block + 6 * r);
             }
         }
 
@@ -557,8 +545,8 @@ namespace Unity.Physics
 
             for (int b = ChunkRhsStart[chunk]; b < ChunkRhsStart[chunk + 1]; b++)
             {
-                Store(Rhs + 6 * (SectionCount + b), 0.0);
-                Store(Rhs + 6 * (SectionCount + b) + 3, 0.0);
+                VectorMath.Store3(Rhs + 6 * (SectionCount + b), 0.0);
+                VectorMath.Store3(Rhs + 6 * (SectionCount + b) + 3, 0.0);
             }
 
             int first = ChunkStart[chunk], last = ChunkStart[chunk + 1];
@@ -747,8 +735,8 @@ namespace Unity.Physics
             VesselRows* rows = LinkRows + k;
             double* child = Solution + 6 * link->ChildSection;
             double* parent = Solution + 6 * link->ParentSection;
-            double3 childLinear = Load(child), childAngular = Load(child + 3);
-            double3 parentLinear = Load(parent), parentAngular = Load(parent + 3);
+            double3 childLinear = VectorMath.Load3(child), childAngular = VectorMath.Load3(child + 3);
+            double3 parentLinear = VectorMath.Load3(parent), parentAngular = VectorMath.Load3(parent + 3);
             double3 relative = childLinear + math.cross(childAngular, rows->ChildArm)
                 - parentLinear - math.cross(parentAngular, rows->ParentArm);
             double3x3 transposed = math.transpose(rows->Axes);
@@ -777,7 +765,7 @@ namespace Unity.Physics
         {
             VesselSection section = Sections[s];
             double h = TimeStep, inverseStep = 1.0 / h;
-            double3 linear = Load(Solution + 6 * s), angular = Load(Solution + 6 * s + 3);
+            double3 linear = VectorMath.Load3(Solution + 6 * s), angular = VectorMath.Load3(Solution + 6 * s + 3);
             int start = SectionPartStart[s], end = SectionPartStart[s + 1];
 
             // Each part's acceleration is from its own velocity before the step, so a velocity written to one part loads
@@ -794,8 +782,8 @@ namespace Unity.Physics
                 }
 
                 double3 force = part->Mass * acceleration - inverseStep * part->LinearImpulse;
-                double3x3 rotation = Rotation(part->Orientation);
-                double3x3 world = WorldInertia(rotation, part->Inertia);
+                double3x3 rotation = VectorMath.Rotation(part->Orientation);
+                double3x3 world = VectorMath.RotateDiagonal(rotation, part->Inertia);
                 ChildPoint[i] = part->Position + math.mul(rotation, Edges[i].ChildAnchor);
                 PartForce[i] = force;
                 PartTorque[i] = math.cross(r, force) + inverseStep * (math.mul(world, angular - part->AngularVelocity)
@@ -888,87 +876,16 @@ namespace Unity.Physics
             // The section moves as one rigid body, so its locked parts stay exactly where they were relative to each other.
             double3 center = section.Center + h * linear;
             double4 turn = math.normalize(new double4(0.5 * h * angular, 1.0));
-            double3x3 turnRotation = Rotation(turn);
+            double3x3 turnRotation = VectorMath.Rotation(turn);
             for (int k = start; k < end; k++)
             {
                 VesselPart* part = Parts + SectionParts[k];
                 double3 r = math.mul(turnRotation, part->Position - section.Center);
                 part->Position = center + r;
-                part->Orientation = math.normalize(Multiply(turn, part->Orientation));
+                part->Orientation = math.normalize(VectorMath.MultiplyQuaternions(turn, part->Orientation));
                 part->LinearVelocity = linear + math.cross(angular, r);
                 part->AngularVelocity = angular;
             }
         }
-
-        // ------------------------------------------------------------------ small helpers
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static double3 Load(double* from) => new double3(from[0], from[1], from[2]);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void Store(double* to, double3 value)
-        {
-            to[0] = value.x;
-            to[1] = value.y;
-            to[2] = value.z;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void Add(double* to, double3 value)
-        {
-            to[0] += value.x;
-            to[1] += value.y;
-            to[2] += value.z;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static double Trace(in double3x3 m) => m.c0.x + m.c1.y + m.c2.z;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static double3x3 Outer(double3 a, double3 b) => new double3x3(a * b.x, a * b.y, a * b.z);
-
-        /// <summary>The matrix X with X v = arm x v.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double3x3 Cross(double3 arm) => new double3x3(
-            0.0, -arm.z, arm.y,
-            arm.z, 0.0, -arm.x,
-            -arm.y, arm.x, 0.0);
-
-        /// <summary>U diag(w) U^T.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static double3x3 Weighted(in double3x3 axes, double3 weight)
-        {
-            double3x3 scaled = new double3x3(axes.c0 * weight.x, axes.c1 * weight.y, axes.c2 * weight.z);
-            return math.mul(scaled, math.transpose(axes));
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double3x3 WorldInertia(double4 orientation, double3 inertia) => WorldInertia(Rotation(orientation), inertia);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double3x3 WorldInertia(in double3x3 r, double3 inertia)
-        {
-            double3x3 scaled = new double3x3(r.c0 * inertia.x, r.c1 * inertia.y, r.c2 * inertia.z);
-            return math.mul(scaled, math.transpose(r));
-        }
-
-        /// <summary>The rotation matrix of a unit quaternion x, y, z, w.</summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double3x3 Rotation(double4 q)
-        {
-            double x = q.x, y = q.y, z = q.z, w = q.w;
-            return new double3x3(
-                1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
-                2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-                2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y));
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double4 Multiply(double4 a, double4 b) => new double4(
-            a.w * b.xyz + b.w * a.xyz + math.cross(a.xyz, b.xyz),
-            a.w * b.w - math.dot(a.xyz, b.xyz));
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double4 Conjugate(double4 q) => new double4(-q.xyz, q.w);
     }
 }

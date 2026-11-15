@@ -75,6 +75,19 @@ namespace Unity.Physics.Numerics.Retooled
             }
         }
 
+        /// <summary>
+        /// Computes block += weight * a b^T.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void AddOuter(double* block, double weight, double6 a, double6 b)
+        {
+            for (int r = 0; r < 6; r++)
+            {
+                double scale = weight * a[r];
+                (double6.Load(block + 6 * r) + scale * b).Store(block + 6 * r);
+            }
+        }
+
         /// <summary>result = transpose(a), for a block that is not symmetric.</summary>
         public static void Transpose(double* result, double* a)
         {

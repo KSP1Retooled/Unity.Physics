@@ -375,21 +375,6 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>
-        /// Computes a skew-symmetric matrix A representing the cross-product of a with any other vector b,
-        /// such that
-        ///     A * b = a x b.
-        ///
-        /// See https://en.wikipedia.org/wiki/Cross_product#Conversion_to_matrix_multiplication.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static float3x3 ComputeCrossProductMatrix(float3 a)
-        {
-            return new float3x3(new float3(0, a[2], -a[1]),
-                new float3(-a[2], 0, a[0]),
-                new float3(a[1], -a[0], 0));
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static float MulSubVector3(ref Vector a, in float3 b, int row)
         {
@@ -525,7 +510,7 @@ namespace Unity.Physics
             float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that
                                                                     // we get the Hadamard product and not
                                                                     // the dot product, as desired!
-            var hatL = ComputeCrossProductMatrix(L);
+            var hatL = VectorMath.Cross(L);
 #if false
             // Use equation (2):
 
@@ -583,7 +568,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, id.c1, startColumnA);
                 SetSubVector3(J_3, id.c2, startColumnA);
 
-                var nhat_s_A = ComputeCrossProductMatrix(-s_A);
+                var nhat_s_A = VectorMath.Cross(-s_A);
                 SetSubVector3(J_1, new float3(nhat_s_A.c0[0], nhat_s_A.c1[0], nhat_s_A.c2[0]), startColumnA + 3);
                 SetSubVector3(J_2, new float3(nhat_s_A.c0[1], nhat_s_A.c1[1], nhat_s_A.c2[1]), startColumnA + 3);
                 SetSubVector3(J_3, new float3(nhat_s_A.c0[2], nhat_s_A.c1[2], nhat_s_A.c2[2]), startColumnA + 3);
@@ -601,7 +586,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, nid.c1, startColumnB);
                 SetSubVector3(J_3, nid.c2, startColumnB);
 
-                var hat_s_B = ComputeCrossProductMatrix(s_B);
+                var hat_s_B = VectorMath.Cross(s_B);
                 SetSubVector3(J_1, new float3(hat_s_B.c0[0], hat_s_B.c1[0], hat_s_B.c2[0]), startColumnB + 3);
                 SetSubVector3(J_2, new float3(hat_s_B.c0[1], hat_s_B.c1[1], hat_s_B.c2[1]), startColumnB + 3);
                 SetSubVector3(J_3, new float3(hat_s_B.c0[2], hat_s_B.c1[2], hat_s_B.c2[2]), startColumnB + 3);
@@ -1094,7 +1079,7 @@ namespace Unity.Physics
                 float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that we get
                                                                         // the Hadamard product and not the dot product,
                                                                         // as desired!
-                var hatL = ComputeCrossProductMatrix(L);
+                var hatL = VectorMath.Cross(L);
                 var stabilizationTerm = timestep * timestep * math.mul(math.mul(hatL, invI0), hatL);
                 inertiaTensor = I0 - stabilizationTerm;
                 invInertiaTensor = math.inverse(inertiaTensor);

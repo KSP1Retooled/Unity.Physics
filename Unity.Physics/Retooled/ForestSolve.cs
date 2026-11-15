@@ -469,8 +469,8 @@ namespace Unity.Physics
                             float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
                             int2 sides = blockSections[b];
                             int s = sides.x >= 0 ? sides.x : sides.y;
-                            double6 j = VesselContext.LoadRow(sides.x >= 0 ? columns : columns + 6);
-                            VesselContext.AddOuter(forest->ExtraDiagonal.Ptr + VesselBlocks.Size * s, 1.0 / problem.Epsilon[row], j, j);
+                            double6 j = BlockRows.Load(sides.x >= 0 ? columns : columns + 6);
+                            VesselBlocks.AddOuter(forest->ExtraDiagonal.Ptr + VesselBlocks.Size * s, 1.0 / problem.Epsilon[row], j, j);
                         }
                     }
                 }
@@ -583,7 +583,7 @@ namespace Unity.Physics
                     if (sides.x >= 0)
                     {
                         seeds[seedCount++] = sides.x;
-                        (double6.Load(yPtr + 6 * sides.x) + VesselContext.LoadRow(columns)).Store(yPtr + 6 * sides.x);
+                        (double6.Load(yPtr + 6 * sides.x) + BlockRows.Load(columns)).Store(yPtr + 6 * sides.x);
                     }
 
                     if (sides.y >= 0)
@@ -593,7 +593,7 @@ namespace Unity.Physics
                             seeds[seedCount++] = sides.y;
                         }
 
-                        (double6.Load(yPtr + 6 * sides.y) + VesselContext.LoadRow(columns + 6)).Store(yPtr + 6 * sides.y);
+                        (double6.Load(yPtr + 6 * sides.y) + BlockRows.Load(columns + 6)).Store(yPtr + 6 * sides.y);
                     }
 
                     int count = context.CollectPath(seeds, seedCount, (int*)path.GetUnsafePtr(), (int*)mark.GetUnsafePtr(), i);
@@ -927,16 +927,6 @@ namespace Unity.Physics
         /// <summary>Radians per second below which a section's spin is taken as none.</summary>
         const double MinimumSpin = 1e-9;
 
-        /// <summary>
-        /// A value for single precision        /// <summary>
-        /// A value for single precision with anything below float's normal range made zero. A locked section at rest leaves
-        /// differences of order 1e-40 that would otherwise turn into denormal velocities and impulses, which every job
-        /// reading them afterwards (row and Jacobian builds, integration) takes tens of times longer to compute with.
-        /// </summary>
-        static float Flushed(double value) => math.abs(value) < 1e-30 ? 0.0f : (float)value;
-
-        static float3 Flushed(double3 value) => new float3(Flushed(value.x), Flushed(value.y), Flushed(value.z));
-
         /// <summary>Whether section s has more than one body.</summary>
         static unsafe bool Multi(ForestIsland* forest, int s) =>
             forest->Structure.SectionPartStart[s + 1] - forest->Structure.SectionPartStart[s] > 1;
@@ -1003,7 +993,7 @@ namespace Unity.Physics
                     continue;
                 }
 
-                AddRow(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, scale);
+                BlockRows.Add(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, scale);
             }
 
             if (!vesselStart)
@@ -1024,7 +1014,7 @@ namespace Unity.Physics
                 for (int i = 0; i < nb; i++)
                 {
                     int row = run.Boundary[i];
-                    q[i] = rhs[row] - RowSpeed(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    q[i] = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     lower[i] = run.Bounded ? problem.Lower[row] : double.NegativeInfinity;
                     upper[i] = run.Bounded ? problem.Upper[row] : double.PositiveInfinity;
                     if (run.Bounded && problem.InitialStates != null)
@@ -1051,7 +1041,7 @@ namespace Unity.Physics
                 for (int i = 0; i < nb; i++)
                 {
                     int row = run.Boundary[i];
-                    AddRow(work, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, z[i]);
+                    BlockRows.Add(work, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row, z[i]);
                     impulses[row] = (float)z[i];
                 }
 
@@ -1075,7 +1065,7 @@ namespace Unity.Physics
                 byte rowClass = run.RowClass[row];
                 if (rowClass == ForestRowClass)
                 {
-                    double speed = RowSpeed(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    double speed = BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     impulses[row] = (float)((rhs[row] - speed) / problem.Epsilon[row]);
                 }
                 else if (rowClass == FixedRowClass)
@@ -1149,7 +1139,7 @@ namespace Unity.Physics
                     : new double4(0.0, 0.0, 0.0, 1.0);
                 run.SettleLinear[s] = sectionLinear;
                 run.SettleAngular[s] = sectionAngular;
-                run.SettleTurn[s] = VesselContext.Rotation(turn);
+                run.SettleTurn[s] = VectorMath.Rotation(turn);
             }
 
             int parts = forest->Structure.SectionParts.Length;
@@ -1250,8 +1240,8 @@ namespace Unity.Physics
                         new double2(angularImpulse.y - knownAngular.y, angularImpulse.z - knownAngular.z));
                 }
 
-                tasks->Linear[i] = Flushed(linearImpulse);
-                tasks->Angular[i] = Flushed(angularImpulse);
+                tasks->Linear[i] = VectorMath.Flushed(linearImpulse);
+                tasks->Angular[i] = VectorMath.Flushed(angularImpulse);
             }
         }
 
@@ -1334,8 +1324,8 @@ namespace Unity.Physics
                 {
                     if (run.RowClass[row] == SectionRowClass)
                     {
-                        double6 j = VesselContext.LoadRow(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
-                        impulses[row] = Flushed(double6.Dot(j, x) * RowStiffness(ref run, problem, pair, k, row));
+                        double6 j = BlockRows.Load(problem.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row + side);
+                        impulses[row] = VectorMath.Flushed(double6.Dot(j, x) * RowStiffness(ref run, problem, pair, k, row));
                     }
                 }
             }
@@ -1409,7 +1399,7 @@ namespace Unity.Physics
                         double3 l = math.mul(back, new double3(c[0], c[1], c[2]));
                         double3 a = math.mul(back, new double3(c[3], c[4], c[5]));
                         double6 j = new double6(new double4(l, a.x), new double2(a.y, a.z));
-                        VesselContext.AddOuter(m, RowStiffness(ref run, problem, pair, k, row), j, j);
+                        VesselBlocks.AddOuter(m, RowStiffness(ref run, problem, pair, k, row), j, j);
                     }
                 }
             }
@@ -1522,37 +1512,6 @@ namespace Unity.Physics
                 NativeArrayOptions.UninitializedMemory);
             vessel->FactorChunk(chunk, (double*)scratch.GetUnsafePtr());
             scratch.Dispose();
-        }
-
-        static unsafe void AddRow(double* vector, int2 sections, float* columns, double scale)
-        {
-            if (sections.x >= 0)
-            {
-                double* to = vector + 6 * sections.x;
-                (double6.Load(to) + scale * VesselContext.LoadRow(columns)).Store(to);
-            }
-
-            if (sections.y >= 0)
-            {
-                double* to = vector + 6 * sections.y;
-                (double6.Load(to) + scale * VesselContext.LoadRow(columns + 6)).Store(to);
-            }
-        }
-
-        static unsafe double RowSpeed(double* vector, int2 sections, float* columns)
-        {
-            double speed = 0.0;
-            if (sections.x >= 0)
-            {
-                speed += double6.Dot(double6.Load(vector + 6 * sections.x), VesselContext.LoadRow(columns));
-            }
-
-            if (sections.y >= 0)
-            {
-                speed += double6.Dot(double6.Load(vector + 6 * sections.y), VesselContext.LoadRow(columns + 6));
-            }
-
-            return speed;
         }
 
         /// <summary>
