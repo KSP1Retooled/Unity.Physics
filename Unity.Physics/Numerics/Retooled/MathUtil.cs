@@ -1,13 +1,14 @@
 using Unity.Burst.Intrinsics;
 using Unity.Mathematics;
 
-namespace Unity.Numerics
+namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>
-    /// Fused multiply-add, a * b + c with one rounding. <see cref="math.fma(float, float, float)"/> only fuses when Burst is
-    /// allowed fast math, which would also let it reorder sums and assume no infinities everywhere it inlines. These ask for
-    /// the instruction itself, so they fuse wherever the target CPU has it and fall back to a multiply and an add elsewhere,
-    /// which rounds twice: an answer can differ in its last bits between CPUs, and between Burst and Mono.
+    /// Provides fused multiply-add operations: a * b + c with one rounding. <see cref="math.fma(float, float, float)"/>
+    /// fuses only when Burst permits fast math. Fast math also permits reordering sums and assuming that infinities do
+    /// not occur wherever the function is inlined. These methods explicitly use x86 FMA instructions when supported.
+    /// Otherwise, they use separate multiplication and addition, with two roundings. Results can therefore differ in
+    /// their last bits between CPUs and between Burst and Mono.
     /// </summary>
     public static class MathUtil
     {

@@ -5,8 +5,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// Takes one WheelCollider through its life on a build from `native build --vehicle-trace`, marking each phase in the
-    /// plugin's vehicle trace. Run it with `unity exec --backend retooled`.
+    /// Exercises WheelCollider creation, configuration and destruction using a build from `native build
+    /// --vehicle-trace`. Marks each phase in the plugin's vehicle trace, including the addition of other wheels to the
+    /// same body. Run it with `unity exec --backend retooled`.
     /// </summary>
     public static class VehicleTraceCapture
     {

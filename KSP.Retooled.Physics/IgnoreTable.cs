@@ -4,12 +4,13 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Which collider pairs Physics.IgnoreCollision switched off, by the 16-bit ignore id each collider holds. Unity keeps the
-    /// id on the Collider and starts it at 0, meaning none; the backend hands out real ids when a pair is first ignored and
-    /// Unity sends them to the shapes in their filter data. Ids stay with a collider until it is destroyed, across restores.
-    /// A step looks up every contact between shapes with ids, and a large craft can ignore a few hundred thousand pairs, so a
-    /// lookup is a hash probe and each id chains its edges, which keeps destroying a collider to the cost of its own pairs.
-    /// All of it lives on the store's heap, because ignored pairs have to survive a domain reload.
+    /// Stores the collider pairs disabled by Physics.IgnoreCollision, using each collider's 16-bit ignore id. Unity
+    /// stores the id on the Collider and initially sets it to 0, meaning no id. The backend assigns ids when a pair is
+    /// first ignored, and Unity sends them to the shapes through their filter data. A collider keeps its id until it is
+    /// destroyed, even when collisions are restored. During a step, contacts between shapes with ids require lookups. A
+    /// large craft can ignore a few hundred thousand pairs, so lookups use a hash table. Each id also has a linked list
+    /// of its edges, so destroying a collider only requires processing its own pairs. Everything is allocated on the
+    /// store's heap so that ignored pairs survive a domain reload.
     /// </summary>
     internal unsafe struct IgnoreTable
     {
@@ -18,7 +19,7 @@ namespace KSP.Retooled.Physics
         private const uint EmptySlot = 0;
         private const uint DeletedSlot = uint.MaxValue;
 
-        // Chain links and slot contents are an edge's index plus one, so that zero can mean none.
+        // Chain links and occupied slots store an edge's index plus one, so zero can represent no edge.
         private struct Edge
         {
             public uint Key;
@@ -53,7 +54,10 @@ namespace KSP.Retooled.Physics
             return table->FindSlot(KeyOf(first, second), out _);
         }
 
-        /// <summary>Ignores or restores a pair. An id of 0 gets a real one when ignoring, and the caller passes it back to Unity.</summary>
+        /// <summary>
+        /// Ignores a pair or restores its collisions. When ignoring a pair, assigns an id to either collider whose id
+        /// is 0. The caller passes the ids back to Unity.
+        /// </summary>
         internal static void Set(NativeStore.StoreGlobals* globals, ref uint first, ref uint second, bool ignored)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.IgnoreCollision.Auto();
@@ -78,7 +82,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Drops every pair of a destroyed collider and frees its id.</summary>
+        /// <summary>
+        /// Removes every ignored pair involving a destroyed collider and frees its id.
+        /// </summary>
         internal static void Forget(NativeStore.StoreGlobals* globals, uint id)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetIgnoredCollisions.Auto();
@@ -100,8 +106,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Places every pair again with this domain's hash. The table outlives a domain reload, and the code before it may
-        /// have placed pairs by another hash, which would leave them unfound.
+        /// Places every pair in the table again using the current domain's hash function. The table survives a domain
+        /// reload. If the previous code used a different hash function, lookups would otherwise fail to find those
+        /// pairs.
         /// </summary>
         internal static void Reslot(NativeStore.StoreGlobals* globals)
         {
@@ -137,9 +144,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Spreads every bit of a key over the slot index. Ids are handed out in order, so the keys of one craft differ in few
-        /// bits of each half, and masking a plain product keeps only the low ones: every pair sharing its higher id then starts
-        /// on one of a handful of slots, and the probes run long.
+        /// Mixes all bits of the key into the slot index. Ids are assigned in order, so keys for pairs in one craft
+        /// differ in only a few bits of each half. Masking a simple product preserves only the low bits. Pairs with the
+        /// same higher id would then start at just a few slots, requiring long sequences of probes.
         /// </summary>
         private static uint Mix(uint key)
         {
@@ -300,7 +307,8 @@ namespace KSP.Retooled.Physics
             SetPrevious(next, id, previous);
         }
 
-        // Every live pair moves to a clean table, which also clears the deleted slots a restore leaves.
+        // Move every live pair to a clean table. This also removes the deleted slots left when collisions were
+        // restored.
         private void Rehash(NativeStore.StoreGlobals* globals)
         {
             uint live = 0;

@@ -11,45 +11,47 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// What a query function reads: a copy of the built collision world and a snapshot of the store's bodies and shapes. It
-    /// lives in unmanaged memory and holds no managed reference, so a Burst function on any thread can use it. The plugin
-    /// keeps it behind the world's query lock, and <see cref="WorldState"/> republishes it after every build. A worker
-    /// reads the last one published even when the store has moved on, so it must not lead back into the store.
+    /// Contains a copy of the built collision world and a snapshot of the store's bodies and shapes for query functions
+    /// to read. This data is unmanaged and contains no managed references, so a Burst function can use it on any
+    /// thread. The plugin protects it with the world's query lock. <see cref="WorldState"/> publishes it again after
+    /// every build. Workers read the last published snapshot even after the store has changed, so they must not
+    /// dereference pointers from the snapshot into the store.
     /// </summary>
     internal unsafe struct QueryWorld
     {
         public CollisionWorld Collision;
 
-        // One per body of Collision.
+        // One entry for each body in Collision.
         [NativeDisableUnsafePtrRestriction]
         public QueryBody* Bodies;
 
-        // Each body's shapes in store order, from QueryBody.FirstShape.
+        // Stores each body's shapes in store order, starting at QueryBody.FirstShape.
         [NativeDisableUnsafePtrRestriction]
         public QueryShape* Shapes;
 
         public int ShapeCount;
     }
 
-    /// <summary>A built body as queries see it.</summary>
+    /// <summary>Describes a body in the built world for use by queries.</summary>
     internal unsafe struct QueryBody
     {
-        // Compared, or handed to Unity. Never read, because the record may be gone by the time a worker has this.
+        // This pointer is used for comparisons or passed to Unity. Never dereference it: the body record may have been
+        // destroyed by the time a worker reads this snapshot.
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.Body* Owner;
 
         public int FirstShape;
-        public int SingleShape;     // the shape a collider that isn't a compound stands for, relative to FirstShape
+        public int SingleShape;     // Index of the shape for a noncompound collider, relative to FirstShape.
         public int IsStatic;
         private readonly int reserved0;
     }
 
-    /// <summary>A shape as queries see it.</summary>
+    /// <summary>Describes a shape for use by queries.</summary>
     internal unsafe struct QueryShape
     {
         public ulong EngineObjectId;
 
-        // Handed to Unity, like QueryBody.Owner.
+        // Passed to Unity without dereferencing it, like QueryBody.Owner.
         [NativeDisableUnsafePtrRestriction]
         public void* UserData;
 
@@ -60,7 +62,9 @@ namespace KSP.Retooled.Physics
         public uint GeometryType;
     }
 
-    /// <summary>A sphere, box or capsule on the stack, which is what Unity Physics casts and measures.</summary>
+    /// <summary>
+    /// Stores a sphere, box or capsule on the stack for Unity Physics to use in casts and distance calculations.
+    /// </summary>
     [StructLayout(LayoutKind.Explicit)]
     internal unsafe struct PrimitiveCollider
     {
@@ -74,8 +78,9 @@ namespace KSP.Retooled.Physics
         private CapsuleCollider capsule;
 
         /// <summary>
-        /// Fills this with a geometry that reads as a <see cref="NativeStore.ShapeData"/> does, centred on its own origin.
-        /// Null for a geometry that isn't a primitive. The result points into this, so it lasts as long as this does.
+        /// Initializes this struct with geometry described in the same way as <see cref="NativeStore.ShapeData"/>,
+        /// centred on its own origin. Returns null if the geometry is not a primitive. The returned pointer points into
+        /// this struct and is valid only as long as the struct remains valid.
         /// </summary>
         internal Collider* Initialize(uint geometryType, float3 extents, CollisionFilter filter)
         {
@@ -97,17 +102,20 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The queries the plugin calls without going through Mono: one Burst function pointer, and until the async compile
-    /// delivers, that pointer is a stub running the same method in Mono, so a query always works. All geometry is Unity
-    /// Physics'. This adapts what it reports to what PhysX would have.
+    /// Implements the queries that the plugin calls through a single Burst function pointer. Until asynchronous
+    /// compilation finishes, that pointer refers to a stub that runs the same method in Mono, so queries work during
+    /// compilation too. Unity Physics performs all geometry calculations. This class converts its results to match the
+    /// results that PhysX would report.
     /// </summary>
     /// <remarks>
-    /// Safety checks stay off because a Burst exception can't cross the native caller; the Mono form catches its own.
+    /// Safety checks are disabled because exceptions from Burst code must not cross the boundary to the native caller.
+    /// The Mono version catches its own exceptions.
     /// </remarks>
     [BurstCompile]
     internal static unsafe class QueryKernel
     {
-        // PhysX counts shapes that touch as overlapping, and Unity Physics only asks for distances below a limit.
+        // PhysX counts touching shapes as overlapping. Unity Physics only reports distances below the specified limit,
+        // so use a small positive limit to include touching shapes.
         private const float TouchDistance = 1e-4f;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -125,7 +133,10 @@ namespace KSP.Retooled.Physics
             return ranInMono ? result : Execute((NativeStore.QueryKind)kind, world, input, output);
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst omits this method. It runs only in Mono, where exceptions must be caught before returning to native
+        /// code.
+        /// </summary>
         [BurstDiscard]
         private static void RunInMono(
             uint kind,
@@ -139,8 +150,9 @@ namespace KSP.Retooled.Physics
             BackendHost.NoteManagedQuery();
             try
             {
-                // Inside a job, which is where most of these calls run, the safety system only lets a native container
-                // be touched through a job's own copy of it. Burst has no such checks, so only this form needs one.
+                // Most of these calls run inside jobs. The safety system allows access to a native container only
+                // through the job's own copy of it. Run a job here to provide that copy. Burst has no such checks, so
+                // only the Mono version needs this job.
                 int found = 0;
                 new QueryJob { Kind = kind, World = *world, Input = input, Output = output, Result = &found }.Run();
                 result = found;
@@ -242,7 +254,8 @@ namespace KSP.Retooled.Physics
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
 
-            // A hit needs nothing done per shape, because the closest triangle is the only one of a mesh that can stay.
+            // Hits do not need to be grouped by shape here. Only the closest triangle hit in a mesh can remain as the
+            // closest hit overall.
             var collector = new QueryCollector<RaycastHit, ClosestSink<RaycastHit>>(
                 world,
                 new ClosestSink<RaycastHit> { MaxFraction = 1.0f },
@@ -439,8 +452,8 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            // The sink only learns a shape's closest hit once the shape is done, because a later triangle can still turn
-            // that shape into a start overlap, which takes it out of the running.
+            // Send a shape's closest hit to the sink only after all its triangles have been processed. A later triangle
+            // may reveal an overlap at the start of the cast, which excludes the shape from the results.
             var collector = new QueryCollector<ColliderCastHit, ClosestSink<ColliderCastHit>>(
                 world,
                 new ClosestSink<ColliderCastHit> { MaxFraction = 1.0f },
@@ -502,8 +515,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Sweeps one of a body's shapes. Only convex shapes sweep, and every one of those does, triggers too: PhysX has no
-        /// sweep for a triangle mesh, and Unity's filter applies to what the sweep can hit.
+        /// Sweeps one of a body's shapes. Only convex shapes can be swept, and all convex shapes are included, even
+        /// triggers. PhysX does not support sweeping a triangle mesh. Unity's filter applies to the shapes that the
+        /// sweep can hit.
         /// </summary>
         private static void CastShape<S>(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.Shape* shape, ref S sink, float3 direction, float distance)
             where S : struct, IQuerySink<ColliderCastHit>
@@ -516,8 +530,9 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            // The filter a query goes by is the query's, and a convex leaf holds its shape's. A blob holds relative offsets
-            // only, so it can move, which is what the copy on this thread's stack relies on.
+            // The cast must use the query's filter, but the convex leaf contains the shape's filter. Copy the leaf to
+            // this thread's stack before changing the filter. The copy remains valid because a collider blob uses only
+            // relative offsets.
             int blocks = collider->MemorySize / sizeof(float4) + 1;
             float4* copy = stackalloc float4[blocks];
             UnsafeUtility.MemCpy(copy, collider, collider->MemorySize);
@@ -583,8 +598,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Sweeps a geometry against one shape. A geometry already in the shape is an overlap, which the caller either doesn't
-        /// want, or wants as PhysX's minimum translation: the normal of the shortest way out, and the depth as a negative distance.
+        /// Sweeps query geometry against one shape. If the query geometry already overlaps the shape, the caller can
+        /// either exclude the overlap or request the minimum translation that PhysX would report. That result gives the
+        /// normal of the shortest path out of the shape and the penetration depth as a negative distance.
         /// </summary>
         private static int CastAgainstShape(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
         {
@@ -663,7 +679,7 @@ namespace KSP.Retooled.Physics
 
             collider->CalculateDistance(distanceInput, ref collector);
 
-            // A point inside has no nearer one: PhysX reports the point itself.
+            // For a point inside the shape, PhysX reports that same point as the closest point.
             if (collector.NumHits == 0 || collector.ClosestHit.Fraction <= 0.0f)
             {
                 return 0;
@@ -687,7 +703,8 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            // A triangle mesh is only ever the target, the one place Unity Physics tells which triangle it measured.
+            // Use a triangle mesh only as the target. Unity Physics identifies the triangle used in the distance
+            // calculation only for the target.
             bool swapped = a->CollisionType == CollisionType.Convex && b->CollisionType != CollisionType.Convex;
             Collider* target = swapped ? b : a;
             Collider* query = swapped ? a : b;
@@ -698,7 +715,8 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            // The filters of a shape's leaf hold its layers, which a penetration test doesn't go by.
+            // A shape's leaf collider contains its layer filter. Copy the query collider and allow all layers because
+            // penetration tests ignore these filters.
             int blocks = query->MemorySize / sizeof(float4) + 1;
             float4* copy = stackalloc float4[blocks];
             UnsafeUtility.MemCpy(copy, query, query->MemorySize);
@@ -745,12 +763,14 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The collider a shape's geometry is, and the pose that puts it where <paramref name="worldFromShape"/> says the shape
-        /// is. A primitive is built in <paramref name="primitive"/> with a filter that lets everything through. A mesh takes too
-        /// long to build for one query, so it is the leaf of its body's collider, whose filter and pose are the shape's. A
-        /// compound's child carries the pose outside it, as a static body's only shape does, but any other single shape's blob
-        /// has it baked in. Null for a shape with no
-        /// such collider, which is what a shape off its body looks like, and PhysX answers for those as if it wasn't there.
+        /// Returns a collider for a shape's geometry and the collider pose that places the shape at
+        /// <paramref name="worldFromShape"/>. Primitive geometry is built in <paramref name="primitive"/> with a
+        /// filter that allows everything. Building a mesh for each query would take too long, so mesh queries use the
+        /// leaf in the body's existing collider, with the shape's filter and pose. For a compound child or a static
+        /// body's only shape, the pose is stored outside the collider blob. For any other single shape, the pose is
+        /// baked into the blob. Returns null if no suitable collider is available. A detached shape can still provide
+        /// primitive geometry, but cannot provide a mesh leaf from a body. PhysX treats shapes without a suitable
+        /// collider as absent.
         /// </summary>
         private static Collider* ColliderOf(
             NativeStore.Shape* shape,

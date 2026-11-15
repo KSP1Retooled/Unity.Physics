@@ -10,10 +10,11 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// One manifold of the narrow phase that survived filtering, ordered so that a pair reads the same however Unity Physics
-    /// built it: body A has the lower store row, except that a static is always body B, because Collision.impulse is one
-    /// vector for both sides and PhysX has it pushing the body. Unity Physics' own keys stay for finding the manifold's solver
-    /// event, and one pair of shapes can have many manifolds, one per triangle of a mesh.
+    /// Stores a manifold that survived filtering in the narrow phase. Normalize the order of its shapes regardless of
+    /// how Unity Physics built the pair: body A has the lower store row, except that a static body is always body B.
+    /// Collision.impulse is one vector shared by both sides, and PhysX defines it as pushing the body. Retain Unity
+    /// Physics' original keys to find the manifold's solver event. A pair of shapes can have several manifolds, one for
+    /// each mesh triangle.
     /// </summary>
     internal unsafe struct ManifoldRecord
     {
@@ -28,31 +29,37 @@ namespace KSP.Retooled.Physics
         public int FirstPoint;
         public int PointCount;
 
-        // From B towards A, as a contact's normal runs from the other shape to the one that hears about it.
+        // Points from B toward A. A reported contact normal points from the other shape toward the shape receiving the
+        // event.
         public float3 Normal;
         public float3 LinearVelocityA;
         public float3 AngularVelocityA;
         public float3 LinearVelocityB;
         public float3 AngularVelocityB;
 
-        // As the narrow phase gave it, which is how the solver's jacobian knows it.
+        // The original normal from the narrow phase, as used by the solver's jacobian.
         public float3 BuiltNormal;
 
-        // What the last step left to start from, of which the solve is given WarmStartJob.Fraction, and what it ended on.
+        // The cached impulse from the previous step and the final impulse for the current step. Apply
+        // WarmStartJob.Fraction of the cached impulse during the warm start.
         public float WarmImpulse;
         public float Impulse;
         public bool Touching;
         public bool Trigger;
     }
 
-    /// <summary>A contact point of a <see cref="ManifoldRecord"/>, in the shape the narrow phase gives it.</summary>
+    /// <summary>
+    /// Stores a contact point of a <see cref="ManifoldRecord"/> in the form produced by the narrow phase.
+    /// </summary>
     internal struct ManifoldPoint
     {
         public float3 Position;
         public float Distance;
     }
 
-    /// <summary>What finds a manifold's record from its solver event.</summary>
+    /// <summary>
+    /// Identifies a manifold's record from its solver event.
+    /// </summary>
     internal struct ManifoldKey : IEquatable<ManifoldKey>
     {
         public int BodyA;
@@ -71,7 +78,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>What identifies a manifold from one step to the next, when bodies have moved in the built world.</summary>
+    /// <summary>
+    /// Identifies the same manifold across steps, even when body indices in the built world change.
+    /// </summary>
     internal unsafe struct PersistentManifoldKey : IEquatable<PersistentManifoldKey>
     {
         public NativeStore.ShapeData* ShapeA;
@@ -102,8 +111,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// What finds a manifold from its jacobian, which names its bodies but not its colliders. Manifolds of one body pair with
-    /// the same normal, such as a box on two coplanar triangles, come to one key and share out their impulse.
+    /// Identifies a manifold from its jacobian, which contains body indices but no collider keys. Manifolds with the
+    /// same body pair and normal use the same key and share their impulse. For example, this occurs when a box rests on
+    /// two coplanar triangles.
     /// </summary>
     internal struct JacobianKey : IEquatable<JacobianKey>
     {
@@ -122,7 +132,10 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>A pair of touching shapes, in pointer order so that it stays one key as bodies come and go.</summary>
+    /// <summary>
+    /// Identifies a pair of touching shapes in pointer order, so that the key stays the same as bodies are added or
+    /// removed.
+    /// </summary>
     internal struct ShapePairKey : IEquatable<ShapePairKey>
     {
         public IntPtr First;
@@ -145,7 +158,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>What a touching pair remembers from one step to the next.</summary>
+    /// <summary>
+    /// Stores the state of a touching pair between steps.
+    /// </summary>
     internal struct ShapePairState
     {
         public uint LastSeen;
@@ -153,8 +168,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Whether every collider pair between two bodies is ignored, as worked out when the ignored pairs and the bodies' shapes
-    /// were at the versions it holds.
+    /// Caches whether every collider pair between two bodies is ignored. Records the versions of the ignored pairs and
+    /// collider builds used to calculate that result.
     /// </summary>
     internal struct KnownBodyPair
     {
@@ -164,14 +179,16 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Takes out the overlaps whose every collider pair is under Physics.IgnoreCollision, which is what the parts of one craft
-    /// are. There are many times more of those than of joints, and left in they would make a craft one crowded island and
-    /// send them all through the narrow phase for nothing. Body pairs with some colliders still in contact stay, and
-    /// <see cref="ReadContactsJob"/> tells those colliders apart.
+    /// Disables collisions for overlapping body pairs when every collider pair between them is ignored through
+    /// Physics.IgnoreCollision. This is common among parts of one craft. Such overlaps greatly outnumber joints.
+    /// Leaving them enabled would put the craft in one crowded island and send all of them through the narrow phase
+    /// unnecessarily. Keep body pairs that still have colliders allowed to contact each other. <see
+    /// cref="ReadContactsJob"/> filters the individual collider pairs.
     ///
-    /// Finding that out takes a lookup per collider pair, each a likely cache miss in a table of a craft's every ignored pair,
-    /// so the answer is kept per body pair. It holds until the ignored pairs change or a body's shapes may have: a body
-    /// whose shapes change, or that is made, gets a whole collider build, which bumps the count it was kept with.
+    /// Checking a body pair requires a lookup for each collider pair. Each lookup is likely to miss the cache because
+    /// the table contains all ignored pairs for the craft. Cache the result for each body pair until the ignored pairs
+    /// change or any body's shapes may have changed. Creating a body or changing its shapes requires a full collider
+    /// build, which increments the build counter recorded with the cached result.
     /// </summary>
     [BurstCompile]
     internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
@@ -194,7 +211,9 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeReference<uint> WholeBuilds;
 
-        /// <summary>What this step worked out afresh, for <see cref="RememberBodyPairsJob"/> to keep.</summary>
+        /// <summary>
+        /// Stores results calculated during this step for <see cref="RememberBodyPairsJob"/> to cache.
+        /// </summary>
         public NativeQueue<KeyValue>.ParallelWriter Learned;
 
         internal struct KeyValue
@@ -259,9 +278,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Keeps what <see cref="DropIgnoredPairsJob"/> worked out afresh. Pairs that stopped overlapping leave their answers
-    /// behind, so past several times the overlaps a craft's parts have, everything is dropped and the next step works out what
-    /// it needs again.
+    /// Caches the results calculated by <see cref="DropIgnoredPairsJob"/>. Cached results remain when pairs stop
+    /// overlapping. If the number of cached and newly calculated results exceeds 32 per body plus 1024, clear the cache
+    /// before storing the new results. Later lookups recalculate any results that are needed.
     /// </summary>
     [BurstCompile]
     internal struct RememberBodyPairsJob : IJob
@@ -289,33 +308,37 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Runs between the narrow phase and the solver over every point of every manifold. Physics.IgnoreCollision acts here for
-    /// the body pairs <see cref="DropIgnoredPairsJob"/> left in, because a manifold names the leaves that touched, so the pairs
-    /// of a compound can be told apart. So do friction and restitution, which need both shapes' materials and the points that
-    /// touched. The manifolds it keeps are what the step's events and sleeping work from.
+    /// Processes every point of every manifold between the narrow phase and the solver. Applies Physics.IgnoreCollision
+    /// to collider pairs within body pairs retained by <see cref="DropIgnoredPairsJob"/>. Manifolds identify the leaf
+    /// colliders that touched, so individual pairs within a compound can be filtered here. Also sets friction and
+    /// restitution using both shapes' materials and the contact points. The retained manifolds are used for events and
+    /// sleeping during this step.
     ///
-    /// Unity Physics also gives a body contacts with a static mesh well ahead of it, a step's travel ahead, where PhysX only
-    /// has them within the shapes' contact offsets. Against the edge of a polygon such a contact's normal leans back along the
-    /// body's travel, and taken as a plane it stops a body that slides along the mesh. A point beyond the contact offsets
-    /// stays only if its path through the step passes through its polygon.
+    /// Unity Physics generates contacts with static meshes up to one step's travel ahead of a body. PhysX generates
+    /// them only within the shapes' contact offsets. At a polygon edge, the normal of a distant contact can point back
+    /// along the body's motion. Treating that contact as a plane would stop a body sliding along the mesh. For a point
+    /// beyond the contact offsets, test whether its path during the step intersects its polygon. If the path is no
+    /// longer than the separation, leave the contact as Unity Physics generated it. The point cannot close by more
+    /// than its separation, regardless of the normal's direction.
     ///
-    /// Each of the narrow phase's buckets is read on its own, into lists of its own, and
-    /// <see cref="MergeContactBucketsJob"/> joins them in bucket order, so the records come out in the order a single pass
-    /// over the stream would give them.
+    /// Read each bucket from the narrow phase into separate lists. <see cref="MergeContactBucketsJob"/> then merges
+    /// them in bucket order, preserving the order that a single pass over the stream would produce.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadContactsJob : IJobParallelForDefer
     {
-        // Measured against PhysX: a 0.015 m box slides on one anchor and a 0.02 m box on two, and their diagonals are 0.021 m
-        // and 0.028 m. Points nearer each other than this share an anchor.
+        // Measurements against PhysX: a 0.015 m box slides on one anchor and a 0.02 m box slides on two. Their
+        // diagonals are 0.021 m and 0.028 m. Points separated by at most this threshold share an anchor.
         private const float FrictionOffsetThreshold = 0.025f;
 
-        // How far apart the solver is told a point is that can't reach its polygon this step. Unity Physics then lets the
-        // bodies close by more than they can move, and the direct solver gives the point no row, as it must stay beyond
-        // Solver.ContactRowReach.
+        // Set this separation for solver points that cannot reach their polygons during this step. Unity Physics then
+        // allows the bodies to approach by more than they can move. The direct solver creates no row for the point
+        // because this separation exceeds Solver.ContactRowReach.
         private const float OutOfReach = 1.0e6f;
 
-        /// <summary>A static mesh's polygon in world space, and the motion of the body against it.</summary>
+        /// <summary>
+        /// Stores a static mesh polygon in world space and the motion of the body in contact with it.
+        /// </summary>
         private struct MeshFace
         {
             public bool Valid;
@@ -357,7 +380,7 @@ namespace KSP.Retooled.Physics
             output.Points.Clear();
             output.Wakes = false;
 
-            // The narrow phase writes each manifold as its header followed by its points.
+            // The narrow phase writes each manifold as a header followed by its points.
             NativeStream.Reader reader = Contacts;
             reader.BeginForEachIndex(bucket);
             while (reader.RemainingItemCount > 0)
@@ -373,7 +396,8 @@ namespace KSP.Retooled.Physics
                         continue;
                     }
 
-                    // The report keeps the point where it is, and only the solver is told it is out of reach.
+                    // Preserve the original point in the report. Change only the separation sent to the solver to put
+                    // it out of reach.
                     float distance = point->Distance;
                     float3 moving = face.MovingIsA ? point->Position + header->Normal * distance : point->Position;
                     bool reachable = !face.Valid || distance <= touchDistance || Reaches(face, moving, distance);
@@ -397,7 +421,9 @@ namespace KSP.Retooled.Physics
             reader.EndForEachIndex();
         }
 
-        /// <summary>Starts a manifold's record, or disables or passes over the manifold and returns false.</summary>
+        /// <summary>
+        /// Starts a manifold record. Returns false if the manifold is disabled or skipped.
+        /// </summary>
         private bool Begin(ref ContactHeader header, ref UnsafeList<ManifoldRecord> records, int firstPoint,
             out float touchDistance, out MeshFace face)
         {
@@ -441,7 +467,8 @@ namespace KSP.Retooled.Physics
             ref NativeStore.BodyData first = ref Store[swapped ? rowB : rowA];
             ref NativeStore.BodyData second = ref Store[swapped ? rowA : rowB];
 
-            // Triggers go by true overlap, and a solid pair by PhysX's rule: within both contact offsets.
+            // Triggers require actual overlap. Solid pairs follow PhysX's rule and may touch within the sum of their
+            // contact offsets.
             touchDistance = trigger ? 0.0f : ((NativeStore.Shape*)shapeA)->contactOffset + ((NativeStore.Shape*)shapeB)->contactOffset;
             records.Add(new ManifoldRecord
             {
@@ -470,15 +497,16 @@ namespace KSP.Retooled.Physics
             output.Points.Add(new ManifoldPoint { Position = position, Distance = distance });
             record.PointCount++;
 
-            // Unity Physics stops a fast body at the surface with a contact that looks well apart, where PhysX lets it in and
-            // reports next step. The pair touches in the step that spends the impact, so that its event carries the impulse.
+            // Unity Physics stops a fast body at the surface using a contact with a large separation. PhysX allows the
+            // body to enter and reports the contact next step. Mark the pair as touching during the step that applies
+            // the impact impulse so that the event includes that impulse.
             float closing = record.Trigger ? 0.0f : math.max(ClosingSpeed(ref record, position), 0.0f);
             record.Touching |= reachable && distance - closing * DeltaTime <= touchDistance;
         }
 
         /// <summary>
-        /// The polygon of a static mesh that a manifold lies against, in world space, and how the body against it moves. Any
-        /// other leaf gives an invalid face.
+        /// Returns the static mesh polygon for a manifold in world space, along with the motion of the body in contact
+        /// with it. Returns an invalid face for any other leaf collider.
         /// </summary>
         private MeshFace FaceOf(RigidBody mesh, ColliderKey key, in NativeStore.BodyData moving, bool movingIsA)
         {
@@ -512,9 +540,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether a point of the moving body may meet the face this step: whether its path through the step passes through
-        /// the polygon. A point that moves less than its distance can't close on the face whatever way its normal leans, and
-        /// stays as Unity Physics has it.
+        /// Tests whether a moving point's path during this step intersects the polygon. If the path is no longer than
+        /// the separation, return true to retain Unity Physics' contact. The point cannot close by more than its
+        /// separation, regardless of the normal's direction.
         /// </summary>
         private bool Reaches(in MeshFace face, float3 point, float distance)
         {
@@ -535,8 +563,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives a manifold the coefficients PhysX would solve it with. A material pair can't say this: Unity Physics has no
-        /// multiply, ranks the combine modes differently and keeps one friction, and only here is the number of anchors known.
+        /// Sets the coefficients that PhysX would use to solve this manifold. Unity Physics material pairs cannot
+        /// express these rules: they lack a multiply mode, rank the combine modes differently, and store only one
+        /// friction coefficient. The number of friction anchors is also known only here.
         /// </summary>
         private void SetCoefficients(ref ContactHeader header, ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
@@ -555,12 +584,14 @@ namespace KSP.Retooled.Physics
             bool sticks = InFrictionCone(ref record, center, anchors * staticFriction);
             header.CoefficientOfFriction = anchors * (sticks ? staticFriction : dynamicFriction);
 
-            // The solver's own resting test measures against gravity, and the step gives it none, so a body at rest would
-            // bounce on a step's worth of gravity. PhysX's test is the threshold.
+            // The solver's resting test depends on gravity, but no gravity is supplied to it during this step. A
+            // resting body would therefore bounce after gaining one step's velocity from gravity. Use PhysX's speed
+            // threshold to decide whether it bounces.
             bool bounces = ClosingSpeed(ref record, center) > BounceThreshold;
             header.CoefficientOfRestitution = bounces ? Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine) : 0.0f;
 
-            // With substeps, a bouncy contact's rows stay shut until it bounces, so they couldn't take back a warm start.
+            // With substeps, rows for a bouncy contact remain inactive until the bounce, so they cannot remove an
+            // applied warm start.
             if (header.CoefficientOfRestitution <= 0.0f)
             {
                 LastImpulses.TryGetValue(PersistentManifoldKey.Of(ref record), out record.WarmImpulse);
@@ -568,10 +599,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX anchors a patch's friction at its first point and the point farthest from it, and each anchor may spend the
-        /// coefficient times the patch's whole normal impulse. So a patch with two anchors holds twice what the coefficient
-        /// says, a sphere's single point holds what it says, and Unity Physics' one row at the manifold's centre is given the
-        /// sum of the two.
+        /// PhysX places friction anchors at a patch's first point and at the point farthest from it. Each anchor can
+        /// apply friction up to the coefficient times the patch's total normal impulse. Two anchors therefore provide
+        /// twice the friction implied by the coefficient alone. A sphere's single contact point provides that amount
+        /// once. Scale the coefficient for Unity Physics' single friction row at the manifold's centre to account for
+        /// both anchors.
         /// </summary>
         private static float FrictionAnchors(ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
@@ -586,9 +618,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether this step's velocities stay inside the cone of a coefficient, which decides between static and dynamic
-        /// friction. PhysX decides it by the impulse the solve asks for. Both impulses would stop their own velocity through
-        /// the same effective mass, so comparing the velocities at the patch's centre comes to the same thing.
+        /// Chooses static or dynamic friction by testing velocities against the cone for the given coefficient.
+        /// PhysX uses the impulse required by the solver to make this choice. This method approximates that decision
+        /// using relative velocity at the patch's centre. Compare tangential speed with the coefficient times the
+        /// nonnegative closing speed.
         /// </summary>
         private bool InFrictionCone(ref ManifoldRecord record, float3 center, float coefficient)
         {
@@ -611,7 +644,9 @@ namespace KSP.Retooled.Physics
             return center / record.PointCount;
         }
 
-        /// <summary>PhysX's rule for a pair: the mode that ranks higher wins, and maximum outranks multiply, minimum, average.</summary>
+        /// <summary>
+        /// Combines a pair using PhysX's higher-ranked mode. The ranking is maximum, multiply, minimum, then average.
+        /// </summary>
         private static float Combine(float a, float b, uint modeA, uint modeB)
         {
             switch (CombineRank(modeA) >= CombineRank(modeB) ? modeA : modeB)
@@ -656,8 +691,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX pairs a kinematic with a static or another kinematic only for triggers, under the scene's default contact
-        /// mode, and never two statics. Unity Physics solves nothing there either, but it does generate the contacts.
+        /// Under the scene's default contact mode, PhysX reports a kinematic body paired with a static or another
+        /// kinematic body only for triggers. It never reports two static bodies. Unity Physics also applies no solver
+        /// response to these pairs, but it does generate their contacts.
         /// </summary>
         private static bool CanReport(NativeStore.BodyFlags a, NativeStore.BodyFlags b, bool trigger)
         {
@@ -671,8 +707,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX culls a height field's triangle against the centre of the shape meeting it, so a shape centred below the
-        /// surface has no contact, while Unity Physics would drive it on through.
+        /// PhysX culls a height field triangle using the centre of the shape in contact with it. A shape centred below
+        /// the surface therefore has no contact, whereas Unity Physics would push it farther through the surface.
         /// </summary>
         private bool IsBehindField(RigidBody field, ColliderKey key, NativeStore.ShapeData* fieldShape, RigidBody other, NativeStore.ShapeData* otherShape)
         {
@@ -695,15 +731,18 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// What <see cref="ReadContactsJob"/> kept from one bucket of the narrow phase's stream. A record's first point counts
-    /// from the start of its bucket's points.
+    /// Stores the records and points retained by <see cref="ReadContactsJob"/> from one bucket of the narrow phase
+    /// stream. A record's first point is indexed relative to the start of that bucket's points.
     /// </summary>
     internal struct ContactBucket
     {
         public UnsafeList<ManifoldRecord> Records;
         public UnsafeList<ManifoldPoint> Points;
 
-        /// <summary>Whether a manifold here has a moving body touch a sleeping one, the only thing that wakes a body.</summary>
+        /// <summary>
+        /// Indicates whether a manifold contains a moving body touching a sleeping body and should wake it during
+        /// contact processing.
+        /// </summary>
         public bool Wakes;
 
         internal void Dispose()
@@ -714,9 +753,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Gives every bucket of the narrow phase's stream its lists, whose number is only known once the stream is made. The
-    /// lists stay from step to step, so this seldom has anything to do. It also records how many buckets this step fills,
-    /// for the jobs that read the buckets after the stream is gone.
+    /// Allocates lists for each bucket of the narrow phase stream. The number of buckets is known only after the stream
+    /// is created. Reuse the lists between steps, so allocation is rarely needed. Also records how many buckets are
+    /// used this step for jobs that read them after the stream has been released.
     /// </summary>
     [BurstCompile]
     internal struct PrepareContactBucketsJob : IJob
@@ -742,7 +781,9 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Joins what <see cref="ReadContactsJob"/> kept from each bucket into the step's manifolds, in bucket order.</summary>
+    /// <summary>
+    /// Merges the records retained by <see cref="ReadContactsJob"/> into this step's manifolds, in bucket order.
+    /// </summary>
     [BurstCompile]
     internal unsafe struct MergeContactBucketsJob : IJob
     {
@@ -776,8 +817,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Finds each warm start its jacobian's key, once the step's manifolds are known. The value holds the impulse and the
-    /// number of contact points that share it.
+    /// Indexes warm starts by their jacobian keys after the manifolds for this step are known. Each value contains the
+    /// total impulse and the number of contact points that share it.
     /// </summary>
     [BurstCompile]
     internal struct IndexWarmStartsJob : IJob
@@ -813,22 +854,25 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Starts each contact from most of the normal impulse it ended the last step on, spread evenly over its points near
-    /// enough to touch, as the events only give a manifold's total. Unity Physics solves friction in every iteration from the first, and a cold start
-    /// has the points of a manifold pulling the bodies about for most of the iterations, which friction takes for slipping
-    /// and spends itself on. A body on another dynamic body then keeps whatever slip that leaves, step after step.
+    /// Starts each contact with most of its final normal impulse from the previous step. Divide the impulse evenly
+    /// among contact points, applying it only to points close enough to touch, because events report only the
+    /// manifold's total impulse. Unity Physics solves friction on every iteration, including the first. With a cold
+    /// start, the contact points move the bodies around during most iterations. The friction calculation treats this
+    /// motion as slipping and uses friction to oppose it. A body resting on another dynamic body can then retain the
+    /// remaining slip from step to step.
     /// </summary>
     [BurstCompile]
     internal unsafe struct WarmStartJob : IJacobiansJob
     {
-        // Less than all of it, because a manifold with nothing left to add raises no event and would start cold next step.
+        // Use less than the full impulse. A manifold that needs no additional impulse produces no event and would start
+        // cold next step.
         internal const float Fraction = 0.95f;
 
-        // Only points this near, in metres, take a share of the warm start: the impulse belongs to the points that touched.
-        // Every one of them must have a row, since a row is what takes back a warm start the contact doesn't need, and a
-        // point's warm start with nothing to take it back would push the bodies apart and feed the next step's warm start,
-        // so a crash would throw its wreckage ever faster. The direct solver's rows reach Solver.ContactRowReach, which must
-        // stay at least this.
+        // Apply a share of the warm start only to points within this distance, in metres, because the impulse came from
+        // touching points. Every such point must have a solver row so that the solver can remove any warm start impulse
+        // that is no longer needed. Without a row, that impulse would push the bodies apart and increase the next
+        // step's warm start, making crash debris accelerate after each step. The direct solver creates rows up to
+        // Solver.ContactRowReach, which must be at least this distance.
         private const float FarthestPoint = 0.1f;
 
         [ReadOnly]
@@ -879,11 +923,14 @@ namespace KSP.Retooled.Physics
         }
     }
 
-    /// <summary>Keeps each manifold's impulse for the warm start of the next step.</summary>
+    /// <summary>
+    /// Stores each manifold's impulse for the next step's warm start.
+    /// </summary>
     [BurstCompile]
     internal struct RememberImpulsesJob : IJob
     {
-        // A heavy body on a light one rings for steps on end, and a start that follows every swing feeds the ringing.
+        // A heavy body on a light one can oscillate for many steps. Following each oscillation in the warm start would
+        // reinforce it.
         private const float Smoothing = 0.25f;
 
         [ReadOnly]
@@ -907,8 +954,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Gives each manifold the impulse the solver spent on it. Without dynamic bodies there's no solve and no event stream,
-    /// so a step without them doesn't run this.
+    /// Records the solver impulse for each manifold. A step with no dynamic bodies has no solver execution or event
+    /// stream, so this job does not run for such a step.
     /// </summary>
     [BurstCompile]
     internal struct ReadImpulsesJob : IJob
@@ -955,9 +1002,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Drops the touching pairs of shapes taken off their bodies, which leave with no exit and whose addresses the next
-    /// shapes can reuse. What rested on such a shape has nothing holding it now, so PhysX wakes it. That decides what the
-    /// step's sleep and contact report see, so this runs before both.
+    /// Removes touching pairs that involve shapes detached from their bodies. These shapes produce no exit event, and
+    /// new shapes may reuse their addresses. PhysX wakes a body when the shape supporting it is removed. Do the same
+    /// here before sleeping and contact reporting, since both depend on whether the body is awake.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ForgetRemovedShapesJob : IJob
@@ -1005,11 +1052,11 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Turns the step's manifolds into what Unity reads back from GetLastSimulationStepResults, which is PhysX's report: each
-    /// pair of bodies with their velocities before the solve, each pair of shapes under it, and their contact points. Touches
-    /// found and lost are worked out here against the pairs of the step before, and a pair of bodies at rest stays touching
-    /// without a word, as an island asleep does under PhysX. Triggers report only enters and exits, because Unity repeats
-    /// OnTriggerStay itself between them.
+    /// Converts this step's manifolds into the report that Unity reads through GetLastSimulationStepResults. Matches
+    /// the PhysX report: each body pair includes its velocities before solving, its shape pairs, and their contact
+    /// points. Compare against the previous step's pairs to detect new and lost touches. Bodies at rest remain touching
+    /// without further reports, as a sleeping island does in PhysX. Report only trigger enters and exits because Unity
+    /// repeats OnTriggerStay between them.
     /// </summary>
     [BurstCompile]
     internal unsafe struct PublishContactsJob : IJob
@@ -1113,7 +1160,9 @@ namespace KSP.Retooled.Physics
             return a.ShapeA == b.ShapeA && a.ShapeB == b.ShapeB;
         }
 
-        /// <summary>Everything is sized up front, because a report's pairs point into these arrays.</summary>
+        /// <summary>
+        /// Reserves all required space before building the report because its pairs contain pointers into these arrays.
+        /// </summary>
         private void Reserve()
         {
             uint pairs = (uint)(Records.Length + Touching.Count);
@@ -1234,7 +1283,10 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        /// <summary>Pairs the step didn't touch: the ones whose bodies both rest wait for them to wake, and the rest are over.</summary>
+        /// <summary>
+        /// Reports lost touches for pairs absent from this step. Retains pairs while both bodies are at rest, until
+        /// either wakes.
+        /// </summary>
         private void ReportLostTouches()
         {
             NativeArray<ShapePairKey> keys = Touching.GetKeyArray(Allocator.Temp);
@@ -1280,7 +1332,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Puts a report's pairs next to each other: body pairs, then shape pairs within them.</summary>
+        /// <summary>
+        /// Orders manifolds by body pair, then by shape pair within each body pair, so that related entries are
+        /// adjacent.
+        /// </summary>
         private struct ManifoldOrder : IComparer<ManifoldRecord>
         {
             public int Compare(ManifoldRecord x, ManifoldRecord y)

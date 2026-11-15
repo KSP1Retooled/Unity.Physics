@@ -3,7 +3,9 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>Physics.IgnoreCollision, which works per collider and which KSP's CollisionManager leans on.</summary>
+    /// <summary>
+    /// Tests Physics.IgnoreCollision, which operates per collider and is used by KSP's CollisionManager.
+    /// </summary>
     public class IgnoreCollisionConformanceTests : PhysicsScene
     {
         private const float RestingHeight = 0.5f;

@@ -5,9 +5,9 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Burst's way into <see cref="StepState"/>. As with the other kernels, these run in Mono until the async compile
-    /// delivers them. A step runs the physics system group, whose systems find the world they are stepping in
-    /// <see cref="Current"/>, because one group serves every physics scene.
+    /// Provides Burst entry points for <see cref="StepState"/>. As with the other kernels, these methods run in Mono
+    /// until asynchronous Burst compilation finishes. Each step runs the physics system group. One group serves every
+    /// physics scene, so its systems use <see cref="Current"/> to find the world for the current step.
     /// </summary>
     [BurstCompile]
     internal static unsafe class StepKernel
@@ -66,7 +66,7 @@ namespace KSP.Retooled.Physics
             state->BuildForQueries();
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form.</summary>
+        /// <summary>Burst omits this method, so it runs only in Mono.</summary>
         [BurstDiscard]
         private static void NoteRunInMono()
         {

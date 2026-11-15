@@ -9,9 +9,10 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// What one physics step costs as a craft grows, in milliseconds. Each craft is a stack with radial pairs braced by struts,
-    /// joined the way stock joins parts, with thrust on its bottom part. Run it on each backend with `unity exec --backend`;
-    /// it writes Library/RetooledPhysics/solver-scale-(backend).csv. Sizes stop growing once a step takes too long to wait for.
+    /// Measures the time per physics step as the craft size increases, in milliseconds. Each craft has a central stack
+    /// and pairs of radial parts braced by struts. Parts are joined as in stock KSP, and thrust is applied to the
+    /// bottom part. Run it on each backend with `unity exec --backend`. The benchmark writes
+    /// Library/RetooledPhysics/solver-scale-(backend).csv and stops increasing the craft size when steps take too long.
     /// </summary>
     public static class SolverScaleBench
     {
@@ -61,7 +62,10 @@ namespace KSP.Retooled.Physics.Editor
             UnityEngine.Physics.simulationMode = simulationMode;
         }
 
-        /// <summary>Burst compiles in the background, so the small craft steps until its cost stops falling.</summary>
+        /// <summary>
+        /// Steps a small craft while Burst compiles in the background. Stops when the median time improves by less than
+        /// ten percent after at least ten seconds, or when the wait times out.
+        /// </summary>
         private static void WaitForBurst()
         {
             Craft craft = Build(StackHeights[0]);
@@ -159,7 +163,10 @@ namespace KSP.Retooled.Physics.Editor
             return body;
         }
 
-        /// <summary>A part joint as stock sets it up: everything limited far away, drives doing the holding, and a locked axis.</summary>
+        /// <summary>
+        /// Creates a joint configured as in stock KSP: large linear and angular limits, drives that hold the parts
+        /// together, and one locked angular axis.
+        /// </summary>
         private static void Join(Rigidbody host, Rigidbody target, Vector3 worldAnchor, Craft craft)
         {
             ConfigurableJoint joint = host.gameObject.AddComponent<ConfigurableJoint>();

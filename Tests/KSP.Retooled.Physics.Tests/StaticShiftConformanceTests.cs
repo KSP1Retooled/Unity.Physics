@@ -104,8 +104,8 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        // A scene change destroys the statics and makes new ones, which can land where the old ones were, and whose colliders
-        // can come back at the old ones' addresses.
+        // A scene change destroys the static objects and creates new ones, possibly at the same positions. The new
+        // colliders may also reuse the memory addresses of the old colliders.
         [Test]
         public void StaticsMadeAgainInTheSamePlaceHaveTheirNewLayer()
         {

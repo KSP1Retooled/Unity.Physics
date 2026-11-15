@@ -10,16 +10,16 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// What one command costs through the selected backend, in wall-clock nanoseconds per call. Run it on each backend with
-    /// `unity exec --backend`; it writes Library/RetooledPhysics/cost-(backend).csv. Every case repeats and reports its
-    /// median, so a stray pause on the machine does not set a number.
+    /// Measures the elapsed time per command on the selected backend, in nanoseconds. Run it on each backend with
+    /// `unity exec --backend`. The benchmark writes Library/RetooledPhysics/cost-(backend).csv. It repeats each case
+    /// and reports the median, so an occasional pause on the machine does not determine the reported time.
     /// </summary>
     public static class BackendCostBench
     {
         private const int Bodies = 1000;
         private const int Repeats = 7;
 
-        // Large enough that the delegate call and loop are a rounding error.
+        // Repeat enough calls that the overhead of invoking the delegate and running the loop is negligible.
         private const int FastCalls = 2_000_000;
         private const int SlowCalls = 100_000;
         private const float DeltaTime = 0.02f;
@@ -155,8 +155,8 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Holds the bench until queries stop running in Mono, or reports that they did not, so the raycast number says
-        /// which code it measured.
+        /// Waits for queries to run in Burst instead of Mono, or reports that the wait timed out. This identifies which
+        /// version of the code was used for the raycast measurement.
         /// </summary>
         private static void WaitForBurstQueries(Rigidbody body)
         {
@@ -182,7 +182,10 @@ namespace KSP.Retooled.Physics.Editor
             Debug.LogWarning($"[CostBench] queries still run in Mono after {BurstWaitSeconds} s");
         }
 
-        /// <summary>A floating origin shift: every body's transform moves, and a sync hands them all to the backend.</summary>
+        /// <summary>
+        /// Measures a floating origin shift by moving every body's transform and synchronizing the changes to the
+        /// backend.
+        /// </summary>
         private static void MeasureTransformSync(Rigidbody[] bodies)
         {
             Transform[] transforms = new Transform[bodies.Length];

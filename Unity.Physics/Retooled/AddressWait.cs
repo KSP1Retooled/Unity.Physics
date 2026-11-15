@@ -6,13 +6,13 @@ using Unity.Profiling.LowLevel.Unsafe;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Blocks a thread until another changes a 32-bit word, through the system's address wait: WaitOnAddress on Windows, a
-    /// private futex on Linux, __ulock_wait on macOS. A thread waiting this way gives its core back to the system, where a
-    /// spinning one keeps it, and it wakes in a few microseconds. Waits may return early for no reason, so callers check the
-    /// word again.
+    /// Allows a thread to block while waiting for a 32-bit word to change. Uses WaitOnAddress on Windows, a private
+    /// futex on Linux, or __ulock_wait on macOS. A blocked thread releases its core for other work, whereas a spinning
+    /// thread keeps using it. Waking takes a few microseconds. Waits can return without a change to the word, so
+    /// callers must check it again.
     ///
-    /// Burst reaches the system only through a native plugin, so the backend that has one installs its functions here. Until
-    /// then <see cref="Available"/> is false and callers spin instead.
+    /// Burst calls these system functions through a native plugin. A backend with such a plugin installs the functions
+    /// here. Until then, <see cref="Available"/> is false and callers spin instead.
     /// </summary>
     internal static unsafe class AddressWait
     {
@@ -22,7 +22,7 @@ namespace Unity.Physics
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate void WakeFunction(int* word, int all);
 
-        /// <summary>The longest a wait lasts before its caller looks again on its own.</summary>
+        /// <summary>The timeout passed to the native wait before the caller checks the word again.</summary>
         const int TimeoutMicroseconds = 1000;
 
         struct Functions
@@ -40,7 +40,7 @@ namespace Unity.Physics
 
         public static bool Available => s_Functions.Data.Installed != 0;
 
-        /// <summary>Installs the native wait and wake, or with null pointers removes them.</summary>
+        /// <summary>Installs native wait and wake functions. Disables them if either pointer is null.</summary>
         public static void Install(IntPtr wait, IntPtr wake)
         {
             ref Functions functions = ref s_Functions.Data;
@@ -55,7 +55,10 @@ namespace Unity.Physics
             functions.Installed = 1;
         }
 
-        /// <summary>Waits while the word still holds <paramref name="expected"/>, for about a millisecond at most.</summary>
+        /// <summary>
+        /// If native functions are installed, waits while the word equals <paramref name="expected"/> , with a timeout
+        /// of about one millisecond. Otherwise, returns immediately.
+        /// </summary>
         public static void Wait(int* word, int expected)
         {
             if (Available)
@@ -81,8 +84,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// How many <see cref="ProfilerUnsafeUtility.Timestamp"/> ticks make up the given microseconds. Reads the conversion,
-        /// which Burst can't, so the main thread works these out and hands them to jobs.
+        /// Converts microseconds to <see cref="ProfilerUnsafeUtility.Timestamp"/> ticks. Reading the conversion ratio
+        /// is unavailable in Burst, so the main thread computes these durations and passes them to jobs.
         /// </summary>
         public static long TicksFromMicroseconds(long microseconds)
         {

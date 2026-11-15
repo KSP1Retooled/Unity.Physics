@@ -9,10 +9,11 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Saves real direct solver problems to Library/SolverCapture/(name) for <see cref="SolverCaptureBench"/>. Set
-    /// RETOOLED_SOLVER_CAPTURE to a name before starting the editor and fly something: every SolveInterval joint problems of
-    /// any size that matters it keeps RunLength in a row, so one flight leaves samples from the pad to the end of the run, and
-    /// each sample shows how a problem changes from one solve to the next.
+    /// Saves problems from the direct solver to Library/SolverCapture/(name) for <see cref="SolverCaptureBench"/>. Set
+    /// RETOOLED_SOLVER_CAPTURE to a name before starting the editor, then fly a craft. Count only problems with at
+    /// least SmallestRows rows. Starting at each multiple of SolveInterval, save RunLength consecutive qualifying
+    /// problems, for up to MaxRuns groups. These groups sample different stages of the flight and show how each problem
+    /// changes between solves.
     /// </summary>
     [InitializeOnLoad]
     public static unsafe class SolverCapture
@@ -103,7 +104,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private static void Observe(SparseConstraintSolver.Problem* problem, float* impulses, byte bounded)
         {
-            // An exception must not reach the Burst frame below this one.
+            // Catch exceptions here so that they cannot propagate back into the Burst code that called this method.
             try
             {
                 if (problem->RowCount < SmallestRows)

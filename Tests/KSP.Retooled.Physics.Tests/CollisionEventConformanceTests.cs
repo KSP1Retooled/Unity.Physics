@@ -7,7 +7,7 @@ namespace KSP.Retooled.Physics.Tests
     /// <summary>The collision and trigger messages, as a script sees them.</summary>
     public class CollisionEventConformanceTests : PhysicsScene
     {
-        /// <summary>Everything a collider or body's GameObject was told, in order.</summary>
+        /// <summary>Records collision messages sent to a collider or body's GameObject, in order.</summary>
         [ExecuteAlways]
         internal class CollisionLog : MonoBehaviour
         {
@@ -45,7 +45,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        /// <summary>Scripts that take only part of the messages, so Unity asks for only those.</summary>
+        /// <summary>Handles only collision entry messages, so Unity requests only those notifications.</summary>
         [ExecuteAlways]
         internal class EnterOnlyLog : MonoBehaviour
         {

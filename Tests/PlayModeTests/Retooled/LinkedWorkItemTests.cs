@@ -5,8 +5,9 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The work items of a phase of links. The narrow phase and the Jacobian build must split the pairs the same way, or the
-    /// build reads another work item's contacts and the stream throws when it ends with some unread.
+    /// Tests how linked pairs are divided among work items in a phase. The narrow phase and the code that builds
+    /// Jacobians must divide pairs the same way. Otherwise, the Jacobian build reads contacts for another work item,
+    /// and reading the stream throws an exception when some entries remain unread at the end.
     /// </summary>
     public class LinkedWorkItemTests
     {
@@ -42,7 +43,8 @@ namespace KSP.Retooled.Physics.Tests
             info.NumWorkItems[0] = 2;
             info.FindLinkedWorkItemRanges(pairs);
 
-            // The first work item builds the link's pairs and finds no contacts in two of them while the second starts.
+            // Simulate the first work item finding no contacts for two linked pairs while the second work item starts.
+            // Invalidating those pairs must not change the ranges of either work item.
             pairs[8] = DispatchPairSequencer.DispatchPair.Invalid;
             pairs[9] = DispatchPairSequencer.DispatchPair.Invalid;
 

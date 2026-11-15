@@ -9,8 +9,9 @@ using UnityEngine.TestTools;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What happens around a stepped scene when Unity reloads scripts or plays: these run the engine's own loop, which
-    /// the hand-stepped fixtures skip. A reload clears the fixture's fields, so state lives in the scene and SessionState.
+    /// Tests scenes during script reloads and play mode using the engine's own loop. Other fixtures step scenes
+    /// explicitly and skip that loop. A reload clears the fixture's fields, so these tests store state in the scene and
+    /// SessionState.
     /// </summary>
     public class PlayModeLifecycleTests
     {
@@ -67,7 +68,10 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        /// <summary>The fixed time that <paramref name="steps"/> more steps reach. Edit mode tests only run their own iterator, so they wait inline.</summary>
+        /// <summary>
+        /// Returns the fixed time after <paramref name="steps"/> additional steps. Edit mode tests run only their own
+        /// iterator, so they wait within that iterator.
+        /// </summary>
         private static float FixedTimeAfter(int steps)
         {
             return Time.fixedTime + steps * Time.fixedDeltaTime;

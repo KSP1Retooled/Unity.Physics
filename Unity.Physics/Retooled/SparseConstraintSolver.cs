@@ -5,27 +5,30 @@ using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Numerics;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
 
 namespace Unity.Physics
 {
     /// <summary>
-    /// Solves the same constraint problem as the direct solver's dense path, without forming J M^-1 J^t. That matrix is dense
-    /// wherever constraints share a body, so a part with thirty attachments costs thirty squared blocks and a craft costs the
-    /// cube of its rows. This keeps the bodies as unknowns instead:
+    /// Solves the same constraint problem as the direct solver's dense path, without forming J M^-1 J^t. That matrix
+    /// has dense blocks wherever constraints share a body. A part with thirty attachments therefore requires thirty
+    /// squared blocks, and the cost of solving a craft grows with the cube of its row count. This solver keeps the
+    /// bodies as unknowns instead:
     ///
     ///     | M   J^t | | du |   | 0 |
     ///     | J   -E  | | -z | = | b |
     ///
-    /// Eliminating du gives (J M^-1 J^t + E) z = b, so the answer is the same. The graph of this matrix is the craft itself:
-    /// bodies and the joints between them. A tree factors with no fill at all from its leaves inwards, and each strut adds a
-    /// little. With M and E positive the matrix is quasi-definite, so every symmetric ordering factors stably without pivoting
-    /// and the structure can be settled before any numbers are seen.
+    /// Eliminating du gives (J M^-1 J^t + E) z = b, so the answer is the same. The graph represents the craft's bodies
+    /// and joints. Eliminating a tree from its leaves inward requires no additional nonzero blocks, called fill. Each
+    /// strut adds a little fill. With M and E positive, the matrix is quasi-definite. Any symmetric ordering therefore
+    /// permits stable factorization without pivoting, and the structure can be determined before numeric values are
+    /// available.
     ///
-    /// Bounds on z are solved by block principal pivoting, as <see cref="LCP.SolveMLCP"/> does. A row at a bound only changes
-    /// values in this matrix, so each pivoting step is one numeric refactorization of the same structure.
+    /// The solver handles bounds on z by block principal pivoting, as <see cref="LCP.SolveMLCP"/> does. Putting a row
+    /// at a bound changes only numeric values in this matrix. Each pivoting step therefore requires one numeric
+    /// refactorization with the same structure.
     /// </summary>
     internal unsafe struct SparseConstraintSolver : IDisposable
     {
@@ -39,12 +42,15 @@ namespace Unity.Physics
         const int MaxBlockIterationsWithoutProgress = 3;
         const int MaxCouplingIterations = 25;
 
-        /// <summary>How far a coupled bound may move, as a share of itself, before it asks for another answer.</summary>
+        /// <summary>
+        /// The relative tolerance for changes to coupled bounds. Multiply by the widening from the source impulse, then
+        /// use the larger of this value and the absolute tolerance to decide whether to solve again.
+        /// </summary>
         const float CouplingTolerance = 1e-3f;
         const double SmallestPivot = 1e-30;
         const int InitialCapacity = 16;
 
-        /// <summary>How close a refined answer has to come, in m/s or rad/s at any body or row.</summary>
+        /// <summary>The allowed residual after refinement, measured in m/s or rad/s at any body or free row.</summary>
         const double RefinementTolerance = 1e-5;
         const int MaxRefinements = 3;
 
@@ -55,7 +61,10 @@ namespace Unity.Physics
             public double3x3 Inertia;
         }
 
-        /// <summary>Consecutive rows acting between two bodies. A body index of -1 is something that doesn't move.</summary>
+        /// <summary>
+        /// Represents consecutive rows acting between two bodies. A body index of -1 represents a body that does not
+        /// move.
+        /// </summary>
         public struct ConstraintBlock
         {
             public int BodyA;
@@ -64,7 +73,10 @@ namespace Unity.Physics
             public int RowCount;
         }
 
-        /// <summary>The problem to solve, which has to outlive the call and is only read.</summary>
+        /// <summary>
+        /// Describes the problem to solve. Its data must remain valid throughout the call and is only read by the
+        /// solver.
+        /// </summary>
         public struct Problem
         {
             public int BodyCount;
@@ -75,10 +87,10 @@ namespace Unity.Physics
 
             public int RowCount;
 
-            /// <summary><see cref="ColumnsPerRow"/> values for each row.</summary>
+            /// <summary>Contains <see cref="ColumnsPerRow"/> values for each row.</summary>
             public float* Jacobian;
 
-            /// <summary>The regularization on each row's diagonal, which has to be positive.</summary>
+            /// <summary>Specifies the positive regularization value on each row's diagonal.</summary>
             public float* Epsilon;
 
             public float* RightHandSide;
@@ -86,22 +98,25 @@ namespace Unity.Physics
             public float* Upper;
 
             /// <summary>
-            /// A first guess at which rows sit at a bound, with the values of <see cref="LCP.MLCPIndexFlag"/>, or null for none.
-            /// A good guess saves pivoting steps and doesn't change the answer.
+            /// An initial guess for which rows are at a bound, using values from <see cref="LCP.MLCPIndexFlag"/>. Use
+            /// null for no guess. A good guess reduces the number of pivoting steps without changing the answer.
             /// </summary>
             public byte* InitialStates;
 
             public int CouplingCount;
 
-            /// <summary>Rows whose bounds follow other rows' impulses, or null for none.</summary>
+            /// <summary>
+            /// Specifies rows whose bounds depend on other rows' impulses, or null if there are none.
+            /// </summary>
             public Coupling* Couplings;
         }
 
         /// <summary>
-        /// Rows whose bounds are their bounds in the problem widened by <see cref="Factor"/> times the sources' impulse: the
-        /// friction of a contact, bounded by its normal impulse. The sources' impulse is what the source rows solve for plus
-        /// <see cref="HeldSourceImpulse"/>. For a contact both count over a whole step, so a friction row's bounds in the
-        /// problem are minus what it pushed earlier in the step: with no normal impulse at all, the step's friction is zero.
+        /// Describes rows whose problem bounds are widened by <see cref="Factor"/> times the nonnegative total source
+        /// impulse. For contact friction, the source is the normal impulse. The total includes the impulses computed
+        /// for the source rows plus <see cref="HeldSourceImpulse"/>. Both normal and friction impulses count over the
+        /// whole step. A friction row's problem bounds are therefore the negative of its earlier impulse in that step.
+        /// If the total normal impulse is zero, the total friction impulse for the step is also zero.
         /// </summary>
         public struct Coupling
         {
@@ -112,21 +127,25 @@ namespace Unity.Physics
             public float Factor;
 
             /// <summary>
-            /// What the sources already pushed with before this solve, which bounds the coupled rows as much as what the
-            /// solve adds: an impulse warm started or spent in an earlier substep of the same step.
+            /// The source impulse already applied before this solve, either through warm starting or in an earlier
+            /// substep of the same step. This impulse contributes to the coupled bounds along with the impulse computed
+            /// by this solve.
             /// </summary>
             public float HeldSourceImpulse;
         }
 
         /// <summary>
-        /// The size of a solve, which doesn't depend on the machine, and its time by stage. Times are in the units of
-        /// <see cref="ProfilerUnsafeUtility.Timestamp"/>.
+        /// Records the size of the problem, independently of the machine, and the time spent in each stage. Times use
+        /// the units of <see cref="ProfilerUnsafeUtility.Timestamp"/>.
         /// </summary>
         public struct Statistics
         {
             public int Nodes;
 
-            /// <summary>The independent subtrees the factorization splits into, and the nodes above them that run alone.</summary>
+            /// <summary>
+            /// Counts the independent subtrees used for factorization and the nodes above them that are processed
+            /// separately.
+            /// </summary>
             public int Tasks;
             public int TopNodes;
 
@@ -137,7 +156,9 @@ namespace Unity.Physics
             public int Refinements;
             public int CouplingIterations;
 
-            /// <summary>What a reused factorization's answer finally missed by, in m/s or rad/s.</summary>
+            /// <summary>
+            /// The final residual measured while solving with a reused factorization, in m/s or rad/s.
+            /// </summary>
             public double Residual;
 
             public long AnalyzeTime;
@@ -162,10 +183,12 @@ namespace Unity.Physics
         const int NoNode = -1;
         const int Top = -1;
 
-        /// <summary>How many subtrees a factorization aims to split into, enough for every lane to keep busy.</summary>
+        /// <summary>
+        /// The target number of subtrees for factorization, chosen to provide enough work for every lane.
+        /// </summary>
         const int TasksPerFactorization = 64;
 
-        // What a task of a team's stage does.
+        // The operation performed by each task in a team stage.
         const int FactorizeTask = 0;
         const int SubstituteTask = 1;
         const int TopFactorTask = 2;
@@ -174,12 +197,14 @@ namespace Unity.Physics
         const int RowResidualTask = 5;
         const int BodyResidualTask = 6;
 
-        /// <summary>How much of the factor one task clears, and how many blocks or bodies one task assembles or checks.</summary>
+        /// <summary>
+        /// Specifies how many factor entries a task clears, or how many blocks or bodies it assembles or checks.
+        /// </summary>
         const int ScalarsPerClearTask = 16384;
         const int BlocksPerTask = 64;
         const int BodiesPerTask = 64;
 
-        /// <summary>A node of the graph: a body, or all the rows between one pair of bodies.</summary>
+        /// <summary>Represents a graph node: either a body or all the rows between one pair of bodies.</summary>
         struct Node
         {
             public int Size;
@@ -188,15 +213,16 @@ namespace Unity.Physics
             public int BodyA;
             public int BodyB;
 
-            // Where its unknowns start in the solution.
+            // The starting index of this node's unknowns in the solution.
             public int Start;
 
-            // Its diagonal block in the factor, and its later neighbours in elimination order.
+            // The node's diagonal block in the factor and its neighbours that occur later in elimination order.
             public int Diagonal;
             public int FirstNeighbour;
             public int NeighbourCount;
 
-            // The subtree it is eliminated in, or Top, and how many of its neighbours come first and are in that subtree too.
+            // The subtree in which this node is eliminated, or Top. OwnNeighbours counts the first neighbours in the
+            // list that belong to that same subtree.
             public int Task;
             public int OwnNeighbours;
         }
@@ -205,7 +231,8 @@ namespace Unity.Physics
         {
             public int Node;
 
-            // Where its block starts in the factor, with this neighbour's rows and the column node's columns.
+            // The start of the block in the factor. Its rows belong to this neighbour, and its columns belong to the
+            // column node.
             public int Offset;
         }
 
@@ -213,71 +240,78 @@ namespace Unity.Physics
         UnsafeList<int> order;
         UnsafeList<Neighbour> neighbours;
 
-        // The subtrees of the elimination tree that factor and substitute independently: each one's positions, in order, start
-        // at its entry in taskStarts. The top joins them and runs node by node, and the boundary is every subtree node that has
-        // a neighbour in the top, whose updates of the top wait until the subtrees are done.
+        // Subtrees of the elimination tree can be factored and solved independently. Each subtree's ordered positions
+        // start at its entry in taskStarts. The top connects the subtrees and is processed node by node. The boundary
+        // consists of subtree nodes with a neighbour in the top. Updates from those nodes to the top are applied after
+        // the subtrees finish.
         UnsafeList<int> taskStarts;
         UnsafeList<int> taskPositions;
         UnsafeList<int> topPositions;
         UnsafeList<int> boundaryPositions;
 
-        // The boundary's updates of the top, by the top node whose blocks they land in: a boundary node's position and which
-        // of its neighbours that is. Each top node's list starts at its entry in topUpdateStarts.
+        // Updates from boundary nodes to the top, grouped by the top node whose blocks are updated. Each entry
+        // identifies a boundary node's position and the index of its neighbour. Each top node's list starts at its
+        // entry in topUpdateStarts.
         UnsafeList<int> topUpdateStarts;
         UnsafeList<int2> topUpdates;
 
-        // The top's own blocks, by the top node whose rows they hold: the index of the node whose column holds each, and which
-        // of its neighbours that is. Each top node's list starts at its entry in topRowStarts and runs in elimination order,
-        // so a node that gathers its updates takes them in the order a serial pass would hand them out.
+        // Blocks within the top, grouped by the top node to which their rows belong. Each entry identifies the node
+        // that owns the block's column and the index of its neighbour. Each top node's list starts at its entry in
+        // topRowStarts and follows elimination order. Updates are therefore gathered in the same order as in a serial
+        // pass.
         UnsafeList<int> topRowStarts;
         UnsafeList<int2> topRows;
 
-        // The pass in which each node was last finished, so that lanes taking nodes in order can wait on exactly the ones they
-        // read. Each pass takes a new stamp, so none needs clearing.
+        // The last pass in which each node finished. Lanes processing nodes in order wait only for the nodes whose
+        // values they read. Each pass uses a new stamp, so these entries do not need to be cleared.
         UnsafeList<int> nodeReady;
         int readyStamp;
 
-        // Each body's rows, as row * 2 + 1 for side B, starting at its entry in bodyRowStarts.
+        // Each body's rows, starting at its entry in bodyRowStarts. A row is encoded as row * 2, plus 1 for side B.
         UnsafeList<int> bodyRowStarts;
         UnsafeList<int> bodyRows;
 
-        // The problem a stage reads, and each task's largest miss.
+        // The problem read during a stage and the largest residual measured by each task.
         Problem stageProblem;
         UnsafeList<double> stageWorst;
 
         UnsafeList<int> rowNode;
         UnsafeList<int> rowInNode;
 
-        // Each row's own unknown in the solution, or NoNode for a row without one.
+        // The index of each row's unknown in the solution, or NoNode if the row has no unknown.
         UnsafeList<int> rowUnknown;
         UnsafeList<double> factor;
         UnsafeList<double> right;
         UnsafeList<double> solution;
         UnsafeList<double> correction;
 
-        // One over each diagonal of the factor, by unknown, so that a substitution multiplies where it would divide.
+        // The reciprocal of each diagonal entry of the factor, indexed by unknown. Substitution uses multiplication in
+        // place of division.
         UnsafeList<double> inverseDiagonal;
 
-        // One over each body's mass and over its smallest inertia, which turn its residual into speeds.
+        // The reciprocal of each body's mass and of its smallest diagonal inertia entry, used to express its residual
+        // as speeds.
         UnsafeList<double2> bodySpeedScale;
 
         UnsafeList<byte> state;
 
-        // Each row's bounds: the problem's, or for a coupled row the last ones its coupling gave it. Coupled rows keep theirs
-        // between solves of one shape, as the best first guess at the next.
+        // Bounds for each row. Uncoupled rows use the problem bounds; coupled rows use the last bounds computed from
+        // their sources. Bounds for coupled rows are retained between solves of the same shape as an initial guess for
+        // the next solve.
         UnsafeList<float> lower;
         UnsafeList<float> upper;
         UnsafeList<bool> coupled;
 
-        // The shape of the problem the structure above belongs to.
+        // The problem shape for which the structure above was analyzed.
         UnsafeList<ConstraintBlock> analyzedBlocks;
         int analyzedBodies;
         bool analyzedBounded;
 
-        // Whether factor holds a factorization of a recent problem of this shape, for the current state.
+        // Whether factor contains a factorization of a recent problem with this shape and the current row states.
         bool factored;
 
-        // Whether solution holds the answer to a recent problem of this shape, a close first guess at the next.
+        // Whether solution contains an answer to a recent problem with this shape, for use as an initial guess in the
+        // next solve.
         bool answered;
 
         Statistics statistics;
@@ -356,16 +390,16 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The lanes that share this solver's factorizations and substitutions, or null to run them on the caller's thread
-        /// alone. The answer is the same either way.
+        /// The team of lanes used for factorization and substitution. Use null to run only on the caller's thread. The
+        /// answer is the same with or without a team.
         /// </summary>
         public SparseSolveTeam* Team;
 
         public Statistics Stats => statistics;
 
         /// <summary>
-        /// What a body takes from the impulses of the rows on it, in the frame of the Jacobian's columns: its part of J^t z. A
-        /// body reads only its own rows, so bodies can do this on any thread.
+        /// Computes a body's share of J^t z from the impulses of its constraint rows, in the frame of the Jacobian's
+        /// columns. Each call reads only that body's rows, so calls for different bodies can run on different threads.
         /// </summary>
         public void BodyImpulse(in Problem problem, float* impulses, int body, out float3 linear, out float3 angular)
         {
@@ -380,17 +414,20 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>The bounds the last solve held a row to, which for a coupled row are what its coupling settled on.</summary>
+        /// <summary>
+        /// Returns the bounds used for a row in the last solve, including the final coupled bounds for a coupled row.
+        /// </summary>
         public float2 Bounds(int row) => new float2(lower[row], upper[row]);
 
         /// <summary>
         /// Writes each row's impulse to <paramref name="impulses"/>. With <paramref name="bounded"/> false the bounds are
         /// ignored. Returns false if pivoting ran out of iterations, leaving the last impulses clamped to their bounds.
         ///
-        /// A solver kept between calls reuses its work. Bodies barely move from one solve to the next, so the last factorization
-        /// is nearly right for the next problem of the same shape, and iterative refinement closes the gap for a fraction of the
-        /// cost of a new one. The answer is checked against the problem it is for, so a factorization too old to help costs a
-        /// little time and never accuracy.
+        /// Keeping a solver between calls allows it to reuse work. Bodies move little between solves, so the last
+        /// factorization is usually close to the next problem of the same shape. Iterative refinement corrects the
+        /// difference at a fraction of the cost of a new factorization. The solver checks the answer against the
+        /// current problem. If the old factorization is no longer useful, trying it costs some time but does not reduce
+        /// accuracy.
         /// </summary>
         public bool Solve(in Problem problem, float* impulses, bool bounded)
         {
@@ -434,15 +471,16 @@ namespace Unity.Physics
             bool flipAll = true;
             int couplings = 0;
 
-            // Whether correction holds what the last answer misses of this problem's matrix, as it does after a refinement
-            // that held, until a row changes sides.
+            // Whether correction contains the residual of the last answer for the current matrix. A successful
+            // refinement leaves this residual available until a row changes state.
             bool residualHeld = false;
             for (int iteration = 1; iteration <= MaxPivotingIterations; iteration++)
             {
                 statistics.PivotingIterations = iteration;
                 started = ProfilerUnsafeUtility.Timestamp;
 
-                // Between rounds only the right-hand side moves, so the new miss is the old one plus how far it moved.
+                // If the matrix is unchanged between rounds, the new residual is the old residual plus the change in
+                // the right-hand side.
                 bool keepResidual = residualHeld && factored;
                 if (keepResidual)
                 {
@@ -457,9 +495,9 @@ namespace Unity.Physics
 
                 statistics.AssembleTime += Lap(ref started);
 
-                // The last answer is only a step from this one, so refining it usually takes fewer substitutions than refining
-                // the factor's own answer. When it doesn't hold, the factor's answer still gets its chance before a new
-                // factorization.
+                // The last answer is usually close to the new answer, so refining it often requires fewer substitutions
+                // than refining the answer computed with the old factorization. If that fails, try the answer from the
+                // old factorization before computing a new one.
                 bool solved = factored
                     && (answered && SolveWithOldFactor(problem, true, keepResidual)
                         || SolveWithOldFactor(problem, false, false));
@@ -489,9 +527,10 @@ namespace Unity.Physics
                 statistics.PivotTime += Lap(ref started);
                 if (infeasible == 0)
                 {
-                    // Each answer moves the normal impulses that bound the friction, and new bounds ask for a new answer.
-                    // Most rounds only move the bounds of tight rows, which reuses the factor. A capped run keeps its last
-                    // bounds, which the answer does respect.
+                    // Each solution updates the normal impulses used to bound friction. If those bounds change enough,
+                    // solve again. Most rounds change only the bounds of tight rows, so the factorization can be
+                    // reused. At the coupling iteration limit, keep the last bounds, which the current answer
+                    // satisfies.
                     if (couplings == MaxCouplingIterations || !Couple(problem, impulses))
                     {
                         return true;
@@ -505,11 +544,12 @@ namespace Unity.Physics
                     continue;
                 }
 
-                // A row that changed sides changed the matrix.
+                // Changing a row between free and tight changes the matrix.
                 factored = false;
 
-                // Flipping every infeasible row usually lands in a few steps but can cycle. A run that stops improving falls
-                // back to Murty's rule, which flips only the last of them and is guaranteed to finish.
+                // Changing every infeasible row usually converges in a few steps, but can cycle. If progress stops, use
+                // Murty's rule: change only the last infeasible row. That rule guarantees convergence, though this loop
+                // still has an iteration limit.
                 if (infeasible < leastInfeasible)
                 {
                     leastInfeasible = infeasible;
@@ -531,10 +571,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Adds to <paramref name="impulses"/>, the answer of the last <see cref="Solve"/>, what a small change to the free
-        /// rows' right-hand side asks of them. The matrix is the same, so one substitution with the factor in hand is the
-        /// whole of it: the factor may be of an earlier problem, but its error is a fraction of a correction that is itself
-        /// small, so it isn't refined. Tight rows stay where they are. Returns false, changing nothing, if there is no factor.
+        /// Updates <paramref name="impulses"/>, the answer from the last <see cref="Solve"/>, for a small change to the
+        /// right-hand side of the free rows. The matrix is unchanged, so the update requires one substitution with the
+        /// available factorization. The factorization may come from an earlier problem. Its error affects only this
+        /// small correction, so no refinement is performed. Updated free impulses are clamped to their bounds, and
+        /// tight rows are unchanged. Returns false without changing anything if no factorization is available.
         /// </summary>
         public bool SolveChange(in Problem problem, float* rightHandSideChange, float* impulses)
         {
@@ -598,7 +639,8 @@ namespace Unity.Physics
                 }
                 else if (coupled[row])
                 {
-                    // Kept bounds are a guess, and a row tight at one would start with a full friction impulse.
+                    // Retained bounds are only an initial guess. Starting a row tight at one of them would apply the
+                    // full friction impulse immediately.
                     state[row] = Free;
                 }
             }
@@ -619,8 +661,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// A row whose bounds meet in the problem has one possible impulse, so it is a known force and not an unknown. A
-        /// coupled row's bounds can meet now and part later, so it is always an unknown.
+        /// A row with equal lower and upper problem bounds has one possible impulse. Treat it as a known impulse rather
+        /// than an unknown. A coupled row must remain an unknown because its bounds may be equal now and separate
+        /// later.
         /// </summary>
         bool IsFixed(in Problem problem, int row)
         {
@@ -648,8 +691,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Sets each coupled row's bounds from the impulses its sources have now, and returns whether any moved. A row
-        /// tight at a bound stays tight at where the bound moved to, and pivoting frees it if that is wrong.
+        /// Updates each coupled row's bounds from the current source impulses and returns whether any bounds changed
+        /// beyond tolerance. A tight row follows its bound, and pivoting can free it. If equal bounds separate, the row
+        /// is freed; if the widening becomes zero, a free row becomes tight.
         /// </summary>
         bool Couple(in Problem problem, float* impulses)
         {
@@ -696,7 +740,7 @@ namespace Unity.Physics
 
         // Structure
 
-        /// <summary>Whether the nodes and their order from the last analysis fit this problem.</summary>
+        /// <summary>Checks whether the nodes and their ordering from the last analysis match this problem.</summary>
         bool HasAnalyzedShape(in Problem problem, bool bounded)
         {
             if (problem.BodyCount != analyzedBodies || bounded != analyzedBounded || problem.RowCount != rowNode.Length
@@ -753,9 +797,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// One joint emits several Jacobians between the same two bodies. As separate nodes they would all neighbour each other
-        /// anyway, so one node holding all their rows is smaller and loses no structure. A row whose bounds meet joins no node:
-        /// it has one possible impulse, so it is a known force on its bodies and not an unknown.
+        /// One joint produces several Jacobian rows between the same two bodies. Separate nodes for these rows would
+        /// all be neighbours, so grouping the rows in one node reduces the graph without losing structure. When bounds
+        /// are enforced, a row with equal uncoupled bounds is omitted from the unknowns because its impulse is known.
+        /// Coupled rows remain unknowns because their bounds can separate.
         /// </summary>
         void MergeBlocksByBodyPair(in Problem problem, bool bounded)
         {
@@ -810,7 +855,7 @@ namespace Unity.Physics
                                 continue;
                             }
 
-                            // The first pass counts, and the second places each row at its body's next free slot.
+                            // The first pass counts rows. The second pass places each row in its body's next free slot.
                             if (pass == 0)
                             {
                                 bodyRowStarts[body + 1]++;
@@ -834,7 +879,8 @@ namespace Unity.Physics
                 }
             }
 
-            // Placing moved each start to the next body's, so shift them back.
+            // Placing the rows advanced each start to the next body's start. Shift the starts back to their original
+            // positions.
             for (int body = problem.BodyCount; body > 0; body--)
             {
                 bodyRowStarts[body] = bodyRowStarts[body - 1];
@@ -844,9 +890,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Minimum degree: eliminating the node with the fewest neighbours joins the fewest pairs of them. A leaf has one, so a
-        /// tree goes from its tips inwards and joins nothing. A body wins a tie, because that divides by a mass and not by a
-        /// constraint's much smaller compliance.
+        /// Use minimum degree ordering: eliminating the node with the fewest neighbours connects the fewest pairs of
+        /// neighbours. A leaf has one neighbour, so a tree is eliminated from the leaves inward without adding
+        /// connections. Prefer a body when degrees are equal, so elimination divides by mass rather than a constraint's
+        /// much smaller compliance.
         /// </summary>
         void Order()
         {
@@ -888,7 +935,7 @@ namespace Unity.Physics
                 long entry = heap.Pop();
                 int node = (int)(entry & uint.MaxValue);
 
-                // A node is pushed again each time its degree changes, so only its newest entry is real.
+                // A new heap entry is added whenever a node's degree changes. Only the newest entry is valid.
                 if (eliminated[node] || Priority(lists[node].Length, node) != entry)
                 {
                     continue;
@@ -949,7 +996,9 @@ namespace Unity.Physics
             return -1;
         }
 
-        /// <summary>Sorts each column's neighbours by when they are eliminated, and gives every node its unknowns.</summary>
+        /// <summary>
+        /// Sorts each column's neighbours by elimination order and assigns solution indices to every node's unknowns.
+        /// </summary>
         void LayOut()
         {
             int start = 0;
@@ -988,11 +1037,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Splits the elimination tree into subtrees that factor independently. A node's neighbours are all its ancestors in
-        /// the tree, whose parent link is a node's first neighbour, so a node only ever updates its own subtree or the nodes
-        /// above every subtree. Those top nodes join the subtrees, which on a craft is mostly its core stack. Each subtree is
-        /// at most a share of the whole work, so that lanes taking them as they come stay balanced. The split depends on the
-        /// structure alone, which keeps the answer the same however many lanes share it.
+        /// Splits the elimination tree into subtrees that can be factored independently. A node's first neighbour is
+        /// its parent, and all its neighbours are ancestors in the tree. Updates therefore affect only the same subtree
+        /// or the top nodes above the subtrees. On a craft, those top nodes are mostly in the core stack. Each subtree
+        /// is limited to a share of the total work, which helps balance lanes as they take tasks. The split depends
+        /// only on structure, so the answer does not depend on the number of lanes.
         /// </summary>
         void Partition()
         {
@@ -1005,8 +1054,8 @@ namespace Unity.Physics
                 Node node = nodes[order[position]];
                 parent[position] = node.NeighbourCount > 0 ? nodes[neighbours[node.FirstNeighbour].Node].Position : -1;
 
-                // Roughly the multiplications its elimination takes: its own block, one solve per neighbour, and one update
-                // per pair of them.
+                // Estimate the multiplication count for eliminating this node: factor its diagonal block, solve once
+                // per neighbour, and update once per pair of neighbours.
                 double size = node.Size;
                 double work = size * size * size;
                 double below = 0.0;
@@ -1025,7 +1074,8 @@ namespace Unity.Physics
                 }
             }
 
-            // Parents come after their children, so walking back reaches each node after its parent.
+            // Parents occur after their children in elimination order. Walking backward therefore visits each parent
+            // before its children.
             double largestTask = total / TasksPerFactorization;
             int tasks = 0;
             for (int position = count - 1; position >= 0; position--)
@@ -1121,7 +1171,7 @@ namespace Unity.Physics
                 }
             }
 
-            // A top node's neighbours come later in the elimination tree, so they are all in the top too.
+            // A top node's neighbours occur later in elimination order, so they are also in the top.
             topRowStarts.Clear();
             topRowStarts.Resize(topPositions.Length + 1, NativeArrayOptions.ClearMemory);
             for (int i = 0; i < topPositions.Length; i++)
@@ -1166,10 +1216,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Gives every block its place in the factor, in the order the forward substitution reads them: each subtree's nodes
-        /// with their diagonal and the column they own, then each top node's diagonal after the blocks it gathers. The factor
-        /// is too big for L2, and scattered reads from L3 wait on misses that a sequential walk leaves to the hardware's
-        /// streaming prefetch. The backward pass walks the same way back.
+        /// Assigns space for every block in the order used by forward substitution. First come each subtree's nodes,
+        /// with their diagonal blocks and columns. Each top node's diagonal then follows the blocks whose contributions
+        /// it gathers. The factor is too large for L2. Sequential access allows hardware prefetching to reduce the
+        /// stalls that scattered reads from L3 would cause. Backward substitution visits these blocks in reverse order.
         /// </summary>
         void PlaceBlocks()
         {
@@ -1214,7 +1264,9 @@ namespace Unity.Physics
             factor.Resize(offset);
         }
 
-        /// <summary>Where the block between two nodes is, which only the earlier of them holds.</summary>
+        /// <summary>
+        /// Returns the block between two nodes. The block is stored only by the node that is eliminated first.
+        /// </summary>
         double* BlockOf(int earlier, int later)
         {
             Node column = nodes[earlier];
@@ -1241,8 +1293,8 @@ namespace Unity.Physics
         // Values
 
         /// <summary>
-        /// Fills in the matrix for the current bounds. A row at a bound becomes -z = bound, cut off from the bodies, whose side
-        /// of the system takes its fixed impulse instead.
+        /// Assembles the matrix for the current bounds. A tight row enforces z = bound and is disconnected from the
+        /// bodies. Its fixed impulse is included in the right-hand side of the body equations instead.
         /// </summary>
         void AssembleMatrix(in Problem problem)
         {
@@ -1267,7 +1319,7 @@ namespace Unity.Physics
                 }
             }
 
-            // Each row writes only its own entries.
+            // Each task assembles rows into separate matrix entries.
             RunTasks(AssembleTask, (problem.BlockCount + BlocksPerTask - 1) / BlocksPerTask, null);
         }
 
@@ -1335,11 +1387,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves the assembled right-hand side with the factorization of an earlier problem, refining until the answer holds
-        /// for this one. Starting from the last answer, each refinement only has to correct the step from it, while starting
-        /// from the factor's own answer, it corrects the factor's error in the whole of it. Returns false if it won't hold
-        /// within the refinements allowed. With <paramref name="residualKnown"/>, correction already holds what the last
-        /// answer misses.
+        /// Solves the assembled right-hand side using an earlier factorization, then refines the answer for the current
+        /// problem. Starting from the last answer requires correcting only the change between answers. Starting from
+        /// the answer computed with the old factorization requires correcting its error across the whole answer.
+        /// Returns false if the residual remains too large after the allowed refinements. When <paramref
+        /// name="residualKnown"/> is true, correction already contains the residual of the last answer.
         /// </summary>
         bool SolveWithOldFactor(in Problem problem, bool fromLastAnswer, bool residualKnown)
         {
@@ -1348,8 +1400,8 @@ namespace Unity.Physics
             int maxRefinements = MaxRefinements;
             if (fromLastAnswer)
             {
-                // Starting from the factor's answer spends a substitution before the first check, which the last answer gets
-                // as a refinement instead.
+                // Computing an answer with the old factorization requires one substitution before the first check.
+                // Starting from the last answer allows that substitution to be used for an extra refinement instead.
                 maxRefinements++;
             }
             else
@@ -1381,8 +1433,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Leaves in <see cref="correction"/> what the current solution misses of the current problem, and returns the largest
-        /// miss as a speed: a body's miss is an impulse, which its mass turns into one, and a constraint's already is.
+        /// Stores the residual of the current solution in <see cref="correction"/> and returns its largest component
+        /// expressed as a speed. A body residual is an impulse, converted using mass or inertia. A free constraint row
+        /// residual is already a speed.
         /// </summary>
         double ComputeResidual(in Problem problem)
         {
@@ -1390,7 +1443,8 @@ namespace Unity.Physics
 
             UnsafeUtility.MemCpy(correction.Ptr, right.Ptr, correction.Length * sizeof(double));
 
-            // A body gathers its rows rather than each row adding to its bodies, so that both split without sharing a value.
+            // Compute each body's residual from its rows, rather than adding each row's contribution to its bodies.
+            // This allows both body and row tasks to run without writing to shared entries.
             stageProblem = problem;
             int rowTasks = (problem.BlockCount + BlocksPerTask - 1) / BlocksPerTask;
             int bodyTasks = (problem.BodyCount + BodiesPerTask - 1) / BodiesPerTask;
@@ -1407,7 +1461,10 @@ namespace Unity.Physics
             return worst;
         }
 
-        /// <summary>The largest miss in <see cref="correction"/> as a speed, measured as <see cref="ComputeResidual"/> does.</summary>
+        /// <summary>
+        /// Returns the largest residual in <see cref="correction"/>, expressed as a speed as in <see
+        /// cref="ComputeResidual"/>.
+        /// </summary>
         double LargestMiss(in Problem problem)
         {
             double* residual = correction.Ptr;
@@ -1433,7 +1490,9 @@ namespace Unity.Physics
             return worst;
         }
 
-        /// <summary>What the rows of some blocks miss, and the largest of it as a speed.</summary>
+        /// <summary>
+        /// Computes residuals for the rows in a range of blocks and returns the largest free row residual as a speed.
+        /// </summary>
         double RowResidual(in Problem problem, int firstBlock, int endBlock)
         {
             double* x = solution.Ptr;
@@ -1466,7 +1525,10 @@ namespace Unity.Physics
             return worst;
         }
 
-        /// <summary>What some bodies miss, from their own momentum and their free rows' impulses, as a speed.</summary>
+        /// <summary>
+        /// Computes residuals for a range of bodies from their momentum and free row impulses, and returns the largest
+        /// as a speed.
+        /// </summary>
         double BodyResidual(in Problem problem, int firstBody, int endBody)
         {
             double* x = solution.Ptr;
@@ -1542,8 +1604,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Block Cholesky on the signed matrix: A = L S L^t, with S the sign of each node, which elimination preserves because
-        /// the matrix is quasi-definite. Each column's blocks are kept as A C^-t, one sign away from L, for the updates to use.
+        /// Performs block Cholesky factorization of the signed matrix: A = L S L^t. S contains each node's sign, which
+        /// is preserved during elimination because the matrix is quasi-definite. Each column block is stored as A C^-t
+        /// for use in updates; it differs from L by a sign.
         /// </summary>
         void Factorize()
         {
@@ -1551,15 +1614,16 @@ namespace Unity.Physics
 
             RunTasks(FactorizeTask, taskStarts.Length - 1, null);
 
-            // Each top node gathers its own column's updates, so no two lanes write one block, and waits only for the nodes
-            // it gathers from, so lanes work down the top together rather than in a stage per node.
+            // Each task gathers the updates for one top node's column, so tasks never write to the same block. It waits
+            // only for the nodes that supply those updates. Lanes can therefore process the top together without a
+            // separate stage for every node.
             readyStamp++;
             RunTasks(TopFactorTask, topPositions.Length, null);
         }
 
         /// <summary>
-        /// Factors a top node's column, after taking the updates of the blocks it holds in the order a serial factorization
-        /// would make them: from the subtrees first, then from each earlier top node once that one is eliminated.
+        /// Factors a top node's column after gathering updates to its blocks in serial factorization order. Updates
+        /// from the subtrees come first, followed by updates from earlier top nodes as each is eliminated.
         /// </summary>
         void TopFactor(int top)
         {
@@ -1581,14 +1645,15 @@ namespace Unity.Physics
             Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
         }
 
-        /// <summary>Runs a stage's tasks on the team if there is one.</summary>
+        /// <summary>Runs the tasks of a stage, using the team if one is available.</summary>
         void RunTasks(int kind, int tasks, double* x)
         {
             SparseSolveTeam.RunAll(Team, UnsafeUtility.AddressOf(ref this), kind, tasks, x);
         }
 
         /// <summary>
-        /// One task of a stage. It touches nothing another task of the stage does, or waits for the earlier tasks it reads.
+        /// Runs one task of a stage. Tasks either access separate data or wait for the earlier tasks whose results they
+        /// read.
         /// </summary>
         internal void RunTask(int kind, int task, double* x)
         {
@@ -1641,7 +1706,9 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Factors a node's diagonal block, which every update from earlier nodes has reached, and its column.</summary>
+        /// <summary>
+        /// Factors a node's diagonal block and column after all updates from earlier nodes have been applied.
+        /// </summary>
         void Eliminate(in Node node)
         {
             double* values = factor.Ptr;
@@ -1663,9 +1730,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Replaces a 6x6 factored diagonal block, whose diagonal is <paramref name="inverse"/>'s reciprocals, with its whole
-        /// inverse. Solving with the triangle finds each unknown only after the one before it, and substitution waits on that
-        /// chain at every node down a branch of the tree; a product with the inverse finds all six at once.
+        /// Replaces a factored 6x6 diagonal block with its full inverse. <paramref name="inverse"/> contains the
+        /// reciprocals of its diagonal entries. Triangular substitution computes each unknown after the previous one,
+        /// causing a chain of dependencies at every node along a tree branch. Multiplication by the full inverse
+        /// computes all six together.
         /// </summary>
         static void InvertTriangle(double* c, double* inverse)
         {
@@ -1694,8 +1762,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Subtracts an eliminated node from the blocks its neighbours from <paramref name="firstNeighbour"/> on hold: each
-        /// one's diagonal, and its blocks with every later neighbour.
+        /// Applies an eliminated node's updates to its neighbours, starting at <paramref name="firstNeighbour"/>.
+        /// Updates each neighbour's diagonal and the blocks connecting it to later neighbours.
         /// </summary>
         void UpdateLaterNodes(in Node node, int firstNeighbour, int endNeighbour)
         {
@@ -1709,7 +1777,8 @@ namespace Unity.Physics
                 double* firstBlock = values + column[i].Offset;
                 Update(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
 
-                // Elimination gave the first neighbour every later one, in the same order, so one walk finds them all.
+                // Elimination connected the first neighbour to every later neighbour in the same order, so a single
+                // pass finds all the blocks.
                 Neighbour* targets = allNeighbours + first.FirstNeighbour;
                 int target = 0;
                 for (int j = i + 1; j < node.NeighbourCount; j++)
@@ -1726,9 +1795,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Factors the lower half of a block in place and writes each diagonal entry's reciprocal to
-        /// <paramref name="inverse"/>. Later columns multiply by it rather than dividing, since each division would stall the
-        /// next column's sum.
+        /// Factors the lower half of a block in place and writes the reciprocal of each diagonal entry to <paramref
+        /// name="inverse"/>. Later columns multiply by these reciprocals. Using division instead would delay the sum
+        /// for the next column.
         /// </summary>
         static void CholeskyInPlace(double* a, double* inverse, int size, double sign)
         {
@@ -1748,8 +1817,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Replaces each row of the block with itself times C^-t, multiplying by C's inverted diagonal rather than dividing,
-        /// since each division would stall the next column's sum.
+        /// Multiplies each row of the block by C^-t in place. Uses the reciprocals of C's diagonal entries rather than
+        /// division, which would delay the sum for the next column.
         /// </summary>
         static void SolveAgainstTranspose(double* block, int rows, double* c, double* inverse, int size)
         {
@@ -1766,8 +1835,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// target -= sign * left * right^t, four of a row's entries at a time. Every entry is the product of two rows, so
-        /// each is read along its length.
+        /// Computes target -= sign * left * right^t, updating four entries of a row at a time. Each entry is a dot
+        /// product of two rows, so both rows are read contiguously.
         /// </summary>
         static void Update(double* target, int rows, int columns, double* left, double* right, int inner, double sign, bool lowerOnly)
         {
@@ -1778,8 +1847,8 @@ namespace Unity.Physics
                 int last = lowerOnly ? row + 1 : columns;
                 int column = 0;
 
-                // A group may run past the diagonal into the upper half, which nothing reads, so short rows of a diagonal
-                // block still fill the vector lanes.
+                // A group of entries may extend past the diagonal into the unused upper half. This allows short rows of
+                // a diagonal block to use all vector lanes.
                 for (; column < last && column + 4 <= columns; column += 4)
                 {
                     double* r = right + column * inner;
@@ -1795,8 +1864,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// target -= sign * block * x, for a row-major block of the given rows with <paramref name="inner"/> columns, four
-        /// rows at a time.
+        /// Computes target -= sign * block * x for a row-major block with the given row count and <paramref
+        /// name="inner"/> columns. Processes four rows at a time.
         /// </summary>
         internal static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
         {
@@ -1815,8 +1884,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The products of <paramref name="shared"/> with four other vectors of the same length, one in each lane. Every
-        /// vector is read along its length, so each load is contiguous and each load of the shared vector serves all four.
+        /// Computes dot products of <paramref name="shared"/> with four other vectors of the same length, returning one
+        /// product in each lane. Reads each vector contiguously and reuses each load of the shared vector in all four
+        /// products.
         /// </summary>
         static double4 ProductSums(double* shared, double* b0, double* b1, double* b2, double* b3, int count)
         {
@@ -1834,7 +1904,7 @@ namespace Unity.Physics
                 s3 = MathUtil.Fma(*(double4*)(b3 + k), a, s3);
             }
 
-            // Two left over, as a body's six columns leave, still go in a vector.
+            // Use a vector for the remaining two entries, which occur with a body's six columns.
             if (k + 2 <= count)
             {
                 double2 a = *(double2*)(shared + k);
@@ -1845,8 +1915,8 @@ namespace Unity.Physics
                 k += 2;
             }
 
-            // Each accumulator holds one vector's partial sums across its lanes. Transposed, they become rows, and adding
-            // the columns gives each vector's total in its own lane.
+            // Each accumulator contains partial sums for one vector. Transpose the accumulators into rows, then add the
+            // columns to obtain each vector's total in a separate lane.
             double4x4 partial = math.transpose(new double4x4(s0, s1, s2, s3));
             double4 sum = (partial.c0 + partial.c1) + (partial.c2 + partial.c3);
 
@@ -1858,7 +1928,7 @@ namespace Unity.Physics
             return sum;
         }
 
-        /// <summary>into += scale * from, over <paramref name="count"/> entries.</summary>
+        /// <summary>Computes into += scale * from over <paramref name="count"/> entries.</summary>
         internal static void AddScaled(double* into, double* from, double scale, int count)
         {
             int k = 0;
@@ -1874,16 +1944,17 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves in place: forward through L, across S, and back through L^t. The whole solve is one stage, whose tasks are
-        /// the subtrees forward, the top forward, the top backward from the root, then the subtrees backward. Each task waits
-        /// only for the nodes it reads, all of them in earlier tasks, which lanes have already taken, so the top's chain
-        /// overlaps the subtrees on either side of it rather than waiting for the slowest.
+        /// Solves in place with forward substitution through L, multiplication by S, and backward substitution through
+        /// L^t. The solve uses one stage. Tasks process the subtrees forward, the top forward, the top backward from
+        /// the root, and finally the subtrees backward. A task waits only for nodes in earlier tasks that lanes have
+        /// already taken. Work on the top can therefore overlap work on the subtrees without waiting for the slowest
+        /// subtree.
         /// </summary>
         void Substitute(double* x)
         {
             using ProfilerMarker.AutoScope span = SubstituteMarker.Auto();
 
-            // One stamp for nodes solved forward and the next for nodes solved backward.
+            // Use one stamp for nodes solved forward and the next stamp for nodes solved backward.
             readyStamp += 2;
             RunTasks(SubstituteTask, 2 * (taskStarts.Length - 1 + topPositions.Length), x);
         }
@@ -1925,14 +1996,15 @@ namespace Unity.Physics
             int first = taskStarts[task];
             int end = taskStarts[task + 1];
 
-            // The subtree's root is solved last on its way forward, by the same lane as the rest of it.
+            // The same lane solves the entire subtree forward, finishing with its root.
             WaitUntilReady(order[taskPositions[end - 1]], forwardStamp);
             for (int i = end - 1; i >= first; i--)
             {
                 Node node = nodes[order[taskPositions[i]]];
 
-                // The top's answers this node reads are final, and the top has read this node's forward answer before
-                // it is overwritten, since the top node that read it finished forward before it could go backward.
+                // The top node answers read here are final. Any top node that read this node's forward answer has
+                // already finished its forward pass before starting backward substitution. It is therefore safe to
+                // overwrite this node's forward answer.
                 for (int n = node.OwnNeighbours; n < node.NeighbourCount; n++)
                 {
                     WaitUntilReady(neighbours[node.FirstNeighbour + n].Node, backwardStamp);
@@ -1943,8 +2015,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves for a top node through L and S, from what the subtrees and the earlier top nodes owe it, in the order a
-        /// serial forward substitution would pass it.
+        /// Solves for a top node through L and S. Gathers contributions from the subtrees and earlier top nodes in the
+        /// same order as serial forward substitution.
         /// </summary>
         void TopForward(int top, double* x, int forwardStamp)
         {
@@ -1952,11 +2024,12 @@ namespace Unity.Physics
             Node node = nodes[index];
             double* into = x + node.Start;
 
-            // The top's chain runs through these sums, so a 6-wide node keeps them in registers and takes them once.
+            // These sums are on the dependency chain through the top. For a node with six unknowns, accumulate them in
+            // registers and apply the total once.
             bool six = node.Size == double6x6.Size;
             var owed = new double6();
 
-            // First what the subtrees owe it, from their boundary nodes' answers.
+            // First gather contributions from the answers at subtree boundary nodes.
             for (int i = topUpdateStarts[top]; i < topUpdateStarts[top + 1]; i++)
             {
                 int2 update = topUpdates[i];
@@ -1967,8 +2040,8 @@ namespace Unity.Physics
                 Owe(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
             }
 
-            // Then what the earlier top nodes owe it. Every answer already carries its node's sign, which the serial push
-            // would have applied to the sum.
+            // Then gather contributions from earlier top nodes. Their answers already include the node sign that serial
+            // substitution would apply when adding each contribution.
             for (int i = topRowStarts[top]; i < topRowStarts[top + 1]; i++)
             {
                 int2 row = topRows[i];
@@ -1988,8 +2061,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// into -= block * source: added to <paramref name="owed"/>, for the caller to take from <paramref name="into"/> at
-        /// the end, when <paramref name="six"/> and the block are both 6x6, and taken from it at once otherwise.
+        /// Computes into -= block * source. If <paramref name="six"/> is true and the block is 6x6, accumulates the
+        /// product in <paramref name="owed"/> for the caller to subtract from <paramref name="into"/> at the end.
+        /// Otherwise, subtracts the product immediately.
         /// </summary>
         static void Owe(ref double6 owed, bool six, double* into, double* block, double* source, int rows, int inner)
         {
@@ -2003,8 +2077,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves for a top node through L^t, once it is solved forward and its neighbours, which come later, have their
-        /// answers.
+        /// Solves for a top node through L^t after its forward pass and after its later neighbours have been solved.
         /// </summary>
         void TopBackward(int top, double* x, int forwardStamp, int backwardStamp)
         {
@@ -2020,7 +2093,7 @@ namespace Unity.Physics
             Volatile.Write(ref nodeReady.Ptr[index], backwardStamp);
         }
 
-        /// <summary>Waits for another lane to finish a node in the pass that the stamp names.</summary>
+        /// <summary>Waits for another lane to finish a node in the pass identified by the stamp.</summary>
         void WaitUntilReady(int node, int stamp)
         {
             while (Volatile.Read(ref nodeReady.Ptr[node]) != stamp)
@@ -2030,8 +2103,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves for a node through L and S, once every earlier node has passed it its share, and passes its own share to its
-        /// neighbours before <paramref name="endNeighbour"/>.
+        /// Solves for a node through L and S after all contributions from earlier nodes have been applied. Applies its
+        /// contributions to neighbours before <paramref name="endNeighbour"/>.
         /// </summary>
         void SubstituteForward(in Node node, double* x, int endNeighbour)
         {
@@ -2112,7 +2185,10 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Solves for a node through L^t, once all its neighbours, which come later, have their answers.</summary>
+        /// <summary>
+        /// Solves for a node through L^t after all its neighbours, which occur later in elimination order, have been
+        /// solved.
+        /// </summary>
         void SubstituteBackward(in Node node, double* x)
         {
             double* values = factor.Ptr;
@@ -2160,8 +2236,9 @@ namespace Unity.Physics
                 }
             }
 
-            // Column by column: once an answer is known, row `row` of C holds everything it owes the earlier rows, side by
-            // side, where a sum per row would walk down a column of C.
+            // Process one column at a time. Once an answer is known, row `row` of C contains its contributions to
+            // earlier unknowns in contiguous entries. Computing a separate sum for each unknown would require reading
+            // down columns of C.
             for (int row = size - 1; row >= 0; row--)
             {
                 double answer = own[row] * inverse[row];
@@ -2183,8 +2260,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Moves rows between free and tight, and returns how many were on the wrong side. A free row is wrong if it passed a
-        /// bound, and a tight one if the rest of the system is pulling it back inside: w = J du + E z - b has the wrong sign.
+        /// Changes rows between free and tight states and returns the number of infeasible rows. A free row is
+        /// infeasible if its impulse exceeds a bound. A tight row is infeasible if the system would move it inside its
+        /// bounds: w = J du + E z - b has the wrong sign.
         /// </summary>
         int Pivot(in Problem problem, float* impulses, bool flipAll)
         {
@@ -2198,7 +2276,7 @@ namespace Unity.Physics
                 ConstraintBlock block = problem.Blocks[b];
                 for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    // A row whose bounds meet has one possible impulse, and it was put tight when they met.
+                    // A row with equal bounds has one possible impulse and was made tight when its bounds became equal.
                     if (lower[row] == upper[row])
                     {
                         continue;
@@ -2267,14 +2345,14 @@ namespace Unity.Physics
             return math.csum(MathUtil.Fma(speed.Low, jacobian.Low, new double4(speed.High * jacobian.High, 0.0, 0.0)));
         }
 
-        /// <summary>One side of a Jacobian row: a body's six columns, linear then angular.</summary>
+        /// <summary>Returns one body's side of a Jacobian row: six columns, linear then angular.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static double6 Columns(float* columns)
         {
             return new double6(new double4(*(float4*)columns), new double2(*(float2*)(columns + 4)));
         }
 
-        /// <summary>A binary heap of priorities, smallest first.</summary>
+        /// <summary>Stores priorities in a binary heap with the smallest priority first.</summary>
         struct MinHeap : IDisposable
         {
             NativeList<long> items;

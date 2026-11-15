@@ -3,7 +3,9 @@ using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
-    /// <summary>What mass, centre of mass and inertia read back as, set by hand and derived from colliders.</summary>
+    /// <summary>
+    /// Tests mass, centre of mass and inertia readback, both when set explicitly and derived from colliders.
+    /// </summary>
     public class MassConformanceTests : PhysicsScene
     {
         private const float Tolerance = 1e-3f;

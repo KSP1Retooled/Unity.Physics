@@ -10,9 +10,10 @@ using Unity.Transforms;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The managed view of the plugin's store, field for field the "mirrored" structs of Native/RetooledPhysics/src/Store.h,
-    /// which documents them. Everything is blittable so jobs can read the native rows directly. Joints are defined here
-    /// alone: the plugin only keeps them on its heap, so that they outlive a domain reload.
+    /// Provides the managed view of the plugin's store. The structs match the mirrored structs in
+    /// Native/RetooledPhysics/src/Store.h field for field. That header documents the structs. All fields are blittable,
+    /// so jobs can read the native rows directly. Joints are defined only here. The plugin allocates them on its heap
+    /// so that they survive a domain reload.
     /// </summary>
     internal static unsafe class NativeStore
     {
@@ -55,7 +56,8 @@ namespace KSP.Retooled.Physics
             HasKinematicTarget = 1 << 10,
             ColliderDirty = 1 << 11,
 
-            // Only shapes' poses changed since the collider was built, so a compound can keep its children.
+            // Only the shapes' poses have changed since the collider was built, so the children of a compound collider
+            // can be reused.
             CollidersMoved = 1 << 12,
             PublicMask = Gravity | Kinematic | Simulated,
         }
@@ -68,7 +70,7 @@ namespace KSP.Retooled.Physics
             public BodyFlags flags;
             public uint shapeCount;
 
-            // The plugin only knows the fields above, so everything from here on is free to change without building it.
+            // The plugin uses only the fields above. The fields below can change without rebuilding the plugin.
             public LocalTransform* pose;
             public PhysicsVelocity* velocity;
             public PhysicsMass* mass;
@@ -79,17 +81,23 @@ namespace KSP.Retooled.Physics
             public BodyForces* forces;
             public BodyTarget* target;
 
-            /// <summary>The body's Unity.Physics collider. A null blob means no collider, or that a rebuild is due.</summary>
+            /// <summary>
+            /// Stores the body's Unity.Physics collider. A null blob means that the body has no collider or that its
+            /// collider needs to be rebuilt.
+            /// </summary>
             public PhysicsCollider* collider;
 
             public Entity entity;
             public int orderVersion;
 
-            /// <summary>How many joint ends point at the body, so destroying one that none do skips searching the joints.</summary>
+            /// <summary>
+            /// Counts the joint ends that point to this body. When the count is zero, the body can be destroyed without
+            /// searching the joints.
+            /// </summary>
             public int jointEnds;
         }
 
-        /// <summary>A body's components, for as long as they aren't on an entity.</summary>
+        /// <summary>Stores a body's components while they are not on an entity.</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct BodyHome
         {
@@ -122,7 +130,10 @@ namespace KSP.Retooled.Physics
             public BodyHome home;
         }
 
-        /// <summary>A shape's handle points at this, and its first field makes that a <see cref="ShapeData"/> as well.</summary>
+        /// <summary>
+        /// Stores the data that a shape's handle points to. The first field is <see cref="ShapeData"/>, so the same
+        /// pointer can be used for either struct.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct Shape
         {
@@ -190,7 +201,10 @@ namespace KSP.Retooled.Physics
             public float3 covarianceOffDiagonal;
         }
 
-        /// <summary>The head of the handle a shape holds. Native keeps the reference count after it, which is never read here.</summary>
+        /// <summary>
+        /// Defines the beginning of the mesh handle that a shape stores. The native plugin stores a reference count
+        /// after these fields. The managed code never reads that count.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct Mesh
         {
@@ -235,7 +249,7 @@ namespace KSP.Retooled.Physics
             private readonly int reserved0;
         }
 
-        /// <summary>The cooked mesh of a shape, or null while it has none.</summary>
+        /// <summary>Returns the cooked mesh of a shape, or null if the shape has no cooked mesh.</summary>
         internal static MeshData* MeshOf(ShapeData* shape)
         {
             return shape->mesh != null ? ((Mesh*)shape->mesh)->data : null;
@@ -287,8 +301,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// One axis of a joint, at the index Physics::ConstraintAxis gives it. min and max are radians on an angular axis and
-        /// metres on a linear one, in the units Unity sends them.
+        /// Describes one axis of a joint at the index defined by Physics::ConstraintAxis. The min and max values are in
+        /// radians for an angular axis and metres for a linear axis. These are the units that Unity supplies.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct JointAxis
@@ -308,8 +322,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// A joint's settings as Unity sent them and what the last step measured. A joint's handle points here, and the world's
-        /// list points back. A null body is the world, which the joint's pose is then relative to.
+        /// Stores the joint settings that Unity supplied and the measurements from the last step. The joint's handle
+        /// and the world's list both point to this record. A null body represents the world. In that case, the pose for
+        /// that end of the joint is relative to the world.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct JointData
@@ -331,8 +346,8 @@ namespace KSP.Retooled.Physics
             public float3 targetAngularVelocity;
             public float breakTorque;
 
-            // What the joint's constraints applied in the last step, as a force in newtons and a torque in newton metres, in
-            // world space.
+            // The force and torque applied by the joint's constraints during the last step. Both are in world space,
+            // with force in newtons and torque in newton metres.
             public float3 force;
             public float inverseMassScale0;
             public float3 torque;
@@ -346,7 +361,8 @@ namespace KSP.Retooled.Physics
             public float hingeMotorTargetVelocity;
             public uint index; // In the world's list.
 
-            // The force and torque magnitudes that breaking compares with, low-passed over a few steps.
+            // The magnitudes of force and torque used to decide whether the joint breaks. A low-pass filter smooths
+            // them over a few steps.
             public float breakingForce;
             public float breakingTorque;
 
@@ -354,7 +370,8 @@ namespace KSP.Retooled.Physics
             public Body* body1;
             public void* userData;
 
-            // JointAxisCount of them, which AxisOf reaches from the first.
+            // There are JointAxisCount consecutive axes. AxisOf accesses them by adding an offset to the address of the
+            // first axis.
             public JointAxis axes0;
             private readonly JointAxis axes1;
             private readonly JointAxis axes2;
@@ -366,7 +383,10 @@ namespace KSP.Retooled.Physics
             private readonly JointAxis axes8;
         }
 
-        /// <summary>The axis of a joint at a Physics::ConstraintAxis index. The record is on the store's heap, so it doesn't move.</summary>
+        /// <summary>
+        /// Returns the joint axis at a Physics::ConstraintAxis index. The record is allocated on the store's heap, so
+        /// its address does not change.
+        /// </summary>
         internal static JointAxis* AxisOf(JointData* joint, int axis)
         {
             return &joint->axes0 + axis;
@@ -380,7 +400,9 @@ namespace KSP.Retooled.Physics
             public float angularMagnitude;
         }
 
-        /// <summary>The blittable head of Physics::ActorDescriptor, whose layout Joint.cpp checks.</summary>
+        /// <summary>
+        /// Defines the blittable beginning of Physics::ActorDescriptor. Joint.cpp checks this layout.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct ActorDescriptor
         {
@@ -392,9 +414,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The vehicle of a body with WheelColliders, followed in the same block by its wheel slots, which
-        /// <see cref="WheelsOf"/> finds. Defined here alone, like a joint, and kept on the plugin's heap so that it outlives a
-        /// domain reload; the world frees it with itself.
+        /// Stores the vehicle data for a body with WheelColliders. Its wheel slots follow it in the same allocation and
+        /// can be accessed with <see cref="WheelsOf"/>. Like joints, this struct is defined only here. The plugin
+        /// allocates it on its heap so that it survives a domain reload. It is freed when the world is destroyed.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct VehicleData
@@ -407,7 +429,8 @@ namespace KSP.Retooled.Physics
             public uint substepsBelow;
             public uint substepsAbove;
 
-            // The body's velocity in world space before this step's forces, which the suspension damps.
+            // The body's velocity in world space before the forces for this step are applied. This velocity is used to
+            // calculate suspension damping.
             public float3 startLinear;
             public float3 startAngular;
         }
@@ -417,23 +440,28 @@ namespace KSP.Retooled.Physics
             return (WheelSlot*)(vehicle + 1);
         }
 
-        /// <summary>One wheel of a vehicle: what Unity set, and what the last step found under it.</summary>
+        /// <summary>
+        /// Stores the settings that Unity supplied for one wheel and the results of the query beneath that wheel during
+        /// the last step.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct WheelSlot
         {
             public void* userData;
 
-            // What the last hit landed on, so that a shape going away can take the hit with it.
+            // The shape recorded by the last hit. When the shape is destroyed, its recorded hit can be cleared too.
             public Shape* hitShape;
             public WheelQueryResult hit;
             public WheelSuspension suspension;
             public WheelBody wheel;
 
-            // From the body's centre of mass, along the body's axes: the wheel's centre at rest and where its force acts.
+            // The wheel's centre at rest and the point where its force is applied. Both are offsets from the body's
+            // centre of mass, expressed along the body's axes.
             public float3 centreOffset;
             public float3 forceOffset;
 
-            // The plugin API's FilterData as four words. The last holds the ignore id in its upper half.
+            // The plugin API's FilterData, stored as four words. The upper half of the last word contains the ignore
+            // id.
             public uint collidesWith;
             public uint belongsTo;
             public uint filterFlags;
@@ -445,13 +473,14 @@ namespace KSP.Retooled.Physics
             public float steerAngle;
             public float rotationAngle;
 
-            // How far the wheel sits above its rest position, at most its maximum compression and at least minus its droop.
+            // The height of the wheel above its rest position. It ranges from minus the maximum droop to the maximum
+            // compression.
             public float jounce;
             public uint enabled;
             public uint grounded;
         }
 
-        /// <summary>Physics::PhysXExt::WheelQueryResult, whose layout Vehicle.cpp checks.</summary>
+        /// <summary>Matches Physics::PhysXExt::WheelQueryResult. Vehicle.cpp checks this layout.</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct WheelQueryResult
         {
@@ -468,7 +497,7 @@ namespace KSP.Retooled.Physics
             public void* userData;
         }
 
-        /// <summary>Physics::PhysXExt::WheelSuspensionData.</summary>
+        /// <summary>Matches Physics::PhysXExt::WheelSuspensionData.</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct WheelSuspension
         {
@@ -479,7 +508,7 @@ namespace KSP.Retooled.Physics
             public float sprungMass;
         }
 
-        /// <summary>Physics::PhysXExt::WheelData.</summary>
+        /// <summary>Matches Physics::PhysXExt::WheelData.</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct WheelBody
         {
@@ -605,7 +634,10 @@ namespace KSP.Retooled.Physics
             public uint bodyDataSize;
             public uint bodySize;
 
-            /// <summary>Bumped whenever the ignored pairs change, so that what was worked out from them can be kept.</summary>
+            /// <summary>
+            /// Increases whenever the ignored pairs change. Cached results derived from those pairs can be reused while
+            /// this version stays the same.
+            /// </summary>
             public uint ignoreVersion;
 
             public IgnoreTable* ignoreTable;
@@ -642,7 +674,7 @@ namespace KSP.Retooled.Physics
             private readonly uint reserved0;
         }
 
-        /// <summary>QueryKind in Store.h.</summary>
+        /// <summary>Matches QueryKind in Store.h.</summary>
         internal enum QueryKind : uint
         {
             Ray = 0,
@@ -705,15 +737,17 @@ namespace KSP.Retooled.Physics
             public void* shapeUserData;
         }
 
-        /// <summary>Physics::QueryHitResultCollectorCallback. The answer is a C++ bool, so it is one byte.</summary>
+        /// <summary>
+        /// Matches Physics::QueryHitResultCollectorCallback. The return value is a C++ bool, so it occupies one byte.
+        /// </summary>
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate byte HitCollectorFunction(void* context, RayCastHit* hits, ulong count);
 
-        /// <summary>Physics::QueryShapesResultCollectorCallback.</summary>
+        /// <summary>Matches Physics::QueryShapesResultCollectorCallback.</summary>
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate byte ShapeCollectorFunction(void* context, void** shapeUserDatas, ulong count);
 
-        /// <summary>Physics::BroadPhaseQueryShapeCollectorCallback.</summary>
+        /// <summary>Matches Physics::BroadPhaseQueryShapeCollectorCallback.</summary>
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate byte BroadphaseCollectorFunction(void* context, void* shape, void* body, void* shapeUserData, ushort geometryType);
 
@@ -723,14 +757,19 @@ namespace KSP.Retooled.Physics
 
         internal delegate void DestroyWorldCallback(WorldData* world);
 
-        /// <summary>A category's commands, in a Burst function. The command is the plugin API's id and the handle what it addresses.</summary>
+        /// <summary>
+        /// Processes one category of commands in a Burst function. The command argument is the id from the plugin API.
+        /// The handle points to the object that the command operates on.
+        /// </summary>
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate void CommandFunction(uint command, void* handle, CommandArgs* args, StoreGlobals* globals);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate void* ReallocateFunction(void* memory, ulong size);
 
-        /// <summary>The plugin's functions that take one pointer: freeing memory, and retaining or releasing a record.</summary>
+        /// <summary>
+        /// Represents plugin functions that take one pointer to free memory or to retain or release a record.
+        /// </summary>
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate void PointerFunction(void* pointer);
 
@@ -771,15 +810,23 @@ namespace KSP.Retooled.Physics
         [DllImport(Library)]
         internal static extern void RetooledPhysics_SyncQueryWorlds();
 
-        /// <summary>Non-zero on the thread that attached, which is the main thread.</summary>
+        /// <summary>
+        /// Returns a non-zero value on the thread that attached the plugin, which is the main thread.
+        /// </summary>
         [DllImport(Library)]
         internal static extern int RetooledPhysics_OnMainThread();
 
-        /// <summary>The plugin's address wait and wake, which the solver's job lanes park on. Older plugins lack it.</summary>
+        /// <summary>
+        /// Returns the plugin functions for waiting on an address and waking threads that are waiting there. Solver
+        /// workers use them while waiting for work. Older plugins do not provide these functions.
+        /// </summary>
         [DllImport(Library)]
         private static extern void RetooledPhysics_WaitFunctions(IntPtr* wait, IntPtr* wake);
 
-        /// <summary>Hands the plugin's address wait to the solver, which spins without it.</summary>
+        /// <summary>
+        /// Installs the plugin's functions for waiting on an address and waking waiting threads in the solver. Without
+        /// these functions, the solver spins while waiting.
+        /// </summary>
         internal static void InstallAddressWait()
         {
             IntPtr wait = IntPtr.Zero;
@@ -797,8 +844,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// What stops this domain attaching, or null when nothing does: the first struct or command enum whose size differs
-        /// from the plugin's, or a joint layout other than the one the store's records were written with.
+        /// Returns the first mismatch that prevents this domain from attaching, or null if there is no mismatch. A
+        /// mismatch can be a struct size or command enum count that differs from the plugin's. It can also be a joint
+        /// or body record layout that differs from the layout used to write the store's records.
         /// </summary>
         internal static string FirstSizeMismatch()
         {

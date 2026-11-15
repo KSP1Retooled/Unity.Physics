@@ -3,9 +3,10 @@ using Unity.Profiling;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// A span for each way into the backend, and for each stage of a step. Native callers leave no samples of their own, so
-    /// without these the time reads as self time of whichever Physics call got there first. Burst compiles these like any
-    /// static marker, which takes a name it can read at compile time.
+    /// Defines profiler spans for each entry point into the backend and each stage of a step. Native callers do not
+    /// record their own samples. Without these spans, the time would appear as self time for whichever Physics call
+    /// first entered the backend. Burst compiles these as static markers, using names that are available at compile
+    /// time.
     /// </summary>
     internal static class BackendMarkers
     {
@@ -23,8 +24,9 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker ValidateMesh = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ValidateMesh");
         internal static readonly ProfilerMarker DestroyWorld = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.DestroyWorld");
 
-        // The commands that do more than read or write a field, inside their kind's span. The rest are too small to time
-        // one by one, since a span of their own would cost about as much as they do.
+        // These commands do more than read or write a field. Each is timed within the span for its command category.
+        // The remaining commands are too small to time individually, because recording a separate span would cost about
+        // as much as running the command.
         internal static readonly ProfilerMarker CreateBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.CreateBody");
         internal static readonly ProfilerMarker DestroyBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.DestroyBody");
         internal static readonly ProfilerMarker CreateJoint = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.CreateJoint");

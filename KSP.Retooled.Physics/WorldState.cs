@@ -6,16 +6,17 @@ using Unity.Physics.Systems;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Everything managed keeps for one native world: a Unity Physics world built on demand from the store, and what a step
-    /// carries over. None of it survives a detach, and the next step or query rebuilds it.
+    /// Stores the managed state for one native world. This includes a Unity Physics world built from the store on
+    /// demand, plus data retained between steps. All of this state is discarded on detach. It is rebuilt for the next
+    /// step or query.
     /// </summary>
     internal sealed unsafe class WorldState : IDisposable
     {
         internal const int SolverIterations = 12;
         internal const int DirectIslandSubsteps = 2;
 
-        // The fastest, in m/s, that contacts push penetrating bodies apart: Rigidbody.maxDepenetrationVelocity's default.
-        // PhysX applies it to each body, and stock never changes it.
+        // The maximum speed, in m/s, at which contacts separate penetrating bodies. This is the default value of
+        // Rigidbody.maxDepenetrationVelocity. PhysX applies it to each body, and the stock game never changes it.
         internal const float MaxDepenetrationVelocity = 10.0f;
 
         private readonly StepState* state;
@@ -37,8 +38,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Runs the physics system group on this world. Before Entities starts there is no group, and nothing steps: the
-        /// first frame's simulation comes after it.
+        /// Runs the physics system group for this world. The group does not exist before Entities starts, so no step
+        /// runs before then. Simulation for the first frame occurs after Entities starts.
         /// </summary>
         internal void Step(PhysicsSystemGroup group, float deltaTime)
         {
@@ -52,7 +53,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Brings the built world up to the store's poses without stepping and returns a QueryWorld constant. Main thread only.
+        /// Updates the built world to match the poses in the store without running a simulation step. Returns a
+        /// QueryWorld constant. Call this method only on the main thread.
         /// </summary>
         internal int BuildForQueries()
         {

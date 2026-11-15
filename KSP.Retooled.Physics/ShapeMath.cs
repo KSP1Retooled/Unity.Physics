@@ -2,12 +2,14 @@ using Unity.Mathematics;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>The geometry of one shape: what the mass calculation needs of it, and its bounds.</summary>
+    /// <summary>
+    /// Provides a shape's geometry for mass calculations and bounds calculations.
+    /// </summary>
     internal static unsafe class ShapeMath
     {
         /// <summary>
-        /// The straight part of a capsule. Despite its name in the plugin API, CapsuleGeometry::height holds half of this,
-        /// like PxCapsuleGeometry::halfHeight.
+        /// Returns the length of the straight part of a capsule. Despite its name in the plugin API,
+        /// CapsuleGeometry::height stores half of this length, like PxCapsuleGeometry::halfHeight.
         /// </summary>
         internal static float CapsuleCylinderLength(NativeStore.ShapeData* shape)
         {
@@ -20,9 +22,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The shape's volume, its centre of mass and its inertia per unit mass about that centre, in the shape's own frame.
-        /// False for shapes the calculation skips, among them any with no volume: such a shape takes none of the mass, and a
-        /// per-unit-mass inertia has no value for it.
+        /// Calculates the shape's volume, centre of mass, and inertia per unit mass about that centre, in the shape's
+        /// own frame. Returns false for shapes that the calculation skips, including shapes with no volume. These
+        /// shapes receive none of the mass, and their inertia per unit mass is undefined.
         /// </summary>
         internal static bool MassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
@@ -50,7 +52,8 @@ namespace KSP.Retooled.Physics
                 }
                 case NativeStore.GeometryCapsule:
                 {
-                    // The axis is local X, as in PhysX. A cylinder of length h between two hemispheres.
+                    // The capsule's axis is local X, as in PhysX. It consists of a cylinder of length h between two
+                    // hemispheres.
                     float r = shape->extents.x;
                     float h = CapsuleCylinderLength(shape);
                     float cylinder = math.PI * r * r * h;
@@ -77,9 +80,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// A scale s moves x to s x, so the covariance's (i, j) entry gains s_i s_j. The inertia of a unit mass about its
-        /// centre is trace(C) I - C. The unscaled moments are worked out once per mesh, because a rigidbody asks for them
-        /// each time its mass is set, and they are the same for every shape: the hull scales with its points.
+        /// Scaling by s moves x to s x, so entry (i, j) of the covariance matrix is multiplied by s_i s_j. The inertia
+        /// of a unit mass about its centre is trace(C) I - C. Calculate the unscaled moments once per mesh. They are
+        /// needed whenever a rigidbody's mass is set, and all shapes that use the mesh can reuse them because the hull
+        /// scales with its points.
         /// </summary>
         private static bool ConvexMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
@@ -120,7 +124,9 @@ namespace KSP.Retooled.Physics
             return volume > 0.0f;
         }
 
-        /// <summary>The half extents of the world-aligned box around a box of the given half extents.</summary>
+        /// <summary>
+        /// Returns the half extents of an axis-aligned box that encloses the rotated box with the given half extents.
+        /// </summary>
         private static float3 RotatedHalfExtents(quaternion rotation, float3 half)
         {
             float3 x = math.rotate(rotation, new float3(half.x, 0.0f, 0.0f));
@@ -129,7 +135,9 @@ namespace KSP.Retooled.Physics
             return math.abs(x) + math.abs(y) + math.abs(z);
         }
 
-        /// <summary>The shape's world-space axis-aligned bounds under a body pose, about the given local pose.</summary>
+        /// <summary>
+        /// Calculates the shape's axis-aligned bounds in world space from the given local pose and body pose.
+        /// </summary>
         internal static void WorldBounds(
             NativeStore.ShapeData* shape,
             float3 localPosition,

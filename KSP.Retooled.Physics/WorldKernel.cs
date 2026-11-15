@@ -8,8 +8,9 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The plugin API's world commands, by the id World.cpp passes. Attach checks the count against the plugin's. Those a world
-    /// needs before attaching stay in World.cpp, so only some of them run in <see cref="WorldKernel"/>.
+    /// Lists the plugin API's world commands by the ID that World.cpp passes. During attachment, the command count is
+    /// checked against the plugin's count. Commands that a world needs before attachment remain in World.cpp, so only
+    /// some commands run in <see cref="WorldKernel"/>.
     /// </summary>
     internal enum WorldCommand : uint
     {
@@ -41,20 +42,22 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// What a world's dense body array needs done: creating and destroying bodies, and walking them. World commands arrive on
-    /// the main thread outside a step. As with the query functions, the plugin holds a Burst function pointer, and until the
-    /// async compile delivers it is a stub running the same code in Mono.
+    /// Creates, destroys and iterates over bodies in a world's dense array. World commands arrive on the main thread
+    /// outside a simulation step. As with query functions, the plugin stores a Burst function pointer. Until
+    /// asynchronous compilation finishes, that pointer refers to a stub that runs the same code in Mono.
     /// </summary>
     [BurstCompile]
     internal static unsafe class WorldKernel
     {
-        // Rigidbody.maxLinearVelocity's default; Unity sends the rest of a body's limits after creating it.
+        // The default value of Rigidbody.maxLinearVelocity. Unity sends the body's other limits after creating it.
         private const float DefaultMaxLinearVelocity = 1e16f;
         private const float DefaultMaxAngularVelocity = 7.0f;
         private const float DefaultMaxDepenetrationVelocity = 1e32f;
         private const float DefaultSleepThreshold = 0.005f;
 
-        /// <summary>The head of Physics::SimulationStepStats. World.cpp checks the offsets.</summary>
+        /// <summary>
+        /// Matches the initial fields of Physics::SimulationStepStats. World.cpp checks the field offsets.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct BodyCounts
         {
@@ -79,7 +82,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>Burst drops this, so it only runs in the Mono form, which needs the exception ended here.</summary>
+        /// <summary>
+        /// Burst omits this method. It runs only in Mono, where exceptions must be caught before returning to native
+        /// code.
+        /// </summary>
         [BurstDiscard]
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
         {
@@ -198,7 +204,7 @@ namespace KSP.Retooled.Physics
             BodyEntities.Adopt(hot);
             JointTopology.Changed();
 
-            // A new body goes last, so the statics keep their order unless it is one of them.
+            // Append the new body to the array. The sequence of static bodies changes only if the new body is static.
             if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
             {
                 world->staticsVersion++;
@@ -234,7 +240,8 @@ namespace KSP.Retooled.Physics
                 world->deadColliders[world->deadColliderCount++] = hot->collider->Value.GetUnsafePtr();
             }
 
-            // The last body takes the destroyed one's place, which reorders the statics only if either of them is static.
+            // Replace the destroyed body with the last body in the array. The sequence of static bodies changes only if
+            // either body is static.
             bool staticsMove = (hot->flags & NativeStore.BodyFlags.Static) != 0;
             uint last = --world->bodyCount;
             if (body->index != last)
@@ -254,7 +261,11 @@ namespace KSP.Retooled.Physics
             StoreOps.MarkQueryDirty(world);
         }
 
-        /// <summary>Unity destroys bodies before their world, so this only frees storage. A shape can outlive its body.</summary>
+        /// <summary>
+        /// Frees any bodies that remain when a world is destroyed. Unity normally destroys bodies before destroying
+        /// their world. This method releases any remaining entities, detaches their shapes and frees the body records.
+        /// A shape can outlive its body.
+        /// </summary>
         internal static void FreeBodies(NativeStore.WorldData* world, NativeStore.StoreGlobals* globals)
         {
             for (uint i = 0; i < world->bodyCount; i++)
@@ -268,7 +279,7 @@ namespace KSP.Retooled.Physics
             world->bodyCount = 0;
         }
 
-        /// <summary>The plugin hands the list to Unity's callback, then frees it.</summary>
+        /// <summary>Builds a list that the plugin passes to Unity's callback and then frees.</summary>
         private static void CollectShapesByLayerMask(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ShapesByLayerMask.Auto();
