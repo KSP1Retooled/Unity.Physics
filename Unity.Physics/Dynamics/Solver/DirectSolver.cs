@@ -1431,7 +1431,7 @@ namespace Unity.Physics
                         float* forestDriftPtr = (float*)forestDrift.GetUnsafePtr();
                         SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
                         bool drifts = AimAtPredictedDrift(problem, null, linearPtr, angularPtr, compactBodies, headers, impulsesPtr,
-                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team);
+                            motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team, true);
                         stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDriftTime,
                             Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
                         if (drifts)
@@ -1447,7 +1447,6 @@ namespace Unity.Physics
                         forestDrift.Dispose();
                     }
 
-                    run.Dispose();
                     if (applyImpulses)
                     {
                         SumBodyImpulses(problem, impulsesPtr, linearPtr, angularPtr);
@@ -1457,9 +1456,11 @@ namespace Unity.Physics
                         {
                             SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
                                 motionVelocities, motionDatas, stepInput.Timestep,
-                                math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
+                                math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run);
                         }
                     }
+
+                    run.Dispose();
 
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
@@ -1815,7 +1816,7 @@ namespace Unity.Physics
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, in NativeArray<int> compactBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
-            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team)
+            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team, bool skipSlow = false)
         {
             using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
@@ -1846,6 +1847,20 @@ namespace Unity.Physics
                 solved[body] = velocity;
             }
 
+            // How far each moving body turns this substep, and how far out its joints can reach, for the Jacobians whose
+            // drift is too small to aim at.
+            var turns = new NativeArray<float2>(skipSlow ? problem.BodyCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int body = 0; skipSlow && body < compactBodies.Length; body++)
+            {
+                int compact = compactBodies[body];
+                if (compact >= 0)
+                {
+                    MotionVelocity velocity = solved[body];
+                    turns[compact] = new float2(math.length(velocity.AngularVelocity) * timestep,
+                        math.max(velocity.AngularExpansionFactor, 1.0f));
+                }
+            }
+
             var prediction = new DriftPrediction
             {
                 Headers = (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(),
@@ -1858,12 +1873,13 @@ namespace Unity.Physics
                 MotionDataCount = motionDatas.Length,
                 Timestep = timestep,
                 Change = rhsChange,
+                Turns = skipSlow ? (float2*)turns.GetUnsafeReadOnlyPtr() : null,
             };
 
             int tasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
             SparseSolveTeam.RunAll(team, &prediction, SparseSolveTeam.PredictDriftKind, tasks, null);
             solved.Dispose();
-
+            turns.Dispose();
             for (int row = 0; row < problem.RowCount; row++)
             {
                 if (rhsChange[row] != 0.0f)
@@ -1893,6 +1909,42 @@ namespace Unity.Physics
             public int MotionDataCount;
             public float Timestep;
             public float* Change;
+
+            /// <summary>
+            /// Each body's turn this substep in radians and the reach of its joints in metres, or null to aim every
+            /// Jacobian.
+            /// </summary>
+            public float2* Turns;
+        }
+
+        /// <summary>
+        /// The drift a Jacobian's rows miss is second order in how far its bodies turn in a substep: about (turn A + turn
+        /// B)^2 times the reach of the joint, in metres or radians. Below this a Jacobian is left unaimed, which also leaves
+        /// a craft at rest without a second solve. The prediction itself is taken in single precision from positions metres
+        /// from the origin, so it is no better than float's resolution of a metre, about this.
+        /// </summary>
+        const float DriftTolerance = 1e-7f;
+
+        /// <summary>
+        /// A side's turn and reach: a moving body's from the table, a static body's none, and a kinematic body's from its
+        /// velocity.
+        /// </summary>
+        static unsafe float2 Turn(DriftPrediction* prediction, int compact, JacobianHeader* header, bool sideA,
+            in NativeArray<MotionVelocity> solved)
+        {
+            if (compact >= 0)
+            {
+                return prediction->Turns[compact];
+            }
+
+            int bodyIndex = sideA ? header->BodyPair.BodyIndexA : header->BodyPair.BodyIndexB;
+            if (bodyIndex >= solved.Length)
+            {
+                return float2.zero;
+            }
+
+            MotionVelocity velocity = solved[bodyIndex];
+            return new float2(math.length(velocity.AngularVelocity) * prediction->Timestep, math.max(velocity.AngularExpansionFactor, 1.0f));
         }
 
         /// <summary>One task of <see cref="AimAtPredictedDrift"/>, whose Jacobians write only their own rows.</summary>
@@ -1906,9 +1958,22 @@ namespace Unity.Physics
             int end = math.min((task + 1) * DriftBlocksPerTask, prediction->BlockCount);
             for (int block = task * DriftBlocksPerTask; block < end; block++)
             {
-                ref JacobianHeader header = ref *prediction->Headers[block];
                 int startRow = prediction->Blocks[block].FirstRow;
                 int jacRows = prediction->Blocks[block].RowCount;
+                // The block's own body numbers spare reading the Jacobian, unless a side isn't one of the solve's bodies.
+                JacobianHeader* headerPointer = prediction->Headers[block];
+                if (prediction->Turns != null)
+                {
+                    float2 turnA = Turn(prediction, prediction->Blocks[block].BodyA, headerPointer, true, solved);
+                    float2 turnB = Turn(prediction, prediction->Blocks[block].BodyB, headerPointer, false, solved);
+                    float turn = turnA.x + turnB.x;
+                    if (turn * turn * math.max(turnA.y, turnB.y) < DriftTolerance)
+                    {
+                        continue;
+                    }
+                }
+
+                ref JacobianHeader header = ref *headerPointer;
                 if (jacRows > 3 || !PredictEqualityChange(ref header, solved, timestep, change))
                 {
                     continue;
@@ -1977,7 +2042,7 @@ namespace Unity.Physics
         /// </summary>
         static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, float timestep, float fastest)
+            in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest = null)
         {
             int rows = problem.RowCount;
             bool pushing = false;
@@ -2025,12 +2090,35 @@ namespace Unity.Physics
             pushOut.Couplings = null;
 
             // A push that pivoting couldn't settle is left for the next substep, which finds the penetration again: its impulses,
-            // clamped to their bounds, would move bodies metres at once.
-            var solver = new SparseConstraintSolver(Allocator.Temp);
-            bool solved = solver.Solve(pushOut, push, true);
+            // clamped to their bounds, would move bodies metres at once. The push has the solve's rows and regularization,
+            // so a forest island's push takes the factor and boundary block its solve made, with the push's bounds.
+            var solver = default(SparseConstraintSolver);
+            var bodyImpulses = new NativeArray<float3>(forest != null ? 2 * worldBodies.Length : 0, Allocator.Temp,
+                NativeArrayOptions.UninitializedMemory);
+            bool solved;
+            if (forest != null)
+            {
+                ForestRun pushRun = *forest;
+                pushRun.Problem = pushOut;
+                pushRun.Bounded = true;
+                solved = SolveForest(ref pushRun, rightHandSide, push);
+                float3* linearImpulses = (float3*)bodyImpulses.GetUnsafePtr();
+                SumBodyImpulses(pushOut, push, linearImpulses, linearImpulses + worldBodies.Length);
+            }
+            else
+            {
+                solver = new SparseConstraintSolver(Allocator.Temp);
+                solved = solver.Solve(pushOut, push, true);
+            }
+
             if (!solved)
             {
-                solver.Dispose();
+                if (forest == null)
+                {
+                    solver.Dispose();
+                }
+
+                bodyImpulses.Dispose();
                 values.Dispose();
                 return;
             }
@@ -2045,7 +2133,16 @@ namespace Unity.Physics
             {
                 int body = worldBodies[compact];
                 MotionVelocity velocity = motionVelocities[body];
-                solver.BodyImpulse(pushOut, push, compact, out float3 linear, out float3 angular);
+                float3 linear, angular;
+                if (forest != null)
+                {
+                    linear = bodyImpulses[compact];
+                    angular = bodyImpulses[worldBodies.Length + compact];
+                }
+                else
+                {
+                    solver.BodyImpulse(pushOut, push, compact, out linear, out angular);
+                }
 
                 // An angular impulse acts in motion space, the body's own frame.
                 linears[compact] = linear * velocity.InverseMass;
@@ -2065,7 +2162,12 @@ namespace Unity.Physics
 
             linears.Dispose();
             spins.Dispose();
-            solver.Dispose();
+            if (forest == null)
+            {
+                solver.Dispose();
+            }
+
+            bodyImpulses.Dispose();
             values.Dispose();
         }
 

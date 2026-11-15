@@ -195,6 +195,13 @@ namespace KSP.Retooled.Physics.Tests
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
         }
 
+        /// <summary>A comma-separated list from the environment, to bench a part of the table, or the default.</summary>
+        private static string[] Choice(string variable, string fallback)
+        {
+            string value = System.Environment.GetEnvironmentVariable(variable);
+            return (string.IsNullOrEmpty(value) ? fallback : value).Split(',');
+        }
+
         [Test]
         [Timeout(7200000)]
         public void Measure()
@@ -219,12 +226,12 @@ namespace KSP.Retooled.Physics.Tests
                 "island solve ms per step: sparse run; forest run\n");
             try
             {
-                foreach (string craft in new[] { "tu160", "synthetic4500" })
+                foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,synthetic4500"))
                 {
                     Graph graph = Load(craft);
-                    foreach (bool ground in new[] { false, true })
+                    foreach (bool ground in Choice("RETOOLED_BENCH_SCENE", "floating,ground").Select(s => s == "ground"))
                     {
-                        foreach (int threads in new[] { 1, 8 })
+                        foreach (int threads in Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse))
                         {
                             var sparse = Session(graph, ground, false, threads, workers);
                             string sparseTimes = lastTimes;
