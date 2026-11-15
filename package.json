@@ -1,0 +1,17 @@
+{
+  "displayName": "Unity Physics",
+  "category": "Unity",
+  "description": "Unity's C# stateless physics library.\n\nBuilt on top of the Unity C# ECS framework, Unity Physics is network-ready, completely customizable, and built for performance out of the box. Whether you're building the next mobile hit or a new networked multiplayer console experience, Unity Physics leverages the Burst compiler and Job system to scale across a range of hardware.",
+  "dependencies": {
+    "com.unity.entities": "6.7.0",
+    "com.unity.test-framework": "1.6.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0"
+  },
+  "keywords": [
+    "unity",
+    "physics"
+  ],
+  "name": "com.unity.physics",
+  "version": "6.7.0"
+}
