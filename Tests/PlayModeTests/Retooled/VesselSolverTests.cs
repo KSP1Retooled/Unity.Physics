@@ -258,11 +258,12 @@ namespace KSP.Retooled.Physics.Tests
 
         [Test]
         public void TheFactorMatchesADenseSolve([Values("behemoth", "pegasus")] string craft, [Values(4, 96, 100000)] int chunkTarget,
-            [Values(false, true)] bool threads)
+            [Values(false, true)] bool threads, [Values(false, true)] bool minimumDegree)
         {
             VesselGraph graph = VesselGraph.Load(craft);
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.ChunkTarget = chunkTarget;
+            settings.MinimumDegree = minimumDegree;
             using VesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1e3, settings,
                 out var parts, out var edges, out var closures);
             try
@@ -617,10 +618,12 @@ namespace KSP.Retooled.Physics.Tests
         /// <summary>The job threads give the single thread's answer, up to the order of a few sums.</summary>
         [Test]
         public void ThreadsAgreeWithOneThread([Values("tu160", "synthetic4500")] string craft,
-            [Values(VesselGraph.LockRule.LiveJointsOnly, VesselGraph.LockRule.AllYielding)] VesselGraph.LockRule rule)
+            [Values(VesselGraph.LockRule.LiveJointsOnly, VesselGraph.LockRule.AllYielding)] VesselGraph.LockRule rule,
+            [Values(false, true)] bool minimumDegree)
         {
             VesselGraph graph = VesselGraph.Load(craft);
             VesselSolverSettings settings = VesselSolverSettings.Default;
+            settings.MinimumDegree = minimumDegree;
             using VesselSolver one = MakeSolver(graph, rule, 1.0, settings, out var parts1, out var edges1, out var closures1);
             using VesselSolver many = MakeSolver(graph, rule, 1.0, settings, out var parts2, out var edges2, out var closures2);
             try

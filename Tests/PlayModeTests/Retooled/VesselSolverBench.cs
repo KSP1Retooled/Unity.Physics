@@ -136,7 +136,17 @@ namespace KSP.Retooled.Physics.Tests
                         foreach (int threads in new[] { 1, 8 })
                         {
                             Session(graph, kind, threads, workers, traffic, stream, report, stages,
-                                VesselSolverSettings.Default.ChunkTarget);
+                                VesselSolverSettings.Default.ChunkTarget, false);
+                        }
+                    }
+
+                    // The same with sections ordered by minimum degree, where it can matter: many live links.
+                    foreach (Case kind in new[] { Case.StackLocked, Case.AllYielding })
+                    {
+                        foreach (int threads in new[] { 1, 8 })
+                        {
+                            Session(graph, kind, threads, workers, traffic, stream, report, stages,
+                                VesselSolverSettings.Default.ChunkTarget, true);
                         }
                     }
                 }
@@ -145,7 +155,8 @@ namespace KSP.Retooled.Physics.Tests
                 VesselGraph synthetic = VesselGraph.Load("synthetic4500");
                 foreach (int chunkTarget in new[] { 16, 32, 48, 192 })
                 {
-                    Session(synthetic, Case.AllYielding, 8, workers, traffic, stream, report, stages, chunkTarget);
+                    Session(synthetic, Case.AllYielding, 8, workers, traffic, stream, report, stages, chunkTarget, false);
+                    Session(synthetic, Case.AllYielding, 8, workers, traffic, stream, report, stages, chunkTarget, true);
                 }
             }
             finally
@@ -162,7 +173,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         static void Session(VesselGraph graph, Case kind, int threads, int workers, NativeArray<long> traffic,
-            StreamKernel stream, StringBuilder report, StringBuilder stages, int chunkTarget)
+            StreamKernel stream, StringBuilder report, StringBuilder stages, int chunkTarget, bool minimumDegree)
         {
             VesselGraph.LockRule rule = kind switch
             {
@@ -172,6 +183,7 @@ namespace KSP.Retooled.Physics.Tests
             };
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.ChunkTarget = chunkTarget;
+            settings.MinimumDegree = minimumDegree;
             graph.Build(rule, settings.TimeStep, 1.0, Allocator.Persistent, out var parts, out var edges, out var closures);
             var solver = new VesselSolver(parts, edges, closures, settings);
 
@@ -258,7 +270,7 @@ namespace KSP.Retooled.Physics.Tests
                     }
                 }
 
-                stages.Append($"{graph.Name} | {kind} | {string.Join(" | ", stageSamples.Select(s => Summary(s).median.ToString("F1")))}\n");
+                stages.Append($"{graph.Name} | {kind}{(minimumDegree ? ", minimum degree" : "")} | {string.Join(" | ", stageSamples.Select(s => Summary(s).median.ToString("F1")))}\n");
             }
 
             bool finite = true;
@@ -269,7 +281,8 @@ namespace KSP.Retooled.Physics.Tests
 
             (double warmMin, double warmMedian) = Summary(warm);
             (double coldMin, double coldMedian) = Summary(cold);
-            string label = chunkTarget == VesselSolverSettings.Default.ChunkTarget ? kind.ToString() : $"{kind}, chunk target {chunkTarget}";
+            string label = (chunkTarget == VesselSolverSettings.Default.ChunkTarget ? kind.ToString() : $"{kind}, chunk target {chunkTarget}")
+                + (minimumDegree ? ", minimum degree" : "");
             report.Append($"{graph.Name} | {label} | {solver.SectionCount} | {solver.LinkCount} | {solver.ChunkCount} | " +
                 $"{solver.TopCount} | {threads} | {warmMin:F0} / {warmMedian:F0} | {coldMin:F0} / {coldMedian:F0} | " +
                 $"{load:F0}%{(finite ? "" : " (NOT FINITE)")}\n");

@@ -150,6 +150,7 @@ namespace Unity.Physics
                 Closures = m_Closures,
                 HubClosures = Settings.HubClosures,
                 ChunkTarget = Settings.ChunkTarget,
+                MinimumDegree = Settings.MinimumDegree,
                 Structure = Structure,
             }.Run();
 

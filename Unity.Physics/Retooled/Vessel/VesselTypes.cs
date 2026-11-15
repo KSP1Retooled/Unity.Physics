@@ -164,6 +164,13 @@ namespace Unity.Physics
         public int ChunkTarget;
 
         /// <summary>
+        /// Orders sections by minimum degree instead of leaves-inward along the section tree with hubs last. The tree
+        /// order lets every strut fill the whole tree path between its ends, which on strutted craft leaves a wide,
+        /// serial top; minimum degree keeps the fill near what the struts themselves add.
+        /// </summary>
+        public bool MinimumDegree;
+
+        /// <summary>
         /// Whether locked edges' loads include the centripetal force of a spinning section. The solve itself has no
         /// gyroscopic or centripetal terms, so loads without it close exactly against the live rows' impulses.
         /// </summary>
@@ -176,6 +183,7 @@ namespace Unity.Physics
             HardDampingRatio = 1.0,
             HubClosures = 16,
             ChunkTarget = 96,
+            MinimumDegree = true,
             CentripetalLoads = true,
         };
     }
