@@ -2357,6 +2357,35 @@ namespace Unity.Physics
             // Contacts that follow the island's pairs are solved sparsely, with their normals and without friction.
             public bool SparseContacts;
             public bool SolveSparsely;
+
+            // The default regularization of the step's rows, worked out once by a caller that builds many Jacobians, or null.
+            public RowRegularization* Regularization;
+        }
+
+        /// <summary>
+        /// The regularization a Jacobian's rows take from the solver's settings and the substep alone, which is the same for
+        /// every Jacobian of a substep.
+        /// </summary>
+        internal struct RowRegularization
+        {
+            public float JointEpsilon;
+            public float JointGamma;
+            public float ContactEpsilon;
+            public float ContactGamma;
+            public float ContactViscousEpsilon;
+
+            public static RowRegularization Of(in StepInput stepInput)
+            {
+                RowRegularization terms;
+                JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out terms.JointEpsilon, out terms.JointGamma,
+                    stepInput.DirectSolverSettings.MaximumJointStiffness, stepInput.DirectSolverSettings.MaximumJointDamping,
+                    stepInput.Timestep);
+                JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out terms.ContactEpsilon, out terms.ContactGamma,
+                    stepInput.DirectSolverSettings.ContactStiffness, stepInput.DirectSolverSettings.ContactDamping, stepInput.Timestep);
+                JacobianUtilities.ComputeDirectSolverViscousRegularizationTerm(out terms.ContactViscousEpsilon,
+                    stepInput.DirectSolverSettings.ContactSlip, stepInput.Timestep);
+                return terms;
+            }
         }
 
         /// <summary>
@@ -2382,19 +2411,12 @@ namespace Unity.Physics
             bool sparseContacts = context.SparseContacts;
 
             float maxJointStiffness = stepInput.DirectSolverSettings.MaximumJointStiffness;
-            float maxJointDamping = stepInput.DirectSolverSettings.MaximumJointDamping;
-
-            float contactStiffness = stepInput.DirectSolverSettings.ContactStiffness;
-            float contactDamping = stepInput.DirectSolverSettings.ContactDamping;
-            float contactSlip = stepInput.DirectSolverSettings.ContactSlip;
-
-            JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var defaultJointViscoelasticEpsilon,
-                out var defaultJointViscoelasticGamma, maxJointStiffness, maxJointDamping, stepInput.Timestep);
-            JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out var contactViscoelasticEpsilon,
-                out var contactViscoelasticGamma, contactStiffness, contactDamping, stepInput.Timestep);
-
-            JacobianUtilities.ComputeDirectSolverViscousRegularizationTerm(out var contactViscousEpsilon, contactSlip,
-                stepInput.Timestep);
+            RowRegularization terms = context.Regularization != null ? *context.Regularization : RowRegularization.Of(stepInput);
+            float defaultJointViscoelasticEpsilon = terms.JointEpsilon;
+            float defaultJointViscoelasticGamma = terms.JointGamma;
+            float contactViscoelasticEpsilon = terms.ContactEpsilon;
+            float contactViscoelasticGamma = terms.ContactGamma;
+            float contactViscousEpsilon = terms.ContactViscousEpsilon;
 
             JacobianHeader.DirectSolverRegularizationData jointRegularizationData = default;
 

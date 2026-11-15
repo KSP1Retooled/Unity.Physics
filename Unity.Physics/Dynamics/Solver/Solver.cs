@@ -680,10 +680,14 @@ namespace Unity.Physics
                 }
                 else
                 {
-                    Joint joint = world.Joints[pair.JointIndex];
+                    // A joint is big, and the build only reads it, so it is read in place unless its motors need scaling.
+                    Joint scaled = default;
+                    ref Joint joint = ref UnsafeUtility.ArrayElementAsRef<Joint>(world.Joints.GetUnsafeReadOnlyPtr(), pair.JointIndex);
                     if (motorImpulseScale != 1.0f)
                     {
-                        ScaleMotorImpulses(ref joint, motorImpulseScale);
+                        scaled = joint;
+                        ScaleMotorImpulses(ref scaled, motorImpulseScale);
+                        joint = ref scaled;
                     }
 
                     // Need to fetch the real body indices from the joint, as the scheduler may have reordered them
@@ -797,6 +801,10 @@ namespace Unity.Physics
                 }
 
                 var constraintIndex = 0;
+                bool regularized = false;
+                uint regularizedKind = 0;
+                Constraint regularizedFrom = default;
+                JacobianHeader.DirectSolverRegularizationData regularization = default;
                 for (var i = 0; i < constraintBlock.Length; i++)
                 {
                     Constraint constraint = constraintPtr[i];
@@ -878,8 +886,23 @@ namespace Unity.Physics
                     if (solverTypeOverride == SolverType.Direct)
                     {
                         // The direct solve may take smaller substeps than the iterative one, and its regularisation is per substep.
-                        header.AccessDirectSolverRegularizationData() = JacobianUtilities.CalculateDirectSolverRegularizationData(
-                            header, constraint, velocityA, velocityB, directSolverSettings, directTimestep > 0.0f ? directTimestep : timestep);
+                        // It follows from the kind of row and the constraint's spring alone, besides the joint's bodies, so a
+                        // constraint like the one before it in the joint takes the same.
+                        uint kind = (header.IsAngular ? 1u : 0u) | (header.IsVelocityConstraint ? 2u : 0u);
+                        bool same = regularized && !LegacyRowBuild && kind == regularizedKind
+                            && math.asuint(constraint.SpringFrequency) == math.asuint(regularizedFrom.SpringFrequency)
+                            && math.asuint(constraint.DampingRatio) == math.asuint(regularizedFrom.DampingRatio)
+                            && math.asuint(constraint.DirectStiffnessScale) == math.asuint(regularizedFrom.DirectStiffnessScale);
+                        if (!same)
+                        {
+                            regularization = JacobianUtilities.CalculateDirectSolverRegularizationData(
+                                header, constraint, velocityA, velocityB, directSolverSettings, directTimestep > 0.0f ? directTimestep : timestep);
+                            regularized = true;
+                            regularizedKind = kind;
+                            regularizedFrom = constraint;
+                        }
+
+                        header.AccessDirectSolverRegularizationData() = regularization;
                     }
 
                     // Build the Jacobian:
