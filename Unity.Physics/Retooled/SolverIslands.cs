@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using Unity.Burst;
 using Unity.Collections;
@@ -44,7 +45,8 @@ namespace Unity.Physics
                 IslandBodies = islandBodies,
                 PhasedDispatchPairs = phasedPairs,
                 PhasesUsed = phasesUsed,
-                LinksInPhases = linksInPhases
+                LinksInPhases = linksInPhases,
+                Cache = stepInput.SolverIslandCache,
             }.Schedule(inputDeps);
 
             handle = new SortIslandIntoBucketsJob
@@ -78,7 +80,7 @@ namespace Unity.Physics
         /// One connected group of bodies, as a range of <see cref="FindSolverIslandsJob.IslandPairs"/> and of
         /// <see cref="FindSolverIslandsJob.IslandBodies"/>.
         /// </summary>
-        struct SolverIsland
+        internal struct SolverIsland
         {
             public int FirstPair;
             public int PairCount;
@@ -97,7 +99,7 @@ namespace Unity.Physics
         /// static body is never written to, so what happens on either side of one is independent.
         /// </summary>
         [BurstCompile]
-        struct FindSolverIslandsJob : IJob
+        unsafe struct FindSolverIslandsJob : IJob
         {
             [ReadOnly]
             public NativeArray<DispatchPair> DispatchPairs;
@@ -123,6 +125,9 @@ namespace Unity.Physics
             /// <summary> Only sized here: an island fills in its bodies' rows if it has to recolour. </summary>
             public NativeList<int> LinksInPhases;
 
+            /// <summary> The last step's islands, which stand if this step solves the same pairs. </summary>
+            public SolverIslandCache Cache;
+
             static int FindRoot(NativeArray<int> parents, int body)
             {
                 while (parents[body] != body)
@@ -134,10 +139,11 @@ namespace Unity.Physics
                 return body;
             }
 
-            // A joint with no constraints has had its say on whether its bodies collide, and writes no Jacobians to solve.
-            bool IsSolved(DispatchPair pair)
+            // A joint with no constraints has had its say on whether its bodies collide, and writes no Jacobians to solve. A
+            // joint is big, so this reads the one field in place rather than copying it.
+            bool IsSolved(DispatchPair pair, Joint* joints)
             {
-                return pair.IsValid && (pair.IsJoint ? Joints[pair.JointIndex].Constraints.Length != 0 : pair.IsCollisionEnabled);
+                return pair.IsValid && (pair.IsJoint ? joints[pair.JointIndex].Constraints.Length != 0 : pair.IsCollisionEnabled);
             }
 
             public void Execute()
@@ -151,17 +157,31 @@ namespace Unity.Physics
                 // Most overlaps in a craft are between parts that ignore each other, so the passes after this one only go over
                 // the pairs that are solved.
                 var solved = new NativeArray<DispatchPair>(DispatchPairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var joints = (Joint*)Joints.GetUnsafeReadOnlyPtr();
                 int numPairs = 0;
                 for (int i = 0; i < DispatchPairs.Length; i++)
                 {
                     DispatchPair pair = DispatchPairs[i];
-                    if (IsSolved(pair))
+                    if (IsSolved(pair, joints))
                     {
                         solved[numPairs++] = pair;
-                        if (pair.BodyIndexB < NumDynamicBodies)
-                        {
-                            parents[FindRoot(parents, pair.BodyIndexA)] = FindRoot(parents, pair.BodyIndexB);
-                        }
+                    }
+                }
+
+                // The islands follow from the solved pairs and the number of bodies alone.
+                NativeArray<DispatchPair> solvedPairs = solved.GetSubArray(0, numPairs);
+                if (Cache.IsCreated && Cache.TryReuse(solvedPairs, NumDynamicBodies, Islands, IslandPairs, IslandBodies))
+                {
+                    SizeBuckets(numPairs);
+                    return;
+                }
+
+                for (int i = 0; i < numPairs; i++)
+                {
+                    DispatchPair pair = solved[i];
+                    if (pair.BodyIndexB < NumDynamicBodies)
+                    {
+                        parents[FindRoot(parents, pair.BodyIndexA)] = FindRoot(parents, pair.BodyIndexB);
                     }
                 }
 
@@ -237,6 +257,16 @@ namespace Unity.Physics
                     }
                 }
 
+                if (Cache.IsCreated)
+                {
+                    Cache.Keep(solvedPairs, NumDynamicBodies, Islands, IslandPairs, IslandBodies);
+                }
+
+                SizeBuckets(numPairs);
+            }
+
+            void SizeBuckets(int numPairs)
+            {
                 PhasedDispatchPairs.ResizeUninitialized(numPairs * NumIslandBuckets);
                 PhasesUsed.Resize(NumDynamicBodies, NativeArrayOptions.ClearMemory);
                 LinksInPhases.ResizeUninitialized(NumDynamicBodies * NumIslandPhases);
@@ -724,6 +754,102 @@ namespace Unity.Physics
 
                 SolverSchedulerInfo.FinalizeIterativeWorkItemInfo();
             }
+        }
+    }
+
+    /// <summary>
+    /// The islands of the last step, kept with the pairs they were found from. A craft solves the same joints step after
+    /// step, and a floating one nothing else, so most steps find the same islands again. The caller of a step owns this and
+    /// passes it in <see cref="SimulationStepInput"/>. Without one, the islands are found afresh every step.
+    /// </summary>
+    public unsafe struct SolverIslandCache : IDisposable
+    {
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<DispatchPairSequencer.DispatchPair>* pairs;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<DispatchPairSequencer.SolverIsland>* islands;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<DispatchPairSequencer.DispatchPair>* islandPairs;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* islandBodies;
+
+        /// <summary> The bodies the islands were found among, or -1 while nothing is kept. </summary>
+        [NativeDisableUnsafePtrRestriction]
+        int* numDynamicBodies;
+
+        public bool IsCreated => pairs != null;
+
+        public static SolverIslandCache Create()
+        {
+            var cache = new SolverIslandCache
+            {
+                pairs = UnsafeList<DispatchPairSequencer.DispatchPair>.Create(0, Allocator.Persistent),
+                islands = UnsafeList<DispatchPairSequencer.SolverIsland>.Create(0, Allocator.Persistent),
+                islandPairs = UnsafeList<DispatchPairSequencer.DispatchPair>.Create(0, Allocator.Persistent),
+                islandBodies = UnsafeList<int>.Create(0, Allocator.Persistent),
+                numDynamicBodies = (int*)UnsafeUtility.MallocTracked(sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Persistent, 0),
+            };
+            *cache.numDynamicBodies = -1;
+            return cache;
+        }
+
+        public void Dispose()
+        {
+            if (!IsCreated)
+            {
+                return;
+            }
+
+            UnsafeList<DispatchPairSequencer.DispatchPair>.Destroy(pairs);
+            UnsafeList<DispatchPairSequencer.SolverIsland>.Destroy(islands);
+            UnsafeList<DispatchPairSequencer.DispatchPair>.Destroy(islandPairs);
+            UnsafeList<int>.Destroy(islandBodies);
+            UnsafeUtility.FreeTracked(numDynamicBodies, Allocator.Persistent);
+            this = default;
+        }
+
+        internal bool TryReuse(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies,
+            NativeList<DispatchPairSequencer.SolverIsland> outIslands, NativeList<DispatchPairSequencer.DispatchPair> outPairs,
+            NativeList<int> outBodies)
+        {
+            if (*numDynamicBodies != dynamicBodies || pairs->Length != solved.Length
+                || UnsafeUtility.MemCmp(pairs->Ptr, solved.GetUnsafeReadOnlyPtr(), (long)solved.Length * sizeof(DispatchPairSequencer.DispatchPair)) != 0)
+            {
+                return false;
+            }
+
+            Copy(islands, outIslands);
+            Copy(islandPairs, outPairs);
+            Copy(islandBodies, outBodies);
+            return true;
+        }
+
+        internal void Keep(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies,
+            NativeList<DispatchPairSequencer.SolverIsland> found, NativeList<DispatchPairSequencer.DispatchPair> foundPairs,
+            NativeList<int> foundBodies)
+        {
+            *numDynamicBodies = dynamicBodies;
+            Store(pairs, solved);
+            Store(islands, found.AsArray());
+            Store(islandPairs, foundPairs.AsArray());
+            Store(islandBodies, foundBodies.AsArray());
+        }
+
+        static void Copy<T>(UnsafeList<T>* from, NativeList<T> to)
+            where T : unmanaged
+        {
+            to.ResizeUninitialized(from->Length);
+            UnsafeUtility.MemCpy(to.GetUnsafePtr(), from->Ptr, (long)from->Length * sizeof(T));
+        }
+
+        static void Store<T>(UnsafeList<T>* to, NativeArray<T> from)
+            where T : unmanaged
+        {
+            to->Resize(from.Length);
+            UnsafeUtility.MemCpy(to->Ptr, from.GetUnsafeReadOnlyPtr(), (long)from.Length * sizeof(T));
         }
     }
 }

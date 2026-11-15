@@ -58,6 +58,12 @@ namespace Unity.Physics
         /// </summary>
         public DirectSolverCache DirectSolverCache;
 
+        /// <summary>
+        /// Lets the island sort keep the islands it found while the solved pairs stay the same. It belongs to the caller, and
+        /// a default one means the islands are found afresh every step.
+        /// </summary>
+        public SolverIslandCache SolverIslandCache;
+
         /// <summary>   Maximum relative velocity that can be produced when separating intersecting dynamic rigid bodies. </summary>
         public float MaxDynamicDepenetrationVelocity;
 
