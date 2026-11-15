@@ -1,10 +1,10 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
-namespace Unity.Numerics
+namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>Represents a 6x6 matrix of doubles, stored row by row.</summary>
-    internal unsafe struct double6x6
+    public unsafe struct double6x6
     {
         public const int Size = 6;
 

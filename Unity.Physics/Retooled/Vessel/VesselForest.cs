@@ -2,7 +2,7 @@ using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Numerics;
+using Unity.Physics.Numerics.Retooled;
 
 namespace Unity.Physics
 {

@@ -5,7 +5,7 @@ using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Numerics;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
 

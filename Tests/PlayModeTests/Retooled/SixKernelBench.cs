@@ -4,7 +4,7 @@ using Unity.Burst;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.Numerics;
+using Unity.Physics.Numerics.Retooled;
 using Unity.Physics;
 using Debug = UnityEngine.Debug;
 

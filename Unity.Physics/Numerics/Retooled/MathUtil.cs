@@ -1,7 +1,7 @@
 using Unity.Burst.Intrinsics;
 using Unity.Mathematics;
 
-namespace Unity.Numerics
+namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>
     /// Provides fused multiply-add operations: a * b + c with one rounding. <see cref="math.fma(float, float, float)"/>
