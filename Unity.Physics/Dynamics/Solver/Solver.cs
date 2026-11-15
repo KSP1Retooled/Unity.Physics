@@ -680,15 +680,9 @@ namespace Unity.Physics
                 }
                 else
                 {
-                    // A joint is big, and the build only reads it, so it is read in place unless its motors need scaling.
-                    Joint scaled = default;
+                    // A joint is big, and the build only reads it, so it is read in place. Its motors' limits are scaled
+                    // as each constraint is read.
                     ref Joint joint = ref UnsafeUtility.ArrayElementAsRef<Joint>(world.Joints.GetUnsafeReadOnlyPtr(), pair.JointIndex);
-                    if (motorImpulseScale != 1.0f)
-                    {
-                        scaled = joint;
-                        ScaleMotorImpulses(ref scaled, motorImpulseScale);
-                        joint = ref scaled;
-                    }
 
                     // Need to fetch the real body indices from the joint, as the scheduler may have reordered them
                     int bodyIndexA = joint.BodyPair.BodyIndexA;
@@ -698,7 +692,7 @@ namespace Unity.Physics
                     GetMotion(world, bodyIndexB, out MotionVelocity velocityB, out MotionData motionB);
 
                     BuildJointJacobian(ref joint, pair.SolverType, velocityA, velocityB, motionA, motionB, timestep,
-                        numSolverIterations, directSolverSettings, ref jacobianWriter, directTimestep);
+                        numSolverIterations, directSolverSettings, ref jacobianWriter, directTimestep, motorImpulseScale);
                 }
             }
 
@@ -757,30 +751,23 @@ namespace Unity.Physics
 
         #region BuildIndividualJacobians
 
-        static unsafe void ScaleMotorImpulses(ref Joint joint, float scale)
+        static void ScaleMotorImpulse(ref Constraint constraint, float scale)
         {
-            fixed (void* block = &joint.Constraints)
+            switch (constraint.Type)
             {
-                var constraints = (Constraint*)block;
-                for (int i = 0; i < joint.Constraints.Length; i++)
-                {
-                    switch (constraints[i].Type)
-                    {
-                        case ConstraintType.RotationMotor:
-                        case ConstraintType.AngularVelocityMotor:
-                        case ConstraintType.PositionMotor:
-                        case ConstraintType.LinearVelocityMotor:
-                            constraints[i].MaxImpulse *= scale;
-                            break;
-                    }
-                }
+                case ConstraintType.RotationMotor:
+                case ConstraintType.AngularVelocityMotor:
+                case ConstraintType.PositionMotor:
+                case ConstraintType.LinearVelocityMotor:
+                    constraint.MaxImpulse *= scale;
+                    break;
             }
         }
 
         internal static unsafe void BuildJointJacobian(ref Joint joint, SolverType solverTypeOverride,
             in MotionVelocity velocityA, in MotionVelocity velocityB, in MotionData motionA, in MotionData motionB,
             float timestep, int numSolverIterations, in DirectSolverSettings directSolverSettings, [NoAlias] ref NativeStream.Writer jacobianWriter,
-            float directTimestep = 0.0f)
+            float directTimestep = 0.0f, float motorImpulseScale = 1.0f)
         {
             var bodyAFromMotionA = new MTransform(motionA.BodyFromMotion);
             MTransform motionAFromJoint = Mul(Inverse(bodyAFromMotionA), joint.AFromJoint);
@@ -808,6 +795,11 @@ namespace Unity.Physics
                 for (var i = 0; i < constraintBlock.Length; i++)
                 {
                     Constraint constraint = constraintPtr[i];
+                    if (motorImpulseScale != 1.0f)
+                    {
+                        ScaleMotorImpulse(ref constraint, motorImpulseScale);
+                    }
+
                     int constraintDimension = constraint.Dimension;
                     if (0 == constraintDimension)
                     {
