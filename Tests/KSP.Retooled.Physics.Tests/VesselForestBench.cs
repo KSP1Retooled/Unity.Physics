@@ -21,7 +21,9 @@ namespace KSP.Retooled.Physics.Tests
     /// <summary>
     /// Whole physics steps of a large craft built from a vessel graph (Tests/VesselGraphs~) as Rigidbodies and stock-style
     /// ConfigurableJoints, on the sparse path, the forest path and the forest path with locking, on one thread and on eight,
-    /// warm (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS pick part of the table). The craft floats
+    /// warm (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS pick part of the table). The "vessel" path hands the step a
+    /// vessel set that the bench builds itself, and the "compiled" path turns vessels on and lets the backend compile the
+    /// craft's joints into vessels. The craft floats
     /// (every row a forest row) or rests on the ground (contacts make a boundary). Parts never collide with each other.
     /// Reports the machine's CPU load when it starts. Results go to the log and to VesselForestBench.txt in Logs.
     /// </summary>
@@ -350,6 +352,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             VesselForest.Enabled = path != "sparse";
+            VesselPipeline.Enabled = path == "compiled";
             VesselForest.ForgetIslands();
             VesselForest.Locking = path == "locked";
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
@@ -616,6 +619,7 @@ namespace KSP.Retooled.Physics.Tests
         [Timeout(7200000)]
         public void Measure()
         {
+            bool wasVessels = VesselPipeline.Enabled;
             if (!BackendInfo.IsRetooled)
             {
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
@@ -667,6 +671,7 @@ namespace KSP.Retooled.Physics.Tests
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
                 VesselForest.Enabled = wasEnabled;
                 VesselForest.Locking = wasLocking;
+                VesselPipeline.Enabled = wasVessels;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 
