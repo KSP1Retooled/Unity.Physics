@@ -46,13 +46,18 @@ namespace Unity.Physics
         public VesselClosure* Closures;
 
         /// <summary>
-        /// Written by the solve, one per part: the force and torque each edge carried, averaged over the step (impulse over
-        /// the step's time), with its ratio against its strength. A root's entry is zero.
+        /// Written by the solve, one per part: the force that the parent part applied to the child part through the edge,
+        /// and the torque about the joint point, both in world space. Each is the step's impulse over the step's time,
+        /// which is the mean over the substeps. The ratio is the larger of the force over the break force and the torque
+        /// over the break torque. A root's entry is zero.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public VesselEdgeLoad* EdgeLoads;
 
-        /// <summary>Written by the solve, one per closure, as <see cref="EdgeLoads"/>.</summary>
+        /// <summary>
+        /// Written by the solve, one per closure, as <see cref="EdgeLoads"/>: the force and torque that part A applied to
+        /// part B, in world space, with the torque about the joint point.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public VesselEdgeLoad* ClosureLoads;
 

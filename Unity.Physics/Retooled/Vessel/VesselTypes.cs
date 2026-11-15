@@ -132,8 +132,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// The load an edge carried over the step: the force and the torque about the joint point that the parent side applied
-    /// to the child side (part B's side for a closure), with the larger of each against its strength.
+    /// The load that an edge carried: the force that the parent part applied to the child part, and the torque about the
+    /// joint point. For a closure, it is what part A applied to part B. Both are in world space. The ratio is the larger of
+    /// the force over the break force and the torque over the break torque.
     /// </summary>
     public struct VesselEdgeLoad
     {

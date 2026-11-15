@@ -12,6 +12,7 @@ namespace KSP.Retooled.Physics.Tests
     public class VesselSectionTests : PhysicsScene
     {
         private bool wasEnabled;
+        private bool wasVessels;
         private bool wasLocking;
 
         [SetUp]
@@ -25,6 +26,11 @@ namespace KSP.Retooled.Physics.Tests
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
             VesselForest.Initialize();
+            VesselPipeline.Initialize();
+            wasVessels = VesselPipeline.Enabled;
+
+            // These test the forest path with Unity's joint rows, which vessels replace.
+            VesselPipeline.Enabled = false;
             wasEnabled = VesselForest.Enabled;
             wasLocking = VesselForest.Locking;
             VesselForest.Enabled = true;
@@ -34,6 +40,7 @@ namespace KSP.Retooled.Physics.Tests
         public void RestoreSwitch()
         {
             VesselForest.Enabled = wasEnabled;
+            VesselPipeline.Enabled = wasVessels;
             VesselForest.Locking = wasLocking;
         }
 
