@@ -1195,11 +1195,12 @@ namespace Unity.Physics
 
         /// <summary>
         /// Each tree pair's deflection under this solve's load: the largest over its rotation rows of how far the row's
-        /// spring would turn to carry its impulse, z / (h k) with h^2 k = 1 / epsilon. Summed over a step's substeps; the
+        /// spring would turn to carry its impulse, z / (h k) with k = gamma / (epsilon h^2), the spring without its damper.
+        /// Summed over a step's substeps; the
         /// next step's first substep turns the sum into their mean, the deflection the lock tests read from then on (see
-        /// <see cref="ForestIsland.PairDeflectionSum"/>). Returns this solve's largest.
+        /// <see cref="ForestIsland.PairDeflectionSum"/>). Returns the largest deflection the lock tests now read.
         /// </summary>
-        static unsafe float RecordDeflections(ref ForestRun run, float* impulses, int substep)
+        static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep)
         {
             float largest = 0.0f;
             ForestIsland* forest = run.Forest;
@@ -1215,7 +1216,13 @@ namespace Unity.Physics
                 float deflection = 0.0f;
                 for (int k = forest->PairBlockStart[p]; k < forest->PairBlockStart[p + 1]; k++)
                 {
-                    SparseConstraintSolver.ConstraintBlock block = problem.Blocks[run.ForestBlocks[forest->PairBlocks[k]]];
+                    int b = run.ForestBlocks[forest->PairBlocks[k]];
+                    SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+
+                    // The rows hold h^2 k + h c = 1 / epsilon and gamma = h k / (h k + c), so the spring alone is
+                    // k = gamma / (epsilon h^2): a damped row's compliance alone would read the deflection low by 1 + c / (h k).
+                    float gamma = headers[b]->AccessDirectSolverRegularizationData().Gamma;
+                    gamma = gamma > 1e-6f && gamma <= 1.0f ? gamma : 1.0f;
                     for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                     {
                         byte rowClass = run.RowClass[row];
@@ -1229,7 +1236,7 @@ namespace Unity.Physics
                         float angular = columns[3] * columns[3] + columns[4] * columns[4] + columns[5] * columns[5];
                         if (linear <= 1e-8f * angular)
                         {
-                            deflection = math.max(deflection, math.abs(impulses[row]) * problem.Epsilon[row] * h);
+                            deflection = math.max(deflection, math.abs(impulses[row]) * problem.Epsilon[row] * h / gamma);
                         }
                     }
                 }
@@ -1247,8 +1254,7 @@ namespace Unity.Physics
                 }
 
                 forest->PairDeflectionSum[p] = sum + deflection;
-
-                largest = math.max(largest, deflection);
+                largest = math.max(largest, forest->PairDeflection[p]);
             }
 
             forest->DeflectionCount = substep <= 0 ? 1 : forest->DeflectionCount + 1;

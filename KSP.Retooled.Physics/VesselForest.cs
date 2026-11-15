@@ -132,7 +132,7 @@ namespace KSP.Retooled.Physics
         /// <summary>The last stepped world's milliseconds settling sections after the first solve, since it was built.</summary>
         internal static unsafe double SettleMilliseconds => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.ForestSettleMilliseconds : 0.0;
 
-        /// <summary>The largest deflection, in radians, a tree pair's springs would take under the last forest solve's load.</summary>
+        /// <summary>The largest deflection, in radians, the lock tests read after the last forest solve (a step's mean).</summary>
         internal static unsafe double LastDeflection => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.LastDeflection : 0.0;
 
         /// <summary>The last stepped world's solve times in ms since it was built, see DirectSolverCache.GetSolveTimes.</summary>

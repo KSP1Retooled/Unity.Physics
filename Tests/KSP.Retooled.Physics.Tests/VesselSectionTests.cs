@@ -222,6 +222,35 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A swing spring with a strong damper under a steady torque: the deflection the forest reads for the lock tests is
+        /// the spring's, not the spring and damper's together, which would read low by 1 + c / (h k).
+        /// </summary>
+        [Test]
+        public void ADampedSpringReadsItsOwnDeflection()
+        {
+            Fresh(false);
+            Rigidbody a = WeightlessBox(new Vector3(-0.5f, 5.0f, 0.0f), 2.0f);
+            Rigidbody b = WeightlessBox(new Vector3(0.5f, 5.0f, 0.0f), 2.0f);
+            ConfigurableJoint joint = SpringJoint(b, a, new Vector3(0.0f, 5.0f, 0.0f), 2000.0f);
+            JointDrive drive = joint.angularYZDrive;
+            drive.positionDamper = 200.0f;
+            joint.angularYZDrive = drive;
+            float turn = 0.0f;
+            for (int i = 0; i < 300; i++)
+            {
+                b.AddTorque(new Vector3(0.0f, 10.0f, 0.0f));
+                a.AddTorque(new Vector3(0.0f, -10.0f, 0.0f));
+                Simulate();
+                Quaternion relative = Quaternion.Inverse(a.rotation) * b.rotation;
+                turn = 2.0f * Mathf.Asin(Mathf.Min(1.0f, new Vector3(relative.x, relative.y, relative.z).magnitude));
+            }
+
+            float read = (float)VesselForest.LastDeflection;
+            Debug.Log($"[VesselSectionTests] damped: turn {turn * 1e3f:F3} mrad, read {read * 1e3f:F3} mrad");
+            Assert.That(read, Is.EqualTo(turn).Within(0.05f * turn));
+        }
+
+        /// <summary>
         /// A part hung below another by a rigid joint with a break force, pulled down harder every step: the joint breaks
         /// while locked at the same load as without locking, and the part falls away.
         /// </summary>

@@ -79,7 +79,7 @@ namespace Unity.Physics
         internal const int ForestLastSections = 16;
         internal const int ForestLastLocked = 17;
 
-        /// <summary>The largest deflection a tree pair's springs would take under the last solve's load, in nanoradians.</summary>
+        /// <summary>The largest deflection the lock tests read after the last solve (a step's mean), in nanoradians.</summary>
         internal const int ForestLastDeflection = 18;
 
         /// <summary>Time the forest path spent turning sections' answers into bodies' and locked pairs' loads, once per solve.</summary>
@@ -209,7 +209,7 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>The largest deflection a tree pair's springs would take under the last forest solve's load, in radians.</summary>
+        /// <summary>The largest deflection the lock tests read after the last forest solve (a step's mean), in radians.</summary>
         public double LastDeflection => forestCounters != null ? forestCounters[ForestLastDeflection] * 1e-9 : 0;
 
         internal void NoteResidual(double residual)

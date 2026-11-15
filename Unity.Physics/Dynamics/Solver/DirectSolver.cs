@@ -1466,7 +1466,9 @@ namespace Unity.Physics
                         }
                     }
 
-                    stepInput.DirectSolverCache.NoteDeflection(RecordDeflections(ref run, impulsesPtr, stepInput.CurrentSubstep));
+                    float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
+                        stepInput.CurrentSubstep);
+                    stepInput.DirectSolverCache.NoteDeflection(deflection);
 
                     stepInput.DirectSolverCache.NoteResidual(run.Residual);
                     run.Dispose();
