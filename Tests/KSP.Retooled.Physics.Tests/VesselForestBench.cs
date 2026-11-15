@@ -8,6 +8,10 @@ using System.Linq;
 using System.Text;
 using NUnit.Framework;
 using Unity.Burst;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
+using Unity.Physics;
 using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -126,7 +130,7 @@ namespace KSP.Retooled.Physics.Tests
             return joint;
         }
 
-        private List<Rigidbody> Build(Graph graph, bool ground)
+        private List<Rigidbody> Build(Graph graph, bool ground, bool joints = true)
         {
             var bodies = new List<Rigidbody>(graph.Parent.Length);
             float lowest = float.MaxValue;
@@ -144,7 +148,7 @@ namespace KSP.Retooled.Physics.Tests
                 lowest = Mathf.Min(lowest, graph.Position[i].y - 0.5f * side);
             }
 
-            for (int i = 0; i < graph.Parent.Length; i++)
+            for (int i = 0; i < graph.Parent.Length && joints; i++)
             {
                 int parent = graph.Parent[i];
                 if (parent >= 0)
@@ -153,7 +157,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            for (int c = 0; c < graph.ClosureA.Length; c++)
+            for (int c = 0; c < graph.ClosureA.Length && joints; c++)
             {
                 int a = graph.ClosureA[c], b = graph.ClosureB[c];
                 Joint(bodies[b], bodies[a], 0.5f * (graph.Position[a] + graph.Position[b]), 0.0f, true);
@@ -165,6 +169,177 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return bodies;
+        }
+
+        /// <summary>
+        /// The craft as one vessel for the "vessel" path: one part per body in parent-first order, an edge for every graph
+        /// edge with the bench joint's swing spring and a hard twist, and a hard closure for every strut. The parts' world
+        /// indices are found once, from the first world the backend builds, since the bench adds no bodies afterwards.
+        /// </summary>
+        private sealed unsafe class BenchVesselSet : IDisposable
+        {
+            private NativeArray<VesselRecord> vessels;
+            private NativeArray<int> partBodies;
+            private NativeArray<VesselEdge> edges;
+            private NativeArray<VesselClosure> closures;
+            private NativeArray<VesselEdgeLoad> edgeLoads;
+            private NativeArray<VesselEdgeLoad> closureLoads;
+            private NativeArray<bool> edgeLocked;
+
+            public BenchVesselSet(Graph graph, List<Rigidbody> bodies)
+            {
+                int count = graph.Parent.Length;
+
+                // Parent-first order: each root, then breadth first along the children.
+                var children = new List<int>[count];
+                var order = new List<int>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    children[i] = new List<int>();
+                }
+
+                for (int i = 0; i < count; i++)
+                {
+                    if (graph.Parent[i] >= 0)
+                    {
+                        children[graph.Parent[i]].Add(i);
+                    }
+                }
+
+                var partOf = new int[count];
+                var roots = new List<int>();
+                for (int i = 0; i < count; i++)
+                {
+                    if (graph.Parent[i] < 0)
+                    {
+                        int first = order.Count;
+                        roots.Add(first);
+                        order.Add(i);
+                        for (int k = first; k < order.Count; k++)
+                        {
+                            order.AddRange(children[order[k]]);
+                        }
+                    }
+                }
+
+                for (int k = 0; k < count; k++)
+                {
+                    partOf[order[k]] = k;
+                }
+
+                // Every tree of the graph is a vessel of its own.
+                vessels = new NativeArray<VesselRecord>(roots.Count, Allocator.Persistent);
+                for (int v = 0; v < roots.Count; v++)
+                {
+                    int end = v + 1 < roots.Count ? roots[v + 1] : count;
+                    vessels[v] = new VesselRecord
+                    {
+                        Id = (ulong)(5000 + v),
+                        StructureVersion = 1,
+                        FirstPart = roots[v],
+                        PartCount = end - roots[v],
+                        FirstClosure = 0,
+                        ClosureCount = v == 0 ? graph.ClosureA.Length : 0,
+                    };
+                }
+
+                PhysicsWorld world = StepKernel.Current->World;
+                NativeArray<RigidBody> dynamic = world.DynamicBodies;
+                partBodies = new NativeArray<int>(count, Allocator.Persistent);
+                edges = new NativeArray<VesselEdge>(count, Allocator.Persistent);
+                for (int k = 0; k < count; k++)
+                {
+                    int i = order[k];
+                    Rigidbody body = bodies[i];
+                    float best = float.MaxValue;
+                    for (int b = 0; b < dynamic.Length; b++)
+                    {
+                        float d = math.distancesq(dynamic[b].WorldFromBody.pos, (float3)body.position);
+                        if (d < best)
+                        {
+                            best = d;
+                            partBodies[k] = b;
+                        }
+                    }
+
+                    int parent = graph.Parent[i];
+                    if (parent < 0)
+                    {
+                        edges[k] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding };
+                        continue;
+                    }
+
+                    int vessel = 0;
+                    while (vessel + 1 < roots.Count && roots[vessel + 1] <= k)
+                    {
+                        vessel++;
+                    }
+
+                    double spring = graph.Swing[i] > 0.0f ? graph.Swing[i] : 1e5;
+                    Vector3 point = graph.Joint[i];
+                    edges[k] = new VesselEdge
+                    {
+                        Parent = partOf[parent] - roots[vessel],
+                        State = VesselEdgeState.Yielding,
+                        MayLock = true,
+                        ChildAnchor = (float3)(point - bodies[i].worldCenterOfMass),
+                        ParentAnchor = (float3)(point - bodies[parent].worldCenterOfMass),
+                        Frame = double3x3.identity,
+                        Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                        TwistStiffness = double.PositiveInfinity,
+                        SwingStiffness = spring,
+                        SwingDamping = 0.02 * spring,
+                        BreakForce = double.PositiveInfinity,
+                        BreakTorque = double.PositiveInfinity,
+                    };
+                }
+
+                // The closures belong to the first vessel; a strut between two vessels would leave both in one island.
+                closures = new NativeArray<VesselClosure>(System.Math.Max(1, graph.ClosureA.Length), Allocator.Persistent);
+                for (int c = 0; c < graph.ClosureA.Length; c++)
+                {
+                    int a = graph.ClosureA[c], b = graph.ClosureB[c];
+                    Vector3 point = 0.5f * (graph.Position[a] + graph.Position[b]);
+                    closures[c] = new VesselClosure
+                    {
+                        PartA = partOf[a],
+                        PartB = partOf[b],
+                        AnchorA = (float3)(point - bodies[a].worldCenterOfMass),
+                        AnchorB = (float3)(point - bodies[b].worldCenterOfMass),
+                        Frame = double3x3.identity,
+                        Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                        LinearStiffness = double.PositiveInfinity,
+                        AngularStiffness = double.PositiveInfinity,
+                    };
+                }
+
+                edgeLoads = new NativeArray<VesselEdgeLoad>(count, Allocator.Persistent);
+                closureLoads = new NativeArray<VesselEdgeLoad>(System.Math.Max(1, graph.ClosureA.Length), Allocator.Persistent);
+                edgeLocked = new NativeArray<bool>(count, Allocator.Persistent);
+                VesselSet.TestSet = new VesselSet
+                {
+                    VesselCount = vessels.Length,
+                    Vessels = (VesselRecord*)vessels.GetUnsafePtr(),
+                    PartBodies = (int*)partBodies.GetUnsafePtr(),
+                    Edges = (VesselEdge*)edges.GetUnsafePtr(),
+                    Closures = (VesselClosure*)closures.GetUnsafePtr(),
+                    EdgeLoads = (VesselEdgeLoad*)edgeLoads.GetUnsafePtr(),
+                    ClosureLoads = (VesselEdgeLoad*)closureLoads.GetUnsafePtr(),
+                    EdgeLocked = (bool*)edgeLocked.GetUnsafePtr(),
+                };
+            }
+
+            public void Dispose()
+            {
+                VesselSet.TestSet = default;
+                vessels.Dispose();
+                partBodies.Dispose();
+                edges.Dispose();
+                closures.Dispose();
+                edgeLoads.Dispose();
+                closureLoads.Dispose();
+                edgeLocked.Dispose();
+            }
         }
 
         private string lastTimes;
@@ -182,7 +357,14 @@ namespace KSP.Retooled.Physics.Tests
             string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
             VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
-            Build(graph, ground);
+            List<Rigidbody> built = Build(graph, ground, path != "vessel");
+            BenchVesselSet vesselSet = null;
+            if (path == "vessel")
+            {
+                Simulate();
+                vesselSet = new BenchVesselSet(graph, built);
+            }
+
             Simulate(WarmUp);
             VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
             VesselForest.GetTimes(out double s0, out double a0, out double b0, out double c0, out double f0, out double w0, out double d0);
@@ -202,7 +384,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.GetTimes(out double s1, out double a1, out double b1, out double c1, out double f1, out double w1, out double d1);
             VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
                 out double residual, out _, out _);
-            long forestSolves = Math.Max(1, solves - solvesBefore);
+            long forestSolves = System.Math.Max(1, solves - solvesBefore);
             lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / Measured:F2}"
                 : $"start {(a1 - a0) / Measured:F2} (factor {(f1 - f0) / Measured:F2}, boundary {(w1 - w0) / Measured:F2}), " +
                 $"solve {(b1 - b0) / Measured:F2}, finish {(c1 - c0) / Measured:F2} (settle {(VesselForest.SettleMilliseconds - settle0) / Measured:F2}, " +
@@ -219,10 +401,11 @@ namespace KSP.Retooled.Physics.Tests
             if (path == "locked")
             {
                 lastTimes += $"; sections {(sections1 - sections0) / (double)forestSolves:F0}, locked pairs {(locked1 - locked0) / (double)forestSolves:F0} " +
-                    $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / Math.Max(1, builds1 - builds0):F2} ms each), " +
+                    $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / System.Math.Max(1, builds1 - builds0):F2} ms each), " +
                     $"lock changes {changes1 - changes0}, largest residual {residual:E1} N s";
             }
             JobsUtility.JobWorkerCount = workers;
+            vesselSet?.Dispose();
             samples.Sort();
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
         }
@@ -291,7 +474,7 @@ namespace KSP.Retooled.Physics.Tests
                 out _, out _, out _);
             VesselForest.GetLockDiagnostics(out long contact1, out long fallbackBoundary, all, lockedBins);
             samples.Sort();
-            long forestSolves = Math.Max(1, solves1 - solves0);
+            long forestSolves = System.Math.Max(1, solves1 - solves0);
             return new SweepRun
             {
                 Median = samples[samples.Count / 2],
@@ -320,8 +503,8 @@ namespace KSP.Retooled.Physics.Tests
                 double d = (run[i] - reference[i]).magnitude;
                 difference += d;
                 total += reference[i].magnitude;
-                largest = Math.Max(largest, d);
-                scale = Math.Max(scale, reference[i].magnitude);
+                largest = System.Math.Max(largest, d);
+                scale = System.Math.Max(scale, reference[i].magnitude);
             }
 
             return (total > 0.0 ? difference / total : 0.0, scale > 0.0 ? largest / scale : largest);
@@ -388,7 +571,7 @@ namespace KSP.Retooled.Physics.Tests
                             double maxPose = 0.0;
                             for (int i = 0; i < run.Positions.Length; i++)
                             {
-                                maxPose = Math.Max(maxPose, (run.Positions[i] - reference.Positions[i]).magnitude);
+                                maxPose = System.Math.Max(maxPose, (run.Positions[i] - reference.Positions[i]).magnitude);
                             }
 
                             var pose = Compare(run.Positions, reference.Positions);

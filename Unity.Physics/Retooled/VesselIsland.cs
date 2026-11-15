@@ -71,8 +71,13 @@ namespace Unity.Physics
             };
 
             int builds = forest->StructureBuilds;
+            long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             PrepareVesselParts(ref run, stepInput.CurrentSubstep);
             StartVesselRun(ref run);
+            long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - started);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFactorTime, run.FactorTicks);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
             stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestSolves);
             stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
 
@@ -81,10 +86,15 @@ namespace Unity.Physics
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
             SolveForest(ref run, problem.RightHandSide, impulses);
+            long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
             SettleForest(ref run, problem, impulses, linear, angular, false);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
+                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
 
-            // A row that holds a position aims at where the integrator will really take its constraint; the vessel's own rows
-            // hold their positions through their errors, which they read from the parts' poses every substep.
+            // A boundary row that holds a position aims at where the integrator will really take its constraint. The
+            // vessel's own rows don't need this: the kernel builds them from the parts' poses every substep, so each row
+            // sees its own error and corrects it.
             if (holdsPositions && problem.RowCount > 0)
             {
                 var drift = new NativeArray<float>(problem.RowCount, Allocator.Temp);
@@ -116,6 +126,8 @@ namespace Unity.Physics
             }
 
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
+                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
             bodyLinear.Dispose();
             bodyAngular.Dispose();
             run.Dispose();
@@ -579,10 +591,7 @@ namespace Unity.Physics
             }
 
             long factorStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            for (int s = 0; s < sections; s++)
-            {
-                context.ComputeSection(s);
-            }
+            RunVesselStage(ref run, VesselTasks.ComputeSections, sections);
 
             VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
             SparseSolveTeam.RunAll(run.Team, contextPtr, SparseSolveTeam.ForestFactorKind, context.ChunkCount, null);
@@ -678,8 +687,8 @@ namespace Unity.Physics
             double* v = (double*)run.Velocity.GetUnsafePtr();
             if (!pushOut)
             {
-                // linear and angular hold each body's share of the boundary's and fixed rows' impulses; the fixed rows' are
-                // already among the parts' outside impulses.
+                // At this point, linear and angular hold the impulse that the boundary rows and the fixed rows gave each
+                // body. The kernel takes these as the parts' outside impulses when it works out the locked edges' loads.
                 for (int part = 0; part < forest->Parts.Length; part++)
                 {
                     int body = forest->PartBody[part];
@@ -690,67 +699,138 @@ namespace Unity.Physics
 
                 UnsafeUtility.MemCpy(context.Solution, v, 6L * sections * sizeof(double));
                 UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
-                for (int k = 0; k < forest->LinkCount; k++)
-                {
-                    context.LinkImpulses(k);
-                }
+                RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
 
                 // The finish moves the kernel's copies of the parts, which are refilled from the bodies next substep.
                 var poses = new NativeArray<VesselPart>(forest->Parts.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 UnsafeUtility.MemCpy(poses.GetUnsafePtr(), forest->Parts.Ptr, forest->Parts.Length * (long)sizeof(VesselPart));
-                for (int s = 0; s < sections; s++)
-                {
-                    context.FinishSection(s);
-                }
+                RunVesselStage(ref run, VesselTasks.FinishSections, sections);
 
                 UnsafeUtility.MemCpy(forest->Parts.Ptr, poses.GetUnsafeReadOnlyPtr(), forest->Parts.Length * (long)sizeof(VesselPart));
                 poses.Dispose();
             }
 
-            double h = run.Timestep;
-            for (int part = 0; part < forest->Parts.Length; part++)
+            var tasks = new VesselTasks
             {
-                int body = forest->PartBody[part];
-                if (body < 0)
-                {
-                    continue;
-                }
+                Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                Phase = VesselTasks.BodyImpulses,
+                Count = forest->Parts.Length,
+                Linear = linear,
+                Angular = angular,
+                PushOut = pushOut,
+            };
+            SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind,
+                (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+        }
 
-                int s = forest->BodySection[body];
-                VesselPart p = forest->Parts[part];
-                VesselSection section = forest->Sections[s];
-                double3 sectionLinear = new double3(v[6 * s], v[6 * s + 1], v[6 * s + 2]);
-                double3 sectionAngular = new double3(v[6 * s + 3], v[6 * s + 4], v[6 * s + 5]);
-                if (!pushOut && math.lengthsq(sectionAngular) < MinimumSpin * MinimumSpin)
-                {
-                    sectionAngular = 0.0;
-                }
+        /// <summary>How many sections, links or parts one task of a vessel stage takes.</summary>
+        const int VesselItemsPerTask = 64;
 
-                double3 r = p.Position - section.Center;
-                double3 targetLinear;
-                if (pushOut)
-                {
-                    targetLinear = sectionLinear + math.cross(sectionAngular, r);
-                }
-                else
-                {
-                    // The part lands where the section's turn takes it, so that a locked section stays rigid.
-                    double angle = math.length(sectionAngular) * h;
-                    double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
-                        : new double4(0.0, 0.0, 0.0, 1.0);
-                    targetLinear = sectionLinear + (math.mul(VesselContext.Rotation(turn), r) - r) / h;
-                }
+        /// <summary>What a vessel island's stages share among a team's lanes.</summary>
+        unsafe struct VesselTasks
+        {
+            public const int ComputeSections = 0;
+            public const int LinkImpulses = 1;
+            public const int FinishSections = 2;
+            public const int BodyImpulses = 3;
 
-                double3 changeLinear = pushOut ? targetLinear : targetLinear - p.LinearVelocity;
-                double3 changeAngular = pushOut ? sectionAngular : sectionAngular - p.AngularVelocity;
-                int worldBody = run.WorldBodies[body];
-                MotionVelocity motion = run.MotionVelocities[worldBody];
-                quaternion rotation = run.MotionDatas[worldBody].WorldFromMotion.rot;
-                double3 inverseInertia = math.max((double3)motion.InverseInertia, 1e-12);
-                double3 local = math.rotate(math.conjugate(rotation), (float3)changeAngular);
-                linear[body] = Flushed(changeLinear / math.max((double)motion.InverseMass, 1e-12));
-                angular[body] = Flushed((double3)math.rotate(rotation, (float3)(local / inverseInertia)));
+            public ForestRun* Run;
+            public int Phase;
+            public int Count;
+            public float3* Linear;
+            public float3* Angular;
+            public bool PushOut;
+        }
+
+        /// <summary>Runs one of the kernel's stages over sections or links on the run's team.</summary>
+        static unsafe void RunVesselStage(ref ForestRun run, int phase, int count)
+        {
+            var tasks = new VesselTasks
+            {
+                Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                Phase = phase,
+                Count = count,
+            };
+            SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+        }
+
+        /// <summary>One task of a vessel stage, for a team.</summary>
+        internal static unsafe void ForestVesselTask(void* context, int task)
+        {
+            var tasks = (VesselTasks*)context;
+            ref ForestRun run = ref *tasks->Run;
+            ref VesselContext kernel = ref run.Forest->Context;
+            int end = math.min((task + 1) * VesselItemsPerTask, tasks->Count);
+            for (int item = task * VesselItemsPerTask; item < end; item++)
+            {
+                switch (tasks->Phase)
+                {
+                    case VesselTasks.ComputeSections:
+                        kernel.ComputeSection(item);
+                        break;
+                    case VesselTasks.LinkImpulses:
+                        kernel.LinkImpulses(item);
+                        break;
+                    case VesselTasks.FinishSections:
+                        kernel.FinishSection(item);
+                        break;
+                    default:
+                        PartImpulse(ref run, item, tasks->Linear, tasks->Angular, tasks->PushOut);
+                        break;
+                }
             }
+        }
+
+        /// <summary>
+        /// The impulse that gives one part's body its section's motion: the section's velocity at the part, and the
+        /// section's spin. After a solve, the part lands where the section's turn takes it, so that a locked section stays
+        /// rigid. After a push-out, the section starts from rest.
+        /// </summary>
+        static unsafe void PartImpulse(ref ForestRun run, int part, float3* linear, float3* angular, bool pushOut)
+        {
+            ForestIsland* forest = run.Forest;
+            double* v = (double*)run.Velocity.GetUnsafePtr();
+            double h = run.Timestep;
+            int body = forest->PartBody[part];
+            if (body < 0)
+            {
+                return;
+            }
+
+            int s = forest->BodySection[body];
+            VesselPart p = forest->Parts[part];
+            VesselSection section = forest->Sections[s];
+            double3 sectionLinear = new double3(v[6 * s], v[6 * s + 1], v[6 * s + 2]);
+            double3 sectionAngular = new double3(v[6 * s + 3], v[6 * s + 4], v[6 * s + 5]);
+            if (!pushOut && math.lengthsq(sectionAngular) < MinimumSpin * MinimumSpin)
+            {
+                sectionAngular = 0.0;
+            }
+
+            double3 r = p.Position - section.Center;
+            double3 targetLinear;
+            if (pushOut)
+            {
+                targetLinear = sectionLinear + math.cross(sectionAngular, r);
+            }
+            else
+            {
+                // The part lands where the section's turn takes it, so that a locked section stays rigid.
+                double angle = math.length(sectionAngular) * h;
+                double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
+                    : new double4(0.0, 0.0, 0.0, 1.0);
+                targetLinear = sectionLinear + (math.mul(VesselContext.Rotation(turn), r) - r) / h;
+            }
+
+            double3 changeLinear = pushOut ? targetLinear : targetLinear - p.LinearVelocity;
+            double3 changeAngular = pushOut ? sectionAngular : sectionAngular - p.AngularVelocity;
+            int worldBody = run.WorldBodies[body];
+            MotionVelocity motion = run.MotionVelocities[worldBody];
+            quaternion rotation = run.MotionDatas[worldBody].WorldFromMotion.rot;
+            double3 inverseInertia = math.max((double3)motion.InverseInertia, 1e-12);
+            double3 local = math.rotate(math.conjugate(rotation), (float3)changeAngular);
+            linear[body] = Flushed(changeLinear / math.max((double)motion.InverseMass, 1e-12));
+            angular[body] = Flushed((double3)math.rotate(rotation, (float3)(local / inverseInertia)));
         }
 
         /// <summary>

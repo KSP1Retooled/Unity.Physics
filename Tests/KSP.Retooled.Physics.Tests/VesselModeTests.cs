@@ -55,6 +55,8 @@ namespace KSP.Retooled.Physics.Tests
 
             public VesselEdgeLoad Load(int part) => edgeLoads[part];
 
+            public VesselEdgeLoad ClosureLoad(int closure) => closureLoads[closure];
+
             public bool Locked(int part) => edgeLocked[part];
 
             /// <summary>Makes the arrays and hands the set to the step, with every part's body as the last world has it.</summary>
@@ -181,6 +183,19 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// Steps once without gravity, so that the backend builds a world to look the parts up in, and then hands the
+        /// vessels to the step. With gravity, the parts would fall apart for that one step, before any edge holds them.
+        /// </summary>
+        private static void Begin(TestVessels set)
+        {
+            Vector3 gravity = UnityEngine.Physics.gravity;
+            UnityEngine.Physics.gravity = Vector3.zero;
+            Simulate();
+            UnityEngine.Physics.gravity = gravity;
+            set.Publish();
+        }
+
+        /// <summary>
         /// A rigid edge from part i to its parent at a point in world space, at rest where the parts are now. Every axis is
         /// hard.
         /// </summary>
@@ -236,8 +251,7 @@ namespace KSP.Retooled.Physics.Tests
             ConfigurableJoint hook = bodies[0].gameObject.AddComponent<ConfigurableJoint>();
             hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
             hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
-            Simulate();
-            vessels.Publish();
+            Begin(vessels);
             Vector3 top = bodies[0].position, bottom = bodies[count - 1].position;
             vessels.Step(50);
 
@@ -254,6 +268,128 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That((bodies[count - 1].position - bottom).magnitude, Is.LessThan(0.01f), "the column hangs where it was");
         }
 
+        /// <summary>
+        /// An arm of one part held out sideways from a part hooked to the world. With a swing spring that may not lock, the
+        /// arm droops by its moment over the spring. With an edge that may lock, it hardly droops at all.
+        /// </summary>
+        [Test]
+        public void ALockedArmBarelyDroopsWhereASpringDroopsByItsLoad()
+        {
+            const double spring = 2000.0;
+            var droop = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                TearDownScene();
+                SetUpScene();
+                VesselForest.Enabled = true;
+                vessels.Dispose();
+                vessels = new TestVessels();
+                Rigidbody root = Box(new Vector3(0.0f, 5.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+                Rigidbody arm = Box(new Vector3(1.0f, 5.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+                root.mass = arm.mass = PartMass;
+                root.sleepThreshold = arm.sleepThreshold = 0.0f;
+                UnityEngine.Physics.IgnoreCollision(root.GetComponent<UnityEngine.Collider>(), arm.GetComponent<UnityEngine.Collider>());
+                ConfigurableJoint hook = root.gameObject.AddComponent<ConfigurableJoint>();
+                hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
+                hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
+                bool mayLock = pass == 1;
+                vessels.AddVessel(new[] { root, arm }, new[] { -1, 0 }, i =>
+                {
+                    VesselEdge edge = RigidEdge(arm, root, new Vector3(0.5f, 5.0f, 0.0f));
+                    edge.SwingStiffness = spring;
+                    edge.SwingDamping = 0.1 * spring;
+                    edge.MayLock = mayLock;
+                    return edge;
+                });
+                Begin(vessels);
+                vessels.Step(100);
+                // The hook to the world is a Unity joint, which gives a little too, so the droop is measured in the frame
+                // of the root part.
+                droop[pass] = -root.transform.InverseTransformPoint(arm.position).y;
+            }
+
+            // The weight of the arm acts half a metre from the joint and turns the arm about it. That lowers the centre of
+            // the arm by the same half metre times the angle.
+            float expected = (float)(PartMass * -Gravity * 0.5 / spring * 0.5);
+            Debug.Log($"[VesselModeTests] arm: droop with a spring {droop[0] * 1e3f:F3} mm (expected {expected * 1e3f:F3}), locked {droop[1] * 1e3f:F4} mm");
+            Assert.That(droop[0], Is.EqualTo(expected).Within(0.2f * expected), "the spring takes the moment of the arm");
+            Assert.That(droop[1], Is.LessThan(0.02f * expected), "the locked edge holds the arm up");
+        }
+
+        /// <summary>
+        /// A column whose edges are springs that may not lock, with a rigid strut from the top part to the bottom one. A
+        /// side force at the bottom bends the springs, and the strut, which is stiffer, takes a share of the load.
+        /// </summary>
+        [Test]
+        public void AStrutAcrossSpringsCarriesLoad()
+        {
+            List<Rigidbody> bodies = Column(3, 5.0f);
+            for (int i = 1; i < 3; i++)
+            {
+                VesselEdge edge = vessels.Edges[i];
+                edge.MayLock = false;
+                edge.SwingStiffness = 500.0;
+                edge.SwingDamping = 50.0;
+                vessels.Edges[i] = edge;
+            }
+
+            ConfigurableJoint hook = bodies[0].gameObject.AddComponent<ConfigurableJoint>();
+            hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
+            hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
+            Vector3 point = 0.5f * (bodies[0].position + bodies[2].position) + new Vector3(0.3f, 0.0f, 0.0f);
+            vessels.Closures.Add(new VesselClosure
+            {
+                PartA = 0,
+                PartB = 2,
+                AnchorA = (float3)(point - bodies[0].worldCenterOfMass),
+                AnchorB = (float3)(point - bodies[2].worldCenterOfMass),
+                Frame = double3x3.identity,
+                Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                LinearStiffness = double.PositiveInfinity,
+                AngularStiffness = double.PositiveInfinity,
+            });
+            Begin(vessels);
+            for (int i = 0; i < 50; i++)
+            {
+                bodies[2].AddForce(new Vector3(20.0f, 0.0f, 0.0f));
+                vessels.Step();
+            }
+
+            VesselEdgeLoad strut = vessels.ClosureLoad(0);
+            Debug.Log($"[VesselModeTests] strut: force {(float3)strut.Force}, torque {(float3)strut.Torque}; edge 1 {(float3)vessels.Load(1).Force}, edge 2 {(float3)vessels.Load(2).Force}");
+            Assert.That(math.length(strut.Force) + math.length(strut.Torque), Is.GreaterThan(1.0), "the strut carries load");
+        }
+
+        /// <summary>A hanging column split into two vessels at its middle: the lower one falls away in one piece.</summary>
+        [Test]
+        public void AColumnSplitInTwoComesApart()
+        {
+            List<Rigidbody> bodies = Column(4, 5.0f);
+            ConfigurableJoint hook = bodies[0].gameObject.AddComponent<ConfigurableJoint>();
+            hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
+            hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
+            Begin(vessels);
+            vessels.Step(10);
+            Vector3 lower = bodies[2].position;
+
+            // Part 2 loses its edge and becomes the root of a vessel of its own, with part 3 under it.
+            VesselEdge cut = vessels.Edges[2];
+            cut.Parent = -1;
+            vessels.Edges[2] = cut;
+            VesselEdge below = vessels.Edges[3];
+            below.Parent = 0;
+            vessels.Edges[3] = below;
+            vessels.Ranges.Clear();
+            vessels.Ranges.Add((0, 2));
+            vessels.Ranges.Add((2, 2));
+            vessels.Publish();
+            vessels.Step(25);
+            float fall = lower.y - bodies[2].position.y;
+            Debug.Log($"[VesselModeTests] split: the lower vessel fell {fall:F3} m");
+            Assert.That(fall, Is.GreaterThan(0.5f), "the lower vessel falls");
+            Assert.That((bodies[3].position - bodies[2].position).magnitude, Is.EqualTo(1.0f).Within(1e-3f), "and stays in one piece");
+        }
+
         [Test]
         public void AnEdgePastItsBreakForceReadsAsBroken()
         {
@@ -261,8 +397,7 @@ namespace KSP.Retooled.Physics.Tests
             ConfigurableJoint hook = bodies[0].gameObject.AddComponent<ConfigurableJoint>();
             hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
             hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
-            Simulate();
-            vessels.Publish();
+            Begin(vessels);
             vessels.Step(10);
             VesselEdgeLoad load = vessels.Load(1);
             Debug.Log($"[VesselModeTests] break: ratio {load.Ratio:F3}, force {math.length(load.Force):F2}");
@@ -282,8 +417,7 @@ namespace KSP.Retooled.Physics.Tests
             bodies[0].linearVelocity = new Vector3(1.0f, 0.0f, 0.0f);
             bodies[3].linearVelocity = new Vector3(0.0f, 0.0f, -2.0f);
             bodies[1].angularVelocity = new Vector3(0.0f, 3.0f, 0.0f);
-            Simulate();
-            vessels.Publish();
+            Begin(vessels);
 
             Vector3 Momentum()
             {
@@ -311,8 +445,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             Ground();
             List<Rigidbody> bodies = Column(4, 0.5f);
-            Simulate();
-            vessels.Publish();
+            Begin(vessels);
             vessels.Step(150);
             float speed = 0.0f;
             foreach (Rigidbody body in bodies)
@@ -356,8 +489,7 @@ namespace KSP.Retooled.Physics.Tests
             hinge.connectedBody = left[0];
             hinge.anchor = new Vector3(-0.5f, 0.0f, 0.0f);
             hinge.axis = new Vector3(0.0f, 0.0f, 1.0f);
-            Simulate();
-            vessels.Publish();
+            Begin(vessels);
             Vector3 gap = rightBodies[1].position - rightBodies[0].position;
             vessels.Step(60);
             float hingeGap = (rightBodies[0].transform.TransformPoint(hinge.anchor) - left[0].transform.TransformPoint(hinge.connectedAnchor)).magnitude;
