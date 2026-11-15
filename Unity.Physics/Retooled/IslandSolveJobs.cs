@@ -207,13 +207,17 @@ namespace Unity.Physics
                 substepInput.CurrentSubstep = substep;
                 if (substep > 0)
                 {
+                    // Only the contacts are updated ahead of the count, because only theirs can change. Each joint is
+                    // updated by the job that builds its rows, while it has the joint at hand.
                     handle = new UpdateIslandJacobiansJob
                     {
                         Headers = work.Headers.AsDeferredJobArray(),
+                        Islands = work.Islands.AsDeferredJobArray(),
                         MotionVelocities = world.MotionVelocities,
                         MotionDatas = world.MotionDatas,
                         Bodies = world.Bodies,
                         StepInput = substepInput,
+                        ContactsOnly = !LegacyRowBuild,
                     }.Schedule(work.Headers, headersPerBatch, handle);
 
                     handle = new CountIslandRowsJob { Work = work }.Schedule(handle);
@@ -226,7 +230,9 @@ namespace Unity.Physics
                     Work = work.Buffers,
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
+                    Bodies = world.Bodies,
                     StepInput = substepInput,
+                    UpdateJoints = substep > 0 && !LegacyRowBuild,
                 }.Schedule(work.Headers, headersPerBatch, handle);
 
                 JobHandle alone = new SolveDirectIslandJob
@@ -298,6 +304,20 @@ namespace Unity.Physics
         }
 
         const int SharedSolveRows = 512;
+
+        /// <summary>
+        /// Builds the direct islands' rows the way they were built before the joints' rows were fused with their updates and
+        /// builds. Only for tests, which compare the two. Read when the jobs are scheduled.
+        /// </summary>
+        internal static bool LegacyRowBuild
+        {
+            get => LegacyRowBuildFlag.Data;
+            set => LegacyRowBuildFlag.Data = value;
+        }
+
+        struct LegacyRowBuildKey { }
+
+        static readonly SharedStatic<bool> LegacyRowBuildFlag = SharedStatic<bool>.GetOrCreate<LegacyRowBuildKey>();
 
         unsafe struct IslandHeader
         {
@@ -513,6 +533,12 @@ namespace Unity.Physics
             [ReadOnly]
             public NativeArray<IslandHeader> Headers;
 
+            [ReadOnly]
+            public NativeArray<DirectIsland> Islands;
+
+            /// <summary> Leaves the joints, which come before an island's contacts, to <see cref="BuildIslandRowsJob"/>. </summary>
+            public bool ContactsOnly;
+
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
 
@@ -526,6 +552,11 @@ namespace Unity.Physics
 
             public void Execute(int index)
             {
+                if (ContactsOnly && index < Islands[Headers[index].Island].JointEnd)
+                {
+                    return;
+                }
+
                 UpdateJacobian(ref *Headers[index].Header, MotionDatas, MotionVelocities, Bodies, StepInput);
             }
         }
@@ -608,25 +639,38 @@ namespace Unity.Physics
             [ReadOnly, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionData> MotionDatas;
 
+            [ReadOnly]
+            public NativeArray<RigidBody> Bodies;
+
             public StepInput StepInput;
+
+            /// <summary>
+            /// Updates each joint's Jacobian to this substep's poses before building its rows. A Jacobian's update and its
+            /// rows read nothing of any other Jacobian, so this is the same as updating them all first.
+            /// </summary>
+            public bool UpdateJoints;
 
             public void Execute(int index)
             {
+                int islandIndex = Headers[index].Island;
+                DirectIsland island = Islands[islandIndex];
+                ref JacobianHeader header = ref *Headers[index].Header;
+                if (UpdateJoints && index < island.JointEnd)
+                {
+                    UpdateJacobian(ref header, MotionDatas, MotionVelocities, Bodies, StepInput);
+                }
+
                 int startRow = (*Work.HeaderRows)[index];
                 if (startRow < 0)
                 {
                     return;
                 }
 
-                ref JacobianHeader header = ref *Headers[index].Header;
                 int jacRows = GetConstraintRows(ref header);
                 if (jacRows == 0)
                 {
                     return;
                 }
-
-                int islandIndex = Headers[index].Island;
-                DirectIsland island = Islands[islandIndex];
 
                 // Every row starts free and unbounded, and the builder bounds the rows that need it.
                 int firstRow = island.FirstRow + startRow;

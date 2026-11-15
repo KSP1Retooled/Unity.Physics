@@ -680,10 +680,14 @@ namespace Unity.Physics
                 }
                 else
                 {
-                    Joint joint = world.Joints[pair.JointIndex];
+                    // A joint is big, and the build only reads it, so it is read in place unless its motors need scaling.
+                    Joint scaled = default;
+                    ref Joint joint = ref UnsafeUtility.ArrayElementAsRef<Joint>(world.Joints.GetUnsafeReadOnlyPtr(), pair.JointIndex);
                     if (motorImpulseScale != 1.0f)
                     {
-                        ScaleMotorImpulses(ref joint, motorImpulseScale);
+                        scaled = joint;
+                        ScaleMotorImpulses(ref scaled, motorImpulseScale);
+                        joint = ref scaled;
                     }
 
                     // Need to fetch the real body indices from the joint, as the scheduler may have reordered them
