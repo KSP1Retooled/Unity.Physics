@@ -775,6 +775,27 @@ namespace KSP.Retooled.Physics
         [DllImport(Library)]
         internal static extern int RetooledPhysics_OnMainThread();
 
+        /// <summary>The plugin's address wait and wake, which the solver's job lanes park on. Older plugins lack it.</summary>
+        [DllImport(Library)]
+        private static extern void RetooledPhysics_WaitFunctions(IntPtr* wait, IntPtr* wake);
+
+        /// <summary>Hands the plugin's address wait to the solver, which spins without it.</summary>
+        internal static void InstallAddressWait()
+        {
+            IntPtr wait = IntPtr.Zero;
+            IntPtr wake = IntPtr.Zero;
+            try
+            {
+                RetooledPhysics_WaitFunctions(&wait, &wake);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return;
+            }
+
+            Unity.Physics.AddressWait.Install(wait, wake);
+        }
+
         /// <summary>
         /// What stops this domain attaching, or null when nothing does: the first struct or command enum whose size differs
         /// from the plugin's, or a joint layout other than the one the store's records were written with.

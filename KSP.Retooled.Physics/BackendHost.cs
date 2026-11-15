@@ -132,6 +132,7 @@ namespace KSP.Retooled.Physics
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
+            NativeStore.InstallAddressWait();
             IgnoreTable.Reslot(NativeStore.RetooledPhysics_Globals());
             attached = true;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
@@ -154,6 +155,7 @@ namespace KSP.Retooled.Physics
                 BodyEntities.Unbind();
             }
 
+            Unity.Physics.AddressWait.Install(IntPtr.Zero, IntPtr.Zero);
             NativeStore.RetooledPhysics_Detach();
             attached = false;
 

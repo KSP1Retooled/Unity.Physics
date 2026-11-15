@@ -285,6 +285,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
 
                 SparseSolveTeam team = default;
+                team.Configure();
                 bool converged = false;
                 fixed (SparseConstraintSolver* solverPointer = &solver)
                 {

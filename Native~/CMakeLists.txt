@@ -30,6 +30,7 @@ add_library(RetooledPhysics SHARED
     src/Query.cpp
     src/Vehicle.cpp
     src/VehicleTrace.cpp
+    src/Wait.cpp
 )
 target_include_directories(RetooledPhysics PRIVATE "${UNITY_PLUGIN_API}" "${UNITY_PLUGIN_API}/PhysicsBackend")
 set_target_properties(RetooledPhysics PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden)

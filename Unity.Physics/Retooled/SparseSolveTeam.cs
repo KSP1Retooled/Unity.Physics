@@ -1,5 +1,8 @@
 using System.Threading;
 using Unity.Burst.Intrinsics;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Profiling;
+using Unity.Profiling.LowLevel.Unsafe;
 
 namespace Unity.Physics
 {
@@ -12,10 +15,21 @@ namespace Unity.Physics
     internal unsafe struct SparseSolveTeam
     {
         /// <summary>
-        /// How many times a helper spins with no stage to work on before it leaves the leader to finish alone, so the lanes
-        /// give their threads back if the leader stays serial for long.
+        /// How long a helper spins with no stage to work on before it parks. A stage that comes sooner finds it awake, and a
+        /// parked helper takes a few microseconds to wake, which is small beside a gap this long.
         /// </summary>
-        const int PatienceSpins = 1 << 20;
+        const long SpinMicroseconds = 50;
+
+        /// <summary>
+        /// How long a helper waits with no stage to work on before it leaves the leader to finish alone, so the lanes give
+        /// their threads back to the job system if the leader stays serial for long.
+        /// </summary>
+        const long PatienceMicroseconds = 2000;
+
+        /// <summary>How many pauses a helper spins between looks at the clock.</summary>
+        const int SpinsPerClockRead = 64;
+
+        static readonly ProfilerMarker ParkMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Park");
 
         /// <summary>Stages of the direct solver's own, around a sparse solver's.</summary>
         public const int PredictDriftKind = -1;
@@ -35,6 +49,10 @@ namespace Unity.Physics
         int leader;
         int finished;
 
+        // Timestamp ticks, set by the main thread, which alone can read the clock's rate.
+        long spinTicks;
+        long patienceTicks;
+
         // Keeps the flags written once per solve a cache line apart from the counters every task updates, wherever the team
         // starts, so reading a flag doesn't pull in a line that the working lanes are writing.
         fixed byte separation[64];
@@ -43,6 +61,11 @@ namespace Unity.Physics
         // task from a stage that has ended.
         long next;
         int done;
+
+        // How many helpers are parked, and the word they wait on, which the leader changes before it wakes one. A woken helper
+        // that finds a stage wakes the next, so the leader pays for one wake however many are parked.
+        int parked;
+        int signal;
 
         // The leader writes a stage before it publishes the stage's generation, and generations alternate between these two.
         // The one a lane reads therefore stays the same for as long as its generation is current.
@@ -55,10 +78,22 @@ namespace Unity.Physics
             return Interlocked.CompareExchange(ref leader, 1, 0) == 0;
         }
 
+        /// <summary>Sets how long helpers spin and wait. The main thread calls it before the team's job runs.</summary>
+        public void Configure()
+        {
+            spinTicks = AddressWait.TicksFromMicroseconds(SpinMicroseconds);
+            patienceTicks = AddressWait.TicksFromMicroseconds(PatienceMicroseconds);
+        }
+
         /// <summary>Lets the helpers go. The leader calls it once it has nothing more to hand out.</summary>
         public void Finish()
         {
             Interlocked.Exchange(ref finished, 1);
+            if (Volatile.Read(ref parked) > 0)
+            {
+                Interlocked.Increment(ref signal);
+                AddressWait.WakeAll((int*)UnsafeUtility.AddressOf(ref signal));
+            }
         }
 
         /// <summary>
@@ -85,6 +120,15 @@ namespace Unity.Physics
 
             Interlocked.Exchange(ref done, 0);
             Interlocked.Exchange(ref next, generation << 32);
+
+            // The exchange above is a full fence, as is a helper's count before it parks, so either the helper sees the new
+            // generation and stays up, or this sees the helper and wakes it.
+            if (Volatile.Read(ref parked) > 0)
+            {
+                Interlocked.Increment(ref signal);
+                AddressWait.WakeOne((int*)UnsafeUtility.AddressOf(ref signal));
+            }
+
             Work(generation, stage);
 
             // Waiting lanes poll with plain reads: a locked read takes the line from the lanes still finishing tasks.
@@ -94,11 +138,15 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Takes tasks from each stage the leader hands out, until it finishes or the lane runs out of patience.</summary>
+        /// <summary>
+        /// Takes tasks from each stage the leader hands out, until it finishes or the lane runs out of patience. Between stages
+        /// the lane spins for a while, then parks until the leader wakes it.
+        /// </summary>
         public void Help()
         {
             long seen = 0;
             int spins = 0;
+            long idleSince = ProfilerUnsafeUtility.Timestamp;
             while (Volatile.Read(ref finished) == 0)
             {
                 long generation = Interlocked.Read(ref next) >> 32;
@@ -107,15 +155,50 @@ namespace Unity.Physics
                     seen = generation;
                     spins = 0;
                     Work(generation, (generation & 1) == 0 ? even : odd);
+                    idleSince = ProfilerUnsafeUtility.Timestamp;
                     continue;
                 }
 
-                if (++spins > PatienceSpins)
+                Common.Pause();
+                if (++spins % SpinsPerClockRead != 0)
+                {
+                    continue;
+                }
+
+                long idle = ProfilerUnsafeUtility.Timestamp - idleSince;
+                if (idle > patienceTicks)
                 {
                     return;
                 }
 
-                Common.Pause();
+                if (AddressWait.Available && idle > spinTicks)
+                {
+                    Park(seen);
+                }
+            }
+        }
+
+        /// <summary>Waits for the leader to signal, unless a new stage or the end has already come.</summary>
+        void Park(long seen)
+        {
+            int* word = (int*)UnsafeUtility.AddressOf(ref signal);
+            Interlocked.Increment(ref parked);
+            int expected = Volatile.Read(ref signal);
+            if (Volatile.Read(ref finished) == 0 && Interlocked.Read(ref next) >> 32 == seen)
+            {
+                using (ParkMarker.Auto())
+                {
+                    AddressWait.Wait(word, expected);
+                }
+            }
+
+            Interlocked.Decrement(ref parked);
+
+            // Passes the wake on, so the leader woke one helper however many there are. The rest of the work the lane finds
+            // itself, back in Help.
+            if (Interlocked.Read(ref next) >> 32 != seen && Volatile.Read(ref parked) > 0)
+            {
+                AddressWait.WakeOne(word);
             }
         }
 

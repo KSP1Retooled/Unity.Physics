@@ -276,6 +276,11 @@ namespace Unity.Physics
             {
                 Teams = UnsafeList<SparseSolveTeam>.Create(substeps, allocator);
                 Teams->Resize(substeps, NativeArrayOptions.ClearMemory);
+                for (int substep = 0; substep < substeps; substep++)
+                {
+                    Teams->ElementAt(substep).Configure();
+                }
+
                 HeaderRows = UnsafeList<int>.Create(0, allocator);
                 Jacobian = UnsafeList<float>.Create(0, allocator);
                 Epsilon = UnsafeList<float>.Create(0, allocator);
