@@ -64,88 +64,89 @@ namespace Unity.Physics
         public const int FillCount = 9;
         public const int HeaderLength = 10;
 
-        public NativeArray<int> Header;
+        public UnsafeList<int> Header;
 
         /// <summary>Each part's section.</summary>
-        public NativeList<int> PartSection;
+        public UnsafeList<int> PartSection;
 
         /// <summary>Each section's parts, parents before children, from SectionPartStart[s] to SectionPartStart[s + 1].</summary>
-        public NativeList<int> SectionPartStart;
+        public UnsafeList<int> SectionPartStart;
 
-        public NativeList<int> SectionParts;
+        public UnsafeList<int> SectionParts;
 
         /// <summary>Each column's structure (later sections it couples to, ascending), from ColumnStart[s].</summary>
-        public NativeList<int> ColumnStart;
+        public UnsafeList<int> ColumnStart;
 
-        public NativeList<int> Rows;
+        public UnsafeList<int> Rows;
 
         /// <summary>The elimination tree: each section's first structure entry, or -1.</summary>
-        public NativeList<int> EliminationParent;
+        public UnsafeList<int> EliminationParent;
 
         /// <summary>
         /// For column s, from UpdateStart[s]: for each structure entry p in turn, the block its diagonal update goes to,
         /// then the block for each pair (p, q &gt; p).
         /// </summary>
-        public NativeList<int> UpdateStart;
+        public UnsafeList<int> UpdateStart;
 
-        public NativeList<int> UpdateTarget;
+        public UnsafeList<int> UpdateTarget;
 
         /// <summary>For each structure entry, where the forward substitution's update to that row goes.</summary>
-        public NativeList<int> RhsTarget;
+        public UnsafeList<int> RhsTarget;
 
         /// <summary>The links owned by each section, from LinkStart[s].</summary>
-        public NativeList<int> LinkStart;
+        public UnsafeList<int> LinkStart;
 
-        public NativeList<VesselLink> Links;
+        public UnsafeList<VesselLink> Links;
 
         /// <summary>Every link touching each section, from IncidentStart[s].</summary>
-        public NativeList<int> IncidentStart;
+        public UnsafeList<int> IncidentStart;
 
-        public NativeList<int> Incident;
+        public UnsafeList<int> Incident;
 
         /// <summary>The link of each part's live tree edge, or -1, and of each closure, or -1 when it is inert.</summary>
-        public NativeList<int> PartLink;
+        public UnsafeList<int> PartLink;
 
-        public NativeList<int> ClosureLink;
+        public UnsafeList<int> ClosureLink;
 
         /// <summary>Each chunk's columns, ascending, from ChunkStart[c]; then the top's columns, ascending.</summary>
-        public NativeList<int> ChunkStart;
+        public UnsafeList<int> ChunkStart;
 
-        public NativeList<int> ChunkColumns;
-        public NativeList<int> TopColumns;
+        public UnsafeList<int> ChunkColumns;
+        public UnsafeList<int> TopColumns;
 
         /// <summary>Each chunk's buffer blocks and right-hand sides, and where the top job adds each one.</summary>
-        public NativeList<int> ChunkBufferStart;
+        public UnsafeList<int> ChunkBufferStart;
 
-        public NativeList<int> BufferTarget;
-        public NativeList<int> ChunkRhsStart;
-        public NativeList<int> RhsBufferTarget;
+        public UnsafeList<int> BufferTarget;
+        public UnsafeList<int> ChunkRhsStart;
+        public UnsafeList<int> RhsBufferTarget;
 
         public VesselStructure(Allocator allocator)
         {
-            Header = new NativeArray<int>(HeaderLength, allocator);
-            PartSection = new NativeList<int>(allocator);
-            SectionPartStart = new NativeList<int>(allocator);
-            SectionParts = new NativeList<int>(allocator);
-            ColumnStart = new NativeList<int>(allocator);
-            Rows = new NativeList<int>(allocator);
-            EliminationParent = new NativeList<int>(allocator);
-            UpdateStart = new NativeList<int>(allocator);
-            UpdateTarget = new NativeList<int>(allocator);
-            RhsTarget = new NativeList<int>(allocator);
-            LinkStart = new NativeList<int>(allocator);
-            Links = new NativeList<VesselLink>(allocator);
-            IncidentStart = new NativeList<int>(allocator);
-            Incident = new NativeList<int>(allocator);
-            PartLink = new NativeList<int>(allocator);
-            ClosureLink = new NativeList<int>(allocator);
-            ChunkStart = new NativeList<int>(allocator);
-            ChunkColumns = new NativeList<int>(allocator);
-            TopColumns = new NativeList<int>(allocator);
-            ChunkBufferStart = new NativeList<int>(allocator);
-            BufferTarget = new NativeList<int>(allocator);
-            ChunkRhsStart = new NativeList<int>(allocator);
-            RhsBufferTarget = new NativeList<int>(allocator);
+            Header = new UnsafeList<int>(HeaderLength, allocator);
+            Header.Resize(HeaderLength, NativeArrayOptions.ClearMemory);
+            PartSection = new UnsafeList<int>(0, allocator);
+            SectionPartStart = new UnsafeList<int>(0, allocator);
+            SectionParts = new UnsafeList<int>(0, allocator);
+            ColumnStart = new UnsafeList<int>(0, allocator);
+            Rows = new UnsafeList<int>(0, allocator);
+            EliminationParent = new UnsafeList<int>(0, allocator);
+            UpdateStart = new UnsafeList<int>(0, allocator);
+            UpdateTarget = new UnsafeList<int>(0, allocator);
+            RhsTarget = new UnsafeList<int>(0, allocator);
+            LinkStart = new UnsafeList<int>(0, allocator);
+            Links = new UnsafeList<VesselLink>(0, allocator);
+            IncidentStart = new UnsafeList<int>(0, allocator);
+            Incident = new UnsafeList<int>(0, allocator);
+            PartLink = new UnsafeList<int>(0, allocator);
+            ClosureLink = new UnsafeList<int>(0, allocator);
+            ChunkStart = new UnsafeList<int>(0, allocator);
+            ChunkColumns = new UnsafeList<int>(0, allocator);
+            TopColumns = new UnsafeList<int>(0, allocator);
+            ChunkBufferStart = new UnsafeList<int>(0, allocator);
+            BufferTarget = new UnsafeList<int>(0, allocator);
+            ChunkRhsStart = new UnsafeList<int>(0, allocator);
+            RhsBufferTarget = new UnsafeList<int>(0, allocator);
         }
 
         public void Dispose()
@@ -178,7 +179,7 @@ namespace Unity.Physics
 
     /// <summary>Rebuilds a <see cref="VesselStructure"/> from the edges' states. It runs on one thread.</summary>
     [BurstCompile(DisableSafetyChecks = true, CompileSynchronously = true)]
-    internal struct BuildVesselStructureJob : IJob
+    internal unsafe struct BuildVesselStructureJob : IJob
     {
         [ReadOnly] public NativeArray<VesselPart> Parts;
         [ReadOnly] public NativeArray<VesselEdge> Edges;
@@ -186,7 +187,7 @@ namespace Unity.Physics
         public int HubClosures;
         public int ChunkTarget;
         public bool MinimumDegree;
-        public VesselStructure Structure;
+        [NativeDisableUnsafePtrRestriction] public VesselStructure* Structure;
 
         // A link while the sections are still labels in tree order.
         struct LabelLink
@@ -459,9 +460,9 @@ namespace Unity.Physics
 
             double target = total / (ChunkTarget > 0 ? ChunkTarget : 1);
             var chunkOf = new NativeArray<int>(sectionCount, Allocator.Temp);
-            Structure.ChunkStart.Clear();
-            Structure.ChunkColumns.Clear();
-            Structure.TopColumns.Clear();
+            Structure->ChunkStart.Clear();
+            Structure->ChunkColumns.Clear();
+            Structure->TopColumns.Clear();
             double accumulated = 0.0;
             bool open = false;
             for (int s = 0; s < sectionCount; s++)
@@ -474,7 +475,7 @@ namespace Unity.Physics
                 bool top = weight[s] > target;
                 if (top)
                 {
-                    Structure.TopColumns.Add(s);
+                    Structure->TopColumns.Add(s);
                     continue;
                 }
 
@@ -487,15 +488,15 @@ namespace Unity.Physics
                 // s roots a chunk subtree: columns s - subtree + 1 to s.
                 if (!open)
                 {
-                    Structure.ChunkStart.Add(Structure.ChunkColumns.Length);
+                    Structure->ChunkStart.Add(Structure->ChunkColumns.Length);
                     open = true;
                     accumulated = 0.0;
                 }
 
-                int chunk = Structure.ChunkStart.Length - 1;
+                int chunk = Structure->ChunkStart.Length - 1;
                 for (int c = s - subtree[s] + 1; c <= s; c++)
                 {
-                    Structure.ChunkColumns.Add(c);
+                    Structure->ChunkColumns.Add(c);
                     chunkOf[c] = chunk;
                 }
 
@@ -506,32 +507,32 @@ namespace Unity.Physics
                 }
             }
 
-            int chunkCount = Structure.ChunkStart.Length;
-            Structure.ChunkStart.Add(Structure.ChunkColumns.Length);
+            int chunkCount = Structure->ChunkStart.Length;
+            Structure->ChunkStart.Add(Structure->ChunkColumns.Length);
 
             // Copy out the structure.
-            Copy(Structure.ColumnStart, columnStart);
-            Structure.Rows.Clear();
-            Structure.Rows.AddRange(rows.AsArray());
-            Copy(Structure.EliminationParent, parentOf);
+            Copy(ref Structure->ColumnStart, columnStart);
+            Structure->Rows.Clear();
+            Structure->Rows.AddRange(rows.GetUnsafeReadOnlyPtr(), rows.Length);
+            Copy(ref Structure->EliminationParent, parentOf);
 
             // Update targets, with a chunk's shares of top blocks sent to its buffer.
-            Structure.UpdateStart.ResizeUninitialized(sectionCount + 1);
+            Structure->UpdateStart.Resize(sectionCount + 1);
             int updates = 0;
             for (int s = 0; s < sectionCount; s++)
             {
-                Structure.UpdateStart[s] = updates;
+                Structure->UpdateStart[s] = updates;
                 int count = columnStart[s + 1] - columnStart[s];
                 updates += count * (count + 1) / 2;
             }
 
-            Structure.UpdateStart[sectionCount] = updates;
-            Structure.UpdateTarget.ResizeUninitialized(updates);
-            Structure.RhsTarget.ResizeUninitialized(offDiagonal);
-            Structure.ChunkBufferStart.Clear();
-            Structure.ChunkRhsStart.Clear();
-            Structure.BufferTarget.Clear();
-            Structure.RhsBufferTarget.Clear();
+            Structure->UpdateStart[sectionCount] = updates;
+            Structure->UpdateTarget.Resize(updates);
+            Structure->RhsTarget.Resize(offDiagonal);
+            Structure->ChunkBufferStart.Clear();
+            Structure->ChunkRhsStart.Clear();
+            Structure->BufferTarget.Clear();
+            Structure->RhsBufferTarget.Clear();
             int blockBase = sectionCount + offDiagonal;
             var blockStamp = new NativeArray<int>(blockBase, Allocator.Temp);
             var blockSlot = new NativeArray<int>(blockBase, Allocator.Temp);
@@ -550,23 +551,23 @@ namespace Unity.Physics
             for (int chunk = 0; chunk <= chunkCount; chunk++)
             {
                 bool isTop = chunk == chunkCount;
-                Structure.ChunkBufferStart.Add(Structure.BufferTarget.Length);
-                Structure.ChunkRhsStart.Add(Structure.RhsBufferTarget.Length);
+                Structure->ChunkBufferStart.Add(Structure->BufferTarget.Length);
+                Structure->ChunkRhsStart.Add(Structure->RhsBufferTarget.Length);
                 if (isTop)
                 {
                     break;
                 }
 
-                for (int k = Structure.ChunkStart[chunk]; k < Structure.ChunkStart[chunk + 1]; k++)
+                for (int k = Structure->ChunkStart[chunk]; k < Structure->ChunkStart[chunk + 1]; k++)
                 {
-                    SetTargets(Structure.ChunkColumns[k], chunk, chunkOf, columnStart, rows, blockStamp, blockSlot, rhsStamp,
+                    SetTargets(Structure->ChunkColumns[k], chunk, chunkOf, columnStart, rows, blockStamp, blockSlot, rhsStamp,
                         rhsSlot, sectionCount, blockBase);
                 }
             }
 
-            for (int k = 0; k < Structure.TopColumns.Length; k++)
+            for (int k = 0; k < Structure->TopColumns.Length; k++)
             {
-                SetTargets(Structure.TopColumns[k], -1, chunkOf, columnStart, rows, blockStamp, blockSlot, rhsStamp, rhsSlot,
+                SetTargets(Structure->TopColumns[k], -1, chunkOf, columnStart, rows, blockStamp, blockSlot, rhsStamp, rhsSlot,
                     sectionCount, blockBase);
             }
 
@@ -578,30 +579,30 @@ namespace Unity.Physics
                 sectionOf[postorder[s]] = s;
             }
 
-            Structure.LinkStart.Clear();
-            Structure.LinkStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
+            Structure->LinkStart.Clear();
+            Structure->LinkStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
             for (int k = 0; k < links.Length; k++)
             {
                 int a = sectionOf[links[k].Child], b = sectionOf[links[k].Parent];
-                Structure.LinkStart[(a < b ? a : b) + 1]++;
+                Structure->LinkStart[(a < b ? a : b) + 1]++;
             }
 
             for (int s = 0; s < sectionCount; s++)
             {
-                Structure.LinkStart[s + 1] += Structure.LinkStart[s];
+                Structure->LinkStart[s + 1] += Structure->LinkStart[s];
             }
 
-            Structure.Links.ResizeUninitialized(links.Length);
-            Structure.PartLink.ResizeUninitialized(partCount);
-            Structure.ClosureLink.ResizeUninitialized(Closures.Length);
+            Structure->Links.Resize(links.Length);
+            Structure->PartLink.Resize(partCount);
+            Structure->ClosureLink.Resize(Closures.Length);
             for (int i = 0; i < partCount; i++)
             {
-                Structure.PartLink[i] = -1;
+                Structure->PartLink[i] = -1;
             }
 
             for (int c = 0; c < Closures.Length; c++)
             {
-                Structure.ClosureLink[c] = -1;
+                Structure->ClosureLink[c] = -1;
             }
 
             var linkFill = new NativeArray<int>(sectionCount, Allocator.Temp);
@@ -612,7 +613,7 @@ namespace Unity.Physics
                 int lower = child < parent ? child : parent, upper = child < parent ? parent : child;
                 int start = columnStart[lower], count = columnStart[lower + 1] - start;
                 int p = Find(rows, start, count, upper);
-                int diagonalEntry = Structure.UpdateStart[lower] + p * count - p * (p - 1) / 2;
+                int diagonalEntry = Structure->UpdateStart[lower] + p * count - p * (p - 1) / 2;
                 var link = new VesselLink
                 {
                     Edge = source.Edge,
@@ -624,36 +625,36 @@ namespace Unity.Physics
                     Lower = lower,
                     Upper = upper,
                     Coupling = sectionCount + start + p,
-                    UpperDiagonal = Structure.UpdateTarget[diagonalEntry],
-                    UpperRhs = Structure.RhsTarget[start + p],
+                    UpperDiagonal = Structure->UpdateTarget[diagonalEntry],
+                    UpperRhs = Structure->RhsTarget[start + p],
                 };
-                int index = Structure.LinkStart[lower] + linkFill[lower]++;
-                Structure.Links[index] = link;
+                int index = Structure->LinkStart[lower] + linkFill[lower]++;
+                Structure->Links[index] = link;
                 if (source.Edge >= 0)
                 {
-                    Structure.PartLink[source.Edge] = index;
+                    Structure->PartLink[source.Edge] = index;
                 }
                 else
                 {
-                    Structure.ClosureLink[source.Closure] = index;
+                    Structure->ClosureLink[source.Closure] = index;
                 }
             }
 
             // Every link at each section, for the loads.
-            Structure.IncidentStart.Clear();
-            Structure.IncidentStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
+            Structure->IncidentStart.Clear();
+            Structure->IncidentStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
             for (int k = 0; k < links.Length; k++)
             {
-                Structure.IncidentStart[Structure.Links[k].ChildSection + 1]++;
-                Structure.IncidentStart[Structure.Links[k].ParentSection + 1]++;
+                Structure->IncidentStart[Structure->Links[k].ChildSection + 1]++;
+                Structure->IncidentStart[Structure->Links[k].ParentSection + 1]++;
             }
 
             for (int s = 0; s < sectionCount; s++)
             {
-                Structure.IncidentStart[s + 1] += Structure.IncidentStart[s];
+                Structure->IncidentStart[s + 1] += Structure->IncidentStart[s];
             }
 
-            Structure.Incident.ResizeUninitialized(2 * links.Length);
+            Structure->Incident.Resize(2 * links.Length);
             for (int s = 0; s < sectionCount; s++)
             {
                 linkFill[s] = 0;
@@ -661,45 +662,45 @@ namespace Unity.Physics
 
             for (int k = 0; k < links.Length; k++)
             {
-                int a = Structure.Links[k].ChildSection, b = Structure.Links[k].ParentSection;
-                Structure.Incident[Structure.IncidentStart[a] + linkFill[a]++] = k;
-                Structure.Incident[Structure.IncidentStart[b] + linkFill[b]++] = k;
+                int a = Structure->Links[k].ChildSection, b = Structure->Links[k].ParentSection;
+                Structure->Incident[Structure->IncidentStart[a] + linkFill[a]++] = k;
+                Structure->Incident[Structure->IncidentStart[b] + linkFill[b]++] = k;
             }
 
             // Each section's parts, parents first since the parts already are.
-            Structure.PartSection.ResizeUninitialized(partCount);
-            Structure.SectionPartStart.Clear();
-            Structure.SectionPartStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
+            Structure->PartSection.Resize(partCount);
+            Structure->SectionPartStart.Clear();
+            Structure->SectionPartStart.Resize(sectionCount + 1, NativeArrayOptions.ClearMemory);
             for (int i = 0; i < partCount; i++)
             {
                 int s = sectionOf[label[i]];
-                Structure.PartSection[i] = s;
-                Structure.SectionPartStart[s + 1]++;
+                Structure->PartSection[i] = s;
+                Structure->SectionPartStart[s + 1]++;
             }
 
             for (int s = 0; s < sectionCount; s++)
             {
-                Structure.SectionPartStart[s + 1] += Structure.SectionPartStart[s];
+                Structure->SectionPartStart[s + 1] += Structure->SectionPartStart[s];
                 linkFill[s] = 0;
             }
 
-            Structure.SectionParts.ResizeUninitialized(partCount);
+            Structure->SectionParts.Resize(partCount);
             for (int i = 0; i < partCount; i++)
             {
-                int s = Structure.PartSection[i];
-                Structure.SectionParts[Structure.SectionPartStart[s] + linkFill[s]++] = i;
+                int s = Structure->PartSection[i];
+                Structure->SectionParts[Structure->SectionPartStart[s] + linkFill[s]++] = i;
             }
 
-            Structure.Header[VesselStructure.SectionCount] = sectionCount;
-            Structure.Header[VesselStructure.OffDiagonalCount] = offDiagonal;
-            Structure.Header[VesselStructure.BufferBlockCount] = Structure.BufferTarget.Length;
-            Structure.Header[VesselStructure.BufferRhsCount] = Structure.RhsBufferTarget.Length;
-            Structure.Header[VesselStructure.ChunkCount] = chunkCount;
-            Structure.Header[VesselStructure.TopCount] = Structure.TopColumns.Length;
-            Structure.Header[VesselStructure.MaxStructure] = maxStructure;
-            Structure.Header[VesselStructure.LinkCount] = links.Length;
-            Structure.Header[VesselStructure.HubCount] = hubCount;
-            Structure.Header[VesselStructure.FillCount] = fillCount;
+            Structure->Header[VesselStructure.SectionCount] = sectionCount;
+            Structure->Header[VesselStructure.OffDiagonalCount] = offDiagonal;
+            Structure->Header[VesselStructure.BufferBlockCount] = Structure->BufferTarget.Length;
+            Structure->Header[VesselStructure.BufferRhsCount] = Structure->RhsBufferTarget.Length;
+            Structure->Header[VesselStructure.ChunkCount] = chunkCount;
+            Structure->Header[VesselStructure.TopCount] = Structure->TopColumns.Length;
+            Structure->Header[VesselStructure.MaxStructure] = maxStructure;
+            Structure->Header[VesselStructure.LinkCount] = links.Length;
+            Structure->Header[VesselStructure.HubCount] = hubCount;
+            Structure->Header[VesselStructure.FillCount] = fillCount;
         }
 
         void SetTargets(int s, int chunk, NativeArray<int> chunkOf, NativeArray<int> columnStart, NativeList<int> rows,
@@ -707,19 +708,19 @@ namespace Unity.Physics
             int sectionCount, int blockBase)
         {
             int start = columnStart[s], count = columnStart[s + 1] - start;
-            int entry = Structure.UpdateStart[s];
+            int entry = Structure->UpdateStart[s];
             for (int p = 0; p < count; p++)
             {
                 int row = rows[start + p];
 
                 // A row outside this chunk is in the top, and so is every later row of the column.
                 bool buffered = chunk >= 0 && chunkOf[row] != chunk;
-                Structure.UpdateTarget[entry++] = buffered ? Buffer(row, chunk, blockStamp, blockSlot, blockBase) : row;
+                Structure->UpdateTarget[entry++] = buffered ? Buffer(row, chunk, blockStamp, blockSlot, blockBase) : row;
                 int rowStart = columnStart[row], rowCount = columnStart[row + 1] - rowStart;
                 for (int q = p + 1; q < count; q++)
                 {
                     int target = sectionCount + rowStart + Find(rows, rowStart, rowCount, rows[start + q]);
-                    Structure.UpdateTarget[entry++] = buffered ? Buffer(target, chunk, blockStamp, blockSlot, blockBase) : target;
+                    Structure->UpdateTarget[entry++] = buffered ? Buffer(target, chunk, blockStamp, blockSlot, blockBase) : target;
                 }
 
                 if (buffered)
@@ -727,15 +728,15 @@ namespace Unity.Physics
                     if (rhsStamp[row] != chunk)
                     {
                         rhsStamp[row] = chunk;
-                        rhsSlot[row] = Structure.RhsBufferTarget.Length;
-                        Structure.RhsBufferTarget.Add(row);
+                        rhsSlot[row] = Structure->RhsBufferTarget.Length;
+                        Structure->RhsBufferTarget.Add(row);
                     }
 
-                    Structure.RhsTarget[start + p] = sectionCount + rhsSlot[row];
+                    Structure->RhsTarget[start + p] = sectionCount + rhsSlot[row];
                 }
                 else
                 {
-                    Structure.RhsTarget[start + p] = row;
+                    Structure->RhsTarget[start + p] = row;
                 }
             }
         }
@@ -745,8 +746,8 @@ namespace Unity.Physics
             if (blockStamp[target] != chunk)
             {
                 blockStamp[target] = chunk;
-                blockSlot[target] = Structure.BufferTarget.Length;
-                Structure.BufferTarget.Add(target);
+                blockSlot[target] = Structure->BufferTarget.Length;
+                Structure->BufferTarget.Add(target);
             }
 
             return blockBase + blockSlot[target];
@@ -928,10 +929,10 @@ namespace Unity.Physics
             return pairs.Count;
         }
 
-        static void Copy(NativeList<int> to, NativeArray<int> from)
+        static void Copy(ref UnsafeList<int> to, NativeArray<int> from)
         {
             to.Clear();
-            to.AddRange(from);
+            to.AddRange(from.GetUnsafeReadOnlyPtr(), from.Length);
         }
 
         /// <summary>

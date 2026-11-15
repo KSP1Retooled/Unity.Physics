@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Numerics;
 using Unity.Physics;
 using Debug = UnityEngine.Debug;
 
@@ -714,6 +715,186 @@ namespace KSP.Retooled.Physics.Tests
                 parts1.Dispose();
                 edges1.Dispose();
                 closures1.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// A boundary block's entries b1^T A^-1 b2 from forward substitutions along the elimination-tree paths of each
+        /// row's sections match the same products from full solves against the factor, and a velocity-only step leaves the
+        /// parts where they were.
+        /// </summary>
+        [Test]
+        public void PathProductsMatchFullSolves([Values("pegasus", "tu160", "synthetic4500")] string craft,
+            [Values(false, true)] bool minimumDegree)
+        {
+            VesselGraph graph = VesselGraph.Load(craft);
+            VesselSolverSettings settings = VesselSolverSettings.Default;
+            settings.MinimumDegree = minimumDegree;
+            using VesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1.0, settings,
+                out var parts, out var edges, out var closures);
+            var before = new NativeArray<VesselPart>(parts, Allocator.Persistent);
+            const int rowCount = 24;
+            var seeds = new NativeArray<int>(2, Allocator.Persistent);
+            NativeArray<double> full = default, y = default;
+            NativeArray<int> path = default, mark = default;
+            try
+            {
+                solver.VelocityOnly = true;
+                solver.Step(false);
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    Assert.AreEqual(before[i].Position, parts[i].Position);
+                    Assert.AreEqual(before[i].LinearVelocity, parts[i].LinearVelocity);
+                }
+
+                int sections = solver.SectionCount;
+                full = new NativeArray<double>(6 * sections * rowCount, Allocator.Persistent);
+                y = new NativeArray<double>(6 * sections, Allocator.Persistent);
+                path = new NativeArray<int>(sections, Allocator.Persistent);
+                mark = new NativeArray<int>(sections, Allocator.Persistent);
+                for (int s = 0; s < sections; s++)
+                {
+                    mark[s] = -1;
+                }
+
+                // Each row touches one or two random sections with random columns, as a contact or a joint would.
+                var generator = new Unity.Mathematics.Random(11);
+                var rowSections = new int[rowCount, 2];
+                var rowColumns = new double[rowCount, 12];
+                for (int r = 0; r < rowCount; r++)
+                {
+                    rowSections[r, 0] = generator.NextInt(sections);
+                    rowSections[r, 1] = r % 3 == 0 ? -1 : generator.NextInt(sections);
+                    for (int c = 0; c < 12; c++)
+                    {
+                        rowColumns[r, c] = generator.NextDouble(-1.0, 1.0);
+                    }
+                }
+
+                // Full solves: A^-1 b for every row.
+                var one = new NativeArray<double>(6 * sections, Allocator.Persistent);
+                for (int r = 0; r < rowCount; r++)
+                {
+                    for (int i = 0; i < one.Length; i++)
+                    {
+                        one[i] = 0.0;
+                    }
+
+                    for (int side = 0; side < 2; side++)
+                    {
+                        int s = rowSections[r, side];
+                        for (int c = 0; s >= 0 && c < 6; c++)
+                        {
+                            one[6 * s + c] += rowColumns[r, 6 * side + c];
+                        }
+                    }
+
+                    solver.SolveWithFactor(one);
+                    for (int i = 0; i < one.Length; i++)
+                    {
+                        full[r * 6 * sections + i] = one[i];
+                    }
+                }
+
+                one.Dispose();
+
+                // Path forward solves, kept as the section, y and z = inv(D) y per path entry.
+                var pathSections = new System.Collections.Generic.List<int>[rowCount];
+                var pathY = new System.Collections.Generic.List<double6>[rowCount];
+                var pathZ = new System.Collections.Generic.List<double6>[rowCount];
+                int longest = 0;
+                double* yPtr = (double*)y.GetUnsafePtr();
+                for (int r = 0; r < rowCount; r++)
+                {
+                    int seedCount = 0;
+                    for (int side = 0; side < 2; side++)
+                    {
+                        int s = rowSections[r, side];
+                        if (s < 0)
+                        {
+                            continue;
+                        }
+
+                        seeds[seedCount++] = s;
+                        for (int c = 0; c < 6; c++)
+                        {
+                            yPtr[6 * s + c] += rowColumns[r, 6 * side + c];
+                        }
+                    }
+
+                    int count = solver.Context.CollectPath((int*)seeds.GetUnsafePtr(), seedCount, (int*)path.GetUnsafePtr(),
+                        (int*)mark.GetUnsafePtr(), r);
+                    longest = math.max(longest, count);
+                    solver.Context.ForwardPath(yPtr, (int*)path.GetUnsafePtr(), count);
+                    pathSections[r] = new System.Collections.Generic.List<int>();
+                    pathY[r] = new System.Collections.Generic.List<double6>();
+                    pathZ[r] = new System.Collections.Generic.List<double6>();
+                    for (int k = 0; k < count; k++)
+                    {
+                        int s = path[k];
+                        double6 ys = double6.Load(yPtr + 6 * s);
+                        pathSections[r].Add(s);
+                        pathY[r].Add(ys);
+                        pathZ[r].Add(solver.Context.InverseDiagonal(s, ys));
+                        for (int c = 0; c < 6; c++)
+                        {
+                            yPtr[6 * s + c] = 0.0;
+                        }
+                    }
+                }
+
+                double error = 0.0, scale = 0.0;
+                for (int a = 0; a < rowCount; a++)
+                {
+                    for (int b = 0; b < rowCount; b++)
+                    {
+                        // Reference: b_a^T (A^-1 b_b).
+                        double reference = 0.0;
+                        for (int side = 0; side < 2; side++)
+                        {
+                            int s = rowSections[a, side];
+                            for (int c = 0; s >= 0 && c < 6; c++)
+                            {
+                                reference += rowColumns[a, 6 * side + c] * full[b * 6 * sections + 6 * s + c];
+                            }
+                        }
+
+                        double product = 0.0;
+                        for (int i = 0; i < pathSections[a].Count; i++)
+                        {
+                            for (int j = 0; j < pathSections[b].Count; j++)
+                            {
+                                if (pathSections[a][i] == pathSections[b][j])
+                                {
+                                    product += double6.Dot(pathY[a][i], pathZ[b][j]);
+                                }
+                            }
+                        }
+
+                        error = math.max(error, math.abs(product - reference));
+                        scale = math.max(scale, math.abs(reference));
+                    }
+                }
+
+                Debug.Log($"[VesselSolverTests] {craft} md {minimumDegree}: {sections} sections, longest path {longest}; " +
+                    $"path products differ from full solves by {error / scale:E2}");
+                Assert.Less(error / scale, 1e-10);
+            }
+            finally
+            {
+                before.Dispose();
+                seeds.Dispose();
+                if (full.IsCreated)
+                {
+                    full.Dispose();
+                    y.Dispose();
+                    path.Dispose();
+                    mark.Dispose();
+                }
+
+                parts.Dispose();
+                edges.Dispose();
+                closures.Dispose();
             }
         }
 

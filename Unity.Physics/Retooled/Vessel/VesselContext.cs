@@ -105,6 +105,20 @@ namespace Unity.Physics
         public int* BufferTarget;
         public int* ChunkRhsStart;
         public int* RhsBufferTarget;
+        public int* EliminationParent;
+
+        // Rows handed in by the caller in place of the edges' own, as the direct island solve builds them: 12 floats
+        // (body A's linear and angular columns, then body B's), the regularization and the right-hand side per row. Each
+        // link's rows run from LinkRowStart[k] in LinkRowList, as row * 2 + 1 when body A is the link's parent side. With
+        // rows handed in, sections start at rest with no impulse, so the solution is the change of velocity the rows make.
+        public float* RowJacobian;
+        public float* RowEpsilon;
+        public float* RowRhs;
+        public int* LinkRowStart;
+        public int* LinkRowList;
+
+        /// <summary>Extra right-hand side terms, one 6-vector per section, as rows on one moving body give it.</summary>
+        public double* ExtraRhs;
 
         public int SectionCount;
         public int OffDiagonalCount;
@@ -197,6 +211,10 @@ namespace Unity.Physics
             double* rhs = Rhs + 6 * s;
             Store(rhs, section->Mass * section->LinearVelocity + section->LinearImpulse);
             Store(rhs + 3, math.mul(section->Inertia, section->AngularVelocity) + section->AngularImpulse);
+            if (ExtraRhs != null)
+            {
+                (double6.Load(rhs) + double6.Load(ExtraRhs + 6 * s)).Store(rhs);
+            }
             for (int e = ColumnStart[s]; e < ColumnStart[s + 1]; e++)
             {
                 VesselBlocks.Zero(Blocks + VesselBlocks.Size * (SectionCount + e));
@@ -209,6 +227,12 @@ namespace Unity.Physics
         /// </summary>
         public void BuildLink(int k)
         {
+            if (LinkRowStart != null)
+            {
+                BuildLinkFromRows(k);
+                return;
+            }
+
             VesselLink* link = Links + k;
             VesselPart* child = Parts + link->ChildPart;
             VesselPart* parent = Parts + link->ParentPart;
@@ -340,6 +364,113 @@ namespace Unity.Physics
             Add(parentRhs, force);
             Add(parentRhs + 3, math.cross(parentArm, force) + torque);
         }
+
+        /// <summary>
+        /// Adds a link's handed-in rows: w J^T J into the two sections' blocks and their coupling, and w J^T r into their
+        /// right-hand sides, w being one over the row's regularization.
+        /// </summary>
+        void BuildLinkFromRows(int k)
+        {
+            VesselLink* link = Links + k;
+            bool childLower = link->ChildSection == link->Lower;
+            double* childBlock = Blocks + VesselBlocks.Size * (childLower ? link->Lower : link->UpperDiagonal);
+            double* parentBlock = Blocks + VesselBlocks.Size * (childLower ? link->UpperDiagonal : link->Lower);
+            double* coupling = Blocks + VesselBlocks.Size * link->Coupling;
+            double* childRhs = Rhs + 6 * (childLower ? link->Lower : link->UpperRhs);
+            double* parentRhs = Rhs + 6 * (childLower ? link->UpperRhs : link->Lower);
+            double6 childSum = default, parentSum = default;
+            for (int e = LinkRowStart[k]; e < LinkRowStart[k + 1]; e++)
+            {
+                int entry = LinkRowList[e];
+                int row = entry >> 1;
+                float* columns = RowJacobian + 12L * row;
+                double6 a = LoadRow(columns), b = LoadRow(columns + 6);
+                double6 child = (entry & 1) != 0 ? b : a;
+                double6 parent = (entry & 1) != 0 ? a : b;
+                double weight = 1.0 / RowEpsilon[row];
+                AddOuter(childBlock, weight, child, child);
+                AddOuter(parentBlock, weight, parent, parent);
+                AddOuter(coupling, weight, childLower ? child : parent, childLower ? parent : child);
+                double drive = weight * RowRhs[row];
+                childSum += drive * child;
+                parentSum += drive * parent;
+            }
+
+            (double6.Load(childRhs) + childSum).Store(childRhs);
+            (double6.Load(parentRhs) + parentSum).Store(parentRhs);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double6 LoadRow(float* columns) => new double6(
+            new double4(columns[0], columns[1], columns[2], columns[3]), new double2(columns[4], columns[5]));
+
+        /// <summary>block += w a b^T.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void AddOuter(double* block, double weight, double6 a, double6 b)
+        {
+            for (int r = 0; r < 6; r++)
+            {
+                double scale = weight * a[r];
+                (double6.Load(block + 6 * r) + scale * b).Store(block + 6 * r);
+            }
+        }
+
+        /// <summary>
+        /// The sections whose rows the forward substitution of a right-hand side nonzero only at <paramref name="seeds"/>
+        /// can touch: the seeds and their elimination-tree ancestors, written ascending to <paramref name="path"/>. Marks
+        /// them with <paramref name="stamp"/> in <paramref name="mark"/>, which must not hold that stamp yet. Returns how
+        /// many there are.
+        /// </summary>
+        public int CollectPath(int* seeds, int seedCount, int* path, int* mark, int stamp)
+        {
+            int count = 0;
+            for (int i = 0; i < seedCount; i++)
+            {
+                for (int s = seeds[i]; s >= 0 && mark[s] != stamp; s = EliminationParent[s])
+                {
+                    mark[s] = stamp;
+                    path[count++] = s;
+                }
+            }
+
+            // Short, and each seed's walk is ascending already.
+            for (int i = 1; i < count; i++)
+            {
+                int v = path[i];
+                int j = i - 1;
+                while (j >= 0 && path[j] > v)
+                {
+                    path[j + 1] = path[j];
+                    j--;
+                }
+
+                path[j + 1] = v;
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// y = L^-1 y in place against the current factor A = L D L^T, for a right-hand side nonzero only on a path that
+        /// <see cref="CollectPath"/> gave: every other section's entry stays zero, so only the path is walked. With z the
+        /// inverse pivot blocks times y on the path, b1^T A^-1 b2 is the sum over the sections both paths share of y1 . z2.
+        /// </summary>
+        public void ForwardPath(double* y, int* path, int count)
+        {
+            for (int k = 0; k < count; k++)
+            {
+                int s = path[k];
+                double6 ys = double6.Load(y + 6 * s);
+                for (int e = ColumnStart[s]; e < ColumnStart[s + 1]; e++)
+                {
+                    double* to = y + 6 * Rows[e];
+                    (double6.Load(to) - ((double6x6*)(Blocks + VesselBlocks.Size * (SectionCount + e)))->TransposeMul(ys)).Store(to);
+                }
+            }
+        }
+
+        /// <summary>The inverse of section s's pivot block times a 6-vector.</summary>
+        public double6 InverseDiagonal(int s, double6 y) => ((double6x6*)(Inverse + VesselBlocks.Size * s))->Mul(y);
 
         /// <summary>
         /// Eliminates column s: inverts its diagonal block, sends every update to the later rows its structure couples,
@@ -527,6 +658,11 @@ namespace Unity.Physics
         /// <summary>lambda = -E^-1 (J v' + (gamma / h) phi) for one link's rows, and a closure's load.</summary>
         public void LinkImpulses(int k)
         {
+            if (LinkRowStart != null)
+            {
+                return;
+            }
+
             VesselLink* link = Links + k;
             VesselRows* rows = LinkRows + k;
             double* child = Solution + 6 * link->ChildSection;

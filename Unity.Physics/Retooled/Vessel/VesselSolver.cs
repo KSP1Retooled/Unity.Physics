@@ -25,11 +25,18 @@ namespace Unity.Physics
     {
         public VesselSolverSettings Settings;
 
+        /// <summary>
+        /// Stops a step once it has the sections' new velocities in <see cref="Solution"/>: no loads, no state tests, and the
+        /// parts are neither moved nor given the new velocities, which leaves integrating them to the caller.
+        /// </summary>
+        public bool VelocityOnly;
+
         readonly NativeArray<VesselPart> m_Parts;
         readonly NativeArray<VesselEdge> m_Edges;
         readonly NativeArray<VesselClosure> m_Closures;
 
-        internal VesselStructure Structure;
+        VesselStructure* m_Structure;
+        internal ref VesselStructure Structure => ref *m_Structure;
         internal NativeList<VesselSection> Sections;
         internal NativeList<double> Blocks;
         internal NativeList<double> Inverse;
@@ -68,7 +75,8 @@ namespace Unity.Physics
             Settings = settings;
             m_Context = (VesselContext*)UnsafeUtility.Malloc(sizeof(VesselContext), 16, Allocator.Persistent);
             *m_Context = default;
-            Structure = new VesselStructure(Allocator.Persistent);
+            m_Structure = (VesselStructure*)UnsafeUtility.Malloc(sizeof(VesselStructure), 16, Allocator.Persistent);
+            *m_Structure = new VesselStructure(Allocator.Persistent);
             Sections = new NativeList<VesselSection>(Allocator.Persistent);
             Blocks = new NativeList<double>(Allocator.Persistent);
             Inverse = new NativeList<double>(Allocator.Persistent);
@@ -90,6 +98,7 @@ namespace Unity.Physics
         {
             UnsafeUtility.Free(m_Context, Allocator.Persistent);
             Structure.Dispose();
+            UnsafeUtility.Free(m_Structure, Allocator.Persistent);
             Sections.Dispose();
             Blocks.Dispose();
             Inverse.Dispose();
@@ -123,7 +132,17 @@ namespace Unity.Physics
         public int ClampedPivots => m_Counters[VesselContext.ClampedPivots];
 
         /// <summary>The section each part belongs to, valid after a rebuild.</summary>
-        public NativeArray<int> PartSection => Structure.PartSection.AsArray();
+        public NativeArray<int> PartSection
+        {
+            get
+            {
+                var array = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<int>(Structure.PartSection.Ptr, Structure.PartSection.Length, Allocator.None);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref array, AtomicSafetyHandle.GetTempMemoryHandle());
+#endif
+                return array;
+            }
+        }
 
         /// <summary>Tells the solver that edge states (or closures) changed, so the next step rebuilds the structure.</summary>
         public void MarkStructureChanged() => m_NeedsRebuild = true;
@@ -151,7 +170,7 @@ namespace Unity.Physics
                 HubClosures = Settings.HubClosures,
                 ChunkTarget = Settings.ChunkTarget,
                 MinimumDegree = Settings.MinimumDegree,
-                Structure = Structure,
+                Structure = m_Structure,
             }.Run();
 
             int sections = SectionCount;
@@ -195,26 +214,27 @@ namespace Unity.Physics
                 ClosureLoads = (VesselEdgeLoad*)ClosureLoads.GetUnsafePtr(),
                 NextState = (VesselEdgeState*)NextState.GetUnsafePtr(),
                 Counters = (int*)m_Counters.GetUnsafePtr(),
-                PartSection = Structure.PartSection.GetUnsafePtr(),
-                SectionPartStart = Structure.SectionPartStart.GetUnsafePtr(),
-                SectionParts = Structure.SectionParts.GetUnsafePtr(),
-                ColumnStart = Structure.ColumnStart.GetUnsafePtr(),
-                Rows = Structure.Rows.GetUnsafePtr(),
-                UpdateStart = Structure.UpdateStart.GetUnsafePtr(),
-                UpdateTarget = Structure.UpdateTarget.GetUnsafePtr(),
-                RhsTarget = Structure.RhsTarget.GetUnsafePtr(),
-                LinkStart = Structure.LinkStart.GetUnsafePtr(),
-                Links = Structure.Links.GetUnsafePtr(),
-                IncidentStart = Structure.IncidentStart.GetUnsafePtr(),
-                Incident = Structure.Incident.GetUnsafePtr(),
-                PartLink = Structure.PartLink.GetUnsafePtr(),
-                ChunkStart = Structure.ChunkStart.GetUnsafePtr(),
-                ChunkColumns = Structure.ChunkColumns.GetUnsafePtr(),
-                TopColumns = Structure.TopColumns.GetUnsafePtr(),
-                ChunkBufferStart = Structure.ChunkBufferStart.GetUnsafePtr(),
-                BufferTarget = Structure.BufferTarget.GetUnsafePtr(),
-                ChunkRhsStart = Structure.ChunkRhsStart.GetUnsafePtr(),
-                RhsBufferTarget = Structure.RhsBufferTarget.GetUnsafePtr(),
+                PartSection = Structure.PartSection.Ptr,
+                SectionPartStart = Structure.SectionPartStart.Ptr,
+                SectionParts = Structure.SectionParts.Ptr,
+                ColumnStart = Structure.ColumnStart.Ptr,
+                Rows = Structure.Rows.Ptr,
+                UpdateStart = Structure.UpdateStart.Ptr,
+                UpdateTarget = Structure.UpdateTarget.Ptr,
+                RhsTarget = Structure.RhsTarget.Ptr,
+                LinkStart = Structure.LinkStart.Ptr,
+                Links = Structure.Links.Ptr,
+                IncidentStart = Structure.IncidentStart.Ptr,
+                Incident = Structure.Incident.Ptr,
+                PartLink = Structure.PartLink.Ptr,
+                ChunkStart = Structure.ChunkStart.Ptr,
+                ChunkColumns = Structure.ChunkColumns.Ptr,
+                TopColumns = Structure.TopColumns.Ptr,
+                ChunkBufferStart = Structure.ChunkBufferStart.Ptr,
+                BufferTarget = Structure.BufferTarget.Ptr,
+                ChunkRhsStart = Structure.ChunkRhsStart.Ptr,
+                RhsBufferTarget = Structure.RhsBufferTarget.Ptr,
+                EliminationParent = Structure.EliminationParent.Ptr,
                 SectionCount = SectionCount,
                 OffDiagonalCount = OffDiagonalCount,
                 ChunkCount = ChunkCount,
@@ -295,6 +315,11 @@ namespace Unity.Physics
             handle = new FactorChunkJob { Context = context }.Schedule(context->ChunkCount, 1, handle);
             handle = new TopJob { Context = context }.Schedule(handle);
             handle = new SubstituteChunkJob { Context = context }.Schedule(context->ChunkCount, 1, handle);
+            if (VelocityOnly)
+            {
+                return handle;
+            }
+
             return new FinishJob { Context = context }.Schedule(context->SectionCount, 16, handle);
         }
 
@@ -314,7 +339,11 @@ namespace Unity.Physics
             long c = System.Diagnostics.Stopwatch.GetTimestamp();
             new SubstituteChunkJob { Context = context }.Run(context->ChunkCount);
             long d = System.Diagnostics.Stopwatch.GetTimestamp();
-            new FinishJob { Context = context }.Run(context->SectionCount);
+            if (!VelocityOnly)
+            {
+                new FinishJob { Context = context }.Run(context->SectionCount);
+            }
+
             long e = System.Diagnostics.Stopwatch.GetTimestamp();
             if (ticks != null)
             {

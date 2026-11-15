@@ -14,6 +14,11 @@ namespace Unity.Numerics
             High = high;
         }
 
+        public double this[int i] => i < 4 ? Low[i] : High[i - 4];
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double Dot(double6 a, double6 b) => math.dot(a.Low, b.Low) + math.dot(a.High, b.High);
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static double6 Load(double* from) => new double6(*(double4*)from, *(double2*)(from + 4));
 
