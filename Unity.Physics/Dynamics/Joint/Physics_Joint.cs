@@ -85,8 +85,8 @@ namespace Unity.Physics
         public float3 Target;
 
         /// <summary>
-        /// How many times the direct solver's stiffness cap this constraint may reach, for one constraint that stands in
-        /// for several between the same bodies. Zero counts as one.
+        /// The multiplier applied to the direct solver's stiffness limit when this constraint represents several
+        /// constraints between the same bodies. A value of zero is treated as one.
         /// </summary>
         [FieldOffset(44)]
         public float DirectStiffnessScale;
@@ -648,15 +648,17 @@ namespace Unity.Physics
         public byte Version;
 
         /// <summary>
-        /// How the direct solve may treat the joint: <see cref="JointForestRole.None"/> for a row like any other, or a tree
-        /// edge or a closure of the vessel forest, whose unbounded rows it eliminates structurally (see
-        /// <see cref="ForestSettings"/>). Whoever builds the joints decides; a joint that isn't a forest joint keeps None.
+        /// Specifies whether the direct solver treats this joint as an ordinary joint
+        /// (<see cref="JointForestRole.None"/>), a tree edge or a closure in the vessel forest. For forest joints, the
+        /// solver eliminates unbounded rows using the forest structure (see <see cref="ForestSettings"/>). The code
+        /// that builds the joints assigns this role. Joints outside the forest retain None.
         /// </summary>
         public JointForestRole ForestRole;
 
         /// <summary>
-        /// What the joint's owner lets the forest do with a forest joint's pair, from the loads that count against the
-        /// joint's break limits; see <see cref="ForestSettings.Locking"/>. None keeps the pair yielding.
+        /// The locking operations that the joint's owner permits for its body pair in the forest. These permissions are
+        /// based on the loads measured against the joint's break limits; see <see cref="ForestSettings.Locking"/>. None
+        /// keeps the pair yielding.
         /// </summary>
         public JointForestLock ForestLock;
 
