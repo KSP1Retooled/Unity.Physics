@@ -8,6 +8,12 @@ namespace Unity.Physics.Numerics.Retooled
     /// Holds the dense kernels that the sparse constraint solver runs on its blocks: the Cholesky factor of a block,
     /// triangular solves, and products that are subtracted from a target. Every block is a dense matrix of doubles that
     /// is stored row by row.
+    /// <para>
+    /// Almost every block in the solver is 6 by 6, one row and column per body's unknowns. At that size, these routines
+    /// are faster than the general kernels in Unity.Numerics.Kernels, which take the blocks as row-major views
+    /// (DenseKernelBench times both): the factor by about 10%, the products and the solves by 25% to 3 times. So they
+    /// stay, except <see cref="AddScaled"/>, which runs the same loop as the kernel and now calls it.
+    /// </para>
     /// </summary>
     public static unsafe class DenseKernels
     {
@@ -210,20 +216,12 @@ namespace Unity.Physics.Numerics.Retooled
         }
 
         /// <summary>
-        /// Computes into += scale * from for <paramref name="count"/> entries.
+        /// Computes into += scale * from for <paramref name="count"/> entries, with the kernel's
+        /// <see cref="Blas.Axpy(int, double, double*, double*)"/>, which runs the same loop.
         /// </summary>
         public static void AddScaled(double* into, double* from, double scale, int count)
         {
-            int k = 0;
-            for (; k + 4 <= count; k += 4)
-            {
-                *(double4*)(into + k) = FusedMath.Fma(scale, *(double4*)(from + k), *(double4*)(into + k));
-            }
-
-            for (; k < count; k++)
-            {
-                into[k] = FusedMath.Fma(scale, from[k], into[k]);
-            }
+            Blas.Axpy(count, scale, from, into);
         }
 
         /// <summary>

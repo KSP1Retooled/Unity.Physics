@@ -487,6 +487,10 @@ namespace Unity.Physics
                     Factorize();
                     factored = true;
                     statistics.Factorizations++;
+                    if (SparseBlockCounters.Enabled)
+                    {
+                        SparseBlockCounters.AddFactorization();
+                    }
                     statistics.FactorizeTime += Lap(ref started);
                     UnsafeUtility.MemCpy(solution.Ptr, right.Ptr, solution.Length * sizeof(double));
                     Substitute(solution.Ptr);
@@ -1695,6 +1699,15 @@ namespace Unity.Physics
             DenseKernels.CholeskyInPlace(diagonal, inverse, size, node.Sign);
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
+            if (SparseBlockCounters.Enabled)
+            {
+                SparseBlockCounters.AddNode(size, node.NeighbourCount);
+                for (int i = 0; i < node.NeighbourCount; i++)
+                {
+                    SparseBlockCounters.AddBlock(nodes[column[i].Node].Size, size);
+                }
+            }
+
             for (int i = 0; i < node.NeighbourCount; i++)
             {
                 DenseKernels.SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
