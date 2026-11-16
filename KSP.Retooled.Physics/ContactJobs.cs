@@ -1102,6 +1102,40 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// Removes the last impulses of manifolds that involve shapes that were detached from their bodies since the last
+    /// step. A new shape can reuse the address of such a shape, and the last impulses are kept by the shapes' addresses.
+    /// Without this job, a new contact between two new shapes could start with the impulse of a contact between the
+    /// two removed shapes whose addresses they took. This job leaves the list of removed shapes as it is, because
+    /// <see cref="ForgetRemovedShapesJob"/> reads it later in the step.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct ForgetRemovedImpulsesJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
+
+        public void Execute()
+        {
+            var removed = new NativeHashSet<IntPtr>((int)World->removedShapeCount, Allocator.Temp);
+            for (uint i = 0; i < World->removedShapeCount; i++)
+            {
+                removed.Add((IntPtr)World->removedShapes[i]);
+            }
+
+            NativeArray<PersistentManifoldKey> keys = LastImpulses.GetKeyArray(Allocator.Temp);
+            foreach (PersistentManifoldKey key in keys)
+            {
+                if (removed.Contains((IntPtr)key.ShapeA) || removed.Contains((IntPtr)key.ShapeB))
+                {
+                    LastImpulses.Remove(key);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Removes touching pairs that involve shapes detached from their bodies. These shapes produce no exit event, and
     /// new shapes may reuse their addresses. PhysX wakes a body when the shape supporting it is removed. Do the same
     /// here before sleeping and contact reporting, since both depend on whether the body is awake.
