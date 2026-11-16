@@ -1,4 +1,4 @@
-// Ported from faer 0.19.4 has no routine of its own for this; it is the dot product that the solves use.
+// faer 0.19.4 has no routine of its own for this; it is the dot product that the solves use, written in faer's style.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
 // The code is written for raw double pointers in column-major order, with double4 in place of the SIMD types.
 
@@ -35,6 +35,27 @@ namespace Unity.Numerics.Kernels
             for (; k < count; k++)
             {
                 sum = FusedMath.Fma(a[k], b[k], sum);
+            }
+
+            return sum;
+        }
+
+        /// <summary>
+        /// Returns the dot product of <paramref name="count"/> entries of two vectors that are <paramref name="incx"/>
+        /// and <paramref name="incy"/> entries apart. Two vectors with a stride of 1 take the fast path above; any
+        /// other strides take a plain loop.
+        /// </summary>
+        public static double Dot(int count, double* x, int incx, double* y, int incy)
+        {
+            if (incx == 1 && incy == 1)
+            {
+                return Dot(count, x, y);
+            }
+
+            double sum = 0.0;
+            for (int k = 0; k < count; k++)
+            {
+                sum = FusedMath.Fma(x[(long)k * incx], y[(long)k * incy], sum);
             }
 
             return sum;

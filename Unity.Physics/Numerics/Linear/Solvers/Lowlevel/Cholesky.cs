@@ -29,6 +29,23 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             L.Clear();
             L.SetDiagonal(0, 1, false, false, true);
 
+            // The kernel factors a copy of A's lower triangle in L, in place. If it stops at a pivot that is not
+            // positive, the columns of L before that row hold the factor, and the rest of the triangle holds what was
+            // left of A. The loops below would leave other values there; the callers read only singularRow then.
+            if (Matrix.TryView(A, out var a) && Matrix.TryView(L, out var l) && !Matrix.Overlaps(a, l))
+            {
+                for (int j = 0; j < n; j++)
+                {
+                    for (int i = j; i < n; i++)
+                    {
+                        l[i, j] = a[i, j];
+                    }
+                }
+
+                singularRow = Unity.Numerics.Kernels.CholeskyLLT.TryFactor(l.Block(0, 0, n, n));
+                return;
+            }
+
             for(int i = 0; i < n; ++i)
             {
                 for(int j = 0; j < i; ++j)
@@ -57,6 +74,15 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             singularRow = -1;
 
             var n = A.MinDimension;
+
+            // The kernel is a port of faer's LLT factor. It reads and writes only the lower triangle, as the loops
+            // below do, and stops at the first pivot that is not positive.
+            if (Matrix.TryView(A, out var a))
+            {
+                singularRow = Unity.Numerics.Kernels.CholeskyLLT.TryFactor(a.Block(0, 0, n, n));
+                return;
+            }
+
             for(int k = 0; k < n; ++k)
             {
                 int rs = n - (k+1); // remaining size

@@ -516,6 +516,11 @@ namespace KSP.Retooled.Physics.Tests
             double[] serial0 = VesselForest.SerialMilliseconds();
             BoundaryCounters.Reset();
             HandOffCounters.Reset();
+
+            // RETOOLED_BENCH_HISTOGRAM=1 counts the sizes of the blocks that the sparse solver factors. Counting costs
+            // time on every lane, so the times of such a run are not comparable with others.
+            SparseBlockCounters.Enabled = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HISTOGRAM") == "1";
+            SparseBlockCounters.Reset();
             var samples = new List<double>(Measured);
             for (int i = 0; i < Measured; i++)
             {
@@ -551,6 +556,12 @@ namespace KSP.Retooled.Physics.Tests
                 lastTimes += $"; teams: {handOff.Stages / (double)Measured:F1} stages published a step, " +
                     $"{100.0 * handOff.HelpedStages / handOff.Stages:F0}% of them helped, first helper after " +
                     $"{handOff.ArrivalTicks * tickUs / System.Math.Max(1, handOff.HelpedStages):F1} us on average";
+            }
+
+            if (SparseBlockCounters.Enabled)
+            {
+                SparseBlockCounters.Enabled = false;
+                lastTimes += "; " + SparseHistogram(SparseBlockCounters.Current);
             }
 
             BoundaryCounters boundary = BoundaryCounters.Current;
@@ -594,6 +605,44 @@ namespace KSP.Retooled.Physics.Tests
             Unity.Physics.Solver.VesselFused = fusedOn;
             samples.Sort();
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
+        }
+
+        /// <summary>
+        /// The sizes of the blocks that the sparse solver factored during the measured steps: the nodes by their number
+        /// of unknowns and by their number of later neighbours, and the blocks below the diagonal by rows x columns.
+        /// The last entry of each list holds every size from <see cref="SparseBlockCounters.Largest"/> - 1 up.
+        /// </summary>
+        private static unsafe string SparseHistogram(SparseBlockCounters counts)
+        {
+            int last = SparseBlockCounters.Largest - 1;
+            string Bin(int i) => i == last ? $"{i}+" : $"{i}";
+            var sizes = new List<string>();
+            var neighbours = new List<string>();
+            var shapes = new List<string>();
+            for (int i = 0; i <= last; i++)
+            {
+                if (counts.NodeSizes[i] > 0)
+                {
+                    sizes.Add($"{Bin(i)}: {counts.NodeSizes[i] / (double)Measured:F0}");
+                }
+
+                if (counts.NeighbourCounts[i] > 0)
+                {
+                    neighbours.Add($"{Bin(i)}: {counts.NeighbourCounts[i] / (double)Measured:F0}");
+                }
+
+                for (int j = 0; j <= last; j++)
+                {
+                    long count = counts.BlockShapes[i * SparseBlockCounters.Largest + j];
+                    if (count > 0)
+                    {
+                        shapes.Add($"{Bin(i)}x{Bin(j)}: {count / (double)Measured:F0}");
+                    }
+                }
+            }
+
+            return $"sparse factors a step {counts.Factorizations / (double)Measured:F1}; nodes a step by size {{{string.Join(", ", sizes)}}}, " +
+                $"by later neighbours {{{string.Join(", ", neighbours)}}}; blocks below the diagonal a step by rows x columns {{{string.Join(", ", shapes)}}}";
         }
 
         private struct SweepRun

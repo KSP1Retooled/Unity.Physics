@@ -616,7 +616,7 @@ namespace Unity.Physics.Numerics.Retooled
                     }
                 }
 
-                CholeskyLLT.Factor(m, l, n);
+                CholeskyLLT.Factor(m, l, n, keepUpper: false);
                 if (stats != null)
                 {
                     stats->FullFactorTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
