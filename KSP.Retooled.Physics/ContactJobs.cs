@@ -181,14 +181,16 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Disables collisions for overlapping body pairs when every collider pair between them is ignored through
-    /// Physics.IgnoreCollision. This is common among parts of one craft. Such overlaps greatly outnumber joints.
+    /// Physics.IgnoreCollision or stopped by the colliders' collision groups (see <see cref="GroupTable"/>). This is
+    /// common among parts of one craft. Such overlaps greatly outnumber joints.
     /// Leaving them enabled would put the craft in one crowded island and send all of them through the narrow phase
     /// unnecessarily. Keep body pairs that still have colliders allowed to contact each other. <see
     /// cref="ReadContactsJob"/> filters the individual collider pairs.
     ///
     /// Checking a body pair requires a lookup for each collider pair. Each lookup is likely to miss the cache because
     /// the table contains all ignored pairs for the craft. Cache the result for each body pair until the ignored pairs
-    /// change or any body's shapes may have changed. Creating a body or changing its shapes requires a full collider
+    /// change or any body's shapes may have changed. A change to a collision group counts as a change to the ignored
+    /// pairs. Creating a body or changing its shapes requires a full collider
     /// build, which increments the build counter recorded with the cached result.
     /// </summary>
     [BurstCompile]
@@ -338,7 +340,7 @@ namespace KSP.Retooled.Physics
                 for (int b = 0; b < rowB->shapeCount; b++)
                 {
                     NativeStore.ShapeData* shapeB = rowB->shapes[b];
-                    if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
+                    if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Ignores(Globals, shapeA, shapeB))
                     {
                         return false;
                     }
@@ -507,7 +509,7 @@ namespace KSP.Retooled.Physics
             ColliderKey keyB = header.ColliderKeys.ColliderKeyB;
             NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA);
             NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB);
-            if (IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
+            if (IgnoreTable.Ignores(Globals, shapeA, shapeB))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
                 return false;

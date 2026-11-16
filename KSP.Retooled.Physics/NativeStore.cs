@@ -143,7 +143,12 @@ namespace KSP.Retooled.Physics
             public float contactOffset;
             public uint messages;
             public uint querySlot;
-            private readonly uint reserved0;
+
+            /// <summary>
+            /// The index of the shape's group record in <see cref="GroupTable"/> plus one, or zero if the shape has no
+            /// group. The plugin never reads this field.
+            /// </summary>
+            public uint groupRecord;
             public Shape* nextOnField;
         }
 

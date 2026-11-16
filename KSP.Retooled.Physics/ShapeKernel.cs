@@ -250,6 +250,7 @@ namespace KSP.Retooled.Physics
             shape->data.userData = a->pointer3;
             SetMaterial(shape, (NativeStore.MaterialData*)a->pointer2, globals);
             StoreGeometry(shape, a, globals);
+            GroupTable.AddShape(globals, shape);
             return shape;
         }
 
@@ -257,6 +258,7 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyShape.Auto();
 
+            GroupTable.RemoveShape(globals, shape);
             if (shape->body != null)
             {
                 StoreOps.RemoveShape(shape->body, shape, globals);

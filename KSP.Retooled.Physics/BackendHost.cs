@@ -103,6 +103,9 @@ namespace KSP.Retooled.Physics
         /// </summary>
         public static int MainThreadId { get; private set; }
 
+        /// <summary>Whether the managed core is attached to the plugin.</summary>
+        public static bool IsAttached => attached;
+
 #if UNITY_EDITOR
         [InitializeOnLoadMethod]
         private static void AttachInEditor()

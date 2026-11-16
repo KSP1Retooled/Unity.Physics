@@ -43,6 +43,20 @@ namespace KSP.Retooled.Physics
         private uint freeIdCount;
         private uint lastId;
 
+        /// <summary>
+        /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>.
+        /// </summary>
+        internal GroupTable* Groups;
+
+        /// <summary>
+        /// Returns whether two shapes must not collide, either because Physics.IgnoreCollision ignored their pair or
+        /// because the group rule stops them.
+        /// </summary>
+        internal static bool Ignores(NativeStore.StoreGlobals* globals, NativeStore.ShapeData* first, NativeStore.ShapeData* second)
+        {
+            return Contains(globals, first->ignorePairId, second->ignorePairId) || GroupTable.Ignores(globals, first, second);
+        }
+
         internal static bool Contains(NativeStore.StoreGlobals* globals, uint first, uint second)
         {
             IgnoreTable* table = globals->ignoreTable;
@@ -117,9 +131,14 @@ namespace KSP.Retooled.Physics
             {
                 table->Rehash(globals);
             }
+
+            if (table != null && table->Groups != null)
+            {
+                table->Groups->Reslot(globals);
+            }
         }
 
-        private static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
+        internal static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
         {
             if (globals->ignoreTable == null)
             {
