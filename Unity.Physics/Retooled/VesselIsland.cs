@@ -550,6 +550,303 @@ namespace Unity.Physics
             }
 
             forest->LockedPairs = locked;
+            OrderSharedSections(forest);
+        }
+
+        /// <summary>
+        /// A section with more parts than this is shared among the team's lanes by ranges of parts. A smaller section is
+        /// one task, as before.
+        /// </summary>
+        const int SharedSectionParts = 256;
+
+        /// <summary>
+        /// Sorts the sections into small ones and shared ones. For each shared section, numbers its parts depth first,
+        /// so that each part's subtree is one range of positions. Then a load that sums over a subtree is the difference
+        /// of two prefix sums, and the lanes can compute the prefix sums by ranges of positions.
+        /// </summary>
+        static unsafe void OrderSharedSections(ForestIsland* forest)
+        {
+            ref VesselStructure structure = ref forest->Structure;
+            int parts = forest->Parts.Length;
+            int sections = forest->SectionCount;
+            forest->SmallSections.Clear();
+            forest->SharedSections.Clear();
+            forest->DepthFirstPart.Resize(math.max(1, parts));
+            forest->DepthFirstPosition.Resize(math.max(1, parts));
+            forest->SubtreeLast.Resize(math.max(1, parts));
+            forest->PrefixForce.Resize(math.max(1, parts));
+            forest->PrefixTorque.Resize(math.max(1, parts));
+            int* sectionParts = structure.SectionParts.Ptr;
+            int* depthFirstPart = forest->DepthFirstPart.Ptr;
+            int* position = forest->DepthFirstPosition.Ptr;
+            int* last = forest->SubtreeLast.Ptr;
+            var size = new NativeArray<int>(math.max(1, parts), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var cursor = new NativeArray<int>(math.max(1, parts), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int s = 0; s < sections; s++)
+            {
+                int start = structure.SectionPartStart[s], end = structure.SectionPartStart[s + 1];
+                bool shared = end - start > SharedSectionParts;
+
+                // Each part after the first must hang from a parent in the same section, which comes before it.
+                for (int k = start + 1; shared && k < end; k++)
+                {
+                    int parent = forest->Edges[sectionParts[k]].Parent;
+                    shared = parent >= 0 && structure.PartSection[parent] == s;
+                }
+
+                if (!shared)
+                {
+                    forest->SmallSections.Add(s);
+                    continue;
+                }
+
+                forest->SharedSections.Add(s);
+                for (int k = start; k < end; k++)
+                {
+                    size[sectionParts[k]] = 1;
+                }
+
+                for (int k = end - 1; k > start; k--)
+                {
+                    int i = sectionParts[k];
+                    size[forest->Edges[i].Parent] += size[i];
+                }
+
+                // Parents come before their children, so each parent has its position before its children need it.
+                int root = sectionParts[start];
+                position[root] = start;
+                cursor[root] = start + 1;
+                for (int k = start + 1; k < end; k++)
+                {
+                    int i = sectionParts[k];
+                    int parent = forest->Edges[i].Parent;
+                    position[i] = cursor[parent];
+                    cursor[parent] += size[i];
+                    cursor[i] = position[i] + 1;
+                }
+
+                for (int k = start; k < end; k++)
+                {
+                    int i = sectionParts[k];
+                    depthFirstPart[position[i]] = i;
+                    last[i] = position[i] + size[i] - 1;
+                }
+            }
+
+            size.Dispose();
+            cursor.Dispose();
+        }
+
+        /// <summary>
+        /// Computes every section's properties. The small sections are one task each. Each shared section is summed by
+        /// ranges of parts in two stages: the first gives its centre, and the second sums the inertia about that centre.
+        /// </summary>
+        static unsafe void ComputeVesselSections(ref ForestRun run)
+        {
+            ForestIsland* forest = run.Forest;
+            if (forest->SharedSections.Length == 0)
+            {
+                RunVesselStage(ref run, VesselTasks.ComputeSections, forest->SectionCount);
+                return;
+            }
+
+            RunVesselStage(ref run, VesselTasks.ComputeSmallSections, forest->SmallSections.Length);
+            ref VesselContext kernel = ref forest->Context;
+            for (int i = 0; i < forest->SharedSections.Length; i++)
+            {
+                int s = forest->SharedSections[i];
+                int start = kernel.SectionPartStart[s], end = kernel.SectionPartStart[s + 1];
+                int chunks = (end - start + VesselItemsPerTask - 1) / VesselItemsPerTask;
+                var mass = new NativeArray<VesselContext.MassSums>(chunks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var inertia = new NativeArray<VesselContext.InertiaSums>(chunks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var tasks = new VesselTasks
+                {
+                    Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                    Phase = VesselTasks.SharedMass,
+                    Start = start,
+                    End = end,
+                    MassSums = (VesselContext.MassSums*)mass.GetUnsafePtr(),
+                    InertiaSums = (VesselContext.InertiaSums*)inertia.GetUnsafePtr(),
+                };
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
+
+                // Add the ranges' sums in order, so that the result does not depend on which lane summed which range.
+                VesselContext.MassSums totalMass = mass[0];
+                for (int c = 1; c < chunks; c++)
+                {
+                    totalMass.Add(mass[c]);
+                }
+
+                tasks.Phase = VesselTasks.SharedInertia;
+                tasks.Center = totalMass.Moment / totalMass.Mass;
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
+                VesselContext.InertiaSums totalInertia = inertia[0];
+                for (int c = 1; c < chunks; c++)
+                {
+                    totalInertia.Add(inertia[c]);
+                }
+
+                kernel.StoreSection(s, totalMass, totalInertia);
+                mass.Dispose();
+                inertia.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Computes the loads on every section's edges. The small sections are one task each. For each shared section,
+        /// the lanes compute each part's own force and torque by ranges of depth-first positions, then the prefix sums
+        /// of those terms, and then each edge's load as the sum over its child's subtree, which is the difference of
+        /// two prefix sums.
+        /// </summary>
+        static unsafe void FinishVesselSections(ref ForestRun run)
+        {
+            ForestIsland* forest = run.Forest;
+            if (forest->SharedSections.Length == 0)
+            {
+                RunVesselStage(ref run, VesselTasks.FinishSections, forest->SectionCount);
+                return;
+            }
+
+            RunVesselStage(ref run, VesselTasks.FinishSmallSections, forest->SmallSections.Length);
+            ref VesselContext kernel = ref forest->Context;
+            double3* prefixForce = forest->PrefixForce.Ptr;
+            double3* prefixTorque = forest->PrefixTorque.Ptr;
+            for (int i = 0; i < forest->SharedSections.Length; i++)
+            {
+                int s = forest->SharedSections[i];
+                int start = kernel.SectionPartStart[s], end = kernel.SectionPartStart[s + 1];
+                int chunks = (end - start + VesselItemsPerTask - 1) / VesselItemsPerTask;
+                var sums = new NativeArray<double3>(2 * chunks, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                double3* chunkForce = (double3*)sums.GetUnsafePtr();
+                double3* chunkTorque = chunkForce + chunks;
+                var tasks = new VesselTasks
+                {
+                    Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                    Phase = VesselTasks.SharedPartLoads,
+                    Section = s,
+                    Start = start,
+                    End = end,
+                    ChunkForce = chunkForce,
+                    ChunkTorque = chunkTorque,
+                };
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
+
+                // The live rows' forces on this section's parts. There are few of these, so the leader adds them.
+                for (int e = kernel.IncidentStart[s]; e < kernel.IncidentStart[s + 1]; e++)
+                {
+                    int part = kernel.LiveRowLoad(s, e, out double3 force, out double3 torque);
+                    int at = forest->DepthFirstPosition[part];
+                    int chunk = (at - start) / VesselItemsPerTask;
+                    kernel.PartForce[part] -= force;
+                    kernel.PartTorque[part] -= torque;
+                    prefixForce[at] -= force;
+                    prefixTorque[at] -= torque;
+                    chunkForce[chunk] -= force;
+                    chunkTorque[chunk] -= torque;
+                }
+
+                // Turn each range's sum into the sum of all the ranges before it.
+                double3 runningForce = 0.0, runningTorque = 0.0;
+                for (int c = 0; c < chunks; c++)
+                {
+                    double3 force = chunkForce[c], torque = chunkTorque[c];
+                    chunkForce[c] = runningForce;
+                    chunkTorque[c] = runningTorque;
+                    runningForce += force;
+                    runningTorque += torque;
+                }
+
+                tasks.Phase = VesselTasks.SharedPrefix;
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
+                tasks.Phase = VesselTasks.SharedEdgeLoads;
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
+                kernel.StoreRootLoad(s, prefixForce[end - 1]);
+                sums.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Processes one range of a shared section's parts in one of the stages of <see cref="ComputeVesselSections"/>
+        /// or <see cref="FinishVesselSections"/>.
+        /// </summary>
+        static unsafe void SharedSectionTask(VesselTasks* tasks, int chunk)
+        {
+            ForestIsland* forest = tasks->Run->Forest;
+            ref VesselContext kernel = ref forest->Context;
+            int from = tasks->Start + chunk * VesselItemsPerTask;
+            int to = math.min(from + VesselItemsPerTask, tasks->End);
+            double3* prefixForce = forest->PrefixForce.Ptr;
+            double3* prefixTorque = forest->PrefixTorque.Ptr;
+            switch (tasks->Phase)
+            {
+                case VesselTasks.SharedMass:
+                    tasks->MassSums[chunk] = kernel.SumMass(from, to);
+                    break;
+                case VesselTasks.SharedInertia:
+                    tasks->InertiaSums[chunk] = kernel.SumInertia(from, to, tasks->Center);
+                    break;
+                case VesselTasks.SharedPartLoads:
+                {
+                    VesselSection section = kernel.Sections[tasks->Section];
+                    double* solution = kernel.Solution + 6 * tasks->Section;
+                    double3 linear = VectorMath.Load3(solution), angular = VectorMath.Load3(solution + 3);
+                    double3 sumForce = 0.0, sumTorque = 0.0;
+                    for (int at = from; at < to; at++)
+                    {
+                        int i = forest->DepthFirstPart[at];
+                        kernel.PartLoad(i, section.Center, linear, angular, out double3 force, out double3 torque);
+                        kernel.PartForce[i] = force;
+                        kernel.PartTorque[i] = torque;
+                        prefixForce[at] = force;
+                        prefixTorque[at] = torque;
+                        sumForce += force;
+                        sumTorque += torque;
+                    }
+
+                    tasks->ChunkForce[chunk] = sumForce;
+                    tasks->ChunkTorque[chunk] = sumTorque;
+                    break;
+                }
+                case VesselTasks.SharedPrefix:
+                {
+                    double3 force = tasks->ChunkForce[chunk], torque = tasks->ChunkTorque[chunk];
+                    for (int at = from; at < to; at++)
+                    {
+                        force += prefixForce[at];
+                        torque += prefixTorque[at];
+                        prefixForce[at] = force;
+                        prefixTorque[at] = torque;
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    // The first position is the section's root, whose load the leader stores afterwards.
+                    double3 center = kernel.Sections[tasks->Section].Center;
+                    for (int at = math.max(from, tasks->Start + 1); at < to; at++)
+                    {
+                        int i = forest->DepthFirstPart[at];
+                        int last = forest->SubtreeLast[i];
+                        double3 force, torque;
+                        if (last == at)
+                        {
+                            // A leaf carries only its own terms, so take them directly rather than as a difference.
+                            force = kernel.PartForce[i];
+                            torque = kernel.PartTorque[i];
+                        }
+                        else
+                        {
+                            force = prefixForce[last] - prefixForce[at - 1];
+                            torque = prefixTorque[last] - prefixTorque[at - 1];
+                        }
+
+                        kernel.StoreEdgeLoad(i, center, force, torque);
+                    }
+
+                    break;
+                }
+            }
         }
 
         /// <summary>
@@ -617,7 +914,7 @@ namespace Unity.Physics
             }
 
             long factorStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            RunVesselStage(ref run, VesselTasks.ComputeSections, sections);
+            ComputeVesselSections(ref run);
 
             VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
             SparseSolveTeam.RunAll(run.Team, contextPtr, SparseSolveTeam.ForestFactorKind, context.ChunkCount, null);
@@ -733,7 +1030,7 @@ namespace Unity.Physics
 
                 // The context has LoadsOnly set, so FinishSections leaves the parts where they are. Later calculations
                 // in this substep use the poses from the start of the substep.
-                RunVesselStage(ref run, VesselTasks.FinishSections, sections);
+                FinishVesselSections(ref run);
             }
 
             var tasks = new VesselTasks
@@ -765,6 +1062,15 @@ namespace Unity.Physics
             public const int BodyImpulses = 3;
             public const int FillParts = 4;
             public const int WriteLoads = 5;
+            public const int ComputeSmallSections = 6;
+            public const int FinishSmallSections = 7;
+
+            // The stages for a shared section, whose tasks are ranges of its parts.
+            public const int SharedMass = 8;
+            public const int SharedInertia = 9;
+            public const int SharedPartLoads = 10;
+            public const int SharedPrefix = 11;
+            public const int SharedEdgeLoads = 12;
 
             public ForestRun* Run;
             public int Phase;
@@ -776,6 +1082,19 @@ namespace Unity.Physics
             /// <summary>For <see cref="WriteLoads"/>: the substep and the number of substeps in the step.</summary>
             public int Substep;
             public int Substeps;
+
+            /// <summary>
+            /// For the stages of a shared section: the section, its range of positions, the centre for the inertia sums,
+            /// and each range's sums.
+            /// </summary>
+            public int Section;
+            public int Start;
+            public int End;
+            public double3 Center;
+            public VesselContext.MassSums* MassSums;
+            public VesselContext.InertiaSums* InertiaSums;
+            public double3* ChunkForce;
+            public double3* ChunkTorque;
         }
 
         /// <summary>Runs one of the kernel's stages over sections or links on the run's team.</summary>
@@ -796,6 +1115,12 @@ namespace Unity.Physics
         internal static unsafe void ForestVesselTask(void* context, int task)
         {
             var tasks = (VesselTasks*)context;
+            if (tasks->Phase >= VesselTasks.SharedMass)
+            {
+                SharedSectionTask(tasks, task);
+                return;
+            }
+
             ref ForestRun run = ref *tasks->Run;
             ref VesselContext kernel = ref run.Forest->Context;
             int end = math.min((task + 1) * VesselItemsPerTask, tasks->Count);
@@ -817,6 +1142,12 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.WriteLoads:
                         WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
+                        break;
+                    case VesselTasks.ComputeSmallSections:
+                        kernel.ComputeSection(run.Forest->SmallSections[item]);
+                        break;
+                    case VesselTasks.FinishSmallSections:
+                        kernel.FinishSection(run.Forest->SmallSections[item]);
                         break;
                     default:
                         PartImpulse(ref run, item, tasks->Linear, tasks->Angular, tasks->PushOut);

@@ -162,41 +162,96 @@ namespace Unity.Physics
         public void ComputeSection(int s)
         {
             int start = SectionPartStart[s], end = SectionPartStart[s + 1];
-            double mass = 0.0;
-            double3 moment = 0.0, momentum = 0.0, impulse = 0.0;
+            MassSums mass = SumMass(start, end);
+            InertiaSums inertia = SumInertia(start, end, mass.Moment / mass.Mass);
+            StoreSection(s, mass, inertia);
+        }
+
+        /// <summary>The sums over some of a section's parts that give the section's mass, centre, momentum and impulse.</summary>
+        public struct MassSums
+        {
+            public double Mass;
+            public double3 Moment;
+            public double3 Momentum;
+            public double3 Impulse;
+
+            public void Add(in MassSums other)
+            {
+                Mass += other.Mass;
+                Moment += other.Moment;
+                Momentum += other.Momentum;
+                Impulse += other.Impulse;
+            }
+        }
+
+        /// <summary>The sums over some of a section's parts that give the section's inertia, angular momentum and angular impulse.</summary>
+        public struct InertiaSums
+        {
+            public double3x3 Inertia;
+            public double3 AngularMomentum;
+            public double3 AngularImpulse;
+
+            public void Add(in InertiaSums other)
+            {
+                Inertia += other.Inertia;
+                AngularMomentum += other.AngularMomentum;
+                AngularImpulse += other.AngularImpulse;
+            }
+        }
+
+        /// <summary>
+        /// Sums the mass terms over the section's parts from position <paramref name="start"/> up to, but not
+        /// including, position <paramref name="end"/> in <see cref="SectionParts"/>.
+        /// </summary>
+        public MassSums SumMass(int start, int end)
+        {
+            var sums = new MassSums();
             for (int k = start; k < end; k++)
             {
                 VesselPart* part = Parts + SectionParts[k];
-                mass += part->Mass;
-                moment += part->Mass * part->Position;
-                momentum += part->Mass * part->LinearVelocity;
-                impulse += part->LinearImpulse;
+                sums.Mass += part->Mass;
+                sums.Moment += part->Mass * part->Position;
+                sums.Momentum += part->Mass * part->LinearVelocity;
+                sums.Impulse += part->LinearImpulse;
             }
 
-            double3 center = moment / mass;
-            double3x3 inertia = double3x3.zero;
-            double3 angularMomentum = 0.0, angularImpulse = 0.0;
+            return sums;
+        }
+
+        /// <summary>
+        /// Sums the inertia terms about <paramref name="center"/> over the section's parts from position
+        /// <paramref name="start"/> up to, but not including, position <paramref name="end"/> in <see cref="SectionParts"/>.
+        /// </summary>
+        public InertiaSums SumInertia(int start, int end, double3 center)
+        {
+            var sums = new InertiaSums { Inertia = double3x3.zero };
             for (int k = start; k < end; k++)
             {
                 VesselPart* part = Parts + SectionParts[k];
                 double3 r = part->Position - center;
                 double3x3 world = VectorMath.RotateDiagonal(part->Orientation, part->Inertia);
-                inertia += world + part->Mass * (math.dot(r, r) * double3x3.identity - VectorMath.Outer(r, r));
-                angularMomentum += math.mul(world, part->AngularVelocity) + part->Mass * math.cross(r, part->LinearVelocity);
-                angularImpulse += part->AngularImpulse + math.cross(r, part->LinearImpulse);
+                sums.Inertia += world + part->Mass * (math.dot(r, r) * double3x3.identity - VectorMath.Outer(r, r));
+                sums.AngularMomentum += math.mul(world, part->AngularVelocity) + part->Mass * math.cross(r, part->LinearVelocity);
+                sums.AngularImpulse += part->AngularImpulse + math.cross(r, part->LinearImpulse);
             }
 
-            double3x3 inverse = math.inverse(inertia);
+            return sums;
+        }
+
+        /// <summary>Stores a section's properties from the sums over all of its parts.</summary>
+        public void StoreSection(int s, in MassSums mass, in InertiaSums inertia)
+        {
+            double3x3 inverse = math.inverse(inertia.Inertia);
             Sections[s] = new VesselSection
             {
-                Mass = mass,
-                Center = center,
-                Inertia = inertia,
+                Mass = mass.Mass,
+                Center = mass.Moment / mass.Mass,
+                Inertia = inertia.Inertia,
                 InverseInertia = inverse,
-                LinearVelocity = momentum / mass,
-                AngularVelocity = math.mul(inverse, angularMomentum),
-                LinearImpulse = impulse,
-                AngularImpulse = angularImpulse,
+                LinearVelocity = mass.Momentum / mass.Mass,
+                AngularVelocity = math.mul(inverse, inertia.AngularMomentum),
+                LinearImpulse = mass.Impulse,
+                AngularImpulse = inertia.AngularImpulse,
             };
         }
 
@@ -730,6 +785,85 @@ namespace Unity.Physics
 
         // ------------------------------------------------------------------ back out
 
+        /// <summary>
+        /// Computes the force and torque that part i needs from its edge toward its parent, so that it moves with its
+        /// section: its mass times its acceleration, minus its external impulse over the step. The torque is about the
+        /// section's centre. Also stores the part's joint point toward its parent in <see cref="ChildPoint"/>.
+        /// </summary>
+        public void PartLoad(int i, double3 center, double3 linear, double3 angular, out double3 force, out double3 torque)
+        {
+            double inverseStep = 1.0 / TimeStep;
+            VesselPart* part = Parts + i;
+            double3 r = part->Position - center;
+            double3 acceleration = inverseStep * (linear + math.cross(angular, r) - part->LinearVelocity);
+            if (Centripetal)
+            {
+                acceleration += math.cross(angular, math.cross(angular, r));
+            }
+
+            force = part->Mass * acceleration - inverseStep * part->LinearImpulse;
+            double3x3 rotation = VectorMath.Rotation(part->Orientation);
+            double3x3 world = VectorMath.RotateDiagonal(rotation, part->Inertia);
+            ChildPoint[i] = part->Position + math.mul(rotation, Edges[i].ChildAnchor);
+            torque = math.cross(r, force) + inverseStep * (math.mul(world, angular - part->AngularVelocity)
+                - part->AngularImpulse);
+        }
+
+        /// <summary>
+        /// Computes the force and the torque about section s's centre that the live rows of incident link number e give
+        /// to the link's part in section s. Returns that part.
+        /// </summary>
+        public int LiveRowLoad(int s, int e, out double3 force, out double3 torque)
+        {
+            double inverseStep = 1.0 / TimeStep;
+            int k = Incident[e];
+            VesselLink* link = Links + k;
+            VesselRows* rows = LinkRows + k;
+            bool childSide = link->ChildSection == s;
+            double sign = childSide ? inverseStep : -inverseStep;
+            force = sign * math.mul(rows->Axes, rows->LinearImpulse);
+            double3 rowTorque = sign * math.mul(rows->Axes, rows->AngularImpulse);
+            double3 arm = childSide ? rows->ChildArm : rows->ParentArm;
+            torque = math.cross(arm, force) + rowTorque;
+            return childSide ? link->ChildPart : link->ParentPart;
+        }
+
+        /// <summary>
+        /// Stores the load on part i's locked edge from the sums over its subtree. The torque in those sums is about
+        /// the section's centre, so this moves it to the joint point.
+        /// </summary>
+        public void StoreEdgeLoad(int i, double3 center, double3 force, double3 torque)
+        {
+            EdgeLoads[i] = new VesselEdgeLoad
+            {
+                Force = force,
+                Torque = torque + math.cross(center - ChildPoint[i], force),
+            };
+        }
+
+        /// <summary>
+        /// Stores the load at section s's first part. The force that is left there after the subtree sums is the
+        /// section's momentum balance, in kN, which is zero up to rounding when every force is accounted for. The first
+        /// part's own edge load comes from its live link, if it has one.
+        /// </summary>
+        public void StoreRootLoad(int s, double3 leftover)
+        {
+            double inverseStep = 1.0 / TimeStep;
+            int first = SectionParts[SectionPartStart[s]];
+            SectionResidual[s] = math.length(leftover);
+            EdgeLoads[first] = default;
+            int live = PartLink[first];
+            if (live >= 0)
+            {
+                VesselRows* rows = LinkRows + live;
+                EdgeLoads[first] = new VesselEdgeLoad
+                {
+                    Force = inverseStep * math.mul(rows->Axes, rows->LinearImpulse),
+                    Torque = inverseStep * math.mul(rows->Axes, rows->AngularImpulse),
+                };
+            }
+        }
+
         /// <summary>lambda = -E^-1 (J v' + (gamma / h) phi) for one link's rows, and a closure's load.</summary>
         public void LinkImpulses(int k)
         {
@@ -771,7 +905,7 @@ namespace Unity.Physics
         public void FinishSection(int s)
         {
             VesselSection section = Sections[s];
-            double h = TimeStep, inverseStep = 1.0 / h;
+            double h = TimeStep;
             double3 linear = VectorMath.Load3(Solution + 6 * s), angular = VectorMath.Load3(Solution + 6 * s + 3);
             int start = SectionPartStart[s], end = SectionPartStart[s + 1];
 
@@ -780,37 +914,15 @@ namespace Unity.Physics
             for (int k = start; k < end; k++)
             {
                 int i = SectionParts[k];
-                VesselPart* part = Parts + i;
-                double3 r = part->Position - section.Center;
-                double3 acceleration = inverseStep * (linear + math.cross(angular, r) - part->LinearVelocity);
-                if (Centripetal)
-                {
-                    acceleration += math.cross(angular, math.cross(angular, r));
-                }
-
-                double3 force = part->Mass * acceleration - inverseStep * part->LinearImpulse;
-                double3x3 rotation = VectorMath.Rotation(part->Orientation);
-                double3x3 world = VectorMath.RotateDiagonal(rotation, part->Inertia);
-                ChildPoint[i] = part->Position + math.mul(rotation, Edges[i].ChildAnchor);
-                PartForce[i] = force;
-                PartTorque[i] = math.cross(r, force) + inverseStep * (math.mul(world, angular - part->AngularVelocity)
-                    - part->AngularImpulse);
+                PartLoad(i, section.Center, linear, angular, out PartForce[i], out PartTorque[i]);
             }
 
             // The live rows' forces on this section's parts, at their joint points.
             for (int e = IncidentStart[s]; e < IncidentStart[s + 1]; e++)
             {
-                int k = Incident[e];
-                VesselLink* link = Links + k;
-                VesselRows* rows = LinkRows + k;
-                bool childSide = link->ChildSection == s;
-                double sign = childSide ? inverseStep : -inverseStep;
-                double3 force = sign * math.mul(rows->Axes, rows->LinearImpulse);
-                double3 torque = sign * math.mul(rows->Axes, rows->AngularImpulse);
-                double3 arm = childSide ? rows->ChildArm : rows->ParentArm;
-                int i = childSide ? link->ChildPart : link->ParentPart;
+                int i = LiveRowLoad(s, e, out double3 force, out double3 torque);
                 PartForce[i] -= force;
-                PartTorque[i] -= math.cross(arm, force) + torque;
+                PartTorque[i] -= torque;
             }
 
             // Leaves inward: each locked edge carries its child's subtree.
@@ -819,33 +931,12 @@ namespace Unity.Physics
                 int i = SectionParts[k];
                 int parent = Edges[i].Parent;
                 double3 force = PartForce[i], torque = PartTorque[i];
-                double3 point = ChildPoint[i];
-                EdgeLoads[i] = new VesselEdgeLoad
-                {
-                    Force = force,
-                    Torque = torque + math.cross(section.Center - point, force),
-                };
+                StoreEdgeLoad(i, section.Center, force, torque);
                 PartForce[parent] += force;
                 PartTorque[parent] += torque;
             }
 
-            // What is left at the section's first part is its momentum balance, in kN: zero up to rounding when every
-            // force is accounted for.
-            {
-                int first = SectionParts[start];
-                SectionResidual[s] = math.length(PartForce[first]);
-                EdgeLoads[first] = default;
-                int live = PartLink[first];
-                if (live >= 0)
-                {
-                    VesselRows* rows = LinkRows + live;
-                    EdgeLoads[first] = new VesselEdgeLoad
-                    {
-                        Force = inverseStep * math.mul(rows->Axes, rows->LinearImpulse),
-                        Torque = inverseStep * math.mul(rows->Axes, rows->AngularImpulse),
-                    };
-                }
-            }
+            StoreRootLoad(s, PartForce[SectionParts[start]]);
 
             if (LoadsOnly)
             {

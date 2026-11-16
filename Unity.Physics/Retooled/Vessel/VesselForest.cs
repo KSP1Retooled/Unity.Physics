@@ -211,6 +211,20 @@ namespace Unity.Physics
 
         public UnsafeList<int> ClosureSetIndex;
 
+        /// <summary>
+        /// The sections that are one task each, and the sections that the team's lanes share by ranges of parts. For
+        /// the parts of a shared section: each depth-first position's part, each part's depth-first position, the last
+        /// position in each part's subtree, and the prefix sums of the parts' forces and torques by position.
+        /// </summary>
+        public UnsafeList<int> SmallSections;
+
+        public UnsafeList<int> SharedSections;
+        public UnsafeList<int> DepthFirstPart;
+        public UnsafeList<int> DepthFirstPosition;
+        public UnsafeList<int> SubtreeLast;
+        public UnsafeList<double3> PrefixForce;
+        public UnsafeList<double3> PrefixTorque;
+
         /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
         public bool VesselMode;
 
@@ -275,6 +289,13 @@ namespace Unity.Physics
                 PartRatio = new UnsafeList<float>(16, Allocator.Persistent),
                 PartSetPart = new UnsafeList<int>(16, Allocator.Persistent),
                 ClosureSetIndex = new UnsafeList<int>(16, Allocator.Persistent),
+                SmallSections = new UnsafeList<int>(16, Allocator.Persistent),
+                SharedSections = new UnsafeList<int>(16, Allocator.Persistent),
+                DepthFirstPart = new UnsafeList<int>(16, Allocator.Persistent),
+                DepthFirstPosition = new UnsafeList<int>(16, Allocator.Persistent),
+                SubtreeLast = new UnsafeList<int>(16, Allocator.Persistent),
+                PrefixForce = new UnsafeList<double3>(16, Allocator.Persistent),
+                PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -339,6 +360,13 @@ namespace Unity.Physics
             forest->PartRatio.Dispose();
             forest->PartSetPart.Dispose();
             forest->ClosureSetIndex.Dispose();
+            forest->SmallSections.Dispose();
+            forest->SharedSections.Dispose();
+            forest->DepthFirstPart.Dispose();
+            forest->DepthFirstPosition.Dispose();
+            forest->SubtreeLast.Dispose();
+            forest->PrefixForce.Dispose();
+            forest->PrefixTorque.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 
