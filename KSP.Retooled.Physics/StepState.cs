@@ -822,12 +822,12 @@ namespace KSP.Retooled.Physics
         /// Schedules the broadphase trees. Only building the static tree depends on the decision to rebuild it.
         /// Building the dynamic tree can run in parallel with that decision.
         /// </summary>
-        private JobHandle ScheduleTrees(float deltaTime, JobHandle built, out JobHandle dynamicBoundsRead)
+        private JobHandle ScheduleTrees(float deltaTime, JobHandle built)
         {
             int threads = JobsUtility.JobWorkerCount + 1;
             Broadphase broadphase = world.CollisionWorld.Broadphase;
             JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
-            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, out dynamicBoundsRead);
+            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built);
             return JobHandle.CombineDependencies(statics, dynamics);
         }
 
@@ -1033,7 +1033,6 @@ namespace KSP.Retooled.Physics
             // the joints and chooses the step's vessels, and before the joint and vessel fill jobs, so that the workers
             // take them first. The joint jobs read none of what these jobs write, and the trees don't need the joints.
             JobHandle broadphase;
-            JobHandle dynamicBoundsRead;
             using (BackendMarkers.BuildScheduleBodies.Auto())
             {
                 var bodiesJob = new BuildBodiesJob
@@ -1049,7 +1048,7 @@ namespace KSP.Retooled.Physics
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
                 JobHandle.ScheduleBatchedJobs();
-                broadphase = ScheduleTrees(deltaTime, bodiesBuilt, out dynamicBoundsRead);
+                broadphase = ScheduleTrees(deltaTime, bodiesBuilt);
                 JobHandle.ScheduleBatchedJobs();
             }
 
@@ -1151,12 +1150,8 @@ namespace KSP.Retooled.Physics
 
                 // Only the solve reads the edges and closures, so these jobs run beside the joint build and the
                 // broadphase, and only the solve waits for them (see PrepareSolve). They prepare the groups of active
-                // vessels, which BuildJointsJob skips. They wait for the job that reads the dynamic bodies' bounds for
-                // the tree, because the pairs and islands wait for the tree, and the solve waits for the islands. When
-                // these jobs could start at the same time as that job, they took most of the workers: with four Tu-160s,
-                // the bounds took 0.85 ms instead of 0.25 ms.
+                // vessels, which BuildJointsJob skips.
                 vesselsFilled = default;
-                JobHandle fillsMayStart = JobHandle.CombineDependencies(groupsFound, dynamicBoundsRead);
                 if (vesselSet.IsCreated)
                 {
                     // Reuse the edges and closures from earlier steps unless the vessels were compiled again. The fill
@@ -1187,7 +1182,7 @@ namespace KSP.Retooled.Physics
                         EdgeCache = vesselBuild.EdgeCache.AsArray(),
                         EdgeCacheFrames = vesselBuild.EdgeCacheFrames.AsArray(),
                         EdgeCacheStamps = vesselBuild.EdgeCacheStamps.AsArray(),
-                    }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, fillsMayStart);
+                    }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, groupsFound);
 
                     JobHandle closuresFilled = new FillVesselClosuresJob
                     {
@@ -1208,7 +1203,7 @@ namespace KSP.Retooled.Physics
                         ClosureCache = vesselBuild.ClosureCache.AsArray(),
                         ClosureCacheFrames = vesselBuild.ClosureCacheFrames.AsArray(),
                         ClosureCacheStamps = vesselBuild.ClosureCacheStamps.AsArray(),
-                    }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, fillsMayStart);
+                    }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, groupsFound);
                     // The joint loads at the end of the step need this list. Waiting for BuildJointsJob keeps the job
                     // from reading a group while BuildJointsJob writes it.
                     JobHandle listed = new ListOtherJointsJob
