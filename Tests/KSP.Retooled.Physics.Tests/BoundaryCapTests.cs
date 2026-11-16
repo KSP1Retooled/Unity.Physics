@@ -198,6 +198,20 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// The limit on self-contact manifolds takes its default of 8 for a setting of zero, and it never goes above 25,
+        /// not even for a negative setting, which turns the other limits off.
+        /// </summary>
+        [Test]
+        public void TheSelfContactLimitNeverGoesAbove25()
+        {
+            Assert.That(new BoundaryCaps().SelfManifoldLimit, Is.EqualTo(BoundaryCaps.DefaultSelfContactManifolds));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = 12 }.SelfManifoldLimit, Is.EqualTo(12));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = 40 }.SelfManifoldLimit, Is.EqualTo(BoundaryCaps.MaxSelfContactManifolds));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = -1 }.SelfManifoldLimit, Is.EqualTo(BoundaryCaps.MaxSelfContactManifolds));
+            Assert.That(new BoundaryCaps { OutsideContactPoints = -1 }.OutsidePointLimit, Is.EqualTo(int.MaxValue));
+        }
+
+        /// <summary>
         /// The same craft on the ground, solved once with each solve of its boundary starting cold and once starting
         /// from the last solve's states. The warm start takes fewer pivoting rounds. Neither run has a cap on rounds, so
         /// that the counts are the rounds that the solve needs.

@@ -360,7 +360,8 @@ namespace KSP.Retooled.Physics.Tests
             string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
             VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
 
-            // RETOOLED_BENCH_BOUNDARY=cold starts every boundary solve cold, and =uncapped also lifts the caps.
+            // RETOOLED_BENCH_BOUNDARY=cold starts every boundary solve cold, and =uncapped also lifts the caps. Self-contact
+            // still keeps at most 25 manifolds, which is the most that the caps allow.
             string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
             VesselForest.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }

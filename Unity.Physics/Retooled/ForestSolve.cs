@@ -2105,7 +2105,8 @@ namespace Unity.Physics
     /// <summary>
     /// Limits on the boundary block of a vessel island, so that the dense solve of the boundary stays small. The
     /// defaults come from the vessel solver study. A field that is zero takes its default, and a field that is negative
-    /// turns its limit off. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
+    /// turns its limit off, except for <see cref="SelfContactManifolds"/>, which never goes above
+    /// <see cref="MaxSelfContactManifolds"/>. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
     /// </summary>
     public struct BoundaryCaps
     {
@@ -2158,10 +2159,12 @@ namespace Unity.Physics
         /// <summary>The limit on points per manifold that applies, after defaults.</summary>
         public int PointLimit => Limit(PointsPerManifold, DefaultPointsPerManifold);
 
-        /// <summary>The limit on self-contact manifolds that applies, after defaults. It is never more than 25.</summary>
-        public int SelfManifoldLimit => SelfContactManifolds < 0
-            ? int.MaxValue
-            : Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
+        /// <summary>
+        /// The limit on self-contact manifolds that applies, after defaults. It is never more than 25, so a negative
+        /// setting, which turns the other limits off, gives 25 here.
+        /// </summary>
+        public int SelfManifoldLimit =>
+            Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
 
         /// <summary>The limit on pivoting rounds that applies, after defaults.</summary>
         public int PivotRoundLimit => Limit(PivotRounds, DefaultPivotRounds);
