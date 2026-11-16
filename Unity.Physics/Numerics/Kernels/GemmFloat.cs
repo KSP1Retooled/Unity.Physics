@@ -88,7 +88,7 @@ namespace Unity.Numerics.Kernels
         static void GemmTiles(int m, int n, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
             float* c, int ldc, Triangle triangle)
         {
-            float* buffer = stackalloc float[16 * 6];
+            float* buffer = stackalloc float[triangle == Triangle.All ? 0 : 16 * 6];
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
@@ -115,8 +115,8 @@ namespace Unity.Numerics.Kernels
             int m = a.Rows;
             int k = a.Columns;
             int n = b.Columns;
-            float* panel = stackalloc float[16 * PanelDepth];
-            float* buffer = stackalloc float[16 * 6];
+            float* panel = stackalloc float[16 * math.min(PanelDepth, k)];
+            float* buffer = stackalloc float[triangle == Triangle.All ? 0 : 16 * 6];
             for (int p0 = 0; p0 < k; p0 += PanelDepth)
             {
                 int depth = math.min(PanelDepth, k - p0);

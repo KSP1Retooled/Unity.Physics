@@ -105,7 +105,7 @@ namespace Unity.Numerics.Kernels
         static void GemmTiles(int m, int n, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
             double* c, int ldc, Triangle triangle)
         {
-            double* buffer = stackalloc double[8 * 6];
+            double* buffer = stackalloc double[triangle == Triangle.All ? 0 : 8 * 6];
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
@@ -123,8 +123,10 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// How many steps of the inner dimension one copy of 8 rows of A holds: 8 by 256 doubles are 16 KiB, which
-        /// fits in the stack and in the first-level cache.
+        /// How many steps of the inner dimension one copy of 8 rows of A holds at most: 8 by 256 doubles are 16 KiB,
+        /// which fits in the stack and in the first-level cache. A product with a shorter inner dimension takes only
+        /// what it needs, because Burst clears the memory that a stackalloc takes, and clearing 16 KiB costs more than
+        /// a small product.
         /// </summary>
         const int PanelDepth = 256;
 
@@ -140,8 +142,8 @@ namespace Unity.Numerics.Kernels
             int m = a.Rows;
             int k = a.Columns;
             int n = b.Columns;
-            double* panel = stackalloc double[8 * PanelDepth];
-            double* buffer = stackalloc double[8 * 6];
+            double* panel = stackalloc double[8 * math.min(PanelDepth, k)];
+            double* buffer = stackalloc double[triangle == Triangle.All ? 0 : 8 * 6];
             for (int p0 = 0; p0 < k; p0 += PanelDepth)
             {
                 int depth = math.min(PanelDepth, k - p0);
