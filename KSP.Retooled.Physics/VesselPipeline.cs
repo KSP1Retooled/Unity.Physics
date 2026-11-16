@@ -84,6 +84,8 @@ namespace KSP.Retooled.Physics
                 UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL_MIN_PARTS={minimum}: vessels have at least {MinimumParts} parts");
             }
 
+            string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
+            Unity.Physics.Solver.VesselFused = fused != "0";
             string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
             if (string.IsNullOrEmpty(value))
             {

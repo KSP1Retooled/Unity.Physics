@@ -202,6 +202,37 @@ namespace Unity.Physics
         public UnsafeList<int> PartHeld;
         public UnsafeList<float> PartRatio;
 
+        /// <summary>
+        /// Each part's index in the vessel set, or -1 for a body that is not in a vessel, and each closure's index in the
+        /// vessel set. The island fills these with the edges, so that the team's lanes can fill the parts and write the
+        /// loads by ranges of parts.
+        /// </summary>
+        public UnsafeList<int> PartSetPart;
+
+        public UnsafeList<int> ClosureSetIndex;
+
+        /// <summary>
+        /// The island's index of the first part of each part's vessel, or -1 for a body that is not in a vessel, and
+        /// the same index for each closure's vessel. A vessel's parents and closures number its parts from there.
+        /// </summary>
+        public UnsafeList<int> PartVesselStart;
+
+        public UnsafeList<int> ClosureVesselStart;
+
+        /// <summary>
+        /// The sections that are one task each, and the sections that the team's lanes share by ranges of parts. For
+        /// the parts of a shared section: each depth-first position's part, each part's depth-first position, the last
+        /// position in each part's subtree, and the prefix sums of the parts' forces and torques by position.
+        /// </summary>
+        public UnsafeList<int> SmallSections;
+
+        public UnsafeList<int> SharedSections;
+        public UnsafeList<int> DepthFirstPart;
+        public UnsafeList<int> DepthFirstPosition;
+        public UnsafeList<int> SubtreeLast;
+        public UnsafeList<double3> PrefixForce;
+        public UnsafeList<double3> PrefixTorque;
+
         /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
         public bool VesselMode;
 
@@ -264,6 +295,17 @@ namespace Unity.Physics
                 PartLocked = new UnsafeList<byte>(16, Allocator.Persistent),
                 PartHeld = new UnsafeList<int>(16, Allocator.Persistent),
                 PartRatio = new UnsafeList<float>(16, Allocator.Persistent),
+                PartSetPart = new UnsafeList<int>(16, Allocator.Persistent),
+                ClosureSetIndex = new UnsafeList<int>(16, Allocator.Persistent),
+                PartVesselStart = new UnsafeList<int>(16, Allocator.Persistent),
+                ClosureVesselStart = new UnsafeList<int>(16, Allocator.Persistent),
+                SmallSections = new UnsafeList<int>(16, Allocator.Persistent),
+                SharedSections = new UnsafeList<int>(16, Allocator.Persistent),
+                DepthFirstPart = new UnsafeList<int>(16, Allocator.Persistent),
+                DepthFirstPosition = new UnsafeList<int>(16, Allocator.Persistent),
+                SubtreeLast = new UnsafeList<int>(16, Allocator.Persistent),
+                PrefixForce = new UnsafeList<double3>(16, Allocator.Persistent),
+                PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -326,6 +368,17 @@ namespace Unity.Physics
             forest->PartLocked.Dispose();
             forest->PartHeld.Dispose();
             forest->PartRatio.Dispose();
+            forest->PartSetPart.Dispose();
+            forest->ClosureSetIndex.Dispose();
+            forest->PartVesselStart.Dispose();
+            forest->ClosureVesselStart.Dispose();
+            forest->SmallSections.Dispose();
+            forest->SharedSections.Dispose();
+            forest->DepthFirstPart.Dispose();
+            forest->DepthFirstPosition.Dispose();
+            forest->SubtreeLast.Dispose();
+            forest->PrefixForce.Dispose();
+            forest->PrefixTorque.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 

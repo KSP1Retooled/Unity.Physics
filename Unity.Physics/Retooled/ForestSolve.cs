@@ -611,38 +611,21 @@ namespace Unity.Physics
                 }
 
                 pathStart[nb] = pathSection.Length;
-                double* wPtr = (double*)w.GetUnsafePtr();
-                for (int i = 0; i < nb; i++)
+
+                // The team's lanes fill W by ranges of its rows.
+                var tasks = new BoundaryTasks
                 {
-                    for (int j = i; j < nb; j++)
-                    {
-                        double sum = 0.0;
-                        int p = pathStart[i], pEnd = pathStart[i + 1], q = pathStart[j], qEnd = pathStart[j + 1];
-                        while (p < pEnd && q < qEnd)
-                        {
-                            int sp = pathSection[p], sq = pathSection[q];
-                            if (sp == sq)
-                            {
-                                sum += double6.Dot(pathY[p], pathZ[q]);
-                                p++;
-                                q++;
-                            }
-                            else if (sp < sq)
-                            {
-                                p++;
-                            }
-                            else
-                            {
-                                q++;
-                            }
-                        }
-
-                        wPtr[i * nb + j] = sum;
-                        wPtr[j * nb + i] = sum;
-                    }
-
-                    wPtr[i * nb + i] += problem.Epsilon[boundary[i]];
-                }
+                    Count = nb,
+                    PathStart = (int*)pathStart.GetUnsafePtr(),
+                    PathSection = pathSection.GetUnsafePtr(),
+                    PathY = pathY.GetUnsafePtr(),
+                    PathZ = pathZ.GetUnsafePtr(),
+                    W = (double*)w.GetUnsafePtr(),
+                    Epsilon = problem.Epsilon,
+                    Boundary = (int*)boundary.GetUnsafePtr(),
+                };
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestBoundaryKind,
+                    (nb + BoundaryRowsPerTask - 1) / BoundaryRowsPerTask, null);
 
                 y.Dispose();
                 mark.Dispose();
@@ -658,6 +641,70 @@ namespace Unity.Physics
             run.W = w;
             run.BoundaryCount = nb;
             run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
+        }
+
+        /// <summary>The number of rows of the boundary block W that one task fills.</summary>
+        const int BoundaryRowsPerTask = 8;
+
+        /// <summary>The data that the team's lanes share while they fill the boundary block W.</summary>
+        unsafe struct BoundaryTasks
+        {
+            public int Count;
+            public int* PathStart;
+            public int* PathSection;
+            public double6* PathY;
+            public double6* PathZ;
+            public double* W;
+            public float* Epsilon;
+            public int* Boundary;
+        }
+
+        /// <summary>
+        /// Fills the rows of W that one task owns. For each row i, the task computes the entries from the diagonal to
+        /// the end of the row, and writes each one to both of its places in the symmetric matrix. Two tasks never write
+        /// the same entry, because an entry belongs to the task that owns the smaller of its row and column.
+        /// </summary>
+        internal static unsafe void ForestBoundaryTask(void* context, int task)
+        {
+            var tasks = (BoundaryTasks*)context;
+            int nb = tasks->Count;
+            int* pathStart = tasks->PathStart;
+            int* pathSection = tasks->PathSection;
+            double6* pathY = tasks->PathY;
+            double6* pathZ = tasks->PathZ;
+            double* w = tasks->W;
+            int end = math.min((task + 1) * BoundaryRowsPerTask, nb);
+            for (int i = task * BoundaryRowsPerTask; i < end; i++)
+            {
+                for (int j = i; j < nb; j++)
+                {
+                    double sum = 0.0;
+                    int p = pathStart[i], pEnd = pathStart[i + 1], q = pathStart[j], qEnd = pathStart[j + 1];
+                    while (p < pEnd && q < qEnd)
+                    {
+                        int sp = pathSection[p], sq = pathSection[q];
+                        if (sp == sq)
+                        {
+                            sum += double6.Dot(pathY[p], pathZ[q]);
+                            p++;
+                            q++;
+                        }
+                        else if (sp < sq)
+                        {
+                            p++;
+                        }
+                        else
+                        {
+                            q++;
+                        }
+                    }
+
+                    w[i * nb + j] = sum;
+                    w[j * nb + i] = sum;
+                }
+
+                w[i * nb + i] += tasks->Epsilon[tasks->Boundary[i]];
+            }
         }
 
         static ulong BlockKey(in SparseConstraintSolver.ConstraintBlock block, bool tree)

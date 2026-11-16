@@ -72,6 +72,9 @@ namespace Unity.Physics
         /// </summary>
         public const int ForestVesselKind = -12;
 
+        /// <summary>Identifies the stage that fills the boundary block of a forest solve, by ranges of its rows.</summary>
+        public const int ForestBoundaryKind = -13;
+
         struct Stage
         {
             public void* Context;
@@ -141,6 +144,14 @@ namespace Unity.Physics
         {
             if (taskCount == 0)
             {
+                return;
+            }
+
+            // The leader runs a stage that has one task by itself and does not publish it. If the leader published it,
+            // the parked helpers would wake up, find nothing to do, and spin again before they park.
+            if (taskCount == 1)
+            {
+                Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
                 return;
             }
 
@@ -292,6 +303,10 @@ namespace Unity.Physics
             else if (stage.Kind == ForestVesselKind)
             {
                 Solver.ForestVesselTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestBoundaryKind)
+            {
+                Solver.ForestBoundaryTask(stage.Context, task);
             }
             else
             {
