@@ -111,6 +111,11 @@ namespace Unity.Physics
         int parked;
         int signal;
 
+        // When the leader published the current stage, and the last generation in which a lane other than the leader
+        // claimed a task. HandOffCounters uses them to measure how long helpers take to arrive.
+        long publishedAt;
+        long helpedGeneration;
+
         // The leader writes a stage before publishing its generation. Successive generations alternate between these
         // two slots. A slot therefore remains unchanged while its generation is current.
         Stage even;
@@ -180,6 +185,8 @@ namespace Unity.Physics
                 odd = stage;
             }
 
+            publishedAt = ProfilerUnsafeUtility.Timestamp;
+            Interlocked.Increment(ref HandOffCounters.Shared.Data.Stages);
             Interlocked.Exchange(ref done, 0);
             Interlocked.Exchange(ref next, generation << 32);
 
@@ -191,7 +198,7 @@ namespace Unity.Physics
                 AddressWait.WakeOne((int*)UnsafeUtility.AddressOf(ref signal));
             }
 
-            Work(generation, stage);
+            Work(generation, stage, true);
 
             // Poll using reads that do not lock the cache line. A locked read would take ownership of that line from
             // lanes that are still finishing tasks.
@@ -218,7 +225,7 @@ namespace Unity.Physics
                 {
                     seen = generation;
                     spins = 0;
-                    Work(generation, (generation & 1) == 0 ? even : odd);
+                    Work(generation, (generation & 1) == 0 ? even : odd, false);
                     idleSince = ProfilerUnsafeUtility.Timestamp;
                     continue;
                 }
@@ -265,7 +272,7 @@ namespace Unity.Physics
                 return false;
             }
 
-            Work(generation, stage);
+            Work(generation, stage, false);
             return true;
         }
 
@@ -374,7 +381,7 @@ namespace Unity.Physics
             }
         }
 
-        void Work(long generation, Stage stage)
+        void Work(long generation, Stage stage, bool leading)
         {
             while (true)
             {
@@ -390,9 +397,41 @@ namespace Unity.Physics
                     continue;
                 }
 
+                // The first task that a lane other than the leader claims in a stage measures how long the helpers took
+                // to arrive after the stage was published.
+                long helped = Volatile.Read(ref helpedGeneration);
+                if (!leading && helped != generation && Interlocked.CompareExchange(ref helpedGeneration, generation, helped) == helped)
+                {
+                    ref HandOffCounters counters = ref HandOffCounters.Shared.Data;
+                    Interlocked.Increment(ref counters.HelpedStages);
+                    Interlocked.Add(ref counters.ArrivalTicks, ProfilerUnsafeUtility.Timestamp - publishedAt);
+                }
+
                 Run(stage, (int)task);
                 Interlocked.Increment(ref done);
             }
+        }
+    }
+
+    /// <summary>
+    /// Counts, over every team, the stages that leaders published, the stages in which some lane other than the leader
+    /// claimed a task, and the time from a stage's publication to that lane's first claim. The bench reads them to see
+    /// how fast parked helpers arrive.
+    /// </summary>
+    internal struct HandOffCounters
+    {
+        public long Stages;
+        public long HelpedStages;
+        public long ArrivalTicks;
+
+        internal static readonly Unity.Burst.SharedStatic<HandOffCounters> Shared =
+            Unity.Burst.SharedStatic<HandOffCounters>.GetOrCreate<HandOffCounters>();
+
+        public static HandOffCounters Current => Shared.Data;
+
+        public static void Reset()
+        {
+            Shared.Data = default;
         }
     }
 }
