@@ -80,6 +80,16 @@ namespace KSP.Retooled.Physics
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
         private NativeList<int> queryFirstShapes;
+
+        // The query snapshot holds no poses, so a step can keep the last one when nothing that it copied has changed.
+        // The snapshot is kept while QuerySnapshotVersion has the value read when it was taken, and while the moving
+        // and static bodies are built from the same store rows in the same order. snapshotTaken is false from the
+        // moment a snapshot is scheduled until it completes, so a step that throws in between takes a new one.
+        private bool snapshotTaken;
+        private uint snapshotVersion;
+        private NativeList<int> snapshotDynamic;
+        private NativeList<int> snapshotStatic;
+        private long keptSnapshots;
         private NativeList<ManifoldRecord> manifolds;
         private NativeList<ManifoldPoint> manifoldPoints;
         private NativeList<ContactBucket> contactBuckets;
@@ -137,6 +147,8 @@ namespace KSP.Retooled.Physics
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
             queryFirstShapes = new NativeList<int>(Allocator.Persistent);
+            snapshotDynamic = new NativeList<int>(Allocator.Persistent);
+            snapshotStatic = new NativeList<int>(Allocator.Persistent);
             manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
@@ -196,6 +208,8 @@ namespace KSP.Retooled.Physics
             queryBodies.Dispose();
             queryShapes.Dispose();
             queryFirstShapes.Dispose();
+            snapshotDynamic.Dispose();
+            snapshotStatic.Dispose();
             manifolds.Dispose();
             manifoldPoints.Dispose();
             for (int i = 0; i < contactBuckets.Length; i++)
@@ -606,20 +620,28 @@ namespace KSP.Retooled.Physics
             // nothing to solve does not have that dependency, so add it explicitly here.
             JobHandle solved = JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, vesselsFilled);
 
-            // Only queries read the dynamic tree at this stage. Rebuild it at the solved poses while the motions are
+            // The jobs below read only the solved motions, so they don't wait for the jobs that free the solve's
+            // buffers and export the events of its direct islands. Those jobs only read the motions too.
+            JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vesselsFilled);
+
+            // Only queries read the dynamic tree at this stage. Move it to the solved poses while the motions are
             // written back, and while this thread schedules the jobs that read joint loads and publishes the contacts.
-            // The query snapshot reads only the store, so it doesn't wait for the rebuild either. The snapshot also
+            // The build at the start of this step made the tree for the same bodies in the same order, so fitting its
+            // bounds to the new poses is enough. Queries then find the same hits as in a rebuilt tree, but they can
+            // report the hits of a query that returns many in a different order. Neither Unity nor PhysX promises an
+            // order for those queries, and the order already changed from step to step as the bodies moved.
+            // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
             // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
             // reads only Static, and neither job changes it.
-            JobHandle tree = world.CollisionWorld.ScheduleUpdateDynamicTree(ref world, deltaTime, float3.zero, solved);
-            JobHandle snapshot = ScheduleQuerySnapshot(solved);
+            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved);
+            JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle writtenBack = new WriteBackJob
             {
                 Store = store->bodies,
                 DynamicIndices = dynamicIndices.AsArray(),
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
-            }.Schedule(dynamicIndices.Length, ParallelBatchSize, solved);
+            }.Schedule(dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
             // The loads of the vessel joints come from the solve, not from impulse events. Converting them needs the
             // written-back poses, because a group shares its load in the frame of its leader's body.
@@ -717,6 +739,7 @@ namespace KSP.Retooled.Physics
             using (BackendMarkers.StepPublishQueryWorld.Auto())
             {
                 snapshot.Complete();
+                FinishQuerySnapshot();
                 store->queryDirty = motionsMatchStore ? 0u : StoreOps.QueryStale;
                 PublishQueryWorld();
             }
@@ -750,6 +773,7 @@ namespace KSP.Retooled.Physics
             JobHandle colliders = RefreshColliders(default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
+            FinishQuerySnapshot();
             PublishQueryWorld();
         }
 
@@ -845,9 +869,22 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Copies the store data needed by queries for <see cref="PublishQueryWorld"/>. Workers read this snapshot
         /// until the next publication, so it must not contain pointers to memory that the store can move or free.
+        /// Returns <paramref name="dependency"/> without scheduling anything when the last snapshot still matches the
+        /// store. The caller must call <see cref="FinishQuerySnapshot"/> after the returned handle completes.
         /// </summary>
         private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
         {
+            uint version = QuerySnapshotVersion.Version;
+            if (snapshotTaken && version == snapshotVersion && Same(snapshotDynamic, dynamicIndices) && Same(snapshotStatic, staticIndices))
+            {
+                keptSnapshots++;
+                return dependency;
+            }
+
+            snapshotTaken = false;
+            snapshotVersion = version;
+            snapshotDynamic.CopyFrom(dynamicIndices.AsArray());
+            snapshotStatic.CopyFrom(staticIndices.AsArray());
             queryBodies.ResizeUninitialized(world.NumBodies);
             queryFirstShapes.ResizeUninitialized(world.NumBodies);
             JobHandle found = new FindFirstShapesJob
@@ -870,6 +907,21 @@ namespace KSP.Retooled.Physics
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(world.NumBodies, ParallelBatchSize, found);
         }
+
+        /// <summary>Records that the snapshot scheduled by <see cref="ScheduleQuerySnapshot"/> has completed.</summary>
+        private void FinishQuerySnapshot()
+        {
+            snapshotTaken = true;
+        }
+
+        private static bool Same(NativeList<int> kept, NativeList<int> built)
+        {
+            return kept.Length == built.Length
+                && UnsafeUtility.MemCmp(kept.GetUnsafeReadOnlyPtr(), built.GetUnsafeReadOnlyPtr(), (long)kept.Length * sizeof(int)) == 0;
+        }
+
+        /// <summary>The number of steps and query builds that kept the last query snapshot. Used by tests.</summary>
+        internal readonly long KeptSnapshots => keptSnapshots;
 
         /// <summary>
         /// Makes the built world and completed snapshot available to query functions. Sharing the colliders is safe
