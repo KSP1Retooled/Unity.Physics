@@ -130,7 +130,11 @@ namespace KSP.Retooled.Physics
             float3 top = centreOfMass + math.rotate(pose.rot, wheel->centreOffset) + up * suspension.maxCompression;
             float length = suspension.maxCompression + suspension.maxDroop + radius;
 
-            var collector = new WheelRayCollector(Collision.Bodies, Store->bodies, Globals, row, wheel->collidesWith, wheel->filterIds >> 16, -up);
+            // The wheel has no shape of its own, so its collision group comes from a lookup by its collider's id.
+            ulong engineId = wheel->userData != null ? *(ulong*)((byte*)wheel->userData + Globals->engineObjectIdOffset) : 0;
+            uint groupRecord = GroupTable.RecordOfCollider(Globals, engineId);
+            var collector = new WheelRayCollector(Collision.Bodies, Store->bodies, Globals, row, wheel->collidesWith, wheel->filterIds >> 16,
+                groupRecord, -up);
             Collision.CastRay(new RaycastInput
             {
                 Start = top,
@@ -288,7 +292,7 @@ namespace KSP.Retooled.Physics
     /// <summary>
     /// Collects the nearest hit that can support a wheel. It excludes the wheel's own body, triggers, shapes that are
     /// hidden from queries, and layers that do not collide with the wheel. It also excludes pairs disabled by
-    /// Physics.IgnoreCollision and hits on the back of a polygon.
+    /// Physics.IgnoreCollision, shapes that the wheel's collision group stops, and hits on the back of a polygon.
     /// </summary>
     internal unsafe struct WheelRayCollector : ICollector<RaycastHit>
     {
@@ -301,10 +305,11 @@ namespace KSP.Retooled.Physics
         private readonly int ownRow;
         private readonly uint collidesWith;
         private readonly uint ignoreId;
+        private readonly uint groupRecord;
         private readonly float3 direction;
 
         internal WheelRayCollector(NativeArray<RigidBody> bodies, NativeStore.BodyData* rows, NativeStore.StoreGlobals* globals, int ownRow,
-            uint collidesWith, uint ignoreId, float3 direction)
+            uint collidesWith, uint ignoreId, uint groupRecord, float3 direction)
         {
             this.bodies = bodies;
             this.rows = rows;
@@ -312,6 +317,7 @@ namespace KSP.Retooled.Physics
             this.ownRow = ownRow;
             this.collidesWith = collidesWith;
             this.ignoreId = ignoreId;
+            this.groupRecord = groupRecord;
             this.direction = direction;
             Closest = default;
             Shape = null;
@@ -341,7 +347,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            if (IgnoreTable.Contains(globals, ignoreId, shape->ignorePairId))
+            if (IgnoreTable.Contains(globals, ignoreId, shape->ignorePairId) || GroupTable.Ignores(globals, groupRecord, shape))
             {
                 return false;
             }

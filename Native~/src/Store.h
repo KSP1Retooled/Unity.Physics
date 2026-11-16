@@ -539,7 +539,8 @@ namespace Retooled
         uint32_t messages;
         // One past the shape's entry in the query world last published, so that removing the shape can hide it there.
         uint32_t querySlot;
-        uint32_t reserved0;
+        // Managed only: the shape's collision group record plus one (GroupTable.cs). The plugin never reads it.
+        uint32_t groupRecord;
         Shape* nextOnField; // the next shape using the same height field
     };
 

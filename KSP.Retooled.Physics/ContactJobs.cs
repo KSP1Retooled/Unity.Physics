@@ -181,15 +181,19 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Disables collisions for overlapping body pairs when every collider pair between them is ignored through
-    /// Physics.IgnoreCollision. This is common among parts of one craft. Such overlaps greatly outnumber joints.
+    /// Physics.IgnoreCollision or stopped by the colliders' collision groups (see <see cref="GroupTable"/>). This is
+    /// common among parts of one craft. Such overlaps greatly outnumber joints.
     /// Leaving them enabled would put the craft in one crowded island and send all of them through the narrow phase
     /// unnecessarily. Keep body pairs that still have colliders allowed to contact each other. <see
     /// cref="ReadContactsJob"/> filters the individual collider pairs.
     ///
     /// Checking a body pair requires a lookup for each collider pair. Each lookup is likely to miss the cache because
     /// the table contains all ignored pairs for the craft. Cache the result for each body pair until the ignored pairs
-    /// change or any body's shapes may have changed. Creating a body or changing its shapes requires a full collider
-    /// build, which increments the build counter recorded with the cached result.
+    /// change or any body's shapes may have changed. A change to a collision group counts as a change to the ignored
+    /// pairs. Creating a body or changing its shapes requires a full collider
+    /// build, which increments the build counter recorded with the cached result. A body pair is checked without the
+    /// cache when one of its bodies has no collider with an ignore id, because then only the groups matter, and
+    /// reading them costs less than the cache lookup.
     /// </summary>
     [BurstCompile]
     internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
@@ -308,6 +312,14 @@ namespace KSP.Retooled.Physics
         {
             uint rowA = (uint)Bodies[pair.BodyIndexA].Entity.Index;
             uint rowB = (uint)Bodies[pair.BodyIndexB].Entity.Index;
+
+            // When one of the bodies has no collider with an ignore id, only the collision groups can stop the pair.
+            // Reading the groups costs less than the cache lookup, so the result isn't cached.
+            if (!HasIgnoreIds(Store + rowA) || !HasIgnoreIds(Store + rowB))
+            {
+                return IsIgnored(Store + rowA, Store + rowB);
+            }
+
             ulong key = ((ulong)math.min(rowA, rowB) << 32) | math.max(rowA, rowB);
             uint ignoreVersion = Globals->ignoreVersion;
             uint wholeBuilds = WholeBuilds.Value;
@@ -325,6 +337,19 @@ namespace KSP.Retooled.Physics
             return ignored;
         }
 
+        private static bool HasIgnoreIds(NativeStore.BodyData* row)
+        {
+            for (int i = 0; i < row->shapeCount; i++)
+            {
+                if (row->shapes[i]->ignorePairId != 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private bool IsIgnored(NativeStore.BodyData* rowA, NativeStore.BodyData* rowB)
         {
             for (int a = 0; a < rowA->shapeCount; a++)
@@ -338,7 +363,7 @@ namespace KSP.Retooled.Physics
                 for (int b = 0; b < rowB->shapeCount; b++)
                 {
                     NativeStore.ShapeData* shapeB = rowB->shapes[b];
-                    if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
+                    if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Ignores(Globals, shapeA, shapeB))
                     {
                         return false;
                     }
@@ -507,7 +532,7 @@ namespace KSP.Retooled.Physics
             ColliderKey keyB = header.ColliderKeys.ColliderKeyB;
             NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA);
             NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB);
-            if (IgnoreTable.Contains(Globals, shapeA->ignorePairId, shapeB->ignorePairId))
+            if (IgnoreTable.Ignores(Globals, shapeA, shapeB))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
                 return false;

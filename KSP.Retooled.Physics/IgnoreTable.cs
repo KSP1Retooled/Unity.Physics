@@ -43,6 +43,36 @@ namespace KSP.Retooled.Physics
         private uint freeIdCount;
         private uint lastId;
 
+        /// <summary>
+        /// Marks a table that has the fields below. A table made by older code ends before them, and it can survive a
+        /// domain reload into this code. <see cref="TableOf"/> then grows the table before it writes these fields.
+        /// </summary>
+        private ulong layout;
+
+        /// <summary>
+        /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>. Read
+        /// it through <see cref="GroupsOf"/> unless a shape's group record shows that the groups exist.
+        /// </summary>
+        internal GroupTable* Groups;
+
+        private const ulong CurrentLayout = 0x3250554F52474954; // "TIGROUP2"
+
+        /// <summary>Returns the collision groups, or null if there are none yet.</summary>
+        internal static GroupTable* GroupsOf(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            return table != null && table->layout == CurrentLayout ? table->Groups : null;
+        }
+
+        /// <summary>
+        /// Returns whether two shapes must not collide, either because Physics.IgnoreCollision ignored their pair or
+        /// because the group rule stops them.
+        /// </summary>
+        internal static bool Ignores(NativeStore.StoreGlobals* globals, NativeStore.ShapeData* first, NativeStore.ShapeData* second)
+        {
+            return Contains(globals, first->ignorePairId, second->ignorePairId) || GroupTable.Ignores(globals, first, second);
+        }
+
         internal static bool Contains(NativeStore.StoreGlobals* globals, uint first, uint second)
         {
             IgnoreTable* table = globals->ignoreTable;
@@ -83,6 +113,35 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
+        /// Returns the number of bytes that the ignore table holds on the store's heap, without the group table. Used
+        /// by benchmarks.
+        /// </summary>
+        internal static ulong Bytes(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            if (table == null)
+            {
+                return 0;
+            }
+
+            return (ulong)sizeof(IgnoreTable) + IdCount * (sizeof(uint) + sizeof(ushort))
+                + table->edgeCapacity * (ulong)sizeof(Edge) + table->slotCount * (ulong)sizeof(uint);
+        }
+
+        /// <summary>Returns the number of ignored pairs.</summary>
+        internal static ulong PairCount(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            ulong count = 0;
+            for (uint i = 0; table != null && i < table->slotCount; i++)
+            {
+                count += table->slots[i] != EmptySlot && table->slots[i] != DeletedSlot ? 1u : 0u;
+            }
+
+            return count;
+        }
+
+        /// <summary>
         /// Removes every ignored pair involving a destroyed collider and frees its id.
         /// </summary>
         internal static void Forget(NativeStore.StoreGlobals* globals, uint id)
@@ -117,9 +176,15 @@ namespace KSP.Retooled.Physics
             {
                 table->Rehash(globals);
             }
+
+            GroupTable* groups = GroupsOf(globals);
+            if (groups != null)
+            {
+                groups->Reslot(globals);
+            }
         }
 
-        private static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
+        internal static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
         {
             if (globals->ignoreTable == null)
             {
@@ -133,6 +198,15 @@ namespace KSP.Retooled.Physics
                 }
 
                 globals->ignoreTable = table;
+            }
+
+            if (globals->ignoreTable->layout != CurrentLayout)
+            {
+                // Copy a table made by older code into a block that is large enough for the new fields.
+                IgnoreTable* grown = (IgnoreTable*)StoreOps.Reallocate(globals, globals->ignoreTable, (ulong)sizeof(IgnoreTable));
+                grown->layout = CurrentLayout;
+                grown->Groups = null;
+                globals->ignoreTable = grown;
             }
 
             return globals->ignoreTable;
