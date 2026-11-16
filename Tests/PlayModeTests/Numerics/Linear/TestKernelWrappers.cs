@@ -181,6 +181,64 @@ namespace Unity.Numerics.Linear.Tests
             }
         }
 
+        /// <summary>
+        /// B := alpha op(T) B or alpha B op(T) when T and B are blocks of one matrix. The two blocks share no entry, but
+        /// the address range of one block overlaps the address range of the other. The kernels don't take storage like
+        /// that, so these products run the routine's own loops. The loop for a lower T, transposed, on the left used to
+        /// add each partial sum to itself.
+        /// </summary>
+        [Test]
+        public void TheTriangularProductsMatchPlainLoopsWhenTheyShareStorage([Values(6, 19)] int m, [Values(4, 11)] int n,
+            [Values(0, 1)] int side, [Values(0, 1)] int type, [Values] bool transpose, [Values] bool unit)
+        {
+            var sideValue = side == 0 ? Side.Left : Side.Right;
+            var typeValue = type == 0 ? TriangularType.Lower : TriangularType.Upper;
+            var opValue = transpose ? Linear.Op.Transpose : Linear.Op.None;
+            var diagValue = unit ? DiagonalType.Unit : DiagonalType.Explicit;
+            int size = sideValue == Side.Left ? m : n;
+            using (var heap = new MemoryManager(Allocator.Persistent))
+            {
+                // T takes rows 0 to 18 at most, and B takes rows 25 to 43 at most. A column of the big matrix holds
+                // rows of both, so the address ranges of T and B overlap.
+                using var big = RandomMatrix(heap, 50, 50, (uint)(size + 7));
+                using var a = big.Submatrix(0, 0, size, size);
+                using var b = big.Submatrix(25, 1, m, n);
+                Assert.That(Matrix.TryView(a, out var aView) && Matrix.TryView(b, out var bView) && Matrix.Overlaps(aView, bView),
+                    "The address ranges of T and B must overlap, so that the routine runs its own loops");
+
+                var t = new double[size, size];
+                for (int i = 0; i < size; i++)
+                {
+                    a[i, i] = 1f + math.abs(a[i, i]);
+                    for (int j = 0; j < size; j++)
+                    {
+                        bool inside = typeValue == TriangularType.Lower ? i > j : i < j;
+                        if (inside)
+                        {
+                            a[i, j] *= 1f / size;
+                            t[i, j] = a[i, j];
+                        }
+                    }
+
+                    t[i, i] = unit ? 1.0 : a[i, i];
+                }
+
+                double[,] op = Apply(t, transpose);
+                double[,] original = Read(b);
+                double[,] product = sideValue == Side.Left ? Multiply(op, original) : Multiply(original, op);
+                b.MultiplyByTriangular(sideValue, typeValue, opValue, diagValue, 0.5f, a);
+                for (int i = 0; i < m; i++)
+                {
+                    for (int j = 0; j < n; j++)
+                    {
+                        product[i, j] *= 0.5;
+                    }
+                }
+
+                AssertNear(product, b, 1e-5 * size, "product");
+            }
+        }
+
         /// <summary>y := alpha op(A) x + beta y, x := op(T) x and M += alpha x y^T, with vectors that are rows of a matrix.</summary>
         [Test]
         public void TheMatrixVectorRoutinesMatchPlainLoops([Values(1, 6, 21)] int m, [Values(1, 9)] int n, [Values] bool transpose,

@@ -435,7 +435,7 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                                 }
                                 for (int k = i + 1; k < NumRows; k++)
                                 {
-                                    temp += temp + A[k, i] * this[k, j];
+                                    temp += A[k, i] * this[k, j];
                                 }
                                 this[i, j] = alpha * temp;
                             }
