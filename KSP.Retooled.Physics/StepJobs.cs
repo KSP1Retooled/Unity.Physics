@@ -176,6 +176,17 @@ namespace KSP.Retooled.Physics
 
         public float DeltaTime;
 
+        /// <summary>
+        /// The flags of the bounds cache (DynamicBoundsCache.View.Same) for the dynamic bodies, or null. The job sets
+        /// a body's flag when the body has exactly the collider and pose of the body that it overwrites, and when
+        /// <see cref="CompareBodies"/> is true.
+        /// </summary>
+        [NativeDisableUnsafePtrRestriction]
+        public byte* Same;
+
+        /// <summary>Whether the bodies that this job overwrites are the bodies that the bounds cache holds.</summary>
+        public bool CompareBodies;
+
         /// <summary>The number of built bodies, including the anchor.</summary>
         public int Count => DynamicIndices.Length + StaticIndices.Length + 1;
 
@@ -185,7 +196,14 @@ namespace KSP.Retooled.Physics
             {
                 int index = DynamicIndices[builtIndex];
                 ref NativeStore.BodyData body = ref Store[index];
-                Bodies[builtIndex] = RigidBodyOf(ref body, index);
+                RigidBody built = RigidBodyOf(ref body, index);
+                if (Same != null)
+                {
+                    // This job writes the body's memory anyway, so reading it first costs little.
+                    Same[builtIndex] = CompareBodies && DynamicBoundsCache.View.Matches(Bodies[builtIndex], built) ? (byte)1 : (byte)0;
+                }
+
+                Bodies[builtIndex] = built;
                 WriteMotion(builtIndex, ref body);
             }
             else if (builtIndex < DynamicIndices.Length + StaticIndices.Length)

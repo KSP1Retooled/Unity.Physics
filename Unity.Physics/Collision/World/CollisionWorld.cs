@@ -779,23 +779,14 @@ namespace Unity.Physics
         /// tree was built for the same dynamic bodies in the same order, for example earlier in the same step. Queries
         /// find the same hits as in a rebuilt tree, but can report them in a different order.
         /// </summary>
-        internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps)
-        {
-            return ScheduleRefitDynamicTree(ref world, timeStep, gravity, inputDeps, default, out _);
-        }
-
-        /// <summary>
-        /// Schedules the refit of the dynamic tree, as the overload without a cache does. The refit also leaves in
-        /// <paramref name="boundsCache"/> the bounds of each moving body's collider at the body's new pose, so that
-        /// the next build of the tree doesn't compute them again. A job after the tree's jobs writes the bodies' poses
-        /// into the cache. The returned handle doesn't wait for that job; <paramref name="boundsCacheFilled"/> does.
-        /// Complete it before anything writes the world's bodies or uses the cache. See
+        /// <remarks>
+        /// With <paramref name="boundsCache"/>, the refit also leaves in the cache the bounds of each body's collider
+        /// at the body's new pose, so that the next build of the tree doesn't compute them again. See
         /// <see cref="DynamicBoundsCache"/>.
-        /// </summary>
+        /// </remarks>
         internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps,
-            DynamicBoundsCache boundsCache, out JobHandle boundsCacheFilled)
+            DynamicBoundsCache boundsCache = default)
         {
-            boundsCacheFilled = inputDeps;
             int count = world.NumDynamicBodies;
             if (count == 0)
             {
@@ -829,25 +820,11 @@ namespace Unity.Physics
                 Aabbs = aabbs,
             }.Schedule(BoundingVolumeHierarchy.RefitSubtreeCount, 1, handle);
 
-            handle = new RefitDynamicTreeTopJob
+            return new RefitDynamicTreeTopJob
             {
                 Tree = tree,
                 Aabbs = aabbs,
             }.Schedule(handle);
-
-            // Writing the poses into the cache in the refit made the refit, which the step waits for, take a quarter
-            // longer. The next build is the first to read them.
-            if (cache.IsCreated)
-            {
-                boundsCacheFilled = new FillDynamicBoundsCacheJob
-                {
-                    RigidBodies = m_Bodies.GetSubArray(0, count),
-                    MotionVelocities = world.MotionVelocities,
-                    Cache = cache,
-                }.Schedule(count, 64, handle);
-            }
-
-            return handle;
         }
 
         #region Jobs
@@ -897,39 +874,14 @@ namespace Unity.Physics
                 Aabb bounds = body.CalculateAabb();
                 Aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, AabbMargin, Gravity, TimeStep, motion);
 
-                // FillDynamicBoundsCacheJob writes the pose and collider that go with these bounds.
-                if (Cache.IsCreated && !motion.IsKinematic && body.Collider.IsCreated)
+                // The bounds in the cache go with the body that the world now holds at index i: its collider at its
+                // new pose. The step writes back the pose of a moving body with its rotation normalized, and the next
+                // build starts from that pose. Normalizing changes the last bits of the rotation of some bodies, and
+                // those bodies compute their bounds again in the next build. Normalizing here, and computing the
+                // bounds of those bodies at the normalized pose, cost the refit more than it saved.
+                if (Cache.IsCreated && body.Collider.IsCreated)
                 {
                     Cache.Bounds[i] = bounds;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Writes into the bounds cache the pose and collider of each body whose collider bounds
-        /// <see cref="UpdateDynamicBoundsJob"/> left there: each body with a collider that is neither kinematic nor
-        /// asleep.
-        /// <para>
-        /// The step writes back the pose of a moving body with its rotation normalized, and the next build starts from
-        /// that pose. Normalizing changes the last bits of the rotation of a few bodies in a hundred, and those bodies
-        /// compute their bounds again in the next build. Normalizing here, and computing the bounds of those bodies at
-        /// the normalized pose, cost the refit more than it saved. The step doesn't move a kinematic or sleeping body
-        /// to its motion's pose, so the entry of such a body stays as the last build left it.
-        /// </para>
-        /// </summary>
-        [BurstCompile]
-        struct FillDynamicBoundsCacheJob : IJobParallelFor
-        {
-            [ReadOnly] public NativeArray<RigidBody> RigidBodies;
-            [ReadOnly] public NativeArray<MotionVelocity> MotionVelocities;
-            public DynamicBoundsCache.View Cache;
-
-            public void Execute(int i)
-            {
-                RigidBody body = RigidBodies[i];
-                if (!MotionVelocities[i].IsKinematic && body.Collider.IsCreated)
-                {
-                    Cache.WritePose(i, body);
                 }
             }
         }

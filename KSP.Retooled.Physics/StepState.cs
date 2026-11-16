@@ -132,10 +132,6 @@ namespace KSP.Retooled.Physics
         // colliders after the build.
         private bool boundsCacheBuilt;
 
-        // The job that writes the poses into the bounds cache after the refit. It reads the built bodies, so the next
-        // build completes it before it changes them.
-        private JobHandle boundsCacheFilled;
-
         /// <summary>
         /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
         /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
@@ -228,7 +224,6 @@ namespace KSP.Retooled.Physics
 
             forcesApplied.Complete();
             collidersBuilt.Complete();
-            boundsCacheFilled.Complete();
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
             vesselsFilled.Complete();
@@ -733,7 +728,7 @@ namespace KSP.Retooled.Physics
             // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
             // reads only Static, and neither job changes it.
             JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved,
-                boundsCacheBuilt ? boundsCache : default, out boundsCacheFilled);
+                boundsCacheBuilt ? boundsCache : default);
             JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
@@ -743,7 +738,7 @@ namespace KSP.Retooled.Physics
             }
 
             // The build of this step has completed, so every entry of the bounds cache that a body could take holds
-            // the body's current collider: either the build wrote it, or the refit and the job after it write it now.
+            // the body's current collider: the build wrote it, and the refit writes it again now.
             if (boundsCacheBuilt)
             {
                 boundsCache.MarkCurrent();
@@ -854,7 +849,6 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal void BuildForQueries()
         {
-            boundsCacheFilled.Complete();
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
 
@@ -1081,10 +1075,8 @@ namespace KSP.Retooled.Physics
         {
             // FinishStep waits for the jobs that fill the vessels' edges and closures. A step that threw before
             // FinishStep leaves them running, and this build compiles the vessels again and resizes their lists. In the
-            // usual case, the jobs have already finished. The job that fills the bounds cache reads the bodies that
-            // this build replaces.
+            // usual case, the jobs have already finished.
             vesselsFilled.Complete();
-            boundsCacheFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
                 new PartitionBodiesJob
@@ -1106,6 +1098,12 @@ namespace KSP.Retooled.Physics
                 builtWhole = false;
             }
 
+            // The bounds cache holds the bounds of the bodies that the world holds now. The body build compares each
+            // dynamic body with the body that it overwrites, but only if the world keeps its bodies' memory and the
+            // same number of dynamic bodies, and if the last build and refit kept the cache.
+            void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
+            bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == dynamicIndices.Length;
+
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
             // read the joints, so jobs can be scheduled before the joint count is known.
             using (BackendMarkers.BuildReset.Auto())
@@ -1113,6 +1111,9 @@ namespace KSP.Retooled.Physics
                 world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
             }
+
+            compareBodies &= NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
+            DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(dynamicIndices.Length) : default;
 
             // The bodies and the broadphase trees lead the longest chain before the solve: the pairs and islands wait
             // for the trees, and the trees wait for the bodies. Schedule them before this thread groups and compiles
@@ -1130,6 +1131,8 @@ namespace KSP.Retooled.Physics
                     MotionDatas = world.MotionDatas,
                     MotionVelocities = world.MotionVelocities,
                     DeltaTime = deltaTime,
+                    Same = boundsView.Same,
+                    CompareBodies = compareBodies,
                 };
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);

@@ -401,6 +401,19 @@ namespace Unity.Physics.Tests.Collision.World
             }
         }
 
+        /// <summary>
+        /// Does what the backend's body build does for the cache: marks each body that has exactly the collider and pose
+        /// that the refit left at its index.
+        /// </summary>
+        static unsafe void MarkSame(NativeArray<Physics.RigidBody> bodies, Physics.RigidBody[] refitted, DynamicBoundsCache cache)
+        {
+            DynamicBoundsCache.View view = cache.CurrentView;
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                view.Same[i] = DynamicBoundsCache.View.Matches(refitted[i], bodies[i]) ? (byte)1 : (byte)0;
+            }
+        }
+
         static void AssertSameBounds(Aabb expected, Aabb actual, string what)
         {
             Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
@@ -408,9 +421,9 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The refit leaves each body's collider bounds in the cache at the pose that the write-back gives the body, and
-        /// the next build takes them from there. That build gives every body the same bounds, to the last bit, and the
-        /// same filter, as a build without the cache.
+        /// The refit leaves each body's collider bounds in the cache at the body's new pose, and the next build takes
+        /// them from there for each body that is still at that pose. That build gives every body the same bounds, to the
+        /// last bit, and the same filter, as a build without the cache.
         /// </summary>
         [Test]
         public unsafe void ABuildWithTheBoundsFromTheRefitMatchesABuildWithout([Values(1, 8)] int threads)
@@ -427,11 +440,12 @@ namespace Unity.Physics.Tests.Collision.World
                 world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default, cache).Complete();
                 cache.MarkCurrent();
                 scene.Move(12, 20.0f);
-                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache, out JobHandle filled).Complete();
-                filled.Complete();
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache).Complete();
+                Physics.RigidBody[] refitted = world.DynamicBodies.ToArray();
                 WriteBack(ref world, 13);
+                MarkSame(world.DynamicBodies, refitted, cache);
 
-                // The refit leaves the entries at the motions' poses. The write-back's normalizing changes the last bits
+                // The refit leaves the bounds at the motions' poses. The write-back's normalizing changes the last bits
                 // of some rotations, and those bodies compute their bounds again.
                 DynamicBoundsCache.View view = cache.CurrentView;
                 NativeArray<Physics.RigidBody> bodies = world.DynamicBodies;
@@ -490,8 +504,8 @@ namespace Unity.Physics.Tests.Collision.World
                 world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default, cache).Complete();
                 cache.MarkCurrent();
                 scene.Move(22, 20.0f);
-                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache, out JobHandle filled).Complete();
-                filled.Complete();
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache).Complete();
+                Physics.RigidBody[] refitted = world.DynamicBodies.ToArray();
                 WriteBack(ref world, 23, false);
 
                 var planted = new Aabb { Min = new float3(-500.0f), Max = new float3(500.0f) };
@@ -509,6 +523,7 @@ namespace Unity.Physics.Tests.Collision.World
                 Physics.RigidBody changed = bodies[1];
                 changed.Collider = other;
                 bodies[1] = changed;
+                MarkSame(bodies, refitted, cache);
 
                 world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default, cache).Complete();
                 Aabb[] fromCache = LeafBounds(tree, count);

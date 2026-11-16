@@ -328,10 +328,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedules the jobs that build the dynamic tree, as the overload without a cache does. A body whose collider
-        /// and pose are the ones that <paramref name="boundsCache"/> holds for it takes its collider's bounds from the
-        /// cache instead of computing them from its collider. The job writes the bounds of every other body into the
-        /// cache. See <see cref="DynamicBoundsCache"/>.
+        /// Schedules the jobs that build the dynamic tree, as the overload without a cache does. A body that is the
+        /// same as before the build (<see cref="DynamicBoundsCache.View.Same"/>, which the code that built the bodies
+        /// must have set) takes its collider's bounds from <paramref name="boundsCache"/> instead of computing them
+        /// from its collider. The job writes the bounds of every other body into the cache. See
+        /// <see cref="DynamicBoundsCache"/>.
         /// </summary>
         internal unsafe JobHandle ScheduleDynamicTreeBuildJobs(ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint,
             JobHandle inputDeps, DynamicBoundsCache boundsCache, bool incremental = false)
@@ -1436,7 +1437,7 @@ namespace Unity.Physics
 
                 // A body that the cache holds at this pose with this collider takes its collider's bounds and filter
                 // from the cache, and the job doesn't read its collider at all. Every other body computes them as
-                // ExecuteImpl does and leaves them in the cache for the next build.
+                // ExecuteImpl does and leaves them in the cache.
                 RigidBody body = RigidBodies[index];
                 Aabb bounds;
                 CollisionFilter filter;
@@ -1928,12 +1929,13 @@ namespace Unity.Physics
     /// when the step refits the tree to the solved poses (<see cref="CollisionWorld.ScheduleRefitDynamicTree"/>), and
     /// again when the next step builds the tree, although most bodies are where the refit put them.
     /// <para>
-    /// Each index of the world's dynamic bodies has an entry: a pose, a collider with its filter, and the bounds of
-    /// that collider at that pose. The refit writes the bounds of each moving body, and a job after the refit writes
-    /// the body's pose and collider (<see cref="View.WritePose"/>). The build writes the whole entry of each body that
-    /// it computes the bounds of. A body takes its bounds from its entry only when the entry holds the body's
-    /// collider and exactly its pose, to the last bit. Anything that moves a body between the steps, such as the game,
-    /// a shift of the floating origin or a kinematic target, makes the body compute its bounds again.
+    /// Each index of the world's dynamic bodies has an entry: the bounds of the collider of the world's body at that
+    /// index, at that body's pose, and the collider with its filter. The refit and the build each leave the bounds of
+    /// every body with a collider in the cache, so that after either, entry i holds the bounds of the body that the
+    /// world holds at index i. The code that builds the next world's bodies sets <see cref="View.Same"/> for each
+    /// body that has exactly the collider and pose, to the last bit, that the world's body at its index had before.
+    /// Only such a body takes its bounds from the cache. Anything that moves a body between the steps, such as the
+    /// game, a shift of the floating origin or a kinematic target, makes the body compute its bounds again.
     /// </para>
     /// <para>
     /// A collider's memory can be freed and given to a new collider, so the address of a collider is not enough to
@@ -1944,14 +1946,6 @@ namespace Unity.Physics
     /// </summary>
     internal unsafe struct DynamicBoundsCache : IDisposable
     {
-        /// <summary>The pose of an entry. The rotation starts on a 16-byte boundary.</summary>
-        internal struct Pose
-        {
-            public float3 Position;
-            int padding;
-            public float4 Rotation;
-        }
-
         /// <summary>The collider of an entry, with the collider's filter, which the build would read from it.</summary>
         internal struct ColliderInfo
         {
@@ -1964,42 +1958,45 @@ namespace Unity.Physics
         internal struct View
         {
             [NativeDisableUnsafePtrRestriction]
-            public Pose* Poses;
-            [NativeDisableUnsafePtrRestriction]
             public Aabb* Bounds;
             [NativeDisableUnsafePtrRestriction]
             public ColliderInfo* Colliders;
+
+            /// <summary>
+            /// For each body of the world being built, 1 if the body has exactly the collider and pose that the
+            /// world's body at the same index had before the build, and 0 otherwise.
+            /// </summary>
+            [NativeDisableUnsafePtrRestriction]
+            public byte* Same;
             public int Length;
             [NativeDisableUnsafePtrRestriction]
             public uint* HeldVersion;
             [NativeDisableUnsafePtrRestriction]
             public uint* ColliderVersion;
 
-            public bool IsCreated => Poses != null;
+            public bool IsCreated => Bounds != null;
 
             /// <summary>
-            /// Whether entry i holds the body's collider at exactly the body's pose, while the entries hold the
-            /// current colliders. A body with a scale other than 1 never matches.
+            /// Whether entry i holds the bounds and filter of the body's collider at the body's pose: the body is the
+            /// same as before the build, and the entries hold the current colliders. A body with a scale other than
+            /// 1 never matches.
             /// </summary>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Holds(int i, in RigidBody body)
             {
                 long collider = (long)body.Collider.GetUnsafePtr();
-                return Colliders[i].Collider == collider && collider != 0 && body.Scale == 1.0f && *HeldVersion == *ColliderVersion
-                    && math.all(math.asuint(Poses[i].Position) == math.asuint(body.WorldFromBody.pos))
-                    && math.all(math.asuint(Poses[i].Rotation) == math.asuint(body.WorldFromBody.rot.value));
+                return Same[i] != 0 && Colliders[i].Collider == collider && collider != 0 && body.Scale == 1.0f
+                    && *HeldVersion == *ColliderVersion;
             }
 
             /// <summary>
-            /// Writes the body's pose and collider into entry i. The entry's bounds must already be the bounds of
-            /// that collider at that pose. The body's collider must be created. The filter is read from the collider
-            /// only when the entry held another collider.
+            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose. The
+            /// filter is read from the collider only when the entry held another collider.
             /// </summary>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void WritePose(int i, in RigidBody body)
+            public void Write(int i, in RigidBody body, Aabb bounds)
             {
-                Poses[i].Position = body.WorldFromBody.pos;
-                Poses[i].Rotation = body.WorldFromBody.rot.value;
+                Bounds[i] = bounds;
                 long collider = body.Scale == 1.0f ? (long)body.Collider.GetUnsafePtr() : 0;
                 if (Colliders[i].Collider != collider)
                 {
@@ -2012,18 +2009,26 @@ namespace Unity.Physics
                 }
             }
 
-            /// <summary>Writes the whole entry i for a body whose collider is created, with the collider's bounds.</summary>
+            /// <summary>
+            /// Returns whether a body that is built at index i has exactly the collider and pose of the body that the
+            /// world held at that index before. The code that builds the bodies calls it before it overwrites the
+            /// body, and stores the answer in <see cref="Same"/>.
+            /// </summary>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void Write(int i, in RigidBody body, Aabb bounds)
+            public static bool Matches(RigidBody before, RigidBody after)
             {
-                Bounds[i] = bounds;
-                WritePose(i, body);
+                // The collider of the body that the world held before can have been freed since. So read the
+                // colliders' addresses as they are stored, at the start of the body. BlobAssetReference.GetUnsafePtr
+                // checks the collider's header first, and that check fails and throws for a freed collider.
+                return *(void**)&before == *(void**)&after && before.Scale == after.Scale
+                    && math.all(math.asuint(before.WorldFromBody.pos) == math.asuint(after.WorldFromBody.pos))
+                    && math.all(math.asuint(before.WorldFromBody.rot.value) == math.asuint(after.WorldFromBody.rot.value));
             }
         }
 
-        NativeList<Pose> poses;
         NativeList<Aabb> bounds;
         NativeList<ColliderInfo> colliders;
+        NativeList<byte> same;
         NativeReference<uint> heldVersion;
         uint* colliderVersion;
 
@@ -2033,34 +2038,39 @@ namespace Unity.Physics
         /// </summary>
         public DynamicBoundsCache(uint* colliderVersion, Allocator allocator)
         {
-            poses = new NativeList<Pose>(allocator);
             bounds = new NativeList<Aabb>(allocator);
             colliders = new NativeList<ColliderInfo>(allocator);
+            same = new NativeList<byte>(allocator);
             heldVersion = new NativeReference<uint>(*colliderVersion - 1, allocator);
             this.colliderVersion = colliderVersion;
         }
 
-        public bool IsCreated => poses.IsCreated;
+        public bool IsCreated => bounds.IsCreated;
 
         /// <summary>
         /// Gives the cache one entry for each of the given number of bodies, and returns the view for the jobs. New
-        /// entries hold no collider. Call it only on the main thread while no job uses the cache.
+        /// entries hold no collider and no body is the same as before. Call it only on the main thread while no job
+        /// uses the cache.
         /// </summary>
         internal View Resize(int count)
         {
-            poses.Resize(count, NativeArrayOptions.ClearMemory);
-            bounds.Resize(count, NativeArrayOptions.ClearMemory);
-            colliders.Resize(count, NativeArrayOptions.ClearMemory);
+            if (bounds.Length != count)
+            {
+                bounds.Resize(count, NativeArrayOptions.ClearMemory);
+                colliders.Resize(count, NativeArrayOptions.ClearMemory);
+                same.Resize(count, NativeArrayOptions.ClearMemory);
+            }
+
             return CurrentView;
         }
 
         /// <summary>The view of the entries as they are, for a job to read and write.</summary>
         internal View CurrentView => new View
         {
-            Poses = poses.GetUnsafePtr(),
             Bounds = bounds.GetUnsafePtr(),
             Colliders = colliders.GetUnsafePtr(),
-            Length = poses.Length,
+            Same = same.GetUnsafePtr(),
+            Length = bounds.Length,
             HeldVersion = heldVersion.GetUnsafePtr(),
             ColliderVersion = colliderVersion,
         };
@@ -2077,11 +2087,11 @@ namespace Unity.Physics
 
         public void Dispose()
         {
-            if (poses.IsCreated)
+            if (bounds.IsCreated)
             {
-                poses.Dispose();
                 bounds.Dispose();
                 colliders.Dispose();
+                same.Dispose();
                 heldVersion.Dispose();
             }
         }
