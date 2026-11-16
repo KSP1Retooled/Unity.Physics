@@ -117,6 +117,26 @@ namespace Retooled
         BindExtensionCommands(s_Extension.data());
     }
 
+#ifdef RETOOLED_COMMAND_TRACE
+    // How many commands of each category and id arrived, on the main thread ([0]) and on other threads ([1]), since the
+    // last read. Tests read and reset the counts between the stages of a step to see which commands each stage sends.
+    static std::atomic<uint32_t> s_Trace[2][16][256];
+
+    extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_ReadCommandTrace(uint32_t* counts)
+    {
+        for (uint32_t thread = 0; thread < 2; thread++)
+        {
+            for (uint32_t category = 0; category < 16; category++)
+            {
+                for (uint32_t id = 0; id < 256; id++)
+                {
+                    counts[(thread * 16 + category) * 256 + id] = s_Trace[thread][category][id].exchange(0, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+#endif
+
     static void ProcessCommand(void* object, const Context& ctx, const uint32_t function, Command& command)
     {
         const uint32_t id = function & kReverseFullMask;
@@ -124,6 +144,14 @@ namespace Retooled
         {
             NoteDetachedCommand((function & kFullMask) >> kMaskOffsetSize, id);
         }
+
+#ifdef RETOOLED_COMMAND_TRACE
+        if (id < 256)
+        {
+            const uint32_t thread = std::this_thread::get_id() == g_MainThread ? 0 : 1;
+            s_Trace[thread][(function & kFullMask) >> kMaskOffsetSize][id].fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
 
 #ifdef RETOOLED_VEHICLE_TRACE
         if ((function & kFullMask) != kPhysXExtensionMask)

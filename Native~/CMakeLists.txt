@@ -49,3 +49,8 @@ target_include_directories(RetooledPhysics PRIVATE "${ENGINE_PATHS}")
 if(RETOOLED_VEHICLE_TRACE)
     target_compile_definitions(RetooledPhysics PRIVATE RETOOLED_VEHICLE_TRACE)
 endif()
+
+option(RETOOLED_COMMAND_TRACE "Count the commands of each category and id, for development only" OFF)
+if(RETOOLED_COMMAND_TRACE)
+    target_compile_definitions(RetooledPhysics PRIVATE RETOOLED_COMMAND_TRACE)
+endif()
