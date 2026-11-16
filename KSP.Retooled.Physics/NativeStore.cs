@@ -70,8 +70,13 @@ namespace KSP.Retooled.Physics
             public BodyFlags flags;
             public uint shapeCount;
 
-            // The plugin uses only the fields above. The fields below can change without rebuilding the plugin.
+            /// <summary>
+            /// Points to the body's pose. The plugin reads the pose through this pointer to answer GetPose where this
+            /// code would read the same pointer without refreshing it first (see Body.cpp).
+            /// </summary>
             public LocalTransform* pose;
+
+            // The plugin uses only the fields above. The fields below can change without rebuilding the plugin.
             public PhysicsVelocity* velocity;
             public PhysicsMass* mass;
             public BodyMass* bodyMass;
@@ -873,7 +878,7 @@ namespace KSP.Retooled.Physics
         {
             int[] sizes =
             {
-                UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.pose))),
+                UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.velocity))),
                 sizeof(ShapeData),
                 sizeof(MaterialData),
                 sizeof(WorldData),
@@ -928,6 +933,12 @@ namespace KSP.Retooled.Physics
                 {
                     return $"{names[i]} is {sizes[i]} here and {native} in the plugin. Rebuild the plugin with `RetooledCli native build`";
                 }
+            }
+
+            // The plugin reads a pose as BodyPose in Store.h: the position, the scale and the rotation.
+            if (sizeof(LocalTransform) != 32 || UnsafeUtility.GetFieldOffset(typeof(LocalTransform).GetField(nameof(LocalTransform.Rotation))) != 16)
+            {
+                return $"{nameof(LocalTransform)} doesn't have the layout of BodyPose in the plugin";
             }
 
             StoreGlobals* globals = RetooledPhysics_Globals();

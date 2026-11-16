@@ -91,6 +91,11 @@ namespace Retooled
     // How many vehicle commands the plugin API has, which VehicleKernel.cs numbers the same way.
     int32_t VehicleCommandCount();
 
+#ifdef RETOOLED_COMMAND_TRACE
+    // Counts a GetPose that the plugin forwards to the kernel, as category 15 in the trace.
+    void NoteForwardedPose();
+#endif
+
 #ifdef RETOOLED_VEHICLE_TRACE
     void BindVehicleTrace(FunctionBinding* table);
     void TraceCommand(void* object, const Context& ctx, uint32_t function);

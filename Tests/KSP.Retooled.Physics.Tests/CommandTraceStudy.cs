@@ -39,7 +39,9 @@ namespace KSP.Retooled.Physics.Tests
                 4 => Enum.GetName(typeof(ShapeCommand), (uint)id),
                 _ => null,
             };
-            string categoryName = category < Categories.Length ? Categories[category] : category.ToString();
+            // The plugin counts a GetPose that it forwards to the kernel as category 15.
+            string categoryName = category == 15 ? "ForwardedToKernel" : category < Categories.Length ? Categories[category] : category.ToString();
+            name = category == 15 ? Enum.GetName(typeof(BodyCommand), (uint)id) : name;
             return $"{categoryName}.{name ?? id.ToString()}";
         }
 

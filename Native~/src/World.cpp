@@ -121,6 +121,9 @@ namespace Retooled
         std::unique_lock lock(world->queryLock);
         g_Managed.simulate(&world->data, command.deltaTime);
         command.ranSimulation = true;
+
+        // Unity reads the poses back next (see g_ReadBackWorld).
+        g_ReadBackWorld.store(world, std::memory_order_relaxed);
     }
 
     static void GetLastSimulationStepResults(void* object, const Context&, WorldCmd::GetLastSimulationStepResults& command)

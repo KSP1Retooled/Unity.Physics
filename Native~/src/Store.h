@@ -65,6 +65,17 @@ namespace Retooled
         kBodyCollidersMoved = 1 << 12,
     };
 
+    // Mirrors Unity.Transforms.LocalTransform, which holds a body's pose in the store: on the body's entity, or in the
+    // body record while the body has no entity. The scale is always 1.
+    struct BodyPose
+    {
+        Float3 position;
+        float scale;
+        Float4 rotation;
+    };
+
+    static_assert(sizeof(BodyPose) == 32, "Unity.Transforms.LocalTransform has this layout");
+
     // The start of one rigid body's row, static or not, mirrored. Managed allocates the rows and keeps its own fields after
     // these, so changing those needs no plugin build. Rows are StoreGlobals::bodyDataSize apart: walk them with BodyRow.
     struct BodyData
@@ -73,9 +84,15 @@ namespace Retooled
         Shape* const* shapes;  // shapeCount entries, owned by the Body
         uint32_t flags; // BodyStateFlags
         uint32_t shapeCount;
+
+        // Where the body's pose is. Managed moves it when the body's entity moves to another chunk, and it updates the
+        // pointer then, but only on the main thread: after a structural change to the body's entity that managed did not
+        // make itself, the pointer stays stale until the main thread next uses the row. So the plugin reads through it only
+        // where managed would read the same pointer (see Body.cpp).
+        const BodyPose* pose;
     };
 
-    static_assert(sizeof(BodyData) == 24, "NativeStore.BodyData starts with this layout");
+    static_assert(sizeof(BodyData) == 32, "NativeStore.BodyData starts with this layout");
 
     // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
     // one reference and each shape using the material another, because Unity releases a material while shapes still use it.
@@ -567,6 +584,25 @@ namespace Retooled
 
     // The thread managed attached on, set before any callback can run.
     extern std::thread::id g_MainThread;
+
+    // The world whose step has just returned and whose poses Unity is reading back, or null. A step refreshes the pose
+    // pointers of every row of its world when it starts, and nothing can make them stale until a script runs again. So
+    // while a world is here, the main thread reads its poses through the rows (see Body.cpp). Simulate sets it when the
+    // step returns, and any command that the read-back doesn't send clears it (see CloseReadBack).
+    extern std::atomic<World*> g_ReadBackWorld;
+
+    // Ends the read-back of the world in g_ReadBackWorld. Plugin.cpp calls it for every command other than the three that
+    // the read-back sends per body (GetFlags, GetIsSleeping and GetPose). Unity asks for the step's results right after its
+    // read-back, so the window closes before a script runs again. Only a script that runs between Unity's Run and Publish
+    // stages, and changes a body's entity there without managed, could make the main thread read a stale pointer; nothing
+    // in the game or the package does that.
+    inline void CloseReadBack()
+    {
+        if (g_ReadBackWorld.load(std::memory_order_relaxed) != nullptr)
+        {
+            g_ReadBackWorld.store(nullptr, std::memory_order_relaxed);
+        }
+    }
 
     // Brings every world's query world up to date with its store. Main thread only.
     void SyncAllQueryWorlds();

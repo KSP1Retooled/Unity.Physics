@@ -21,6 +21,7 @@ namespace Retooled
     ManagedCallbacks g_Managed{};
     std::thread::id g_MainThread;
     std::vector<World*> g_Worlds;
+    std::atomic<World*> g_ReadBackWorld{nullptr};
 
     static IUnityLog* s_Log;
     static bool s_Registered;
@@ -122,6 +123,12 @@ namespace Retooled
     // last read. Tests read and reset the counts between the stages of a step to see which commands each stage sends.
     static std::atomic<uint32_t> s_Trace[2][16][256];
 
+    void NoteForwardedPose()
+    {
+        const uint32_t thread = std::this_thread::get_id() == g_MainThread ? 0 : 1;
+        s_Trace[thread][15][static_cast<uint32_t>(BodyCmd::GetPose::command)].fetch_add(1, std::memory_order_relaxed);
+    }
+
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_ReadCommandTrace(uint32_t* counts)
     {
         for (uint32_t thread = 0; thread < 2; thread++)
@@ -152,6 +159,14 @@ namespace Retooled
             s_Trace[thread][(function & kFullMask) >> kMaskOffsetSize][id].fetch_add(1, std::memory_order_relaxed);
         }
 #endif
+
+        // The read-back after a step sends only these three commands per body. Any other command ends it.
+        if ((function & kFullMask) != kBodyFunctionMask
+            || (id != static_cast<uint32_t>(BodyCmd::GetPose::command) && id != static_cast<uint32_t>(BodyCmd::GetFlags::command)
+                && id != static_cast<uint32_t>(BodyCmd::GetIsSleeping::command)))
+        {
+            CloseReadBack();
+        }
 
 #ifdef RETOOLED_VEHICLE_TRACE
         if ((function & kFullMask) != kPhysXExtensionMask)
