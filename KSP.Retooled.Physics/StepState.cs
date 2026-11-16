@@ -275,7 +275,7 @@ namespace KSP.Retooled.Physics
             using var span = BackendMarkers.StepSchedule.Auto();
 
             JobHandle colliders = RefreshColliders(dependency);
-            JobHandle built = Build(deltaTime, colliders, out JobHandle joints);
+            JobHandle broadphase = Build(deltaTime, colliders, out JobHandle joints);
 
             using (BackendMarkers.BuildScheduleBroadphase.Auto())
             {
@@ -283,7 +283,6 @@ namespace KSP.Retooled.Physics
                 // the joints can therefore run in parallel with building the trees and finding overlaps. Only the job
                 // that creates dispatch pairs must wait for the joints.
                 world.DynamicsWorld.JointsBuilt = joints;
-                JobHandle broadphase = ScheduleTrees(deltaTime, built);
                 return ScheduleWheels(deltaTime, broadphase, joints);
             }
         }
@@ -728,8 +727,7 @@ namespace KSP.Retooled.Physics
             }
 
             JobHandle colliders = RefreshColliders(default);
-            JobHandle built = Build(0.0f, colliders, out _);
-            JobHandle broadphase = ScheduleTrees(0.0f, built);
+            JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
             PublishQueryWorld();
         }
@@ -897,8 +895,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Schedules the body and joint builds. Returns the handle for the bodies and supplies the joint handle
-        /// separately, so the broadphase does not need to wait for the joints.
+        /// Schedules the body build, the broadphase trees and the joint build. Returns the handle for the trees and
+        /// supplies the joint handle separately, so the broadphase does not need to wait for the joints.
         /// </summary>
         private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
         {
@@ -959,6 +957,30 @@ namespace KSP.Retooled.Physics
             {
                 world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
+            }
+
+            // The bodies and the broadphase trees lead the longest chain before the solve: the pairs and islands wait
+            // for the trees, and the trees wait for the bodies. Schedule them before this thread groups and compiles
+            // the joints and chooses the step's vessels, and before the joint and vessel fill jobs, so that the workers
+            // take them first. The joint jobs read none of what these jobs write, and the trees don't need the joints.
+            JobHandle broadphase;
+            using (BackendMarkers.BuildScheduleBodies.Auto())
+            {
+                var bodiesJob = new BuildBodiesJob
+                {
+                    Store = store->bodies,
+                    DynamicIndices = dynamicIndices.AsArray(),
+                    StaticIndices = staticIndices.AsArray(),
+                    Bodies = world.Bodies,
+                    MotionDatas = world.MotionDatas,
+                    MotionVelocities = world.MotionVelocities,
+                    DeltaTime = deltaTime,
+                };
+
+                JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
+                JobHandle.ScheduleBatchedJobs();
+                broadphase = ScheduleTrees(deltaTime, bodiesBuilt);
+                JobHandle.ScheduleBatchedJobs();
             }
 
             // Queries do not run the solver, so build joints only for a simulation step, which also supplies the time
@@ -1144,20 +1166,7 @@ namespace KSP.Retooled.Physics
                 joints = stream.Dispose(copied);
             }
 
-            using var scheduleSpan = BackendMarkers.BuildScheduleBodies.Auto();
-
-            var bodiesJob = new BuildBodiesJob
-            {
-                Store = store->bodies,
-                DynamicIndices = dynamicIndices.AsArray(),
-                StaticIndices = staticIndices.AsArray(),
-                Bodies = world.Bodies,
-                MotionDatas = world.MotionDatas,
-                MotionVelocities = world.MotionVelocities,
-                DeltaTime = deltaTime,
-            };
-
-            return bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
+            return broadphase;
         }
     }
 }
