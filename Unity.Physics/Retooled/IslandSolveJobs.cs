@@ -251,6 +251,7 @@ namespace Unity.Physics
                     Bodies = world.Bodies,
                     StepInput = substepInput,
                     Teams = work.Buffers.FusedTeams,
+                    Lanes = lanes,
                 }.Schedule(lanes, 1, handle);
             }
 
@@ -1368,6 +1369,13 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction]
             public UnsafeList<FusedTeam>* Teams;
 
+            /// <summary>
+            /// The number of lanes that the job was scheduled with. With one lane, no other lane can help an island,
+            /// so the lane solves each island without a team. Publishing the stages to a team cost 0.05 to 0.1 ms a
+            /// step on one thread for sixteen craft of 128 parts.
+            /// </summary>
+            public int Lanes;
+
             static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.HelpFused");
 
             public void Execute(int lane)
@@ -1387,7 +1395,7 @@ namespace Unity.Physics
                     System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
                     SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
                         (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
-                        StepInput, &teams[t].Team);
+                        StepInput, Lanes > 1 ? &teams[t].Team : null);
                     teams[t].Team.Finish();
                 }
 
