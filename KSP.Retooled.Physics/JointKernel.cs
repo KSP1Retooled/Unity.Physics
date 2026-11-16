@@ -69,6 +69,25 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// Counts the commands that may change a joint's settings: its anchors, frames, break limits, axis locks and drives.
+    /// Commands that only set a drive target leave this version the same. The vessel jobs reuse the edge and closure
+    /// values that they computed in an earlier step while this version stays the same.
+    /// </summary>
+    internal static class JointSettings
+    {
+        private readonly struct Key { }
+
+        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
+
+        internal static uint Version => (uint)Shared.Data;
+
+        internal static unsafe void Changed()
+        {
+            System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+        }
+    }
+
+    /// <summary>
     /// Handles joint commands by storing the values that Unity sends. <see cref="BuildJointsJob"/> uses those values to
     /// build constraints for the step. Commands arrive on the main thread, outside a step.
     /// </summary>
@@ -115,6 +134,11 @@ namespace KSP.Retooled.Physics
             {
                 Run(command, joint, a, axis);
                 return;
+            }
+
+            if (!SetsTarget(command))
+            {
+                JointSettings.Changed();
             }
 
             // The groups and forest roles depend on which joints are mergeable. For mergeable joints, they also depend
@@ -290,6 +314,22 @@ namespace KSP.Retooled.Physics
                     return false;
                 default:
                     return true;
+            }
+        }
+
+        /// <summary>Returns whether a command only sets a drive target, which the vessel edges never read.</summary>
+        private static bool SetsTarget(JointCommand command)
+        {
+            switch (command)
+            {
+                case JointCommand.Set6DofMotorTargetPosition:
+                case JointCommand.Set6DofMotorTargetRotation:
+                case JointCommand.Set6DofMotorTargetLinearVelocity:
+                case JointCommand.Set6DofMotorTargetAngularVelocity:
+                case JointCommand.SetHingeMotorTargetVelocity:
+                    return true;
+                default:
+                    return false;
             }
         }
 
