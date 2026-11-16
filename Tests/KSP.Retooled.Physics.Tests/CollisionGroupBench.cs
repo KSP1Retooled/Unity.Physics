@@ -21,8 +21,8 @@ namespace KSP.Retooled.Physics.Tests
     /// 17 x 17 x 17 boxes, each on its own body. Each box is slightly larger than the spacing, so it overlaps all 26
     /// neighbours, as the parts of a real craft overlap their neighbours. The benchmark reports the time and the memory
     /// to set up each way, the time of the pair filter over every overlapping body pair, and the time of whole steps
-    /// with and without the filter's cache. RETOOLED_BENCH_SIDE changes the size of the cube, and
-    /// RETOOLED_BENCH_THREADS the number of threads.
+    /// with and without the filter's cache. RETOOLED_BENCH_SIDE changes the size of the cube, RETOOLED_BENCH_THREADS
+    /// the number of threads, and RETOOLED_BENCH_MODES=groups or =pairs runs one way only.
     /// </summary>
     [Explicit("A benchmark, a few minutes long")]
     public class CollisionGroupBench : PhysicsScene
@@ -133,7 +133,7 @@ namespace KSP.Retooled.Physics.Tests
             report.AppendLine($"CollisionGroupBench: {side * side * side} boxes, {threads} threads, {Environment.ProcessorCount} logical CPUs");
             try
             {
-                foreach (string mode in new[] { "groups", "pairs" })
+                foreach (string mode in Setting("RETOOLED_BENCH_MODES", "groups,pairs").Split(','))
                 {
                     Run(mode, side, report);
                     SetUpScene();
