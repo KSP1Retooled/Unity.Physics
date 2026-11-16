@@ -40,9 +40,29 @@ unity=${UNITY_EXE:-"/c/Program Files/Unity/Hub/Editor/6000.7.0b9/Editor/Unity.ex
 service="$project/TestService"
 mkdir -p "$service" "$project/Logs"
 
+project_windows=$(cygpath -w "$project")
+
+# Prints the process id of the editor that has this project open, found by its command line, or nothing. An asset
+# import worker also has the project on its command line, so the search leaves workers out. The search takes a few
+# seconds, so running() uses it only when the process in pid.txt doesn't answer.
+find_editor() {
+    powershell.exe -NoProfile -Command "\$p = '$project_windows'; Get-CimInstance Win32_Process -Filter 'Name=''Unity.exe''' |
+        Where-Object { \$_.CommandLine -like ('*-projectPath ' + [char]34 + \$p + [char]34 + '*') -and \$_.CommandLine -notlike '*AssetImportWorker*' } |
+        Select-Object -First 1 -ExpandProperty ProcessId" | tr -d '\r\n'
+}
+
+# Succeeds when the project's editor is running. The service writes the editor's process id into pid.txt when its
+# scripts load. If that process is gone, the editor may still be running under another id, for example when pid.txt
+# is stale; the command-line search then finds it, and pid.txt is corrected.
 running() {
-    [ -f "$service/pid.txt" ] || return 1
-    tasklist //FI "PID eq $(cat "$service/pid.txt")" //NH 2>/dev/null | grep -qi "unity"
+    if [ -f "$service/pid.txt" ] && tasklist //FI "PID eq $(cat "$service/pid.txt")" //NH 2>/dev/null | grep -qi "unity"; then
+        return 0
+    fi
+
+    found=$(find_editor)
+    [ -n "$found" ] || return 1
+    echo "$found" > "$service/pid.txt"
+    return 0
 }
 
 if [ "$name" = stop ]; then
@@ -109,7 +129,6 @@ done
 
 if ! running; then
     rm -f "$service"/*.txt "$service"/*.tmp
-    project_windows=$(cygpath -w "$project")
     arguments="-batchmode -nographics -projectPath \"$project_windows\" -logFile \"$project_windows\\Logs\\editor-service.log\" ${EDITOR_ARGS:-}"
     pid=$(RETOOLED_TEST_SERVICE=$(cygpath -w "$service") powershell.exe -NoProfile -Command \
         "(Start-Process -FilePath '$(cygpath -w "$unity")' -ArgumentList '$arguments' -WindowStyle Hidden -PassThru).Id" | tr -d '\r')

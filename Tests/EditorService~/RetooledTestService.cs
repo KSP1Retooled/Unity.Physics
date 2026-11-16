@@ -42,7 +42,10 @@ namespace KSP.Retooled.Physics.EditorService
 
         static RetooledTestService()
         {
-            if (string.IsNullOrEmpty(Folder))
+            // The editor's asset import workers are Unity processes of their own. They inherit the editor's environment
+            // and load the same scripts, so without the second check a worker would write its own process id into
+            // pid.txt, and could take a request or a quit.txt that was meant for the editor.
+            if (string.IsNullOrEmpty(Folder) || AssetDatabase.IsAssetImportWorkerProcess())
             {
                 return;
             }
