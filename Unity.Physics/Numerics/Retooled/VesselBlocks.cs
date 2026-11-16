@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
+using Unity.Numerics.Kernels;
 
 namespace Unity.Physics.Numerics.Retooled
 {
@@ -14,8 +15,8 @@ namespace Unity.Physics.Numerics.Retooled
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static double6 Fma(double scale, double6 row, double6 sum) => new double6(
-            MathUtil.Fma(row.Low, scale, sum.Low),
-            MathUtil.Fma(row.High, scale, sum.High));
+            FusedMath.Fma(row.Low, scale, sum.Low),
+            FusedMath.Fma(row.High, scale, sum.High));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Zero(double* block)

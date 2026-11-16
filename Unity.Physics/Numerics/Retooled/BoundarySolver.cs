@@ -1,6 +1,7 @@
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Numerics.Kernels;
 
 namespace Unity.Physics.Numerics.Retooled
 {
@@ -20,8 +21,45 @@ namespace Unity.Physics.Numerics.Retooled
         public long AddedRows;
         public long RemovedRows;
 
+        /// <summary>
+        /// The free rows that the rounds solved for, summed over the rounds, and the most and the fewest free rows that
+        /// one round had. The fewest leaves out rounds with no free rows.
+        /// </summary>
+        public long FreeRows;
+        public long MostFreeRows;
+        public long FewestFreeRows;
+
         /// <summary>The time spent factoring or changing the factor, in profiler timestamp units.</summary>
         public long FactorTicks;
+
+        /// <summary>
+        /// The time spent on the right-hand side and the solves with the factor, and the time spent checking the rows'
+        /// conditions, in profiler timestamp units.
+        /// </summary>
+        public long SolveTicks;
+        public long PivotTicks;
+
+        /// <summary>The part of <see cref="FactorTicks"/> spent on factors from the start, with the copy of W_FF into them.</summary>
+        public long FullFactorTicks;
+    }
+
+    /// <summary>How a round of the boundary solve changes the factor of its free rows when they differ from the last round's.</summary>
+    public enum FactorUpdate : byte
+    {
+        /// <summary>Every round factors the free rows from the start.</summary>
+        Refactor,
+
+        /// <summary>
+        /// The factor keeps its rows up to the first row that left the free set. The rows after it that stay and the
+        /// rows that joined are inserted after them, with faer's insertion of rows and columns at the end.
+        /// </summary>
+        KeepPrefix,
+
+        /// <summary>
+        /// The rows that left the free set are deleted from the factor wherever they are, with faer's deletion of rows
+        /// and columns, and the rows that joined are inserted at the end.
+        /// </summary>
+        Edit,
     }
 
     /// <summary>
@@ -81,20 +119,38 @@ namespace Unity.Physics.Numerics.Retooled
         }
 
         /// <summary>
-        /// Solves as the overload above does. If <paramref name="update"/> is true, a round keeps the rows of the last
-        /// round's factor up to the first row that left the free set and factors only the rest again, and a round with
-        /// the same free rows uses the last round's factor as it is. If <paramref name="update"/> is false,
-        /// every round factors W_FF from the start, as the solver did before. Both ways give the same answer up to
-        /// rounding. If <paramref name="stats"/> is not null, the solve adds what it did to it.
+        /// Solves as the overload above does. If <paramref name="update"/> is true, a round changes the last round's
+        /// factor in the default way, <see cref="DefaultUpdate"/>, and a round with the same free rows uses the last
+        /// round's factor as it is. If <paramref name="update"/> is false, every round factors W_FF from the start. All
+        /// ways give the same answer up to rounding. If <paramref name="stats"/> is not null, the solve adds what it did
+        /// to it.
         /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, bool update,
             BoundarySolveStats* stats, out int rounds)
         {
+            return Solve(n, w, q, problemLower, problemUpper, states, couplings, couplingCount, bounded, z, maxRounds, warm,
+                update ? DefaultUpdate : FactorUpdate.Refactor, null, stats, out rounds);
+        }
+
+        /// <summary>The way that a round changes the factor of the free rows when the caller doesn't pick one.</summary>
+        public const FactorUpdate DefaultUpdate = FactorUpdate.Edit;
+
+        /// <summary>
+        /// Solves as the overload above does, with the factor changed from round to round in the given way. If
+        /// <paramref name="priority"/> is not null, the first factor takes its free rows in order of falling priority,
+        /// and rows of equal priority in their own order. A caller gives the rows that are likely to stay free a high
+        /// priority, so that the rows that leave the free set later sit near the end of the factor, where a deletion
+        /// costs little. The order changes the answer only by rounding.
+        /// </summary>
+        public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
+            BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, FactorUpdate update,
+            byte* priority, BoundarySolveStats* stats, out int rounds)
+        {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var coupledArray = new NativeArray<bool>(n, Allocator.Temp);
-            var factor = new FreeFactor(n, update, stats);
+            var factor = new FreeFactor(n, update, priority, stats);
             var bestArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var guessArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bestStatesArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -163,7 +219,13 @@ namespace Unity.Physics.Numerics.Retooled
                     break;
                 }
 
+                long pivotStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 int infeasible = Pivot(n, w, q, lower, upper, states, z, flipAll);
+                if (stats != null)
+                {
+                    stats->PivotTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pivotStarted;
+                }
+
                 if (infeasible == 0)
                 {
                     found = true;
@@ -246,42 +308,63 @@ namespace Unity.Physics.Numerics.Retooled
         /// <summary>
         /// The Cholesky factor L L^T of W_FF, where F is the set of free rows, kept from one round of pivoting to the
         /// next. The factor's rows are the free rows in the order in which they joined the factor, so a row that joins
-        /// goes at the end, and the rows that stay free longest come first. Each round asks the factor to solve
-        /// W_FF z_F = q_F - W_FT z_T, where T is the set of rows at a bound. If the round's free rows are the ones that
-        /// the factor holds, the factor is used as it is. Otherwise, the rows of L before the first row that left the
-        /// free set stay as they are, because a row of L depends only on the rows of W_FF up to its own. The rows from
-        /// there on, and the rows that joined, are factored again. That costs (m^3 - k^3) / 6 for m free rows of which
-        /// the first k stay, against m^3 / 6 for a new factor. With updates turned off, every round factors W_FF from
-        /// the start.
+        /// goes at the end. Each round asks the factor to solve W_FF z_F = q_F - W_FT z_T, where T is the set of rows
+        /// at a bound. If the round's free rows are the ones that the factor holds, the factor is used as it is.
+        /// Otherwise the factor changes in the way that <see cref="FactorUpdate"/> picks. The factor, its solves and
+        /// its changes are the ported faer routines in <see cref="CholeskyLLT"/>. L is stored in column-major order
+        /// with a column stride of n.
         /// </summary>
         unsafe struct FreeFactor
         {
             readonly int n;
-            readonly bool update;
+            readonly FactorUpdate mode;
+            readonly byte* priority;
             readonly BoundarySolveStats* stats;
 
-            /// <summary>The lower triangle L, with a row stride of n.</summary>
+            /// <summary>The lower triangle L, in column-major order with a column stride of n.</summary>
             NativeArray<double> factorArray;
 
             /// <summary>The rows of the factor in its order, and each row's place in the factor, or -1.</summary>
             NativeArray<int> orderArray;
             NativeArray<int> placeArray;
             NativeArray<double> rhsArray;
-            NativeArray<int> tightArray;
+            NativeArray<double> residualArray;
+
+            /// <summary>For each row, the impulse at a bound that the residual has taken out of q, or zero.</summary>
+            NativeArray<double> appliedArray;
+            bool residualStarted;
+
+            /// <summary>The new columns that an insertion takes, and the scratch of an insertion or a deletion.</summary>
+            NativeArray<double> columnsArray;
+            NativeArray<double> scratchArray;
+            NativeArray<int> deletedArray;
             int m;
             bool valid;
 
-            public FreeFactor(int n, bool update, BoundarySolveStats* stats)
+            public FreeFactor(int n, FactorUpdate mode, byte* priority, BoundarySolveStats* stats)
             {
                 this.n = n;
-                this.update = update;
+                this.mode = mode;
+                this.priority = priority;
                 this.stats = stats;
                 int size = math.max(1, n);
                 factorArray = new NativeArray<double>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 orderArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 placeArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 rhsArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                tightArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                residualArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                appliedArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                residualStarted = false;
+                columnsArray = default;
+                scratchArray = default;
+                deletedArray = default;
+                if (mode != FactorUpdate.Refactor)
+                {
+                    columnsArray = new NativeArray<double>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    scratchArray = new NativeArray<double>(size * size + 2 * size + 8, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    deletedArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                }
+
                 int* place = (int*)placeArray.GetUnsafePtr();
                 for (int i = 0; i < n; i++)
                 {
@@ -298,7 +381,14 @@ namespace Unity.Physics.Numerics.Retooled
                 orderArray.Dispose();
                 placeArray.Dispose();
                 rhsArray.Dispose();
-                tightArray.Dispose();
+                residualArray.Dispose();
+                appliedArray.Dispose();
+                if (columnsArray.IsCreated)
+                {
+                    columnsArray.Dispose();
+                    scratchArray.Dispose();
+                    deletedArray.Dispose();
+                }
             }
 
             /// <summary>
@@ -306,15 +396,14 @@ namespace Unity.Physics.Numerics.Retooled
             /// </summary>
             public void SolveFree(double* w, double* q, double* lower, double* upper, byte* states, double* z)
             {
-                double* l = (double*)factorArray.GetUnsafePtr();
                 int* order = (int*)orderArray.GetUnsafePtr();
                 int* place = (int*)placeArray.GetUnsafePtr();
                 double* rhs = (double*)rhsArray.GetUnsafePtr();
-                int* tight = (int*)tightArray.GetUnsafePtr();
 
                 // Find the rows at a bound, and how the free rows differ from the rows that the factor holds. The rows
                 // of the factor before the first row that left the free set can stay.
-                int tightCount = 0, added = 0, removed = 0, kept = valid && update ? m : 0;
+                bool changing = valid && mode != FactorUpdate.Refactor;
+                int added = 0, removed = 0, kept = changing ? m : 0;
                 for (int i = 0; i < n; i++)
                 {
                     if (states[i] == Free)
@@ -324,7 +413,6 @@ namespace Unity.Physics.Numerics.Retooled
                     else
                     {
                         z[i] = states[i] == LowerTight ? lower[i] : upper[i];
-                        tight[tightCount++] = i;
                         if (place[i] >= 0)
                         {
                             removed++;
@@ -340,16 +428,25 @@ namespace Unity.Physics.Numerics.Retooled
                     stats->RemovedRows += removed;
                 }
 
-                if (valid && update && added + removed == 0)
+                if (changing && added + removed == 0)
                 {
                     if (stats != null)
                     {
                         stats->Reuses++;
                     }
                 }
+                else if (changing && mode == FactorUpdate.Edit)
+                {
+                    EditRows(w, states, removed);
+                    if (stats != null)
+                    {
+                        stats->Updates++;
+                    }
+                }
                 else
                 {
-                    // The new order: the rows that stay, in their order, and then the rows that joined.
+                    // The new order: the rows that stay, in their order, and then the rows that joined. The rows of
+                    // the factor before place kept stay as they are, and the rest are inserted after them.
                     int next = kept;
                     for (int a = kept; a < m; a++)
                     {
@@ -366,6 +463,11 @@ namespace Unity.Physics.Numerics.Retooled
                         place[order[a]] = a;
                     }
 
+                    if (!valid && priority != null)
+                    {
+                        next = OrderByPriority(states, next);
+                    }
+
                     for (int i = 0; i < n; i++)
                     {
                         if (states[i] == Free && place[i] < 0)
@@ -375,8 +477,17 @@ namespace Unity.Physics.Numerics.Retooled
                         }
                     }
 
-                    m = next;
-                    FactorFrom(w, kept);
+                    if (kept == 0)
+                    {
+                        m = next;
+                        FactorAll(w);
+                    }
+                    else
+                    {
+                        m = kept;
+                        Append(w, next - kept);
+                    }
+
                     if (stats != null)
                     {
                         if (kept > 0)
@@ -390,111 +501,213 @@ namespace Unity.Physics.Numerics.Retooled
                     }
                 }
 
+                valid = true;
                 if (stats != null)
                 {
                     stats->FactorTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+                    stats->FreeRows += m;
+                    stats->MostFreeRows = math.max(stats->MostFreeRows, m);
+                    stats->FewestFreeRows = m > 0 && (stats->FewestFreeRows == 0 || m < stats->FewestFreeRows) ? m : stats->FewestFreeRows;
                 }
 
-                // The right-hand side, in the factor's order.
+                long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                // The right-hand side q - W_FT z_T. W is symmetric, so column t of W is row t, which is stored in a
+                // line. The residual keeps what the last round took out of q, and each row whose impulse at a bound
+                // differs from that only takes out the difference, along its row of W. From one round to the next,
+                // only the rows that changed state and the coupled rows whose bounds moved differ, and a row at a
+                // bound of zero takes out nothing.
+                double* residual = (double*)residualArray.GetUnsafePtr();
+                double* applied = (double*)appliedArray.GetUnsafePtr();
+                if (!residualStarted)
+                {
+                    UnsafeUtility.MemCpy(residual, q, (long)n * sizeof(double));
+                    UnsafeUtility.MemClear(applied, (long)n * sizeof(double));
+                    residualStarted = true;
+                }
+
+                for (int i = 0; i < n; i++)
+                {
+                    double atBound = states[i] == Free ? 0.0 : z[i];
+                    if (atBound != applied[i])
+                    {
+                        Blas.Axpy(n, applied[i] - atBound, w + (long)i * n, residual);
+                        applied[i] = atBound;
+                    }
+                }
+
                 for (int a = 0; a < m; a++)
                 {
-                    int i = order[a];
-                    double sum = q[i];
-                    double* wi = w + (long)i * n;
-                    for (int t = 0; t < tightCount; t++)
-                    {
-                        sum -= wi[tight[t]] * z[tight[t]];
-                    }
-
-                    rhs[a] = sum;
+                    rhs[a] = residual[order[a]];
                 }
 
-                // Solve with L and then with L^T.
-                for (int a = 0; a < m; a++)
-                {
-                    double sum = rhs[a] - Dot(l + (long)a * n, rhs, a);
-                    rhs[a] = sum / l[(long)a * n + a];
-                }
-
-                for (int a = m - 1; a >= 0; a--)
-                {
-                    double sum = rhs[a];
-                    for (int k = a + 1; k < m; k++)
-                    {
-                        sum -= l[(long)k * n + a] * rhs[k];
-                    }
-
-                    rhs[a] = sum / l[(long)a * n + a];
-                }
-
+                CholeskyLLT.Solve(m, (double*)factorArray.GetUnsafePtr(), n, rhs);
                 for (int a = 0; a < m; a++)
                 {
                     z[order[a]] = rhs[a];
                 }
+
+                if (stats != null)
+                {
+                    stats->SolveTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted;
+                }
             }
 
             /// <summary>
-            /// Factors the rows of W_FF from place <paramref name="first"/> on, in the factor's order, and keeps the rows
-            /// of L before it. With <paramref name="first"/> zero, this is a new factor.
+            /// Puts the free rows into the order from place <paramref name="next"/> on, highest priority first, and rows
+            /// of equal priority in their own order. Returns the place after the last one.
             /// </summary>
-            void FactorFrom(double* w, int first)
+            int OrderByPriority(byte* states, int next)
             {
-                double* l = (double*)factorArray.GetUnsafePtr();
                 int* order = (int*)orderArray.GetUnsafePtr();
-                for (int a = first; a < m; a++)
+                int* place = (int*)placeArray.GetUnsafePtr();
+                int* counts = stackalloc int[257];
+                for (int k = 0; k < 257; k++)
                 {
-                    double* wi = w + (long)order[a] * n;
-                    double* ra = l + (long)a * n;
-                    for (int b = 0; b <= a; b++)
+                    counts[k] = 0;
+                }
+
+                // A counting sort by falling priority: count each priority, turn the counts into starting places, and
+                // put each row at its priority's next place.
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free && place[i] < 0)
                     {
-                        ra[b] = wi[order[b]];
+                        counts[255 - priority[i] + 1]++;
                     }
                 }
 
-                // Factor W_FF in place as L L^T, where L is lower triangular. Row a of L needs only the rows before it.
-                for (int a = first; a < m; a++)
+                counts[0] = next;
+                for (int k = 1; k < 257; k++)
                 {
-                    double* ra = l + (long)a * n;
-                    for (int b = 0; b <= a; b++)
-                    {
-                        double* rb = l + (long)b * n;
-                        double sum = ra[b] - Dot(ra, rb, b);
+                    counts[k] += counts[k - 1];
+                }
 
-                        if (a == b)
+                int end = counts[256];
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free && place[i] < 0)
+                    {
+                        int at = counts[255 - priority[i]]++;
+                        order[at] = i;
+                    }
+                }
+
+                for (int a = next; a < end; a++)
+                {
+                    place[order[a]] = a;
+                }
+
+                return end;
+            }
+
+            /// <summary>Factors W_FF in the factor's order from the start.</summary>
+            void FactorAll(double* w)
+            {
+                long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                double* l = (double*)factorArray.GetUnsafePtr();
+                int* order = (int*)orderArray.GetUnsafePtr();
+                for (int j = 0; j < m; j++)
+                {
+                    double* wj = w + (long)order[j] * n;
+                    double* lj = l + (long)j * n;
+                    for (int i = j; i < m; i++)
+                    {
+                        lj[i] = wj[order[i]];
+                    }
+                }
+
+                CholeskyLLT.Factor(m, l, n);
+                if (stats != null)
+                {
+                    stats->FullFactorTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+                }
+            }
+
+            /// <summary>
+            /// Inserts the <paramref name="count"/> rows at places m and on of the order at the end of the factor, and
+            /// moves m past them. Their new columns come from W, in the factor's order.
+            /// </summary>
+            void Append(double* w, int count)
+            {
+                if (count == 0)
+                {
+                    return;
+                }
+
+                if (m == 0)
+                {
+                    m = count;
+                    FactorAll(w);
+                    return;
+                }
+
+                int* order = (int*)orderArray.GetUnsafePtr();
+                double* columns = (double*)columnsArray.GetUnsafePtr();
+                int total = m + count;
+                for (int c = 0; c < count; c++)
+                {
+                    double* wc = w + (long)order[m + c] * n;
+                    double* bc = columns + (long)c * total;
+                    for (int i = 0; i < total; i++)
+                    {
+                        bc[i] = wc[order[i]];
+                    }
+                }
+
+                CholeskyLLT.InsertRowsAndColumns(m, (double*)factorArray.GetUnsafePtr(), n, m, count, columns, total,
+                    (double*)scratchArray.GetUnsafePtr());
+                m = total;
+            }
+
+            /// <summary>
+            /// Deletes the factor's rows that left the free set, wherever they are, and then inserts the rows that
+            /// joined at the end. The rows that stay keep their order.
+            /// </summary>
+            void EditRows(double* w, byte* states, int removed)
+            {
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                int* deleted = (int*)deletedArray.GetUnsafePtr();
+                if (removed > 0)
+                {
+                    int count = 0, next = 0;
+                    for (int a = 0; a < m; a++)
+                    {
+                        int row = order[a];
+                        if (states[row] == Free)
                         {
-                            ra[a] = math.sqrt(math.max(sum, 1e-300));
+                            place[row] = next;
+                            order[next++] = row;
                         }
                         else
                         {
-                            ra[b] = sum / rb[b];
+                            place[row] = -1;
+                            deleted[count++] = a;
                         }
+                    }
+
+                    if (next > 0)
+                    {
+                        CholeskyLLT.DeleteRowsAndColumns(m, (double*)factorArray.GetUnsafePtr(), n, deleted, count,
+                            (double*)scratchArray.GetUnsafePtr());
+                    }
+
+                    m = next;
+                }
+
+                int first = m;
+                int total = m;
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free && place[i] < 0)
+                    {
+                        place[i] = total;
+                        order[total++] = i;
                     }
                 }
 
-                valid = true;
+                Append(w, total - first);
             }
-        }
-
-        /// <summary>
-        /// Returns the dot product of the first <paramref name="count"/> entries of two arrays. It keeps four separate
-        /// sums so that the compiler can use vector instructions, which it does not do for a single running sum.
-        /// </summary>
-        static double Dot(double* a, double* b, int count)
-        {
-            double4 sums = 0.0;
-            int k = 0;
-            for (; k + 4 <= count; k += 4)
-            {
-                sums += *(double4*)(a + k) * *(double4*)(b + k);
-            }
-
-            double sum = (sums.x + sums.y) + (sums.z + sums.w);
-            for (; k < count; k++)
-            {
-                sum += a[k] * b[k];
-            }
-
-            return sum;
         }
 
         /// <summary>
@@ -531,7 +744,7 @@ namespace Unity.Physics.Numerics.Retooled
                 }
                 else
                 {
-                    double slack = Dot(w + (long)i * n, z, n) - q[i];
+                    double slack = Blas.Dot(n, w + (long)i * n, z) - q[i];
 
                     if ((current == LowerTight && slack < -Tolerance) || (current == UpperTight && slack > Tolerance))
                     {
@@ -712,7 +925,7 @@ namespace Unity.Physics.Numerics.Retooled
                         continue;
                     }
 
-                    double residual = q[i] - Dot(wi, z, n);
+                    double residual = q[i] - Blas.Dot(n, wi, z);
                     z[i] = math.clamp(z[i] + residual / wi[i], lower[i], upper[i]);
                 }
             }
@@ -731,7 +944,7 @@ namespace Unity.Physics.Numerics.Retooled
             double energy = 0.0;
             for (int i = 0; i < n; i++)
             {
-                energy += z[i] * (0.5 * Dot(w + (long)i * n, z, n) - q[i]);
+                energy += z[i] * (0.5 * Blas.Dot(n, w + (long)i * n, z) - q[i]);
             }
 
             return energy;

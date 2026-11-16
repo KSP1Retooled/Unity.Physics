@@ -1111,8 +1111,8 @@ namespace Unity.Physics
 
         /// <summary>
         /// Makes a key for each boundary row that stays the same from one solve to the next while the row's constraint
-        /// lasts. The key comes from the row's block and from the row's own place in its constraint. The two lowest bits
-        /// of each key are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// lasts. The key comes from the row's block and from the row's own place in its constraint. The eight lowest
+        /// bits of each key are zero, so that <see cref="BoundaryMemory"/> can keep a state and an age in them.
         /// <list type="bullet">
         /// <item>
         /// A block is known by its two bodies, see <see cref="BodyKey"/>, its type and, for a contact that has them, its
@@ -1187,7 +1187,7 @@ namespace Unity.Physics
                     place = ContactRowPlace(ref *header, row - block.FirstRow);
                 }
 
-                keys[i] = Mix(blockKeys[b] + place) & ~(ulong)BoundaryMemory.StateMask;
+                keys[i] = Mix(blockKeys[b] + place) & ~(ulong)BoundaryMemory.ValueMask;
             }
 
             blockKeys.Dispose();
@@ -1650,6 +1650,7 @@ namespace Unity.Physics
                 ref UnsafeList<ulong> memory = ref run.Forest->BoundaryMemory.States;
                 int warmRows = 0;
                 var remembered = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var ages = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.ClearMemory);
                 for (int i = 0; i < nb; i++)
                 {
                     remembered[i] = 0xFF;
@@ -1669,6 +1670,7 @@ namespace Unity.Physics
                         {
                             states[i] = (byte)(memory[found] & BoundaryMemory.StateMask);
                             remembered[i] = states[i];
+                            ages[i] = (byte)(BoundaryMemory.Age(memory[found]) + 1);
                             warmRows++;
                         }
                     }
@@ -1719,16 +1721,18 @@ namespace Unity.Physics
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
-                        !run.Caps.RefactorEveryRound, &stats, out int rounds);
+                        run.Caps.FactorUpdate, run.Caps.UnorderedFactor ? null : (byte*)ages.GetUnsafePtr(), &stats, out int rounds);
                     long solveTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted;
                     int changes = 0;
                     for (int i = 0; i < nb; i++)
                     {
-                        changes += remembered[i] != 0xFF && remembered[i] != states[i] ? 1 : 0;
+                        bool changed = remembered[i] != 0xFF && remembered[i] != states[i];
+                        changes += changed ? 1 : 0;
+                        ages[i] = changed || remembered[i] == 0xFF ? (byte)0 : ages[i];
                     }
 
                     BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
-                        (byte*)states.GetUnsafeReadOnlyPtr(), nb);
+                        (byte*)states.GetUnsafeReadOnlyPtr(), (byte*)ages.GetUnsafeReadOnlyPtr(), nb);
                     BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, !solved, warmRows);
                     BoundaryCounters.AddFactor(stats, solveTicks, changes, run.Substep <= 0);
                 }
@@ -1738,7 +1742,7 @@ namespace Unity.Physics
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(),
-                        BoundarySolver.MaxPivotingIterations, false, !run.Caps.RefactorEveryRound, null, out int rounds);
+                        BoundarySolver.MaxPivotingIterations, false, run.Caps.FactorUpdate, null, null, out int rounds);
                     if (run.VesselMode)
                     {
                         BoundaryCounters.AddPush(rounds, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
@@ -1768,6 +1772,7 @@ namespace Unity.Physics
                 upper.Dispose();
                 states.Dispose();
                 remembered.Dispose();
+                ages.Dispose();
                 z.Dispose();
                 couplings.Dispose();
             }
@@ -2477,6 +2482,25 @@ namespace Unity.Physics
         public bool RefactorEveryRound;
 
         /// <summary>
+        /// If true, and <see cref="RefactorEveryRound"/> is false, a round keeps the last round's factor up to the first
+        /// row that left the free set and inserts the rest after it, instead of deleting the rows that left wherever they
+        /// are, see <see cref="Unity.Physics.Numerics.Retooled.FactorUpdate"/>. For measuring the two ways.
+        /// </summary>
+        public bool KeepFactorPrefix;
+
+        /// <summary>
+        /// If true, the first factor of a vessel island's boundary solve takes its free rows in the boundary's order. If
+        /// false, it takes the rows that have kept their state for the most solves first, so that the rows that are
+        /// likely to leave the free set sit at the end of the factor, where deleting them costs little. For measuring.
+        /// </summary>
+        public bool UnorderedFactor;
+
+        /// <summary>The way that the boundary's rounds change their factor, from <see cref="RefactorEveryRound"/> and <see cref="KeepFactorPrefix"/>.</summary>
+        public Unity.Physics.Numerics.Retooled.FactorUpdate FactorUpdate => RefactorEveryRound
+            ? Unity.Physics.Numerics.Retooled.FactorUpdate.Refactor
+            : KeepFactorPrefix ? Unity.Physics.Numerics.Retooled.FactorUpdate.KeepPrefix : Unity.Physics.Numerics.Retooled.BoundarySolver.DefaultUpdate;
+
+        /// <summary>
         /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
         /// keys did before, instead of by its entity. For measuring what the entity keys keep.
         /// </summary>
@@ -2528,12 +2552,18 @@ namespace Unity.Physics
 
     /// <summary>
     /// What one island remembers of its boundary rows between solves: for each row's key, the row's state at the end of
-    /// the last solve. Each entry is the key with the state in its two lowest bits, and the entries are sorted, so that a
-    /// lookup is a binary search.
+    /// the last solve, and the row's age, which is how many solves in a row before that one ended in the same state, up
+    /// to <see cref="MostAge"/>. Each entry is the key with the state in its two lowest bits and the age in the six bits
+    /// above them. The entries are sorted, so that a lookup is a binary search.
     /// </summary>
     internal unsafe struct BoundaryMemory
     {
         public const int StateMask = 3;
+        public const int AgeShift = 2;
+        public const int MostAge = 63;
+
+        /// <summary>The bits of an entry that hold the state and the age. A key has these bits zero.</summary>
+        public const int ValueMask = 0xFF;
 
         public UnsafeList<ulong> States;
 
@@ -2555,7 +2585,7 @@ namespace Unity.Physics
             while (low < high)
             {
                 int middle = (low + high) >> 1;
-                if ((states[middle] & ~(ulong)StateMask) < key)
+                if ((states[middle] & ~(ulong)ValueMask) < key)
                 {
                     low = middle + 1;
                 }
@@ -2565,11 +2595,17 @@ namespace Unity.Physics
                 }
             }
 
-            return low < states.Length && (states[low] & ~(ulong)StateMask) == key ? low : -1;
+            return low < states.Length && (states[low] & ~(ulong)ValueMask) == key ? low : -1;
         }
 
-        /// <summary>Replaces what <paramref name="states"/> holds with the keys and states of this solve's rows.</summary>
-        public static void Remember(ref UnsafeList<ulong> states, ulong* keys, byte* rowStates, int count)
+        /// <summary>The age that entry <paramref name="entry"/> holds.</summary>
+        public static byte Age(ulong entry) => (byte)((entry & ValueMask) >> AgeShift);
+
+        /// <summary>
+        /// Replaces what <paramref name="states"/> holds with the keys, states and ages of this solve's rows. A row's age
+        /// is its remembered age plus one if it ended in its remembered state, and zero otherwise.
+        /// </summary>
+        public static void Remember(ref UnsafeList<ulong> states, ulong* keys, byte* rowStates, byte* ages, int count)
         {
             if (!states.IsCreated)
             {
@@ -2579,7 +2615,7 @@ namespace Unity.Physics
             states.Clear();
             for (int i = 0; i < count; i++)
             {
-                states.Add(keys[i] | (ulong)(rowStates[i] & StateMask));
+                states.Add(keys[i] | (ulong)(rowStates[i] & StateMask) | ((ulong)math.min((int)ages[i], MostAge) << AgeShift));
             }
 
             NativeSortExtension.Sort(states.Ptr, states.Length);
@@ -2727,6 +2763,12 @@ namespace Unity.Physics
             Interlocked.Add(ref data.Factor.AddedRows, stats.AddedRows);
             Interlocked.Add(ref data.Factor.RemovedRows, stats.RemovedRows);
             Interlocked.Add(ref data.Factor.FactorTicks, stats.FactorTicks);
+            Interlocked.Add(ref data.Factor.SolveTicks, stats.SolveTicks);
+            Interlocked.Add(ref data.Factor.PivotTicks, stats.PivotTicks);
+            Interlocked.Add(ref data.Factor.FullFactorTicks, stats.FullFactorTicks);
+            Interlocked.Add(ref data.Factor.FreeRows, stats.FreeRows);
+            Most(ref data.Factor.MostFreeRows, stats.MostFreeRows);
+            Fewest(ref data.Factor.FewestFreeRows, stats.FewestFreeRows);
             Interlocked.Add(ref data.SolveTicks, solveTicks);
             if (firstSubstep)
             {
@@ -2772,6 +2814,22 @@ namespace Unity.Physics
             Interlocked.Add(ref Shared.Data.HeldReleases, releases);
             Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
             Interlocked.Add(ref Shared.Data.HeldSupports, supports);
+        }
+
+        /// <summary>Lowers <paramref name="fewest"/> to <paramref name="value"/>. Zero counts as no value in both.</summary>
+        static void Fewest(ref long fewest, long value)
+        {
+            long seen = Interlocked.Read(ref fewest);
+            while (value > 0 && (seen == 0 || value < seen))
+            {
+                long previous = Interlocked.CompareExchange(ref fewest, value, seen);
+                if (previous == seen)
+                {
+                    break;
+                }
+
+                seen = previous;
+            }
         }
 
         static void Most(ref long most, long value)

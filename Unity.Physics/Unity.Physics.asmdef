@@ -12,6 +12,7 @@
         "Unity.Numerics.Linear.Dense",
         "Unity.Numerics.Linear.Sparse",
         "Unity.Numerics.Linear.Solvers.Lowlevel",
+        "Unity.Numerics.Kernels",
         "Unity.Physics.Numerics.Retooled",
         "Unity.Profiling.Core",
         "Unity.Transforms"

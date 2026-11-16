@@ -8,6 +8,7 @@ using Unity.Mathematics;
 using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
+using Unity.Numerics.Kernels;
 
 namespace Unity.Physics
 {
@@ -1918,7 +1919,7 @@ namespace Unity.Physics
 
             for (int row = 0; row < size; row++)
             {
-                double sum = own[row] - MathUtil.ArrayProductSum(&c[row * size], own, row);
+                double sum = own[row] - FusedMath.ArrayProductSum(&c[row * size], own, row);
 
                 own[row] = sum * inverse[row];
             }
@@ -2092,7 +2093,7 @@ namespace Unity.Physics
 
             double6 speed = double6.Load(solution.Ptr + nodes[body].Start);
             double6 jacobian = Columns(columns);
-            return math.csum(MathUtil.Fma(speed.Low, jacobian.Low, new double4(speed.High * jacobian.High, 0.0, 0.0)));
+            return math.csum(FusedMath.Fma(speed.Low, jacobian.Low, new double4(speed.High * jacobian.High, 0.0, 0.0)));
         }
 
         /// <summary>Returns one body's side of a Jacobian row: six columns, linear then angular.</summary>

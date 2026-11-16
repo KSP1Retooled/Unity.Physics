@@ -1,7 +1,7 @@
 using Unity.Burst.Intrinsics;
 using Unity.Mathematics;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Kernels
 {
     /// <summary>
     /// Provides fused multiply-add operations: a * b + c with one rounding. <see cref="math.fma(float, float, float)"/>
@@ -10,7 +10,7 @@ namespace Unity.Physics.Numerics.Retooled
     /// Otherwise, they use separate multiplication and addition, with two roundings. Results can therefore differ in
     /// their last bits between CPUs and between Burst and Mono.
     /// </summary>
-    public static class MathUtil
+    public static unsafe class FusedMath
     {
         public static float Fma(float a, float b, float c)
         {
@@ -48,8 +48,20 @@ namespace Unity.Physics.Numerics.Retooled
         {
             if (X86.Fma.IsFmaSupported)
             {
-                v128 result = X86.Fma.fmadd_ps(new v128(a.x, a.y, a.z, a.w), new v128(b.x, b.y, b.z, b.w), new v128(c.x, c.y, c.z, c.w));
-                return new float4(result.Float0, result.Float1, result.Float2, result.Float3);
+                v128 result = X86.Fma.fmadd_ps(*(v128*)&a, *(v128*)&b, *(v128*)&c);
+                return *(float4*)&result;
+            }
+
+            return a * b + c;
+        }
+
+        public static float8 Fma(float8 a, float8 b, float8 c)
+        {
+            if (X86.Fma.IsFmaSupported)
+            {
+                // float8 and v256 have the same layout, so the vectors pass through without being taken apart.
+                v256 result = X86.Fma.mm256_fmadd_ps(*(v256*)&a, *(v256*)&b, *(v256*)&c);
+                return *(float8*)&result;
             }
 
             return a * b + c;
@@ -91,8 +103,9 @@ namespace Unity.Physics.Numerics.Retooled
         {
             if (X86.Fma.IsFmaSupported)
             {
-                v256 result = X86.Fma.mm256_fmadd_pd(new v256(a.x, a.y, a.z, a.w), new v256(b.x, b.y, b.z, b.w), new v256(c.x, c.y, c.z, c.w));
-                return new double4(result.Double0, result.Double1, result.Double2, result.Double3);
+                // double4 and v256 have the same layout, so the vectors pass through without being taken apart.
+                v256 result = X86.Fma.mm256_fmadd_pd(*(v256*)&a, *(v256*)&b, *(v256*)&c);
+                return *(double4*)&result;
             }
 
             return a * b + c;
@@ -101,7 +114,7 @@ namespace Unity.Physics.Numerics.Retooled
         /// <summary>
         /// Computes <c>sum(a[i] * b[i])</c>.
         /// </summary>
-        public static unsafe double ArrayProductSum(double* a, double* b, int count)
+        public static double ArrayProductSum(double* a, double* b, int count)
         {
             double4x4 sum4x4 = 0.0;
 
