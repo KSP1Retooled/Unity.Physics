@@ -22,8 +22,30 @@ namespace Unity.Physics
     /// </summary>
     public unsafe struct DirectSolverCache : IDisposable
     {
-        // Cache at most this many islands per step. Any additional islands solve without cached data.
-        const int Capacity = 64;
+        // The substeps' jobs solve the islands that the fused job doesn't take: craft whose joints can't join a
+        // vessel, islands with loose bodies, and every island when the fused job is off. The table of their slots
+        // starts with room for this many islands, and it grows when every slot holds an island that a recent step
+        // solved. When the table had a fixed size of 64, every island past the 64th solved with a solver and a forest
+        // for one step only, and built its structure again in every step.
+        const int InitialCapacity = 64;
+
+        // The table of slots grows to at most this many. Past that size, a new island takes the slot that was used
+        // least recently among the slots that no island of the same step holds, and an island that finds no such slot
+        // solves without cached data.
+        const int MaxSlots = 4096;
+
+        // A slot that no step has used for this many steps can go to a new island. An island that went to the fused job
+        // for a step or two, or slept for a moment, keeps its slot.
+        internal const int SlotKeepSteps = 60;
+
+        // The step in which a slot that was never assigned was last used. Such a slot can always go to a new island.
+        const long NeverUsed = long.MinValue;
+
+        /// <summary>
+        /// The identity that <see cref="Assign"/> takes as "this island needs no slot". No body has it, see
+        /// <see cref="BodyIdentity"/>.
+        /// </summary>
+        internal const ulong NoSlot = ulong.MaxValue;
 
         struct Slot
         {
@@ -49,13 +71,39 @@ namespace Unity.Physics
             public bool Created;
 
             /// <summary>
-            /// The step in which this slot was last assigned to an island.
+            /// The step in which this slot was last assigned to an island, or <see cref="NeverUsed"/>.
             /// </summary>
             public long LastUsed;
         }
 
+        /// <summary>
+        /// The slots of the islands that the substeps' jobs solve. Only <see cref="Assign"/> adds slots, on one thread
+        /// and before any island is solved, so the solvers don't move while islands use them.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
-        Slot* slots;
+        UnsafeList<Slot>* slots;
+
+        /// <summary>
+        /// The slot that each identity of a first body was last assigned to (see <see cref="BodyIdentity"/>). Only
+        /// <see cref="Assign"/> changes it.
+        /// </summary>
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeHashMap<ulong, int>* slotOfIdentity;
+
+        /// <summary>A slot that holds nothing yet.</summary>
+        static Slot EmptySlot => new Slot { Key = -1, Identity = NoSlot, LastUsed = NeverUsed };
+
+        /// <summary>
+        /// A slot that no island of the current step holds, and the step in which it was last used. Sorting these puts
+        /// the slot that was used least recently first, and slots that were last used in the same step in index order.
+        /// </summary>
+        struct FreeSlot : IComparable<FreeSlot>
+        {
+            public long LastUsed;
+            public int Slot;
+
+            public int CompareTo(FreeSlot other) => LastUsed != other.LastUsed ? LastUsed.CompareTo(other.LastUsed) : Slot.CompareTo(other.Slot);
+        }
 
         // The fused job takes vessel islands of every size, so a scene with many small craft or much debris has many
         // fused islands, and each of them keeps its state in a slot. The table of slots starts with room for this many
@@ -139,6 +187,26 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         long* step;
 
+        /// <summary>
+        /// How much work the islands that the fused job didn't take gave the substeps in one step: the islands, their
+        /// rows at the first substep, their bodies, and the islands that are large enough to share their solve among
+        /// lanes. Also the number of vessel parts in the islands that the fused job took.
+        /// </summary>
+        internal struct UnfusedWork
+        {
+            public int Islands;
+            public int Rows;
+            public int Bodies;
+            public int TeamIslands;
+            public int FusedParts;
+
+            /// <summary>The step that the counts are from, or 0 if no step has recorded them.</summary>
+            public long Step;
+        }
+
+        [NativeDisableUnsafePtrRestriction]
+        UnfusedWork* unfusedWork;
+
         [NativeDisableUnsafePtrRestriction]
         ForestSettings* forestSettings;
 
@@ -209,8 +277,8 @@ namespace Unity.Physics
         {
             var cache = new DirectSolverCache
             {
-                slots = (Slot*)UnsafeUtility.MallocTracked(Capacity * sizeof(Slot), UnsafeUtility.AlignOf<Slot>(), Allocator.Persistent, 0),
-                slotOfIsland = UnsafeList<int>.Create(Capacity, Allocator.Persistent),
+                slots = UnsafeList<Slot>.Create(InitialCapacity, Allocator.Persistent),
+                slotOfIsland = UnsafeList<int>.Create(InitialCapacity, Allocator.Persistent),
                 step = (long*)UnsafeUtility.MallocTracked(sizeof(long), UnsafeUtility.AlignOf<long>(), Allocator.Persistent, 0),
                 forestSettings = (ForestSettings*)UnsafeUtility.MallocTracked(sizeof(ForestSettings), UnsafeUtility.AlignOf<ForestSettings>(),
                     Allocator.Persistent, 0),
@@ -221,13 +289,16 @@ namespace Unity.Physics
                 Allocator.Persistent, 0);
             UnsafeUtility.MemClear(cache.forestCounters, CounterCount * sizeof(long));
 
-            UnsafeUtility.MemClear(cache.slots, Capacity * sizeof(Slot));
-            for (int slot = 0; slot < Capacity; slot++)
+            // Make the first slots at once, so that a solve that runs before any assignment can use the island's index
+            // as its slot, as Solver and ForestOf allow.
+            for (int slot = 0; slot < InitialCapacity; slot++)
             {
-                cache.slots[slot].Key = -1;
-                cache.slots[slot].Identity = ulong.MaxValue;
-                cache.slots[slot].LastUsed = -1;
+                cache.slots->Add(EmptySlot);
             }
+
+            cache.slotOfIdentity = (UnsafeHashMap<ulong, int>*)UnsafeUtility.MallocTracked(UnsafeUtility.SizeOf<UnsafeHashMap<ulong, int>>(),
+                UnsafeUtility.AlignOf<UnsafeHashMap<ulong, int>>(), Allocator.Persistent, 0);
+            *cache.slotOfIdentity = new UnsafeHashMap<ulong, int>(InitialCapacity, Allocator.Persistent);
 
             cache.fusedSlots = UnsafeList<FusedSlot>.Create(FusedInitialCapacity, Allocator.Persistent);
             cache.fusedSlotOfVessel = (UnsafeHashMap<ulong, int>*)UnsafeUtility.MallocTracked(UnsafeUtility.SizeOf<UnsafeHashMap<ulong, int>>(),
@@ -238,6 +309,9 @@ namespace Unity.Physics
             *cache.vesselOwners = new UnsafeHashMap<ulong, VesselOwner>(64, Allocator.Persistent);
             cache.compactOfWorld = UnsafeList<int>.Create(0, Allocator.Persistent);
             *cache.step = 0;
+            cache.unfusedWork = (UnfusedWork*)UnsafeUtility.MallocTracked(sizeof(UnfusedWork), UnsafeUtility.AlignOf<UnfusedWork>(),
+                Allocator.Persistent, 0);
+            *cache.unfusedWork = default;
             return cache;
         }
 
@@ -386,10 +460,10 @@ namespace Unity.Physics
                 locked[i] = 0;
             }
 
-            for (int slot = 0; slots != null && slot < Capacity; slot++)
+            for (int slot = 0; slots != null && slot < slots->Length; slot++)
             {
-                ForestIsland* forest = slots[slot].Forest;
-                if (forest == null || slots[slot].LastUsed != *step)
+                ForestIsland* forest = slots->Ptr[slot].Forest;
+                if (forest == null || slots->Ptr[slot].LastUsed != *step)
                 {
                     continue;
                 }
@@ -481,10 +555,10 @@ namespace Unity.Physics
         /// </summary>
         public void ForgetForests()
         {
-            for (int slot = 0; slots != null && slot < Capacity; slot++)
+            for (int slot = 0; slots != null && slot < slots->Length; slot++)
             {
-                ForestIsland.Destroy(slots[slot].Forest);
-                slots[slot].Forest = null;
+                ForestIsland.Destroy(slots->Ptr[slot].Forest);
+                slots->Ptr[slot].Forest = null;
             }
 
             for (int slot = 0; fusedSlots != null && slot < fusedSlots->Length; slot++)
@@ -682,18 +756,19 @@ namespace Unity.Physics
                 return null;
             }
 
-            int slot = slotOfIsland->Length > 0 ? (island < slotOfIsland->Length ? (*slotOfIsland)[island] : -1) : island;
-            if (slot < 0 || slot >= Capacity)
+            int slot = SlotOf(island);
+            if (slot < 0)
             {
                 return null;
             }
 
-            if (slots[slot].Forest == null)
+            Slot* entry = slots->Ptr + slot;
+            if (entry->Forest == null)
             {
-                slots[slot].Forest = ForestIsland.Create();
+                entry->Forest = ForestIsland.Create();
             }
 
-            return slots[slot].Forest;
+            return entry->Forest;
         }
 
         /// <summary>
@@ -718,13 +793,15 @@ namespace Unity.Physics
 
         /// <summary>
         /// Assigns cache slots for the step by the identity of each island's first body. Runs on one thread before any
-        /// island is solved. First reuses the slot whose identity matches, then assigns the remaining islands the least
-        /// recently used slots that are still available. No slot goes to two islands in one step, even if two first
-        /// bodies had the same identity. Islands beyond the cache capacity receive no slot. A destroyed body's slot is
-        /// never found again; it can still go to another island as a least recently used slot. Its forest then gives the
-        /// island no lock states, because a forest finds lock states by the identities of the bodies, see
-        /// <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's index and identity, see
-        /// <see cref="BodyIdentity"/>.
+        /// island is solved. An island whose identity is <see cref="NoSlot"/> gets no slot: the fused job keeps the
+        /// state of its islands in slots of its own. Each other island first takes the slot that its identity had, which
+        /// a hash map finds. The remaining islands take the slots that no step has used for <see cref="SlotKeepSteps"/>
+        /// steps, the least recently used first, and otherwise new slots, until the table holds
+        /// <see cref="MaxSlots"/> slots. No slot goes to two islands in one step, even if two first bodies had the same
+        /// identity. A destroyed body's slot is never found again; it can still go to another island when no step has
+        /// used it for a while. Its forest then gives the island no lock states, because a forest finds lock states by
+        /// the identities of the bodies, see <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's
+        /// index and identity, see <see cref="BodyIdentity"/>.
         /// </summary>
         internal void Assign(NativeArray<int> firstBodies, NativeArray<ulong> firstIdentities)
         {
@@ -737,51 +814,130 @@ namespace Unity.Physics
             int islandCount = firstBodies.Length;
             slotOfIsland->Resize(islandCount);
 
+            // An island that needs a slot and has none yet is marked with this value until the second pass below gives
+            // it one.
+            const int unmatched = -2;
+            int unmatchedCount = 0;
+            Slot* table = slots->Ptr;
             for (int island = 0; island < islandCount; island++)
             {
+                ulong identity = firstIdentities[island];
                 int found = -1;
-                for (int slot = 0; slot < Capacity; slot++)
+                if (identity != NoSlot)
                 {
-                    if (slots[slot].Identity == firstIdentities[island] && slots[slot].LastUsed != now)
+                    if (slotOfIdentity->TryGetValue(identity, out int slot) && table[slot].LastUsed != now)
                     {
                         found = slot;
-                        break;
+                        table[slot].LastUsed = now;
+                    }
+                    else
+                    {
+                        found = unmatched;
+                        unmatchedCount++;
                     }
                 }
 
                 (*slotOfIsland)[island] = found;
-                if (found >= 0)
+            }
+
+            if (unmatchedCount == 0)
+            {
+                return;
+            }
+
+            // The slots that no island of this step holds, the least recently used first.
+            var free = new NativeList<FreeSlot>(slots->Length, Allocator.Temp);
+            for (int slot = 0; slot < slots->Length; slot++)
+            {
+                if (table[slot].LastUsed != now)
                 {
-                    slots[found].LastUsed = now;
+                    free.Add(new FreeSlot { LastUsed = table[slot].LastUsed, Slot = slot });
                 }
             }
 
+            free.Sort();
+            int nextFree = 0;
             for (int island = 0; island < islandCount; island++)
             {
-                if ((*slotOfIsland)[island] >= 0)
+                if ((*slotOfIsland)[island] != unmatched)
                 {
                     continue;
                 }
 
-                int oldest = -1;
-                for (int slot = 0; slot < Capacity; slot++)
+                // The least recently used free slot goes to the island if no step has used it for a while, or if the
+                // table can't grow. Otherwise the island gets a new slot.
+                int chosen = -1;
+                bool full = slots->Length >= MaxSlots;
+                if (nextFree < free.Length && (free[nextFree].LastUsed < now - SlotKeepSteps || full))
                 {
-                    if (slots[slot].LastUsed != now && (oldest < 0 || slots[slot].LastUsed < slots[oldest].LastUsed))
+                    chosen = free[nextFree++].Slot;
+                    ulong previous = table[chosen].Identity;
+                    if (previous != NoSlot && slotOfIdentity->TryGetValue(previous, out int mapped) && mapped == chosen)
                     {
-                        oldest = slot;
+                        slotOfIdentity->Remove(previous);
                     }
                 }
+                else if (!full)
+                {
+                    chosen = slots->Length;
+                    slots->Add(EmptySlot);
+                    table = slots->Ptr;
+                }
 
-                if (oldest < 0)
+                (*slotOfIsland)[island] = chosen;
+                if (chosen < 0)
                 {
                     continue;
                 }
 
-                slots[oldest].Key = firstBodies[island];
-                slots[oldest].Identity = firstIdentities[island];
-                slots[oldest].LastUsed = now;
-                (*slotOfIsland)[island] = oldest;
+                table[chosen].Key = firstBodies[island];
+                table[chosen].Identity = firstIdentities[island];
+                table[chosen].LastUsed = now;
+
+                // When two islands of a step have the same identity, the map keeps the slot of the first one.
+                slotOfIdentity->TryAdd(firstIdentities[island], chosen);
             }
+
+            free.Dispose();
+        }
+
+        /// <summary>
+        /// Records how much work this step's islands that are not fused give the substeps. The job that marks the fused
+        /// islands calls this, after <see cref="Assign"/>.
+        /// </summary>
+        internal void NoteUnfusedWork(UnfusedWork work)
+        {
+            if (unfusedWork == null)
+            {
+                return;
+            }
+
+            work.Step = *step;
+            *unfusedWork = work;
+        }
+
+        /// <summary>
+        /// The work that the islands that were not fused gave the substeps in the last step that recorded it. Returns
+        /// false if no step has. The main thread reads this when it schedules a step, after the last step's jobs have
+        /// finished.
+        /// </summary>
+        internal bool LastUnfusedWork(out UnfusedWork work)
+        {
+            work = unfusedWork != null ? *unfusedWork : default;
+            return work.Step > 0;
+        }
+
+        /// <summary>The number of slots in the table of the substeps' islands. Tests read it.</summary>
+        internal int SlotCount => slots != null ? slots->Length : 0;
+
+        /// <summary>
+        /// The slot of an island in this step, or -1 if the island has none. Before any assignment, the island's index
+        /// is its slot.
+        /// </summary>
+        int SlotOf(int island)
+        {
+            int slot = slotOfIsland->Length > 0 ? (island < slotOfIsland->Length ? (*slotOfIsland)[island] : -1) : island;
+            return slot >= 0 && slot < slots->Length ? slot : -1;
         }
 
         /// <summary>
@@ -795,19 +951,20 @@ namespace Unity.Physics
                 return null;
             }
 
-            int slot = slotOfIsland->Length > 0 ? (island < slotOfIsland->Length ? (*slotOfIsland)[island] : -1) : island;
-            if (slot < 0 || slot >= Capacity)
+            int slot = SlotOf(island);
+            if (slot < 0)
             {
                 return null;
             }
 
-            if (!slots[slot].Created)
+            Slot* entry = slots->Ptr + slot;
+            if (!entry->Created)
             {
-                slots[slot].Solver = new SparseConstraintSolver(Allocator.Persistent);
-                slots[slot].Created = true;
+                entry->Solver = new SparseConstraintSolver(Allocator.Persistent);
+                entry->Created = true;
             }
 
-            return &slots[slot].Solver;
+            return &entry->Solver;
         }
 
         public void Dispose()
@@ -817,15 +974,19 @@ namespace Unity.Physics
                 return;
             }
 
-            for (int slot = 0; slot < Capacity; slot++)
+            for (int slot = 0; slot < slots->Length; slot++)
             {
-                if (slots[slot].Created)
+                if (slots->Ptr[slot].Created)
                 {
-                    slots[slot].Solver.Dispose();
+                    slots->Ptr[slot].Solver.Dispose();
                 }
 
-                ForestIsland.Destroy(slots[slot].Forest);
+                ForestIsland.Destroy(slots->Ptr[slot].Forest);
             }
+
+            slotOfIdentity->Dispose();
+            UnsafeUtility.FreeTracked(slotOfIdentity, Allocator.Persistent);
+            slotOfIdentity = null;
 
             for (int slot = 0; slot < fusedSlots->Length; slot++)
             {
@@ -843,11 +1004,13 @@ namespace Unity.Physics
             UnsafeList<int>.Destroy(compactOfWorld);
             compactOfWorld = null;
             UnsafeUtility.FreeTracked(forestSettings, Allocator.Persistent);
+            UnsafeUtility.FreeTracked(unfusedWork, Allocator.Persistent);
+            unfusedWork = null;
             UnsafeUtility.FreeTracked(forestCounters, Allocator.Persistent);
             forestSettings = null;
             forestCounters = null;
 
-            UnsafeUtility.FreeTracked(slots, Allocator.Persistent);
+            UnsafeList<Slot>.Destroy(slots);
             UnsafeUtility.FreeTracked(step, Allocator.Persistent);
             UnsafeList<int>.Destroy(slotOfIsland);
             slots = null;

@@ -176,6 +176,12 @@ namespace Unity.Physics
 
         static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Fused");
 
+        /// <summary>Whether a body of the world is kinematic: it has a motion, and no mass or inertia.</summary>
+        static unsafe bool IsKinematicBody(int body, MotionVelocity* motions, int motionCount)
+        {
+            return (uint)body < (uint)motionCount && motions[body].IsKinematic;
+        }
+
         /// <summary>
         /// Solves an island whose bodies are all vessel parts for every substep of the step. The island's state is kept
         /// by the ID of its first vessel, and the island keeps the numbering of its moving parts from step to step
@@ -229,6 +235,10 @@ namespace Unity.Physics
                 closureStart += vessel.ClosureCount;
             }
 
+            // The kinematic parts' bodies. The island's moving bodies leave them out, so the stages below don't move
+            // them, and the substeps' jobs skip the fused islands. So this job integrates them at the end of each
+            // substep.
+            var kinematic = new NativeList<int>(Allocator.Temp);
             int numbered = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
             {
@@ -240,6 +250,10 @@ namespace Unity.Physics
                     {
                         known = numbered < forest->FusedWorldBodies.Length && forest->FusedWorldBodies[numbered] == body;
                         numbered++;
+                    }
+                    else if (IsKinematicBody(set.PartBodies[part], motions, motionCount))
+                    {
+                        kinematic.Add(set.PartBodies[part]);
                     }
                 }
             }
@@ -268,6 +282,7 @@ namespace Unity.Physics
             {
                 // Number the moving parts again, one vessel after another.
                 forest->FusedWorldBodies.Clear();
+                kinematic.Clear();
                 for (int v = 0; v < islandVesselCount; v++)
                 {
                     VesselRecord vessel = set.Vessels[islandVessels[v]];
@@ -279,8 +294,28 @@ namespace Unity.Physics
                             compactOfWorld[body] = forest->FusedWorldBodies.Length;
                             forest->FusedWorldBodies.Add(body);
                         }
+                        else if (body < 0 && IsKinematicBody(set.PartBodies[part], motions, motionCount))
+                        {
+                            kinematic.Add(set.PartBodies[part]);
+                        }
                     }
                 }
+            }
+
+            // Two parts can share a body. Integrate each kinematic body once.
+            if (kinematic.Length > 1)
+            {
+                kinematic.Sort();
+                int unique = 1;
+                for (int k = 1; k < kinematic.Length; k++)
+                {
+                    if (kinematic[k] != kinematic[unique - 1])
+                    {
+                        kinematic[unique++] = kinematic[k];
+                    }
+                }
+
+                kinematic.Resize(unique, NativeArrayOptions.UninitializedMemory);
             }
 
             // All the island's moving bodies are vessel parts, so the numbering above numbers every body that the island's
@@ -469,6 +504,11 @@ namespace Unity.Physics
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 }
 
+                for (int k = 0; k < kinematic.Length; k++)
+                {
+                    Integrator.IntegrateMotion(kinematic[k], motionDatas, motionVelocities, stepInput.Timestep);
+                }
+
                 stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
                     Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 run.Dispose();
@@ -483,6 +523,7 @@ namespace Unity.Physics
             headerRows.Dispose();
             bodyLinear.Dispose();
             bodyAngular.Dispose();
+            kinematic.Dispose();
             for (int compact = 0; compact < forest->FusedWorldBodies.Length; compact++)
             {
                 compactOfWorld[forest->FusedWorldBodies[compact]] = -1;

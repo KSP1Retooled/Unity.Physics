@@ -409,6 +409,7 @@ namespace KSP.Retooled.Physics.Tests
 
             var text = new StringBuilder();
             text.Append(WhileParked(first, last));
+            text.Append(SolveTail(first, last));
             text.Append($"## {name}: profiled step median {Median(steps):F2} ms over {steps.Count}, unprofiled median {unprofiled:F2}\n");
             text.Append("   first     last     span      cpu  marker\n");
             foreach (var pair in stats.OrderBy(p => Median(p.Value.First)))
@@ -426,6 +427,97 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return text.ToString();
+        }
+
+        /// <summary>
+        /// The jobs that the substeps of the direct islands run, and the jobs that free their buffers. SolveTail looks
+        /// for them after the fused vessel job.
+        /// </summary>
+        private static readonly string[] SubstepJobs =
+        {
+            "Solver:UpdateIslandJacobiansJob", "Solver:CountIslandRowsJob", "Solver:BuildIslandRowsJob",
+            "Solver:SolveDirectIslandJob", "Solver:SolveSharedDirectIslandsJob", "Solver:IntegrateIslandBodiesJob",
+            "Solver:SolveUnfusedSubstepsJob",
+        };
+
+        /// <summary>
+        /// The end of the solve in each profiled frame: when the fused vessel job ends, when the last job of the
+        /// substeps ends, and when WriteBackJob starts, as medians in ms from the end of the fused job. WriteBackJob is
+        /// the first job that waits for every motion to be solved. The report also lists, for the first three frames,
+        /// every job that runs from 0.05 ms before the fused job ends until WriteBackJob starts, with its thread, its
+        /// start and its length, so that the chain of jobs between the two can be read job by job.
+        /// </summary>
+        private static string SolveTail(int first, int last)
+        {
+            const string fusedJob = "Solver:SolveFusedVesselIslandsJob (Burst)";
+            const string writeBackJob = "WriteBackJob (Burst)";
+            var chainEnds = new List<double>();
+            var writeBacks = new List<double>();
+            var writeBackEnds = new List<double>();
+            var stepEnds = new List<double>();
+            var substepJobCounts = new List<double>();
+            var listing = new StringBuilder();
+            int listed = 0;
+            for (int frame = first; frame <= last; frame++)
+            {
+                var samples = new List<(int thread, ulong start, ulong end, string name)>();
+                for (int thread = 0; ; thread++)
+                {
+                    using RawFrameDataView view = ProfilerDriver.GetRawFrameDataView(frame, thread);
+                    if (!view.valid)
+                    {
+                        break;
+                    }
+
+                    for (int i = 0; i < view.sampleCount; i++)
+                    {
+                        string name = view.GetSampleName(i);
+                        bool stepMarker = thread == 0 && name != null && name.StartsWith("Retooled.Physics.Step");
+                        if (name == null || !(name.EndsWith("(Burst)") || name.EndsWith("(Cleanup)") || stepMarker))
+                        {
+                            continue;
+                        }
+
+                        ulong start = view.GetSampleStartTimeNs(i);
+                        samples.Add((thread, start, start + (ulong)(view.GetSampleTimeMs(i) * 1e6), name));
+                    }
+                }
+
+                ulong fusedEnd = samples.Where(s => s.name == fusedJob).Select(s => s.end).DefaultIfEmpty(0UL).Max();
+                ulong writeBack = samples.Where(s => s.name == writeBackJob).Select(s => s.start).DefaultIfEmpty(0UL).Min();
+                if (fusedEnd == 0 || writeBack == 0 || writeBack < fusedEnd - 5_000_000)
+                {
+                    continue;
+                }
+
+                var chain = samples.Where(s => SubstepJobs.Any(j => s.name.StartsWith(j)) && s.start >= fusedEnd - 5_000_000 && s.start < writeBack).ToList();
+                ulong chainEnd = chain.Select(s => s.end).DefaultIfEmpty(fusedEnd).Max();
+                chainEnds.Add(((long)chainEnd - (long)fusedEnd) / 1e6);
+                writeBacks.Add(((long)writeBack - (long)fusedEnd) / 1e6);
+                writeBackEnds.Add(((long)samples.Where(s => s.name == writeBackJob).Max(s => s.end) - (long)fusedEnd) / 1e6);
+                ulong stepEnd = samples.Where(s => s.name == "Retooled.Physics.Step").Select(s => s.end).DefaultIfEmpty(0UL).Max();
+                stepEnds.Add(((long)stepEnd - (long)fusedEnd) / 1e6);
+                substepJobCounts.Add(chain.Count(s => s.name.EndsWith("(Burst)")));
+                if (listed < 3)
+                {
+                    listed++;
+                    listing.Append($"#   frame {frame}, times in ms from the end of the fused job:\n");
+                    foreach (var s in samples.Where(s => s.end + 50_000 >= fusedEnd && s.start <= writeBack).OrderBy(s => s.start))
+                    {
+                        listing.Append($"#     {((long)s.start - (long)fusedEnd) / 1e6,8:F3} {(s.end - s.start) / 1e6,7:F3}  thread {s.thread,2}  {s.name}\n");
+                    }
+                }
+            }
+
+            if (writeBacks.Count == 0)
+            {
+                return "";
+            }
+
+            return $"# solve tail over {writeBacks.Count} frames, medians in ms from the end of the fused job: last substep job ends " +
+                $"{Median(chainEnds):F3}, WriteBackJob starts {Median(writeBacks):F3} and ends {Median(writeBackEnds):F3}, the step " +
+                $"(Retooled.Physics.Step) ends {Median(stepEnds):F3}; substep jobs that start within 5 ms before the " +
+                $"fused job ends or after it: {Median(substepJobCounts):F0}\n" + listing;
         }
 
         /// <summary>

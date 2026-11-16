@@ -99,6 +99,9 @@ namespace KSP.Retooled.Physics
 
             string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
             Unity.Physics.Solver.VesselFused = fused != "0";
+            string fold = Environment.GetEnvironmentVariable("RETOOLED_SUBSTEP_FOLD");
+            Unity.Physics.Solver.UnfusedFolding = fold == "1" ? Unity.Physics.Solver.SubstepFolding.Fold
+                : fold == "0" ? Unity.Physics.Solver.SubstepFolding.Chain : Unity.Physics.Solver.SubstepFolding.Auto;
             string fusedParts = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED_PARTS");
             if (int.TryParse(fusedParts, out int fusedMinimum) && fusedMinimum > 0)
             {

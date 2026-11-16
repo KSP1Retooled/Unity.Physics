@@ -67,6 +67,17 @@ namespace KSP.Retooled.Physics
         private NativeList<int> otherGroups;
         private DirectSolverCache directSolverCache;
 
+        // The simulation whose solve PrepareSolve prepared in this step, or null when no solve has been prepared since
+        // the last FinishStep. FinishStepSystem takes it from here instead of reading the simulation singleton. Reading
+        // the singleton on this thread would wait for every job of the solve, including the jobs that free its
+        // buffers, before FinishStep could schedule the write-back.
+        internal Simulation* preparedSimulation;
+
+        // The jobs that the solve waits for: every job of the step before the solve. FinishStepSystem completes them
+        // before FinishStep, because FinishStep reads lists that those jobs write, such as the joint groups, when it
+        // schedules the jobs after the solve.
+        internal JobHandle preparedInputs;
+
         // The vessels compiled from the joints, and whether compilation has been completed for the current groups.
         private VesselBuild vesselBuild;
         private VesselSet vesselSet;
@@ -509,6 +520,8 @@ namespace KSP.Retooled.Physics
             };
             input.DirectSolverCache = directSolverCache;
             input.VesselSet = vesselSet;
+            preparedSimulation = singleton.AsSimulationPtr();
+            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled);
             return new WarmStartJob
             {
                 WarmStarts = warmStarts,
@@ -659,17 +672,9 @@ namespace KSP.Retooled.Physics
             // buffers and export the events of its direct islands. Those jobs only read the motions too.
             JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vesselsFilled);
 
-            // Only queries read the dynamic tree at this stage. Move it to the solved poses while the motions are
-            // written back, and while this thread schedules the jobs that read joint loads and publishes the contacts.
-            // The build at the start of this step made the tree for the same bodies in the same order, so fitting its
-            // bounds to the new poses is enough. Queries then find the same hits as in a rebuilt tree, but they can
-            // report the hits of a query that returns many in a different order. Neither Unity nor PhysX promises an
-            // order for those queries, and the order already changed from step to step as the bodies moved.
-            // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
-            // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
-            // reads only Static, and neither job changes it.
-            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved);
-            JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
+            // The workers start the jobs that become ready together in the order in which this thread scheduled them.
+            // Schedule the write-back first, because the step waits for it first. When the tree's jobs came first, they
+            // took the workers, and the write-back started up to 0.1 ms after the solve ended.
             JobHandle writtenBack = new WriteBackJob
             {
                 Store = store->bodies,
@@ -682,6 +687,18 @@ namespace KSP.Retooled.Physics
             // the frame of its leader's body, but the job takes that body's pose from its solved motion, so it runs
             // beside the write-back. Neither job writes what the other reads.
             JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
+
+            // Only queries read the dynamic tree at this stage. Move it to the solved poses while the motions are
+            // written back, and while this thread schedules the jobs that read joint loads and publishes the contacts.
+            // The build at the start of this step made the tree for the same bodies in the same order, so fitting its
+            // bounds to the new poses is enough. Queries then find the same hits as in a rebuilt tree, but they can
+            // report the hits of a query that returns many in a different order. Neither Unity nor PhysX promises an
+            // order for those queries, and the order already changed from step to step as the bodies moved.
+            // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
+            // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
+            // reads only Static, and neither job changes it.
+            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved);
+            JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWaitForSolve.Auto())
