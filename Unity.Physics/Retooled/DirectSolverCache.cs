@@ -15,6 +15,11 @@ namespace Unity.Physics
     /// first body is a useful key while those body indices remain stable, including when a craft drops a stage or lands
     /// near another craft. A solver can also be assigned to a different island: it validates cached analysis against
     /// the new problem and repeats analysis when necessary.
+    ///
+    /// A body index alone does not tell two bodies apart: when a body is destroyed, the next body that is made can take
+    /// its index. So the cache also keeps each slot's first body by its identity (see <see cref="BodyIdentity"/>), and a
+    /// slot matches an island only when both the index and the identity match. A forest's pairs keep their lock states
+    /// by the identities of their bodies too, so a new craft never takes over the lock states of a destroyed craft.
     /// </summary>
     public unsafe struct DirectSolverCache : IDisposable
     {
@@ -34,6 +39,9 @@ namespace Unity.Physics
             /// The first body of the island last assigned to this slot, or -1 if the slot has never been assigned.
             /// </summary>
             public int Key;
+
+            /// <summary>The identity of the body at <see cref="Key"/> when the slot was assigned, see <see cref="BodyIdentity"/>.</summary>
+            public ulong Identity;
 
             public bool Created;
 
@@ -619,11 +627,34 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Assigns cache slots for the step using each island's first body as its key. Runs on one thread before any
-        /// island is solved. First reuses slots with matching keys, then assigns the remaining islands the least
-        /// recently used slots that are still available. Islands beyond the cache capacity receive no slot.
+        /// Returns a number that tells this body apart from every other body that the world has had, as long as the
+        /// world's bodies have entities: the entity's version in the high half and its index in the low half. The
+        /// backend sets each body's entity version to the body's serial number, which it never reuses. A body without
+        /// an entity is known by its index in the world alone, with zero in the high half, which no entity has as its
+        /// version. When the caller has no bodies to give, every body is known by its index.
         /// </summary>
-        internal void Assign(NativeArray<int> firstBodies)
+        internal static ulong BodyIdentity(RigidBody* bodies, int bodyCount, int worldBody)
+        {
+            if (bodies == null || (uint)worldBody >= (uint)bodyCount)
+            {
+                return (uint)worldBody;
+            }
+
+            Unity.Entities.Entity entity = bodies[worldBody].Entity;
+            return entity.Version != 0 ? ((ulong)(uint)entity.Version << 32) | (uint)entity.Index : (uint)worldBody;
+        }
+
+        /// <summary>
+        /// Assigns cache slots for the step using each island's first body as its key. Runs on one thread before any
+        /// island is solved. First reuses slots whose key and first body's identity both match, then assigns the
+        /// remaining islands the least recently used slots that are still available. Islands beyond the cache capacity
+        /// receive no slot. A slot whose key matches but whose identity doesn't belongs to a body that was destroyed,
+        /// so no island takes it as its own. The slot can still go to another island as a least recently used slot. Its
+        /// forest then gives the island no lock states, because a forest finds lock states by the identities of the
+        /// bodies, see <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's identity, see
+        /// <see cref="BodyIdentity"/>.
+        /// </summary>
+        internal void Assign(NativeArray<int> firstBodies, NativeArray<ulong> firstIdentities)
         {
             if (slots == null)
             {
@@ -639,7 +670,7 @@ namespace Unity.Physics
                 int found = -1;
                 for (int slot = 0; slot < Capacity; slot++)
                 {
-                    if (slots[slot].Key == firstBodies[island])
+                    if (slots[slot].Key == firstBodies[island] && slots[slot].Identity == firstIdentities[island])
                     {
                         found = slot;
                         break;
@@ -675,6 +706,7 @@ namespace Unity.Physics
                 }
 
                 slots[oldest].Key = firstBodies[island];
+                slots[oldest].Identity = firstIdentities[island];
                 slots[oldest].LastUsed = now;
                 (*slotOfIsland)[island] = oldest;
             }

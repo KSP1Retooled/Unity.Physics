@@ -301,6 +301,81 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(table->Orphans, Is.LessThanOrEqualTo(before), "and goes when the collider no longer exists");
         }
 
+        /// <summary>
+        /// The group table keeps a collider's group by the collider's engine id, and it keeps the group after the
+        /// collider's shape is gone. That is only safe if Unity never gives the id of a destroyed collider to a new one
+        /// within a session. This creates and destroys many colliders, on one game object and on many, and checks that
+        /// no id comes back.
+        /// </summary>
+        [Test]
+        public void UnityNeverGivesADestroyedCollidersIdToANewOne()
+        {
+            const int count = 20000;
+            var seen = new System.Collections.Generic.HashSet<ulong>();
+            GameObject holder = Track(new GameObject("holder"));
+            ulong first = 0, last = 0;
+            for (int i = 0; i < count; i++)
+            {
+                BoxCollider box = holder.AddComponent<BoxCollider>();
+                ulong id = EntityId.ToULong(box.GetEntityId());
+                first = i == 0 ? id : first;
+                last = id;
+                Assert.That(seen.Add(id), Is.True, $"collider {i} on one game object has the id {id:X} of an earlier collider");
+                Object.DestroyImmediate(box);
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                var owner = new GameObject("owner");
+                BoxCollider box = owner.AddComponent<BoxCollider>();
+                ulong id = EntityId.ToULong(box.GetEntityId());
+                Assert.That(seen.Add(id), Is.True, $"collider {i} on its own game object has the id {id:X} of an earlier collider");
+                Object.DestroyImmediate(owner);
+            }
+
+            Debug.Log($"[CollisionGroupTests] {seen.Count} collider ids, all different; on one game object from {first:X} to {last:X}");
+        }
+
+        /// <summary>
+        /// A table made by code older than the groups is 64 bytes long. The bytes after it on the heap can hold anything,
+        /// here the layout mark that the code before this one used and a pointer that leads nowhere, as a freed table
+        /// would leave them. After a domain reload into this code, the backend must not take those bytes for the
+        /// table's groups. It grows the table, and the table keeps its ignored pairs.
+        /// </summary>
+        [Test]
+        public unsafe void AnIgnoreTableFromBeforeTheGroupsGrowsAndKeepsItsPairs()
+        {
+            TwoBoxes();
+            UnityEngine.Physics.IgnoreCollision(First, Second);
+            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            IgnoreTable* current = globals->ignoreTable;
+
+            // The old table holds the first 64 bytes of the current one, so it shares the current table's arrays. Fill a
+            // larger block first and then shrink it, so that the bytes after the old table are likely to hold the stale
+            // mark and pointer.
+            const int oldSize = IgnoreTable.OldSize;
+            var block = (byte*)StoreOps.Reallocate(globals, null, oldSize + 16);
+            Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCpy(block, current, oldSize);
+            *(ulong*)(block + oldSize) = 0x3250554F52474954; // "TIGROUP2"
+            *(ulong*)(block + oldSize + 8) = 0xDEADBEEF0;
+            var old = (IgnoreTable*)StoreOps.Reallocate(globals, block, oldSize);
+            IgnoreTable.ClearLayoutMark(old);
+            globals->ignoreTable = old;
+            try
+            {
+                IgnoreTable.Upgrade(globals);
+                Assert.That(IgnoreTable.GroupsOf(globals) == null, Is.True, "the grown table has no groups yet");
+                Assert.That(UnityEngine.Physics.GetIgnoreCollision(First, Second), Is.True, "the grown table keeps its pairs");
+            }
+            finally
+            {
+                StoreOps.Release(globals, globals->ignoreTable);
+                globals->ignoreTable = current;
+            }
+
+            Assert.That(UnityEngine.Physics.GetIgnoreCollision(First, Second), Is.True);
+        }
+
         private WheelCollider Unicycle(out Rigidbody body)
         {
             GameObject chassis = Track(new GameObject("chassis"));

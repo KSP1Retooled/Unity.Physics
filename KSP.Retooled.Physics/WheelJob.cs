@@ -133,8 +133,8 @@ namespace KSP.Retooled.Physics
             // The wheel has no shape of its own, so its collision group comes from a lookup by its collider's id.
             ulong engineId = wheel->userData != null ? *(ulong*)((byte*)wheel->userData + Globals->engineObjectIdOffset) : 0;
             uint groupRecord = GroupTable.RecordOfCollider(Globals, engineId);
-            var collector = new WheelRayCollector(Collision.Bodies, Store->bodies, Globals, row, wheel->collidesWith, wheel->filterIds >> 16,
-                groupRecord, -up);
+            var collector = new WheelRayCollector(Collision.Bodies, Store->bodies, Globals, row, wheel->collidesWith, wheel->belongsTo,
+                wheel->filterIds >> 16, groupRecord, -up);
             Collision.CastRay(new RaycastInput
             {
                 Start = top,
@@ -304,18 +304,20 @@ namespace KSP.Retooled.Physics
         private readonly NativeStore.StoreGlobals* globals;
         private readonly int ownRow;
         private readonly uint collidesWith;
+        private readonly uint belongsTo;
         private readonly uint ignoreId;
         private readonly uint groupRecord;
         private readonly float3 direction;
 
         internal WheelRayCollector(NativeArray<RigidBody> bodies, NativeStore.BodyData* rows, NativeStore.StoreGlobals* globals, int ownRow,
-            uint collidesWith, uint ignoreId, uint groupRecord, float3 direction)
+            uint collidesWith, uint belongsTo, uint ignoreId, uint groupRecord, float3 direction)
         {
             this.bodies = bodies;
             this.rows = rows;
             this.globals = globals;
             this.ownRow = ownRow;
             this.collidesWith = collidesWith;
+            this.belongsTo = belongsTo;
             this.ignoreId = ignoreId;
             this.groupRecord = groupRecord;
             this.direction = direction;
@@ -343,6 +345,15 @@ namespace KSP.Retooled.Physics
             NativeStore.ShapeData* shape = row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, hit.ColliderKey, ColliderBuilder.FirstSupported(row))];
             bool hidden = (shape->flags & NativeStore.ShapeFlagSceneQuery) == 0 || (shape->flags & NativeStore.ShapeFlagTrigger) != 0;
             if (hidden || (shape->belongsTo & collidesWith) == 0 || shape->collisionDisabled != 0)
+            {
+                return false;
+            }
+
+            // Unity sends a wheel a filter that collides with every layer, and PhysX applies the layer collision matrix
+            // to the wheel's raycast itself. Unity does send each shape the layers that the matrix lets it collide with,
+            // and it sends them again when the matrix changes. So the wheel skips a shape whose layers leave out the
+            // wheel's own layer. A shape whose filter has no layers collides with every layer, see ColliderBuilder.
+            if (belongsTo != 0 && shape->collidesWith != 0 && (shape->collidesWith & belongsTo) == 0)
             {
                 return false;
             }

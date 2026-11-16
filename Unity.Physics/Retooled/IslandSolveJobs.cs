@@ -204,6 +204,7 @@ namespace Unity.Physics
                 JacobiansReader = jacobians.AsReader(),
                 Work = work,
                 Cache = stepInput.DirectSolverCache,
+                Bodies = world.Bodies,
             }.Schedule(jacobiansBuilt);
 
             handle = JobHandle.CombineDependencies(handle, inputDeps);
@@ -289,6 +290,7 @@ namespace Unity.Physics
                     IslandVessels = work.IslandVessels.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
+                    Bodies = world.Bodies,
                     StepInput = substepInput,
                 }.Schedule(work.Islands, 1, handle);
 
@@ -302,6 +304,7 @@ namespace Unity.Physics
                     IslandVessels = work.IslandVessels.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
+                    Bodies = world.Bodies,
                     StepInput = substepInput,
                     Team = work.Buffers.Teams->Ptr + substep,
                 }.Schedule(lanes, 1, handle);
@@ -642,6 +645,10 @@ namespace Unity.Physics
 
             public DirectSolverCache Cache;
 
+            /// <summary>The world's bodies, which tell the cache who each island's first body is.</summary>
+            [ReadOnly]
+            public NativeArray<RigidBody> Bodies;
+
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
@@ -653,12 +660,15 @@ namespace Unity.Physics
                 if (Cache.IsCreated)
                 {
                     var firstBodies = new NativeArray<int>(islandCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var firstIdentities = new NativeArray<ulong>(islandCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var bodies = (RigidBody*)Bodies.GetUnsafeReadOnlyPtr();
                     for (int island = 0; island < islandCount; island++)
                     {
                         firstBodies[island] = Info.IslandBodies[Info.FirstIslandBodyIndices[island]];
+                        firstIdentities[island] = DirectSolverCache.BodyIdentity(bodies, Bodies.Length, firstBodies[island]);
                     }
 
-                    Cache.Assign(firstBodies);
+                    Cache.Assign(firstBodies, firstIdentities);
                 }
 
                 Work.Islands.ResizeUninitialized(islandCount);
@@ -1030,13 +1040,17 @@ namespace Unity.Physics
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionData> MotionDatas;
 
+            /// <summary>The world's bodies, which tell an island's forest who its bodies are.</summary>
+            [ReadOnly]
+            public NativeArray<RigidBody> Bodies;
+
             public StepInput StepInput;
 
             public void Execute(int islandIndex)
             {
                 if (!Islands[islandIndex].SolvesInTeam)
                 {
-                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, StepInput, islandIndex, null);
+                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, null);
                 }
             }
         }
@@ -1071,6 +1085,10 @@ namespace Unity.Physics
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionData> MotionDatas;
 
+            /// <summary>The world's bodies, which tell an island's forest who its bodies are.</summary>
+            [ReadOnly]
+            public NativeArray<RigidBody> Bodies;
+
             public StepInput StepInput;
 
             [NativeDisableUnsafePtrRestriction]
@@ -1094,7 +1112,7 @@ namespace Unity.Physics
                 {
                     if (Islands[islandIndex].SolvesInTeam)
                     {
-                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, StepInput, islandIndex, Team);
+                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, Team);
                     }
                 }
 
@@ -1107,7 +1125,8 @@ namespace Unity.Physics
         static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
             in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
             in NativeArray<int> islandVessels, ref NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int islandIndex, SparseSolveTeam* team)
+            in NativeArray<MotionData> motionDatas, in NativeArray<RigidBody> bodies, in StepInput stepInput, int islandIndex,
+            SparseSolveTeam* team)
         {
             DirectIsland island = islands[islandIndex];
             using (DirectSolveMarker.Auto())
@@ -1122,7 +1141,8 @@ namespace Unity.Physics
                         (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,
                         (IslandHeader*)headers.GetUnsafeReadOnlyPtr() + island.FirstHeader, work.HeaderRows->Ptr + island.FirstHeader,
                         island.SolveEnd - island.FirstHeader, work.Recovery->Ptr + island.FirstRow,
-                        (int*)islandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, island.VesselCount);
+                        (int*)islandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, island.VesselCount,
+                        (RigidBody*)bodies.GetUnsafeReadOnlyPtr(), bodies.Length);
                 }
             }
         }

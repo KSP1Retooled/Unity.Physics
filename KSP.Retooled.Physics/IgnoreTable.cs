@@ -34,6 +34,13 @@ namespace KSP.Retooled.Physics
         private uint edgesUsed;
         private uint freeEdge;
 
+        /// <summary>
+        /// Marks a table that has the fields after <see cref="lastId"/>. The field sits in the four bytes of padding
+        /// before <see cref="slots"/>, so it doesn't move any field, and every table that older code made has it, with a
+        /// value of zero. See <see cref="Upgrade"/>.
+        /// </summary>
+        private uint layoutMark;
+
         private uint* slots;
         private uint slotCount;
         private uint slotsTaken;
@@ -44,24 +51,21 @@ namespace KSP.Retooled.Physics
         private uint lastId;
 
         /// <summary>
-        /// Marks a table that has the fields below. A table made by older code ends before them, and it can survive a
-        /// domain reload into this code. <see cref="TableOf"/> then grows the table before it writes these fields.
-        /// </summary>
-        private ulong layout;
-
-        /// <summary>
         /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>. Read
         /// it through <see cref="GroupsOf"/> unless a shape's group record shows that the groups exist.
         /// </summary>
         internal GroupTable* Groups;
 
-        private const ulong CurrentLayout = 0x3250554F52474954; // "TIGROUP2"
+        private const uint CurrentLayout = 0x33505247; // "GRP3"
+
+        /// <summary>The size of a table made by code older than the groups.</summary>
+        internal const int OldSize = 64;
 
         /// <summary>Returns the collision groups, or null if there are none yet.</summary>
         internal static GroupTable* GroupsOf(NativeStore.StoreGlobals* globals)
         {
             IgnoreTable* table = globals->ignoreTable;
-            return table != null && table->layout == CurrentLayout ? table->Groups : null;
+            return table != null && table->layoutMark == CurrentLayout ? table->Groups : null;
         }
 
         /// <summary>
@@ -171,6 +175,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static void Reslot(NativeStore.StoreGlobals* globals)
         {
+            Upgrade(globals);
             IgnoreTable* table = globals->ignoreTable;
             if (table != null && table->slotCount != 0)
             {
@@ -197,19 +202,43 @@ namespace KSP.Retooled.Physics
                     table->firstEdge[i] = 0;
                 }
 
+                table->layoutMark = CurrentLayout;
                 globals->ignoreTable = table;
             }
 
-            if (globals->ignoreTable->layout != CurrentLayout)
+            return globals->ignoreTable;
+        }
+
+        /// <summary>
+        /// Gives a table that older code made the fields that it lacks. <see cref="BackendHost.Attach"/> calls this
+        /// through <see cref="Reslot"/>, after a domain reload and before anything else reads the table.
+        ///
+        /// A table made by code older than the groups is 64 bytes long. The code before this one put its layout mark
+        /// after those 64 bytes, so to check the mark it read 8 bytes past an older table. Those bytes can hold anything
+        /// that the heap left there, including the mark and a groups pointer of a table that was freed. This code keeps
+        /// its mark inside the first 64 bytes, where every older table has zero. A table without the mark is moved to a
+        /// block of the current size, which keeps its first 64 bytes, and it starts with no groups. A table that the
+        /// code before this one made loses its groups once, when the editor first reloads into this code; the game sets
+        /// them again when it next loads a vessel. Its old group table stays on the heap.
+        /// </summary>
+        internal static void Upgrade(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            if (table == null || table->layoutMark == CurrentLayout)
             {
-                // Copy a table made by older code into a block that is large enough for the new fields.
-                IgnoreTable* grown = (IgnoreTable*)StoreOps.Reallocate(globals, globals->ignoreTable, (ulong)sizeof(IgnoreTable));
-                grown->layout = CurrentLayout;
-                grown->Groups = null;
-                globals->ignoreTable = grown;
+                return;
             }
 
-            return globals->ignoreTable;
+            table = (IgnoreTable*)StoreOps.Reallocate(globals, table, (ulong)sizeof(IgnoreTable));
+            table->layoutMark = CurrentLayout;
+            table->Groups = null;
+            globals->ignoreTable = table;
+        }
+
+        /// <summary>Removes the layout mark, so that a test can make a table that looks like an older one.</summary>
+        internal static void ClearLayoutMark(IgnoreTable* table)
+        {
+            table->layoutMark = 0;
         }
 
         private static uint KeyOf(uint first, uint second)
