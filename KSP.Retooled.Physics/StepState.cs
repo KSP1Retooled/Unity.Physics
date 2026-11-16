@@ -1104,6 +1104,8 @@ namespace KSP.Retooled.Physics
                         ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
                         ClosurePartA = vesselBuild.ClosurePartA.AsArray(),
                         ClosurePartB = vesselBuild.ClosurePartB.AsArray(),
+                        Vessels = vesselBuild.Vessels.AsArray(),
+                        PartStoreBodies = vesselBuild.PartStoreBodies.AsArray(),
                         Closures = vesselBuild.Closures.AsArray(),
                         RefillAll = refillAll,
                         SettingsChanged = settingsChanged,

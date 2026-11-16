@@ -1663,6 +1663,16 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<int> ClosurePartB;
 
+        /// <summary>
+        /// The compiled vessels and the store body of each part. ClosurePartA and ClosurePartB count from the first
+        /// part of their vessel.
+        /// </summary>
+        [ReadOnly]
+        public NativeArray<VesselRecord> Vessels;
+
+        [ReadOnly]
+        public NativeArray<int> PartStoreBodies;
+
         public NativeArray<VesselClosure> Closures;
 
         /// <summary>See <see cref="FillVesselEdgesJob.RefillAll"/>.</summary>
@@ -1709,10 +1719,13 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // Find the bodies through the parts rather than through the leading joint's record. The compile took
+            // part A from the joint's body0 and part B from its body1, so these are the same bodies. The record is
+            // rarely in the cache, and the reuse test below then doesn't need it.
             BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
-            NativeStore.JointData* leader = World->joints[unit.Joint];
-            NativeStore.BodyData* bodyA = StoreOps.Hot(leader->body0);
-            NativeStore.BodyData* bodyB = StoreOps.Hot(leader->body1);
+            int firstPart = Vessels[UnitVessels[ClosureUnits[closure]]].FirstPart;
+            NativeStore.BodyData* bodyA = World->bodies + PartStoreBodies[firstPart + ClosurePartA[closure]];
+            NativeStore.BodyData* bodyB = World->bodies + PartStoreBodies[firstPart + ClosurePartB[closure]];
             RigidTransform motionA = bodyA->mass->Transform;
             RigidTransform motionB = bodyB->mass->Transform;
             uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, unit, Groups, Members) : ClosureCacheStamps[closure];
