@@ -8,11 +8,6 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Provides operations that the command kernels share for store memory, flags that mark query worlds as dirty, and
-    /// lists of shapes attached to bodies. A world's handle points to its <see cref="NativeStore.WorldData"/>, and a
-    /// shape's handle points to its <see cref="NativeStore.ShapeData"/>.
-    /// </summary>
-    /// <summary>
     /// A version counter for the store data that the query snapshot copies (see <see cref="SnapshotQueryDataJob"/>).
     /// The snapshot holds no poses. For each built body it holds the body's record, its shapes and whether it is
     /// static. For each shape it holds the shape's record, user data, engine object id, flags and geometry type. The
@@ -37,6 +32,11 @@ namespace KSP.Retooled.Physics
         }
     }
 
+    /// <summary>
+    /// Provides operations that the command kernels share for store memory, flags that mark query worlds as dirty, and
+    /// lists of shapes attached to bodies. A world's handle points to its <see cref="NativeStore.WorldData"/>, and a
+    /// shape's handle points to its <see cref="NativeStore.ShapeData"/>.
+    /// </summary>
     internal static unsafe class StoreOps
     {
         // The initial counter value when a body wakes. PhysX's Dy::sleepCheck uses 20 steps of 0.02 s, regardless of
