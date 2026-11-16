@@ -110,6 +110,18 @@ namespace KSP.Retooled.Physics
         /// <summary>For each joint unit, the vessel that it belongs to, or -1.</summary>
         public NativeList<int> UnitVessels;
 
+        /// <summary>
+        /// For each store body, the vessel that it is a part of, or -1. A body added after the last compilation has no
+        /// entry.
+        /// </summary>
+        public NativeList<int> BodyVessels;
+
+        /// <summary>
+        /// The edge and closure units of all vessels, keyed by the store indices of their two bodies (see
+        /// <see cref="PairKey"/>). Two bodies can share more than one unit.
+        /// </summary>
+        public NativeParallelMultiHashMap<ulong, int> PairUnits;
+
         // Stable addresses of the body and joint records from the previous compilation. Compare them during the next
         // compilation to identify unchanged vessels and retain their Ids.
         public NativeList<IntPtr> PartBodyRecords;
@@ -145,6 +157,8 @@ namespace KSP.Retooled.Physics
                 ClosurePartA = new NativeList<int>(Allocator.Persistent),
                 ClosurePartB = new NativeList<int>(Allocator.Persistent),
                 UnitVessels = new NativeList<int>(Allocator.Persistent),
+                BodyVessels = new NativeList<int>(Allocator.Persistent),
+                PairUnits = new NativeParallelMultiHashMap<ulong, int>(64, Allocator.Persistent),
                 PartBodyRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 PartJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 ClosureJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
@@ -171,6 +185,8 @@ namespace KSP.Retooled.Physics
             ClosurePartA.Dispose();
             ClosurePartB.Dispose();
             UnitVessels.Dispose();
+            BodyVessels.Dispose();
+            PairUnits.Dispose();
             PartBodyRecords.Dispose();
             PartJointRecords.Dispose();
             ClosureJointRecords.Dispose();
@@ -201,11 +217,19 @@ namespace KSP.Retooled.Physics
             ClosureJointRecords.Clear();
             Active.Clear();
             StepVessels.Clear();
+            BodyVessels.Clear();
+            PairUnits.Clear();
             UnitVessels.ResizeUninitialized(unitCount);
             for (int i = 0; i < unitCount; i++)
             {
                 UnitVessels[i] = -1;
             }
+        }
+
+        /// <summary>The key for two store bodies in <see cref="PairUnits"/>. The order of the bodies doesn't matter.</summary>
+        public static ulong PairKey(int bodyA, int bodyB)
+        {
+            return ((ulong)(uint)math.min(bodyA, bodyB) << 32) | (uint)math.max(bodyA, bodyB);
         }
 
         /// <summary>Returns the vessel set for this step, with pointers to the lists in this build.</summary>
@@ -261,6 +285,14 @@ namespace KSP.Retooled.Physics
 
             int parts = PartStoreBodies.Length;
             PartBodies.ResizeUninitialized(parts);
+
+            // The job that finds islands reads the parts' bodies, so fill them here. Only the solve waits for the jobs
+            // that fill the edges and closures.
+            for (int part = 0; part < parts; part++)
+            {
+                PartBodies[part] = builtIndices[PartStoreBodies[part]];
+            }
+
             Edges.ResizeUninitialized(parts);
             EdgeLoads.ResizeUninitialized(parts);
             EdgeLocked.ResizeUninitialized(parts);
@@ -442,6 +474,21 @@ namespace KSP.Retooled.Physics
                 Build.Vessels[v] = record;
             }
 
+            Build.BodyVessels.ResizeUninitialized(bodyCount);
+            for (int body = 0; body < bodyCount; body++)
+            {
+                Build.BodyVessels[body] = -1;
+            }
+
+            for (int v = 0; v < vesselCount; v++)
+            {
+                VesselRecord record = Build.Vessels[v];
+                for (int part = record.FirstPart; part < record.FirstPart + record.PartCount; part++)
+                {
+                    Build.BodyVessels[Build.PartStoreBodies[part]] = v;
+                }
+            }
+
             int closures = closureCount[vesselCount];
             Build.ClosureUnits.ResizeUninitialized(closures);
             Build.ClosurePartA.ResizeUninitialized(closures);
@@ -462,6 +509,17 @@ namespace KSP.Retooled.Physics
                 Build.ClosurePartB[slot] = partOf[b] - firstPart;
                 Build.ClosureJointRecords[slot] = (IntPtr)World->joints[Units[u].Joint];
                 Build.UnitVessels[u] = vessel;
+            }
+
+            // List every edge and closure unit by its two bodies, so that DropIgnoredPairsJob can find them.
+            Build.PairUnits.Capacity = math.max(Build.PairUnits.Capacity, Build.PartStoreBodies.Length + closures);
+            for (int u = 0; u < unitCount; u++)
+            {
+                if (Build.UnitVessels[u] >= 0)
+                {
+                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    Build.PairUnits.Add(VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index), u);
+                }
             }
 
             KeepOrRenewIds(oldVessels, oldBodies, oldJoints, oldClosures);
@@ -732,16 +790,24 @@ namespace KSP.Retooled.Physics
         public NativeStore.WorldData* World;
 
         [ReadOnly]
-        public NativeArray<int> BuiltIndices;
-
-        [ReadOnly]
         public NativeArray<JointUnit> Units;
 
-        [ReadOnly]
+        // This job runs at the same time as BuildJointsJob and FillVesselClosuresJob. All three jobs write groups, but
+        // never the same group: this job writes only the groups of the edges in active vessels, FillVesselClosuresJob
+        // writes only those of the closures, and BuildJointsJob writes only the groups outside active vessels.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroup> Groups;
 
-        [ReadOnly]
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
 
         [ReadOnly]
         public NativeArray<int> PartStoreBodies;
@@ -755,7 +821,6 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<byte> PartIsBody0;
 
-        public NativeArray<int> PartBodies;
         public NativeArray<VesselEdge> Edges;
 
         /// <summary>
@@ -768,12 +833,16 @@ namespace KSP.Retooled.Physics
         public void Execute(int part)
         {
             int storeBody = PartStoreBodies[part];
-            PartBodies[part] = BuiltIndices[storeBody];
             int unit = PartUnits[part];
             if (unit < 0)
             {
                 Edges[part] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding, MayLock = true };
                 return;
+            }
+
+            if (Active[UnitVessels[unit]] != 0)
+            {
+                BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
             }
 
             UnitParameters parameters = UnitParameters.Of(World, Units[unit], Groups, Members);
@@ -821,11 +890,20 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointUnit> Units;
 
-        [ReadOnly]
+        // See the comment on FillVesselEdgesJob.Groups.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroup> Groups;
 
-        [ReadOnly]
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
 
         [ReadOnly]
         public NativeArray<int> ClosureUnits;
@@ -841,6 +919,11 @@ namespace KSP.Retooled.Physics
         public void Execute(int closure)
         {
             JointUnit unit = Units[ClosureUnits[closure]];
+            if (Active[UnitVessels[ClosureUnits[closure]]] != 0)
+            {
+                BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
+            }
+
             UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
             NativeStore.JointData* leader = World->joints[unit.Joint];
             NativeStore.BodyData* bodyA = StoreOps.Hot(leader->body0);

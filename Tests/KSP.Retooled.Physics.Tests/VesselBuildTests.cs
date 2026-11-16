@@ -168,23 +168,87 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
-        public void AVesselsJointsBuildOnlyCollisionFilters()
+        public void AVesselsJointsBuildNoUnityJoints()
         {
             Column(4);
             Simulate();
 
-            // The stack joints don't let their bodies collide, so each of the three units keeps one joint without constraints.
-            NativeArrayCheck(State->World.Joints, 3);
+            // The step drops the contact pairs between jointed parts itself, so it needs no joint without constraints.
+            Assert.That(State->World.Joints.Length, Is.Zero, "built joints");
         }
 
-        private static void NativeArrayCheck(Unity.Collections.NativeArray<Unity.Physics.Joint> joints, int expected)
+        /// <summary>Records the bodies that touch the body that this component is on.</summary>
+        [ExecuteAlways]
+        internal class TouchLog : MonoBehaviour
         {
-            Assert.That(joints.Length, Is.EqualTo(expected), "built joints");
-            foreach (Unity.Physics.Joint joint in joints)
+            public readonly HashSet<Rigidbody> Touched = new HashSet<Rigidbody>();
+
+            private void OnCollisionEnter(Collision collision)
             {
-                Assert.That(joint.Constraints.Length, Is.Zero, "a vessel's joint keeps no constraints");
-                Assert.That(joint.EnableCollision, Is.False);
+                Touched.Add(collision.rigidbody);
             }
+
+            private void OnCollisionStay(Collision collision)
+            {
+                Touched.Add(collision.rigidbody);
+            }
+        }
+
+        /// <summary>
+        /// Three parts in a column that overlap their neighbours by a fifth of their height, and a fourth part on the
+        /// side of the top part that overlaps the middle part. The fourth part is jointed only to the top part.
+        /// </summary>
+        private List<Rigidbody> OverlappingParts(bool stackCollides)
+        {
+            const float top = 10.0f;
+            var bodies = new List<Rigidbody>();
+            for (int i = 0; i < 4; i++)
+            {
+                Vector3 position = i < 3 ? new Vector3(0.0f, top - PartHeight * (i + 0.5f), 0.0f) : new Vector3(0.5f, top - PartHeight * 1.5f, 0.0f);
+                Rigidbody body = Box(position, new Vector3(0.6f, 1.2f * PartHeight, 0.6f)).AddComponent<Rigidbody>();
+                body.mass = PartMass;
+                body.useGravity = false;
+                body.gameObject.AddComponent<TouchLog>();
+                bodies.Add(body);
+            }
+
+            for (int i = 1; i < 3; i++)
+            {
+                foreach (ConfigurableJoint joint in StackJoint(bodies[i], bodies[i - 1], new Vector3(0.0f, top - PartHeight * i, 0.0f)))
+                {
+                    joint.enableCollision = stackCollides;
+                }
+            }
+
+            SurfaceJoint(bodies[3], bodies[0], new Vector3(0.5f, top - PartHeight, 0.0f), 1000.0f);
+            return bodies;
+        }
+
+        [Test]
+        public void JointedPartsDoNotCollideButOtherPartsOfTheVesselDo()
+        {
+            List<Rigidbody> bodies = OverlappingParts(false);
+            Simulate(3);
+
+            Assert.That(VesselsOf(bodies).Count, Is.EqualTo(1), "one vessel");
+            HashSet<Rigidbody> middle = bodies[1].GetComponent<TouchLog>().Touched;
+            Assert.That(middle.Contains(bodies[0]), Is.False, "the middle part doesn't touch the part that it is jointed to above");
+            Assert.That(middle.Contains(bodies[2]), Is.False, "the middle part doesn't touch the part that it is jointed to below");
+            Assert.That(middle.Contains(bodies[3]), Is.True, "the middle part touches the side part, which it isn't jointed to");
+            Assert.That(bodies[3].GetComponent<TouchLog>().Touched.Contains(bodies[0]), Is.False, "the side part doesn't touch its parent");
+        }
+
+        [Test]
+        public void AVesselJointThatEnablesCollisionLetsItsPartsCollide()
+        {
+            List<Rigidbody> bodies = OverlappingParts(true);
+            Simulate(3);
+
+            Assert.That(VesselsOf(bodies).Count, Is.EqualTo(1), "one vessel");
+            HashSet<Rigidbody> middle = bodies[1].GetComponent<TouchLog>().Touched;
+            Assert.That(middle.Contains(bodies[0]), Is.True, "the stack joint above lets the parts collide");
+            Assert.That(middle.Contains(bodies[2]), Is.True, "the stack joint below lets the parts collide");
+            Assert.That(bodies[3].GetComponent<TouchLog>().Touched.Contains(bodies[0]), Is.False, "the side part doesn't touch its parent");
         }
 
         [Test]
