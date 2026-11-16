@@ -324,9 +324,28 @@ namespace Unity.Physics
         public JobHandle ScheduleDynamicTreeBuildJobs(
             ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint, JobHandle inputDeps, bool incremental = false)
         {
+            return ScheduleDynamicTreeBuildJobs(ref world, timeStep, gravity, numThreadsHint, inputDeps, default, incremental);
+        }
+
+        /// <summary>
+        /// Schedules the jobs that build the dynamic tree, as the overload without a cache does. A body whose collider
+        /// and pose are the ones that <paramref name="boundsCache"/> holds for it takes its collider's bounds from the
+        /// cache instead of computing them from its collider. The job writes the bounds of every other body into the
+        /// cache. See <see cref="DynamicBoundsCache"/>.
+        /// </summary>
+        internal unsafe JobHandle ScheduleDynamicTreeBuildJobs(ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint,
+            JobHandle inputDeps, DynamicBoundsCache boundsCache, bool incremental = false)
+        {
             using var scope = ScheduleDynamicBuildJobsMarker.Auto();
 
             Assert.AreEqual(world.NumDynamicBodies, DynamicTree.NumBodies);
+
+            // A build that doesn't run the job below leaves no entry of the cache for the current colliders, so it
+            // empties the cache.
+            if (boundsCache.IsCreated && (world.NumDynamicBodies == 0 || incremental))
+            {
+                boundsCache.Resize(0);
+            }
 
             if (world.NumDynamicBodies == 0)
             {
@@ -360,7 +379,8 @@ namespace Unity.Physics
                 AabbMargin = world.CollisionWorld.CollisionTolerance * 0.5f, // each body contributes half
                 TimeStep = timeStep,
                 Gravity = gravity,
-                Incremental = DynamicTree.IncrementalRef
+                Incremental = DynamicTree.IncrementalRef,
+                Cache = boundsCache.IsCreated ? boundsCache.Resize(world.NumDynamicBodies) : default,
             }.Schedule(world.NumDynamicBodies, 32, inputDeps);
 
             var shouldDoWork = new NativeReference<int>(1, Allocator.TempJob);
@@ -1400,13 +1420,71 @@ namespace Unity.Physics
             [WriteOnly, NativeDisableParallelForRestriction]
             public NativeReference<bool> Incremental;
 
-            public void Execute(int index)
+            /// <summary>The cache of the bodies' bounds, or a view that is not created.</summary>
+            public DynamicBoundsCache.View Cache;
+
+            public unsafe void Execute(int index)
             {
-                ExecuteImpl(index, AabbMargin, Gravity, TimeStep, RigidBodies, MotionVelocities, Aabbs, Points, FiltersOut, RespondsToCollisionOut, BodySolverTypesOut, Incremental);
+                if (!Cache.IsCreated)
+                {
+                    ExecuteImpl(index, AabbMargin, Gravity, TimeStep, RigidBodies, MotionVelocities, Aabbs, Points, FiltersOut, RespondsToCollisionOut, BodySolverTypesOut, Incremental);
+                    return;
+                }
+
+                if (index == 0)
+                    Incremental.Value = false;
+
+                // A body that the cache holds at this pose with this collider takes its collider's bounds and filter
+                // from the cache, and the job doesn't read its collider at all. Every other body computes them as
+                // ExecuteImpl does and leaves them in the cache for the next build.
+                RigidBody body = RigidBodies[index];
+                Aabb bounds;
+                CollisionFilter filter;
+                bool responds;
+                if (Cache.Holds(index, body))
+                {
+                    bounds = Cache.Bounds[index];
+                    filter = Cache.Colliders[index].Filter;
+                    responds = Cache.Colliders[index].RespondsToCollision != 0;
+                }
+                else if (body.Collider.IsCreated)
+                {
+                    bounds = body.CalculateAabb();
+                    filter = body.Collider.Value.GetCollisionFilter();
+                    responds = body.Collider.Value.RespondsToCollision;
+                    Cache.Write(index, body, bounds);
+                }
+                else
+                {
+                    bounds = body.CalculateAabb();
+                    filter = CollisionFilter.Zero;
+                    responds = false;
+                }
+
+                var aabb = ExpandAabb(bounds, AabbMargin, Gravity, TimeStep, MotionVelocities[index]);
+                FiltersOut[index] = filter;
+                RespondsToCollisionOut[index] = responds;
+                BodySolverTypesOut[index] = body.Collider.IsCreated ? body.SolverType : Solver.kDefaultSolverType;
+                Aabbs[index] = aabb;
+                Points[index] = new PointAndIndex
+                {
+                    Position = aabb.Center,
+                    Index = index
+                };
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             internal static Aabb CalculateAabb(ref RigidBody body, float aabbMargin, float3 gravity, float timeStep, in MotionVelocity motionVelocity)
+            {
+                return ExpandAabb(body.CalculateAabb(), aabbMargin, gravity, timeStep, motionVelocity);
+            }
+
+            /// <summary>
+            /// Expands the bounds of a body's collider by how far the body can move in the time step, and by the margin.
+            /// <see cref="CalculateAabb"/> does the same with the bounds that it computes from the collider.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            internal static Aabb ExpandAabb(Aabb colliderAabb, float aabbMargin, float3 gravity, float timeStep, in MotionVelocity motionVelocity)
             {
                 // Apply gravity only on a copy to get proper expansion for the AABB,
                 // actual applying of gravity will be done later in the physics step
@@ -1414,7 +1492,7 @@ namespace Unity.Physics
                 mv.LinearVelocity += gravity * timeStep * mv.GravityFactor;
 
                 MotionExpansion expansion = mv.CalculateExpansion(timeStep);
-                var aabb = expansion.ExpandAabb(body.CalculateAabb());
+                var aabb = expansion.ExpandAabb(colliderAabb);
                 aabb.Expand(aabbMargin);
 
                 return aabb;
@@ -1842,5 +1920,170 @@ namespace Unity.Physics
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// The bounds of the dynamic bodies' colliders, kept from the end of one step to the build of the dynamic tree at
+    /// the start of the next. Without it, every dynamic body's collider bounds were computed twice for each step: once
+    /// when the step refits the tree to the solved poses (<see cref="CollisionWorld.ScheduleRefitDynamicTree"/>), and
+    /// again when the next step builds the tree, although most bodies are where the refit put them.
+    /// <para>
+    /// Each index of the world's dynamic bodies has an entry: a pose, a collider with its filter, and the bounds of
+    /// that collider at that pose. The refit writes the bounds of each moving body, and a job after the refit writes
+    /// the body's pose and collider (<see cref="View.WritePose"/>). The build writes the whole entry of each body that
+    /// it computes the bounds of. A body takes its bounds from its entry only when the entry holds the body's
+    /// collider and exactly its pose, to the last bit. Anything that moves a body between the steps, such as the game,
+    /// a shift of the floating origin or a kinematic target, makes the body compute its bounds again.
+    /// </para>
+    /// <para>
+    /// A collider's memory can be freed and given to a new collider, so the address of a collider is not enough to
+    /// know it. The owner of the cache counts every change of the bodies' colliders in the number that the cache's
+    /// colliderVersion points to, and <see cref="MarkCurrent"/> records that number when the entries hold the current
+    /// colliders. While the two numbers differ, no body takes its bounds from the cache.
+    /// </para>
+    /// </summary>
+    internal unsafe struct DynamicBoundsCache : IDisposable
+    {
+        /// <summary>The pose of an entry. The rotation starts on a 16-byte boundary.</summary>
+        internal struct Pose
+        {
+            public float3 Position;
+            int padding;
+            public float4 Rotation;
+        }
+
+        /// <summary>The collider of an entry, with the collider's filter, which the build would read from it.</summary>
+        internal struct ColliderInfo
+        {
+            public long Collider;
+            public CollisionFilter Filter;
+            public int RespondsToCollision;
+        }
+
+        /// <summary>The cache's entries and versions, for a job to read and write.</summary>
+        internal struct View
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public Pose* Poses;
+            [NativeDisableUnsafePtrRestriction]
+            public Aabb* Bounds;
+            [NativeDisableUnsafePtrRestriction]
+            public ColliderInfo* Colliders;
+            public int Length;
+            [NativeDisableUnsafePtrRestriction]
+            public uint* HeldVersion;
+            [NativeDisableUnsafePtrRestriction]
+            public uint* ColliderVersion;
+
+            public bool IsCreated => Poses != null;
+
+            /// <summary>
+            /// Whether entry i holds the body's collider at exactly the body's pose, while the entries hold the
+            /// current colliders. A body with a scale other than 1 never matches.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool Holds(int i, in RigidBody body)
+            {
+                long collider = (long)body.Collider.GetUnsafePtr();
+                return Colliders[i].Collider == collider && collider != 0 && body.Scale == 1.0f && *HeldVersion == *ColliderVersion
+                    && math.all(math.asuint(Poses[i].Position) == math.asuint(body.WorldFromBody.pos))
+                    && math.all(math.asuint(Poses[i].Rotation) == math.asuint(body.WorldFromBody.rot.value));
+            }
+
+            /// <summary>
+            /// Writes the body's pose and collider into entry i. The entry's bounds must already be the bounds of
+            /// that collider at that pose. The body's collider must be created. The filter is read from the collider
+            /// only when the entry held another collider.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void WritePose(int i, in RigidBody body)
+            {
+                Poses[i].Position = body.WorldFromBody.pos;
+                Poses[i].Rotation = body.WorldFromBody.rot.value;
+                long collider = body.Scale == 1.0f ? (long)body.Collider.GetUnsafePtr() : 0;
+                if (Colliders[i].Collider != collider)
+                {
+                    Colliders[i] = new ColliderInfo
+                    {
+                        Collider = collider,
+                        Filter = body.Collider.Value.GetCollisionFilter(),
+                        RespondsToCollision = body.Collider.Value.RespondsToCollision ? 1 : 0,
+                    };
+                }
+            }
+
+            /// <summary>Writes the whole entry i for a body whose collider is created, with the collider's bounds.</summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Write(int i, in RigidBody body, Aabb bounds)
+            {
+                Bounds[i] = bounds;
+                WritePose(i, body);
+            }
+        }
+
+        NativeList<Pose> poses;
+        NativeList<Aabb> bounds;
+        NativeList<ColliderInfo> colliders;
+        NativeReference<uint> heldVersion;
+        uint* colliderVersion;
+
+        /// <summary>
+        /// Makes an empty cache. The owner adds one to the number that <paramref name="colliderVersion"/> points to
+        /// whenever a body's collider changes, and keeps that number alive as long as the cache.
+        /// </summary>
+        public DynamicBoundsCache(uint* colliderVersion, Allocator allocator)
+        {
+            poses = new NativeList<Pose>(allocator);
+            bounds = new NativeList<Aabb>(allocator);
+            colliders = new NativeList<ColliderInfo>(allocator);
+            heldVersion = new NativeReference<uint>(*colliderVersion - 1, allocator);
+            this.colliderVersion = colliderVersion;
+        }
+
+        public bool IsCreated => poses.IsCreated;
+
+        /// <summary>
+        /// Gives the cache one entry for each of the given number of bodies, and returns the view for the jobs. New
+        /// entries hold no collider. Call it only on the main thread while no job uses the cache.
+        /// </summary>
+        internal View Resize(int count)
+        {
+            poses.Resize(count, NativeArrayOptions.ClearMemory);
+            bounds.Resize(count, NativeArrayOptions.ClearMemory);
+            colliders.Resize(count, NativeArrayOptions.ClearMemory);
+            return CurrentView;
+        }
+
+        /// <summary>The view of the entries as they are, for a job to read and write.</summary>
+        internal View CurrentView => new View
+        {
+            Poses = poses.GetUnsafePtr(),
+            Bounds = bounds.GetUnsafePtr(),
+            Colliders = colliders.GetUnsafePtr(),
+            Length = poses.Length,
+            HeldVersion = heldVersion.GetUnsafePtr(),
+            ColliderVersion = colliderVersion,
+        };
+
+        /// <summary>
+        /// Records that the entries hold the current colliders. Call it on the main thread when no job changes the
+        /// colliders, and only after every entry that a body could take holds that body's current collider: after a
+        /// build of the tree since the colliders last changed.
+        /// </summary>
+        public void MarkCurrent()
+        {
+            heldVersion.Value = *colliderVersion;
+        }
+
+        public void Dispose()
+        {
+            if (poses.IsCreated)
+            {
+                poses.Dispose();
+                bounds.Dispose();
+                colliders.Dispose();
+                heldVersion.Dispose();
+            }
+        }
     }
 }

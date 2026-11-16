@@ -56,7 +56,8 @@ namespace KSP.Retooled.Physics
         /// name="all"/> is true, includes every body. Building runs concurrently with subsequent work on the main
         /// thread. Until the returned handle completes, nothing may read a body's collider or write its flags. Keep
         /// <paramref name="work"/> and <paramref name="results"/> alive until then. If any body requires a full build,
-        /// increment <paramref name="wholeBuilds"/> because its shapes may have changed.
+        /// increment <paramref name="wholeBuilds"/> because its shapes may have changed. If any body gets a new
+        /// collider, increment <paramref name="changes"/>.
         /// </summary>
         internal static JobHandle ScheduleRefresh(
             NativeStore.WorldData* world,
@@ -64,6 +65,7 @@ namespace KSP.Retooled.Physics
             NativeList<Work> work,
             NativeList<long> results,
             NativeReference<uint> wholeBuilds,
+            NativeReference<uint> changes,
             JobHandle dependency)
         {
             if (work.Capacity < world->bodyCount)
@@ -78,7 +80,7 @@ namespace KSP.Retooled.Physics
                 All = all
             }.ScheduleBatch((int)world->bodyCount, 1024, dependency);
 
-            dependency = new InitializeResultsJob { Work = work, Results = results, WholeBuilds = wholeBuilds }.Schedule(aggregateWork);
+            dependency = new InitializeResultsJob { Work = work, Results = results, WholeBuilds = wholeBuilds, Changes = changes }.Schedule(aggregateWork);
 
             // Schedule one body per work item because building a mesh can take a thousand times as long as building a
             // box.
@@ -163,9 +165,20 @@ namespace KSP.Retooled.Physics
 
             public NativeReference<uint> WholeBuilds;
 
+            /// <summary>
+            /// The number of refreshes that gave any body a new collider. The cache of the dynamic bodies' bounds
+            /// knows a collider by its address, and a new collider can take the memory of one that was freed, so
+            /// the cache holds nothing while this number differs from the one it recorded.
+            /// </summary>
+            public NativeReference<uint> Changes;
+
             public void Execute()
             {
                 Results.ResizeUninitialized(Work.Length);
+                if (Work.Length > 0)
+                {
+                    Changes.Value++;
+                }
 
                 bool whole = false;
                 for (int i = 0; i < Results.Length; ++i)

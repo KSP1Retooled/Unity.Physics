@@ -347,6 +347,202 @@ namespace Unity.Physics.Tests.Collision.World
             Assert.That(owner.Count, Is.EqualTo(roots));
         }
 
+        /// <summary>The bounds of each body in the leaves of the dynamic tree, by the body's index.</summary>
+        static unsafe Aabb[] LeafBounds(Broadphase.Tree tree, int count)
+        {
+            var bounds = new Aabb[count];
+            var nodes = (Node*)tree.Nodes.GetUnsafeReadOnlyPtr();
+            foreach (int n in ReachedNodes(nodes))
+            {
+                for (int j = 0; j < 4 && nodes[n].IsLeaf; j++)
+                {
+                    if (nodes[n].IsLeafValid(j))
+                    {
+                        bounds[nodes[n].Data[j]] = nodes[n].Bounds.GetAabb(j);
+                    }
+                }
+            }
+
+            return bounds;
+        }
+
+        /// <summary>
+        /// Does to the bodies what the step's write-back and the next build do to them: each body gets its motion's
+        /// pose, with the rotation normalized if <paramref name="normalize"/> is true, and a new velocity, as gravity
+        /// and forces give it.
+        /// </summary>
+        static void WriteBack(ref PhysicsWorld world, uint seed, bool normalize = true)
+        {
+            // A Burst job normalizes the rotations, as the step's write-back does, because C# can round differently.
+            if (normalize)
+            {
+                new NormalizeRotationsJob { RigidBodies = world.DynamicBodies }.Run(world.NumDynamicBodies);
+            }
+
+            var random = new Unity.Mathematics.Random(seed);
+            for (int i = 0; i < world.NumDynamicBodies; i++)
+            {
+                MotionVelocity velocity = world.DynamicsWorld.m_MotionVelocities[i];
+                velocity.LinearVelocity += random.NextFloat3(-1.0f, 1.0f);
+                world.DynamicsWorld.m_MotionVelocities[i] = velocity;
+            }
+        }
+
+        [BurstCompile(CompileSynchronously = true)]
+        struct NormalizeRotationsJob : IJobParallelFor
+        {
+            public NativeArray<Physics.RigidBody> RigidBodies;
+
+            public void Execute(int i)
+            {
+                Physics.RigidBody body = RigidBodies[i];
+                body.WorldFromBody = new RigidTransform(math.normalize(body.WorldFromBody.rot), body.WorldFromBody.pos);
+                RigidBodies[i] = body;
+            }
+        }
+
+        static void AssertSameBounds(Aabb expected, Aabb actual, string what)
+        {
+            Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
+            Assert.That(math.asuint(actual.Max), Is.EqualTo(math.asuint(expected.Max)), what);
+        }
+
+        /// <summary>
+        /// The refit leaves each body's collider bounds in the cache at the pose that the write-back gives the body, and
+        /// the next build takes them from there. That build gives every body the same bounds, to the last bit, and the
+        /// same filter, as a build without the cache.
+        /// </summary>
+        [Test]
+        public unsafe void ABuildWithTheBoundsFromTheRefitMatchesABuildWithout([Values(1, 8)] int threads)
+        {
+            const int count = 3000;
+            (float3[] positions, float[] sizes) = RandomScene(count, 11);
+            using var scene = new BoxWorld(positions, sizes, 11);
+            ref PhysicsWorld world = ref scene.World;
+            Broadphase.Tree tree = world.CollisionWorld.Broadphase.DynamicTree;
+            uint version = 1;
+            var cache = new DynamicBoundsCache(&version, Allocator.Persistent);
+            try
+            {
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default, cache).Complete();
+                cache.MarkCurrent();
+                scene.Move(12, 20.0f);
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache, out JobHandle filled).Complete();
+                filled.Complete();
+                WriteBack(ref world, 13);
+
+                // The refit leaves the entries at the motions' poses. The write-back's normalizing changes the last bits
+                // of some rotations, and those bodies compute their bounds again.
+                DynamicBoundsCache.View view = cache.CurrentView;
+                NativeArray<Physics.RigidBody> bodies = world.DynamicBodies;
+                int held = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    held += view.Holds(i, bodies[i]) ? 1 : 0;
+                }
+
+                UnityEngine.Debug.Log($"[DynamicTreeRefitTests] the cache holds {held} of {count} bodies where the write-back put them");
+                Assert.That(held, Is.GreaterThan(count / 2), "the cache holds most bodies where the write-back put them");
+
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default, cache).Complete();
+                Aabb[] cached = LeafBounds(tree, count);
+                CollisionFilter[] cachedFilters = tree.BodyFilters.AsArray().ToArray();
+                bool[] cachedResponds = tree.RespondsToCollision.AsArray().ToArray();
+
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default).Complete();
+                Aabb[] computed = LeafBounds(tree, count);
+                for (int i = 0; i < count; i++)
+                {
+                    AssertSameBounds(computed[i], cached[i], $"body {i}'s bounds");
+                    Assert.That(cachedFilters[i], Is.EqualTo(tree.BodyFilters[i]), $"body {i}'s filter");
+                    Assert.That(cachedResponds[i], Is.EqualTo(tree.RespondsToCollision[i]), $"body {i}'s response");
+                }
+            }
+            finally
+            {
+                cache.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// A body takes its collider bounds from the cache only when the cache holds its collider at exactly its pose,
+        /// and only while no collider has changed since the cache recorded the colliders' version. The test fills the
+        /// cache with bounds that no collider has, so that the bounds in the tree show where they came from.
+        /// </summary>
+        [Test]
+        public unsafe void ABodyTakesItsBoundsFromTheCacheOnlyForItsColliderAndPose()
+        {
+            const int count = 64;
+            (float3[] positions, float[] sizes) = RandomScene(count, 21);
+            using var scene = new BoxWorld(positions, sizes, 21);
+            ref PhysicsWorld world = ref scene.World;
+            Broadphase.Tree tree = world.CollisionWorld.Broadphase.DynamicTree;
+            uint version = 1;
+            var cache = new DynamicBoundsCache(&version, Allocator.Persistent);
+            BlobAssetReference<Collider> other = BoxCollider.Create(new BoxGeometry
+            {
+                Center = float3.zero,
+                Orientation = quaternion.identity,
+                Size = new float3(2.0f),
+            });
+            try
+            {
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default, cache).Complete();
+                cache.MarkCurrent();
+                scene.Move(22, 20.0f);
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache, out JobHandle filled).Complete();
+                filled.Complete();
+                WriteBack(ref world, 23, false);
+
+                var planted = new Aabb { Min = new float3(-500.0f), Max = new float3(500.0f) };
+                DynamicBoundsCache.View view = cache.CurrentView;
+                for (int i = 0; i < count; i++)
+                {
+                    view.Bounds[i] = planted;
+                }
+
+                // Body 0 moves by one bit of its position, and body 1 gets another collider.
+                NativeArray<Physics.RigidBody> bodies = world.DynamicBodies;
+                Physics.RigidBody moved = bodies[0];
+                moved.WorldFromBody.pos.x = math.asfloat(math.asuint(moved.WorldFromBody.pos.x) + 1u);
+                bodies[0] = moved;
+                Physics.RigidBody changed = bodies[1];
+                changed.Collider = other;
+                bodies[1] = changed;
+
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default, cache).Complete();
+                Aabb[] fromCache = LeafBounds(tree, count);
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default).Complete();
+                Aabb[] computed = LeafBounds(tree, count);
+                AssertSameBounds(computed[0], fromCache[0], "the body that moved computes its bounds");
+                AssertSameBounds(computed[1], fromCache[1], "the body with another collider computes its bounds");
+                for (int i = 2; i < count; i++)
+                {
+                    Assert.That(fromCache[i].Contains(planted), Is.True, $"body {i} takes its bounds from the cache");
+                }
+
+                // The cache now holds the right bounds for bodies 0 and 1. Plant the false bounds again, and change
+                // the colliders' version: then no body takes its bounds from the cache.
+                for (int i = 0; i < count; i++)
+                {
+                    view.Bounds[i] = planted;
+                }
+
+                version++;
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 1, default, cache).Complete();
+                Aabb[] afterChange = LeafBounds(tree, count);
+                for (int i = 0; i < count; i++)
+                {
+                    AssertSameBounds(computed[i], afterChange[i], $"body {i} computes its bounds after a collider changed");
+                }
+            }
+            finally
+            {
+                cache.Dispose();
+                other.Dispose();
+            }
+        }
+
         // The benchmark below times the jobs in this file, which are compiled before their first run, and not the
         // step's jobs, which Burst may still be compiling when a test starts.
 

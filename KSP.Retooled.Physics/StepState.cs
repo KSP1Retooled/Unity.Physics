@@ -122,6 +122,36 @@ namespace KSP.Retooled.Physics
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
+
+        // The number of collider refreshes that gave any body a new collider, and the bounds of the dynamic bodies'
+        // colliders that the refit at the end of a step leaves for the build at the start of the next.
+        private NativeReference<uint> colliderChanges;
+        private DynamicBoundsCache boundsCache;
+
+        // Whether the last build of the dynamic tree used the bounds cache. Only then does the cache hold the current
+        // colliders after the build.
+        private bool boundsCacheBuilt;
+
+        // The job that writes the poses into the bounds cache after the refit. It reads the built bodies, so the next
+        // build completes it before it changes them.
+        private JobHandle boundsCacheFilled;
+
+        /// <summary>
+        /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
+        /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
+        /// so it lives in a shared static, which holds whether the cache is off.
+        /// </summary>
+        internal static bool BoundsCacheEnabled
+        {
+            get => BoundsCacheOff.Data == 0;
+            set => BoundsCacheOff.Data = value ? 0 : 1;
+        }
+
+        private sealed class BoundsCacheOffKey
+        {
+        }
+
+        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, BoundsCacheOffKey>();
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
         private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
@@ -186,6 +216,8 @@ namespace KSP.Retooled.Physics
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
             wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
+            colliderChanges = new NativeReference<uint>(0, Allocator.Persistent);
+            boundsCache = new DynamicBoundsCache(colliderChanges.GetUnsafePtr(), Allocator.Persistent);
             knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
             learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
@@ -196,6 +228,7 @@ namespace KSP.Retooled.Physics
 
             forcesApplied.Complete();
             collidersBuilt.Complete();
+            boundsCacheFilled.Complete();
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
             vesselsFilled.Complete();
@@ -255,6 +288,8 @@ namespace KSP.Retooled.Physics
             colliderWork.Dispose();
             colliderResults.Dispose();
             wholeColliderBuilds.Dispose();
+            boundsCache.Dispose();
+            colliderChanges.Dispose();
             knownBodyPairs.Dispose();
             learnedBodyPairs.Dispose();
         }
@@ -697,13 +732,21 @@ namespace KSP.Retooled.Physics
             // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
             // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
             // reads only Static, and neither job changes it.
-            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved);
+            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved,
+                boundsCacheBuilt ? boundsCache : default, out boundsCacheFilled);
             JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWaitForSolve.Auto())
             {
                 solved.Complete();
+            }
+
+            // The build of this step has completed, so every entry of the bounds cache that a body could take holds
+            // the body's current collider: either the build wrote it, or the refit and the job after it write it now.
+            if (boundsCacheBuilt)
+            {
+                boundsCache.MarkCurrent();
             }
 
             // SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
@@ -811,6 +854,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal void BuildForQueries()
         {
+            boundsCacheFilled.Complete();
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
 
@@ -829,6 +873,11 @@ namespace KSP.Retooled.Physics
             JobHandle colliders = RefreshColliders(default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
+            broadphase.Complete();
+            if (boundsCacheBuilt)
+            {
+                boundsCache.MarkCurrent();
+            }
             FinishQuerySnapshot();
             PublishQueryWorld();
         }
@@ -861,7 +910,8 @@ namespace KSP.Retooled.Physics
             int threads = JobsUtility.JobWorkerCount + 1;
             Broadphase broadphase = world.CollisionWorld.Broadphase;
             JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
-            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built);
+            boundsCacheBuilt = BoundsCacheEnabled;
+            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, boundsCacheBuilt ? boundsCache : default);
             return JobHandle.CombineDependencies(statics, dynamics);
         }
 
@@ -1008,7 +1058,7 @@ namespace KSP.Retooled.Physics
 
             uint materialVersion = globals->materialVersion;
             collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults,
-                wholeColliderBuilds, dependency);
+                wholeColliderBuilds, colliderChanges, dependency);
             builtMaterialVersion = materialVersion;
             return collidersBuilt;
         }
@@ -1031,8 +1081,10 @@ namespace KSP.Retooled.Physics
         {
             // FinishStep waits for the jobs that fill the vessels' edges and closures. A step that threw before
             // FinishStep leaves them running, and this build compiles the vessels again and resizes their lists. In the
-            // usual case, the jobs have already finished.
+            // usual case, the jobs have already finished. The job that fills the bounds cache reads the bodies that
+            // this build replaces.
             vesselsFilled.Complete();
+            boundsCacheFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
                 new PartitionBodiesJob
