@@ -3,6 +3,7 @@
 // The algorithms are faer's. The code is written for raw double pointers in column-major order, with double4 in place
 // of faer's SIMD types, and calls the BLAS-style routines in Blas. What was adapted is listed in each summary.
 
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
@@ -40,12 +41,16 @@ namespace Unity.Numerics.Kernels
                 for (int r = 0; r < active; r += BlockSize)
                 {
                     int count = math.min(BlockSize, active - r);
+                    // faer divides by the old and the new diagonal entry three times for each column of W. Each
+                    // division waits on the square root before it, so this port takes one reciprocal of each new entry
+                    // and multiplies by it, which leaves one square root and one division on the chain.
                     double ljj = lj[j];
+                    double inverse = 1.0 / ljj;
                     for (int t = 0; t < count; t++)
                     {
                         double wj = w[j + (long)(r + t) * ldw];
                         double aw = alpha[r + t] * wj;
-                        double sum = ljj * ljj + aw * wj;
+                        double sum = FusedMath.Fma(ljj, ljj, aw * wj);
                         if (!(sum > SmallestPivot))
                         {
                             sum = SmallestPivot;
@@ -53,11 +58,13 @@ namespace Unity.Numerics.Kernels
                         }
 
                         double newLjj = math.sqrt(sum);
-                        negative[t] = -wj / ljj;
-                        newOverOld[t] = newLjj / ljj;
-                        alphaOverNew[t] = aw / newLjj;
+                        double newInverse = 1.0 / newLjj;
+                        negative[t] = -wj * inverse;
+                        newOverOld[t] = newLjj * inverse;
+                        alphaOverNew[t] = aw * newInverse;
                         alpha[r + t] -= alphaOverNew[t] * alphaOverNew[t];
                         ljj = newLjj;
+                        inverse = newInverse;
                     }
 
                     lj[j] = ljj;
@@ -282,7 +289,8 @@ namespace Unity.Numerics.Kernels
             }
 
             // Close the gaps. Every entry moves up, to the left, or both, so a pass in storage order never overwrites
-            // an entry that has yet to move.
+            // an entry that has yet to move. In the columns before the first deleted index, the rows before that index
+            // stay where they are. Each run of kept rows between two deleted indices moves as one block.
             int column = 0;
             int nextDeletedColumn = 0;
             for (int j = 0; j < n; j++)
@@ -293,18 +301,27 @@ namespace Unity.Numerics.Kernels
                     continue;
                 }
 
-                int row = column;
-                int nextDeletedRow = nextDeletedColumn;
-                for (int i = j; i < n; i++)
+                int start = j < first ? first : j;
+                int nextDeletedRow = 0;
+                while (nextDeletedRow < r && indices[nextDeletedRow] < start)
                 {
-                    if (nextDeletedRow < r && indices[nextDeletedRow] == i)
+                    nextDeletedRow++;
+                }
+
+                int row = start - nextDeletedRow;
+                double* source = l + (long)j * ldl;
+                double* target = l + (long)column * ldl;
+                for (int i = start; i < n; nextDeletedRow++)
+                {
+                    int end = nextDeletedRow < r ? indices[nextDeletedRow] : n;
+                    int length = end - i;
+                    if (length > 0 && target + row != source + i)
                     {
-                        nextDeletedRow++;
-                        continue;
+                        UnsafeUtility.MemMove(target + row, source + i, (long)length * sizeof(double));
                     }
 
-                    l[row + (long)column * ldl] = l[i + (long)j * ldl];
-                    row++;
+                    row += length;
+                    i = end + 1;
                 }
 
                 column++;
