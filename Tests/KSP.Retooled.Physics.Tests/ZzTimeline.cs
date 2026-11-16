@@ -178,6 +178,7 @@ namespace KSP.Retooled.Physics.Tests
             bool wasForest = VesselForest.Enabled;
             bool wasLocking = VesselForest.Locking;
             bool wasVessels = VesselPipeline.Enabled;
+            Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             VesselForest.Initialize();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
             UnityEngine.Profiling.Profiler.maxUsedMemory = 1 << 30;
