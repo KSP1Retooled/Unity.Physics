@@ -8,10 +8,10 @@ Source: https://github.com/sarah-quinones/faer-rs
 
 Used in: Unity.Physics/Numerics/Kernels (assembly Unity.Numerics.Kernels): CholeskyLLT.cs, CholeskyLLTFloat.cs,
 CholeskyLLTUpdate.cs, Trsm.cs, TrsmFloat.cs, Trsv.cs, TrsvFloat.cs, Trmm.cs, TrmmFloat.cs, Gemv.cs, GemvFloat.cs,
-Gemm.cs, GemmFloat.cs, MatrixView.cs, and the dot products and column updates in Dot.cs, DotFloat.cs, Axpy.cs and AxpyFloat.cs. These files
-are C# ports of faer's Cholesky (LLT) factor, its solves, its rank update, its insertion and deletion of rows and
-columns, the triangular solves that they use, the triangular products, and the shape of faer's matrix views (a pointer, the sizes, and a stride
-for rows and one for columns).
+Gemm.cs, GemmFloat.cs and MatrixView.cs, and the dot products and column updates in Dot.cs, DotFloat.cs, Axpy.cs and
+AxpyFloat.cs. These files are C# ports of faer's Cholesky (LLT) factor, its solves, its rank update, its insertion and
+deletion of rows and columns, the triangular solves that they use, the triangular products, and the shape of faer's
+matrix views (a pointer, the sizes, and a stride for rows and one for columns).
 
 License Type: MIT
 
