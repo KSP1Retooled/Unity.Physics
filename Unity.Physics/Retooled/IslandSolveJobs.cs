@@ -230,6 +230,7 @@ namespace Unity.Physics
                 FusedBodies = fusedBodies,
                 Fuse = fusedVessels && !LegacyRowBuild,
                 MinimumParts = FusedVesselParts,
+                Contacts = FusedContacts,
             }.Schedule(handle);
 
             if (fusedVessels)
@@ -400,6 +401,21 @@ namespace Unity.Physics
         }
 
         struct VesselFusedKey { }
+
+        /// <summary>
+        /// Whether the fused vessel job also takes the vessel islands that have contacts or joints with rows. When this
+        /// is false, it takes only the islands that hold vessels and nothing else, as it did before it could build a
+        /// boundary block. It is on by default, and the bench turns it off to compare the two.
+        /// </summary>
+        internal static bool FusedContacts
+        {
+            get => !FusedContactsOff.Data;
+            set => FusedContactsOff.Data = !value;
+        }
+
+        struct FusedContactsKey { }
+
+        static readonly SharedStatic<bool> FusedContactsOff = SharedStatic<bool>.GetOrCreate<FusedContactsKey>();
 
         /// <summary>
         /// The number of island solves, each one for a whole step, that the fused vessel job has done since the
@@ -1200,13 +1216,17 @@ namespace Unity.Physics
 
             public int MinimumParts;
 
+            /// <summary>The value of <see cref="FusedContacts"/> when the job was scheduled.</summary>
+            public bool Contacts;
+
             public void Execute()
             {
                 var motions = (MotionVelocity*)MotionVelocities.GetUnsafeReadOnlyPtr();
                 for (int i = 0; Fuse && i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
-                    if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.OtherBodies > 0)
+                    if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.OtherBodies > 0
+                        || (!Contacts && (island.JointRows > 0 || island.Rows > 0 || island.JointEnd != island.HeaderEnd)))
                     {
                         continue;
                     }

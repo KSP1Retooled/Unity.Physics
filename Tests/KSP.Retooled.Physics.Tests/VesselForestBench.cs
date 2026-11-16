@@ -48,6 +48,10 @@ namespace KSP.Retooled.Physics.Tests
             public int[] ClosureB;
         }
 
+        // The fused job's settings before the bench changes them for a path.
+        private static int fusedParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+        private static bool fusedOn = true;
+
         private static Graph Load(string name)
         {
             string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Packages", "io.github.ksp1retooled.physics",
@@ -86,6 +90,75 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return graph;
+        }
+
+        /// <summary>
+        /// Cuts a craft down to its first RETOOLED_BENCH_PARTS parts and lays out RETOOLED_BENCH_COPIES copies of it side by
+        /// side, for a scene of several smaller crafts. The parts come parents first, so the first parts of a craft are
+        /// one connected tree. Without either setting, returns the craft as it is.
+        /// </summary>
+        private static Graph Fleet(Graph graph)
+        {
+            int parts = int.TryParse(System.Environment.GetEnvironmentVariable("RETOOLED_BENCH_PARTS"), out int p) && p > 0
+                ? System.Math.Min(p, graph.Parent.Length) : graph.Parent.Length;
+            int copies = int.TryParse(System.Environment.GetEnvironmentVariable("RETOOLED_BENCH_COPIES"), out int c) && c > 0 ? c : 1;
+            if (parts == graph.Parent.Length && copies == 1)
+            {
+                return graph;
+            }
+
+            float left = float.MaxValue, right = float.MinValue;
+            for (int i = 0; i < parts; i++)
+            {
+                left = Mathf.Min(left, graph.Position[i].x);
+                right = Mathf.Max(right, graph.Position[i].x);
+            }
+
+            float spacing = right - left + 10.0f;
+            var closures = new List<int>();
+            for (int k = 0; k < graph.ClosureA.Length; k++)
+            {
+                if (graph.ClosureA[k] < parts && graph.ClosureB[k] < parts)
+                {
+                    closures.Add(k);
+                }
+            }
+
+            var fleet = new Graph
+            {
+                Name = $"{graph.Name} {copies}x{parts}",
+                Parent = new int[parts * copies],
+                Mass = new float[parts * copies],
+                Inertia = new Vector3[parts * copies],
+                Position = new Vector3[parts * copies],
+                Joint = new Vector3[parts * copies],
+                Swing = new float[parts * copies],
+                ClosureA = new int[closures.Count * copies],
+                ClosureB = new int[closures.Count * copies],
+            };
+
+            for (int copy = 0; copy < copies; copy++)
+            {
+                var offset = new Vector3(copy * spacing, 0.0f, 0.0f);
+                for (int i = 0; i < parts; i++)
+                {
+                    int to = copy * parts + i;
+                    fleet.Parent[to] = graph.Parent[i] >= 0 ? copy * parts + graph.Parent[i] : -1;
+                    fleet.Mass[to] = graph.Mass[i];
+                    fleet.Inertia[to] = graph.Inertia[i];
+                    fleet.Position[to] = graph.Position[i] + offset;
+                    fleet.Joint[to] = graph.Joint[i] + offset;
+                    fleet.Swing[to] = graph.Swing[i];
+                }
+
+                for (int k = 0; k < closures.Count; k++)
+                {
+                    fleet.ClosureA[copy * closures.Count + k] = copy * parts + graph.ClosureA[closures[k]];
+                    fleet.ClosureB[copy * closures.Count + k] = copy * parts + graph.ClosureB[closures[k]];
+                }
+            }
+
+            return fleet;
         }
 
         /// <summary>Total CPU load in percent over three seconds, from the Windows performance counter.</summary>
@@ -351,6 +424,25 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
+            // A compiled path can name settings of the fused vessel job after a colon: "compiled:parts=64" sends vessel
+            // islands of 64 parts or more to the fused job, "compiled:nocontacts" keeps the islands with contacts or
+            // joints out of it, and "compiled:off" turns it off.
+            string[] options = path.Split(':');
+            Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            Unity.Physics.Solver.FusedContacts = true;
+            Unity.Physics.Solver.VesselFused = fusedOn;
+            for (int i = 1; i < options.Length; i++)
+            {
+                if (options[i].StartsWith("parts="))
+                {
+                    Unity.Physics.Solver.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
+                }
+
+                Unity.Physics.Solver.FusedContacts &= options[i] != "nocontacts";
+                Unity.Physics.Solver.VesselFused &= options[i] != "off";
+            }
+
+            path = options[0];
             VesselForest.Enabled = path != "sparse";
             VesselPipeline.Enabled = path == "compiled";
             VesselForest.ForgetIslands();
@@ -425,6 +517,9 @@ namespace KSP.Retooled.Physics.Tests
             }
             JobsUtility.JobWorkerCount = workers;
             vesselSet?.Dispose();
+            Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            Unity.Physics.Solver.FusedContacts = true;
+            Unity.Physics.Solver.VesselFused = fusedOn;
             samples.Sort();
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
         }
@@ -652,6 +747,9 @@ namespace KSP.Retooled.Physics.Tests
             JobsUtility.JobDebuggerEnabled = false;
             Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
             int workers = JobsUtility.JobWorkerCount;
+            VesselPipeline.Initialize();
+            fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            fusedOn = Unity.Physics.Solver.VesselFused;
             double load = SampleLoad();
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +
                 $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default\n");
@@ -662,7 +760,7 @@ namespace KSP.Retooled.Physics.Tests
             {
                 foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,synthetic4500"))
                 {
-                    Graph graph = Load(craft);
+                    Graph graph = Fleet(Load(craft));
                     foreach (bool ground in Choice("RETOOLED_BENCH_SCENE", "floating,ground").Select(s => s == "ground"))
                     {
                         foreach (int threads in Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse))
@@ -677,7 +775,7 @@ namespace KSP.Retooled.Physics.Tests
                                     : $"{path}: {result.solves} forest solves / {result.fallbacks} fallbacks, {lastTimes}");
                             }
 
-                            report.Append($"{craft} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threads} | " +
+                            report.Append($"{graph.Name} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threads} | " +
                                 $"{string.Join(" | ", cells)} | {string.Join("; ", notes)}\n");
                         }
                     }

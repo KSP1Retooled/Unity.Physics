@@ -204,8 +204,18 @@ namespace KSP.Retooled.Physics.Tests
                                 continue;
                             }
 
+                            // "compiled:nocontacts" keeps the islands with contacts or joints out of the fused vessel job,
+                            // and "compiled:parts=64" sends vessel islands of 64 parts or more to it.
+                            string[] options = path.Split(':');
+                            Unity.Physics.Solver.FusedContacts = !options.Contains("nocontacts");
+                            Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+                            foreach (string option in options.Where(o => o.StartsWith("parts=")))
+                            {
+                                Unity.Physics.Solver.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
+                            }
+
                             VesselForest.Enabled = path != "sparse";
-                            VesselPipeline.Enabled = path == "compiled";
+                            VesselPipeline.Enabled = options[0] == "compiled";
                             VesselForest.ForgetIslands();
                             VesselForest.Locking = path == "locked";
                             VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
@@ -259,6 +269,8 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Enabled = wasForest;
             VesselForest.Locking = wasLocking;
             VesselPipeline.Enabled = wasVessels;
+            Unity.Physics.Solver.FusedContacts = true;
+            Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"Timeline-{tag}.txt"), report.ToString());
             Debug.Log("[ZzTimeline] done");
