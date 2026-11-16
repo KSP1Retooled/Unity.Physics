@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading;
 using AOT;
 using Unity.Burst;
@@ -33,14 +34,23 @@ namespace KSP.Retooled.Physics
 
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
-        private static IntPtr queryFunction;
-        private static IntPtr cookMeshFunction;
-        private static IntPtr validateMeshFunction;
-        private static IntPtr bodyCommandFunction;
-        private static IntPtr shapeCommandFunction;
-        private static IntPtr worldCommandFunction;
-        private static IntPtr jointCommandFunction;
-        private static IntPtr vehicleCommandFunction;
+        // The Mono versions of the kernels. In the editor, the plugin calls these until Burst has compiled the kernels.
+        // The static fields keep the delegates alive while the plugin holds pointers to them.
+        private static readonly QueryKernel.QueryFunction MonoQuery = QueryKernel.Run;
+        private static readonly MeshCook.CookFunction MonoCookMesh = MeshCook.Cook;
+        private static readonly MeshCook.ValidateFunction MonoValidateMesh = MeshCook.Validate;
+        private static readonly NativeStore.CommandFunction MonoBodyCommand = BodyKernel.Run;
+        private static readonly NativeStore.CommandFunction MonoShapeCommand = ShapeKernel.Run;
+        private static readonly NativeStore.CommandFunction MonoWorldCommand = WorldKernel.Run;
+        private static readonly NativeStore.CommandFunction MonoJointCommand = JointKernel.Run;
+        private static readonly NativeStore.CommandFunction MonoVehicleCommand = VehicleKernel.Run;
+
+        private static Kernels compiledKernels;
+        private static volatile bool kernelsCompiled;
+        private static bool compiledKernelsInPlugin;
+#if UNITY_EDITOR
+        private static Thread compileThread;
+#endif
         private static bool attached;
         private static World entityWorld;
         private static long managedJobRuns;
@@ -102,6 +112,9 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // The compile thread must not still be inside Burst when the domain unloads, so these handlers wait for it.
+            AssemblyReloadEvents.beforeAssemblyReload += FinishKernelCompile;
+            EditorApplication.quitting += FinishKernelCompile;
             AssemblyReloadEvents.beforeAssemblyReload += Detach;
             EditorApplication.quitting += Detach;
             Attach();
@@ -136,22 +149,7 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            NativeStore.ManagedCallbacks callbacks = new NativeStore.ManagedCallbacks
-            {
-                simulate = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(SimulateDelegate),
-                buildQueryWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
-                query = QueryFunction(),
-                destroyWorld = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
-                cookMesh = CookMeshFunction(),
-                validateMesh = ValidateMeshFunction(),
-                bodyCommand = BodyCommandFunction(),
-                shapeCommand = ShapeCommandFunction(),
-                worldCommand = WorldCommandFunction(),
-                jointCommand = JointCommandFunction(),
-                vehicleCommand = VehicleCommandFunction(),
-            };
-
-            NativeStore.RetooledPhysics_Attach(&callbacks);
+            AttachToPlugin();
             NativeStore.InstallAddressWait();
             IgnoreTable.Reslot(NativeStore.RetooledPhysics_Globals());
             attached = true;
@@ -178,6 +176,7 @@ namespace KSP.Retooled.Physics
             Unity.Physics.AddressWait.Install(IntPtr.Zero, IntPtr.Zero);
             NativeStore.RetooledPhysics_Detach();
             attached = false;
+            compiledKernelsInPlugin = false;
 
             int worldCount = NativeStore.RetooledPhysics_WorldCount();
             for (int i = 0; i < worldCount; i++)
@@ -246,88 +245,184 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Requests the function pointer from Burst once per domain. Burst compiles the method in the background. The
-        /// returned pointer initially refers to a stub that runs the method in Mono until compilation finishes. If
-        /// Burst is disabled, the stub continues running in Mono.
+        /// Waits on the main thread until Burst has compiled the query, mesh and command kernels, then gives the
+        /// compiled kernels to the plugin. Returns false if the compile did not finish within <paramref name="seconds"/>.
+        /// Tests and benchmarks that check or measure compiled kernels call this first, because in the editor the
+        /// kernels run in Mono until their compile finishes. Outside the editor, the kernels are compiled from the start.
         /// </summary>
-        private static IntPtr QueryFunction()
+        public static bool WaitForCompiledKernels(double seconds)
         {
-            if (queryFunction == IntPtr.Zero)
+#if UNITY_EDITOR
+            Thread thread = compileThread;
+            if (thread != null && !thread.Join(TimeSpan.FromSeconds(seconds)))
             {
-                queryFunction = BurstCompiler.CompileFunctionPointer<QueryKernel.QueryFunction>(QueryKernel.Run).Value;
+                return false;
             }
 
-            return queryFunction;
+            InstallCompiledKernels();
+#endif
+            return kernelsCompiled;
         }
 
-        private static IntPtr CookMeshFunction()
+        /// <summary>
+        /// Gives the plugin the current kernels with the other callbacks. The plugin can be given new kernels while it is
+        /// attached. A thread that is running a kernel at that moment finishes with the version it started.
+        /// </summary>
+        private static void AttachToPlugin()
         {
-            if (cookMeshFunction == IntPtr.Zero)
+            Kernels kernels = CurrentKernels();
+            NativeStore.ManagedCallbacks callbacks = new NativeStore.ManagedCallbacks
             {
-                cookMeshFunction = BurstCompiler.CompileFunctionPointer<MeshCook.CookFunction>(MeshCook.Cook).Value;
-            }
+                simulate = Marshal.GetFunctionPointerForDelegate(SimulateDelegate),
+                buildQueryWorld = Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
+                query = kernels.query,
+                destroyWorld = Marshal.GetFunctionPointerForDelegate(DestroyWorldDelegate),
+                cookMesh = kernels.cookMesh,
+                validateMesh = kernels.validateMesh,
+                bodyCommand = kernels.bodyCommand,
+                shapeCommand = kernels.shapeCommand,
+                worldCommand = kernels.worldCommand,
+                jointCommand = kernels.jointCommand,
+                vehicleCommand = kernels.vehicleCommand,
+            };
 
-            return cookMeshFunction;
+            NativeStore.RetooledPhysics_Attach(&callbacks);
+            compiledKernelsInPlugin = kernels.compiled;
         }
 
-        private static IntPtr ValidateMeshFunction()
+        /// <summary>
+        /// Returns the compiled kernels once they exist, and the Mono kernels until then. In the editor, this starts the
+        /// compile in the background. In a player, Burst only looks up the code that the build compiled. That lookup is
+        /// quick, so this asks for the compiled kernels right away.
+        /// </summary>
+        private static Kernels CurrentKernels()
         {
-            if (validateMeshFunction == IntPtr.Zero)
+            if (!kernelsCompiled)
             {
-                validateMeshFunction = BurstCompiler.CompileFunctionPointer<MeshCook.ValidateFunction>(MeshCook.Validate).Value;
+#if UNITY_EDITOR
+                StartKernelCompile();
+#else
+                compiledKernels = CompileKernels();
+                kernelsCompiled = true;
+#endif
             }
 
-            return validateMeshFunction;
+            return kernelsCompiled ? compiledKernels : MonoKernels();
         }
 
-        private static IntPtr BodyCommandFunction()
+        /// <summary>
+        /// Requests a function pointer from Burst for each kernel. In the editor, the first request after a code change
+        /// can block for a minute or more while Burst catches up. A returned pointer can still refer to a stub that runs
+        /// the kernel in Mono until Burst finishes its code. If Burst is disabled, the stub keeps running in Mono.
+        /// </summary>
+        private static Kernels CompileKernels()
         {
-            if (bodyCommandFunction == IntPtr.Zero)
+            return new Kernels
             {
-                bodyCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(BodyKernel.Run).Value;
-            }
-
-            return bodyCommandFunction;
+                query = BurstCompiler.CompileFunctionPointer<QueryKernel.QueryFunction>(QueryKernel.Run).Value,
+                cookMesh = BurstCompiler.CompileFunctionPointer<MeshCook.CookFunction>(MeshCook.Cook).Value,
+                validateMesh = BurstCompiler.CompileFunctionPointer<MeshCook.ValidateFunction>(MeshCook.Validate).Value,
+                bodyCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(BodyKernel.Run).Value,
+                shapeCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(ShapeKernel.Run).Value,
+                worldCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(WorldKernel.Run).Value,
+                jointCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(JointKernel.Run).Value,
+                vehicleCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(VehicleKernel.Run).Value,
+                compiled = true,
+            };
         }
 
-        private static IntPtr ShapeCommandFunction()
+        private static Kernels MonoKernels()
         {
-            if (shapeCommandFunction == IntPtr.Zero)
+            return new Kernels
             {
-                shapeCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(ShapeKernel.Run).Value;
-            }
-
-            return shapeCommandFunction;
+                query = Marshal.GetFunctionPointerForDelegate(MonoQuery),
+                cookMesh = Marshal.GetFunctionPointerForDelegate(MonoCookMesh),
+                validateMesh = Marshal.GetFunctionPointerForDelegate(MonoValidateMesh),
+                bodyCommand = Marshal.GetFunctionPointerForDelegate(MonoBodyCommand),
+                shapeCommand = Marshal.GetFunctionPointerForDelegate(MonoShapeCommand),
+                worldCommand = Marshal.GetFunctionPointerForDelegate(MonoWorldCommand),
+                jointCommand = Marshal.GetFunctionPointerForDelegate(MonoJointCommand),
+                vehicleCommand = Marshal.GetFunctionPointerForDelegate(MonoVehicleCommand),
+                compiled = false,
+            };
         }
 
-        private static IntPtr WorldCommandFunction()
+#if UNITY_EDITOR
+        /// <summary>
+        /// Starts the compile of the kernels on a background thread, once per domain. If the main thread made the first
+        /// request to Burst after a code change, the domain reload would wait for it. The plugin calls the Mono kernels
+        /// in the meantime, and an editor update gives it the compiled kernels once the thread has finished.
+        /// </summary>
+        private static void StartKernelCompile()
         {
-            if (worldCommandFunction == IntPtr.Zero)
+            if (compileThread != null)
             {
-                worldCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(WorldKernel.Run).Value;
+                return;
             }
 
-            return worldCommandFunction;
+            compileThread = new Thread(CompileKernelsInBackground)
+            {
+                IsBackground = true,
+                Name = "Retooled kernel compile",
+            };
+            compileThread.Start();
+            EditorApplication.update += InstallCompiledKernels;
         }
 
-        private static IntPtr JointCommandFunction()
+        private static void CompileKernelsInBackground()
         {
-            if (jointCommandFunction == IntPtr.Zero)
+            System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            try
             {
-                jointCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(JointKernel.Run).Value;
+                compiledKernels = CompileKernels();
+                kernelsCompiled = true;
+                Debug.Log($"{Tag}the kernel compile took {watch.Elapsed.TotalSeconds:F1} s on a background thread");
             }
-
-            return jointCommandFunction;
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
         }
 
-        private static IntPtr VehicleCommandFunction()
+        /// <summary>
+        /// Gives the compiled kernels to the plugin once the compile thread has finished. If the compile failed, the
+        /// plugin keeps the Mono kernels. Runs on the main thread, because attaching records the main thread.
+        /// </summary>
+        private static void InstallCompiledKernels()
         {
-            if (vehicleCommandFunction == IntPtr.Zero)
+            if (compileThread == null || compileThread.IsAlive)
             {
-                vehicleCommandFunction = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(VehicleKernel.Run).Value;
+                return;
             }
 
-            return vehicleCommandFunction;
+            EditorApplication.update -= InstallCompiledKernels;
+            if (attached && kernelsCompiled && !compiledKernelsInPlugin)
+            {
+                AttachToPlugin();
+            }
+        }
+
+        /// <summary>
+        /// Waits for the compile thread before the domain unloads, so that no thread is inside Burst at that point.
+        /// </summary>
+        private static void FinishKernelCompile()
+        {
+            compileThread?.Join();
+        }
+#endif
+
+        /// <summary>The kernels that the plugin calls: all compiled by Burst, or all in Mono.</summary>
+        private struct Kernels
+        {
+            public IntPtr query;
+            public IntPtr cookMesh;
+            public IntPtr validateMesh;
+            public IntPtr bodyCommand;
+            public IntPtr shapeCommand;
+            public IntPtr worldCommand;
+            public IntPtr jointCommand;
+            public IntPtr vehicleCommand;
+            public bool compiled;
         }
 
         /// <summary>

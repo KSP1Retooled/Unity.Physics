@@ -38,8 +38,11 @@ namespace KSP.Retooled.Physics.Editor
             Mesh grid = Grid(15);
             Mesh sphere = Sphere();
 
-            // Mesh cooking and collider building run in Mono until Burst finishes compiling their code.
+            // Mesh cooking and collider building run in Mono until Burst finishes compiling their code. The compiled
+            // cook kernel only reaches the plugin from the main thread, and the loop below sleeps on the main thread,
+            // so wait for the kernels here first.
             Stopwatch wait = Stopwatch.StartNew();
+            BackendHost.WaitForCompiledKernels(BurstWaitSeconds);
             long managed = -1;
             while (wait.Elapsed.TotalSeconds < BurstWaitSeconds && managed != BackendHost.ManagedCooks)
             {

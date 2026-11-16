@@ -49,6 +49,12 @@ namespace KSP.Retooled.Physics.Editor
 
         public static void Run()
         {
+            // The command cases below measure the kernels, which run in Mono until their compile finishes.
+            if (BackendInfo.IsRetooled && !BackendHost.WaitForCompiledKernels(BurstWaitSeconds))
+            {
+                Debug.LogWarning($"[CostBench] the kernels still run in Mono after {BurstWaitSeconds} s");
+            }
+
             UnityEngine.Physics.simulationMode = SimulationMode.Script;
             UnityEngine.Physics.gravity = Vector3.zero;
             UnityEngine.Physics.autoSyncTransforms = false;
