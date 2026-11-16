@@ -725,13 +725,29 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void FortyFusedIslandsKeepTheirStructuresFromStepToStep()
         {
+            ManyFusedIslandsKeepTheirStructures(40);
+        }
+
+        /// <summary>
+        /// Three hundred floating vessels of two parts each: more fused islands than the table of fused slots starts
+        /// with. The table grows, and no island builds its structure again. When the table held 256 islands at most,
+        /// 44 of them built their structure again in every step.
+        /// </summary>
+        [Test]
+        public void MoreFusedIslandsThanTheTableStartsWithKeepTheirStructures()
+        {
+            ManyFusedIslandsKeepTheirStructures(300);
+        }
+
+        private void ManyFusedIslandsKeepTheirStructures(int columns)
+        {
             bool wasFused = Unity.Physics.Solver.VesselFused;
             int fusedParts = Unity.Physics.Solver.FusedVesselParts;
             try
             {
                 Unity.Physics.Solver.VesselFused = true;
                 Unity.Physics.Solver.FusedVesselParts = 2;
-                for (int c = 0; c < 40; c++)
+                for (int c = 0; c < columns; c++)
                 {
                     foreach (Rigidbody body in Column(2, 5.0f, double.PositiveInfinity, 3.0f * c))
                     {
@@ -745,7 +761,7 @@ namespace KSP.Retooled.Physics.Tests
                 long before = Unity.Physics.Solver.FusedIslandSolves;
                 vessels.Step(5);
                 VesselForest.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
-                Assert.That(Unity.Physics.Solver.FusedIslandSolves - before, Is.EqualTo(40 * 5), "every vessel is a fused island in every step");
+                Assert.That(Unity.Physics.Solver.FusedIslandSolves - before, Is.EqualTo(columns * 5), "every vessel is a fused island in every step");
                 Assert.That(builds1 - builds0, Is.EqualTo(0), "no fused island builds its structure again");
             }
             finally

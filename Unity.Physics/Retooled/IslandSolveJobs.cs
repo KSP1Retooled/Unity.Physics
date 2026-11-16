@@ -213,6 +213,7 @@ namespace Unity.Physics
                 Work = work,
                 Cache = stepInput.DirectSolverCache,
                 Bodies = world.Bodies,
+                MotionCount = world.MotionVelocities.Length,
             }.Schedule(jacobiansBuilt);
 
             handle = JobHandle.CombineDependencies(handle, inputDeps);
@@ -684,6 +685,9 @@ namespace Unity.Physics
             [ReadOnly]
             public NativeArray<RigidBody> Bodies;
 
+            /// <summary>The number of moving bodies in the world, which the islands' shared index of bodies covers.</summary>
+            public int MotionCount;
+
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
@@ -704,6 +708,7 @@ namespace Unity.Physics
                     }
 
                     Cache.Assign(firstBodies, firstIdentities);
+                    Cache.ClearCompactIndex(MotionCount);
                 }
 
                 Work.Islands.ResizeUninitialized(islandCount);

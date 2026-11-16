@@ -343,6 +343,53 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That((after - before).magnitude, Is.LessThan(1e-3f * before.magnitude), "momentum is kept");
             Assert.That((bodies[3].position - bodies[0].position).magnitude, Is.EqualTo(3.0f).Within(1e-3f), "the stack stays rigid");
         }
+
+        /// <summary>
+        /// A column of parts held together by stack joints, upright, with the centre of its bottom part at the given x
+        /// and z and at the height <paramref name="bottom"/>.
+        /// </summary>
+        private List<Rigidbody> StandingColumn(int count, float x, float bottom = 1.0f, float z = 0.0f)
+        {
+            var bodies = new List<Rigidbody>();
+            for (int i = 0; i < count; i++)
+            {
+                Rigidbody body = Box(new Vector3(x, bottom + i, z), new Vector3(0.8f, 1.0f, 0.8f)).AddComponent<Rigidbody>();
+                body.mass = PartMass;
+                bodies.Add(body);
+                if (i > 0)
+                {
+                    StackJoint(body, bodies[i - 1], new Vector3(x, bottom - 0.5f + i, z));
+                }
+            }
+
+            return bodies;
+        }
+
+        /// <summary>
+        /// The islands of a step number their bodies in one index that they share, and each island sets its entries to -1
+        /// again when its solve ends. After steps with a vessel, a craft on Unity joints and a loose box, all of them on
+        /// the ground, every entry of the index is -1.
+        /// </summary>
+        [Test]
+        public void TheIslandsLeaveTheSharedIndexOfBodiesEmpty()
+        {
+            // The three-part column stays on Unity joints, and the five-part column is a vessel.
+            VesselPipeline.MinimumParts = 4;
+            Ground();
+            StandingColumn(5, 0.0f);
+            StandingColumn(3, 3.0f);
+            Box(new Vector3(6.0f, 1.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+            Simulate(10);
+            Assert.That(VesselCount(), Is.EqualTo(1), "only the five-part column is a vessel");
+
+            int motionCount = StepKernel.Current->World.MotionVelocities.Length;
+            int* index = StepKernel.Current->DirectSolverCache.CompactIndex(motionCount);
+            Assert.That(index != null, "the islands share an index");
+            for (int body = 0; body < motionCount; body++)
+            {
+                Assert.That(index[body], Is.EqualTo(-1), $"body {body} has no number between steps");
+            }
+        }
     }
 
     /// <summary>
