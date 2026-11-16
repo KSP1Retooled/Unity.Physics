@@ -86,6 +86,37 @@ namespace KSP.Retooled.Physics
             state->BuildForQueries();
         }
 
+        /// <summary>
+        /// Does the work that is left of a refit of the dynamic tree that a step left running (see
+        /// <see cref="SharedDynamicTreeRefit.Help"/>). The plugin calls it from a query, on any thread.
+        /// </summary>
+        [BurstCompile(DisableSafetyChecks = true)]
+        [AOT.MonoPInvokeCallback(typeof(NativeStore.RefitFunction))]
+        internal static void HelpRefit(void* refit)
+        {
+            bool ranInMono = false;
+            HelpRefitInMono(refit, ref ranInMono);
+            if (!ranInMono)
+            {
+                ((SharedDynamicTreeRefit*)refit)->Help();
+            }
+        }
+
+        /// <summary>Burst omits this method, so it runs only in Mono, which must not let an exception reach the plugin.</summary>
+        [BurstDiscard]
+        private static void HelpRefitInMono(void* refit, ref bool ranInMono)
+        {
+            ranInMono = true;
+            try
+            {
+                ((SharedDynamicTreeRefit*)refit)->Help();
+            }
+            catch (System.Exception e)
+            {
+                UnityEngine.Debug.LogException(e);
+            }
+        }
+
         /// <summary>Burst omits this method, so it runs only in Mono.</summary>
         [BurstDiscard]
         private static void NoteRunInMono()

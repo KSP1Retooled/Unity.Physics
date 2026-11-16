@@ -853,7 +853,7 @@ namespace Unity.Physics
         /// computes the body's bounds as the broadphase build does.
         /// </summary>
         [BurstCompile]
-        struct UpdateDynamicBoundsJob : IJobParallelFor
+        internal struct UpdateDynamicBoundsJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<MotionData> MotionDatas;
             [ReadOnly] public NativeArray<MotionVelocity> MotionVelocities;
@@ -868,20 +868,31 @@ namespace Unity.Physics
 
             public unsafe void Execute(int i)
             {
-                UpdateRigidBodyTransformsJob.ExecuteImpl(i, MotionDatas, RigidBodies);
-                RigidBody body = RigidBodies[i];
-                MotionVelocity motion = MotionVelocities[i];
+                UpdateBody(i, (MotionData*)MotionDatas.GetUnsafeReadOnlyPtr(), (MotionVelocity*)MotionVelocities.GetUnsafeReadOnlyPtr(),
+                    (RigidBody*)RigidBodies.GetUnsafePtr(), (Aabb*)Aabbs.GetUnsafePtr(), AabbMargin, Gravity, TimeStep, Cache);
+            }
+
+            /// <summary>
+            /// Moves dynamic body i to its motion's pose, and writes its bounds for the tree and for the cache. Also used
+            /// by <see cref="SharedDynamicTreeRefit"/>.
+            /// </summary>
+            internal static unsafe void UpdateBody(int i, MotionData* motionDatas, MotionVelocity* motionVelocities, RigidBody* bodies,
+                Aabb* aabbs, float aabbMargin, float3 gravity, float timeStep, in DynamicBoundsCache.View cache)
+            {
+                RigidBody body = bodies[i];
+                body.WorldFromBody = math.mul(motionDatas[i].WorldFromMotion, math.inverse(motionDatas[i].BodyFromMotion));
+                bodies[i] = body;
                 Aabb bounds = body.CalculateAabb();
-                Aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, AabbMargin, Gravity, TimeStep, motion);
+                aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, aabbMargin, gravity, timeStep, motionVelocities[i]);
 
                 // The bounds in the cache go with the body that the world now holds at index i: its collider at its
                 // new pose. The step writes back the pose of a moving body with its rotation normalized, and the next
                 // build starts from that pose. Normalizing changes the last bits of the rotation of some bodies, and
                 // those bodies compute their bounds again in the next build. Normalizing here, and computing the
                 // bounds of those bodies at the normalized pose, cost the refit more than it saved.
-                if (Cache.IsCreated && body.Collider.IsCreated)
+                if (cache.IsCreated && body.Collider.IsCreated)
                 {
-                    Cache.Bounds[i] = bounds;
+                    cache.Bounds[i] = bounds;
                 }
             }
         }

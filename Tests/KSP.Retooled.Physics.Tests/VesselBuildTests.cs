@@ -121,6 +121,9 @@ namespace KSP.Retooled.Physics.Tests
         private static List<List<Rigidbody>> VesselsOf(List<Rigidbody> bodies)
         {
             VesselSet set = State->VesselSet;
+
+            // The step returns while the refit moves the built bodies to their solved poses.
+            State->FinishPendingRefit();
             PhysicsWorld world = State->World;
             var vessels = new List<List<Rigidbody>>();
             for (int v = 0; v < set.VesselCount; v++)

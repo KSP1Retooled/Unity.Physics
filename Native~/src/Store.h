@@ -340,9 +340,26 @@ namespace Retooled
         void** vehicles;
         uint32_t vehicleCount;
         uint32_t vehicleCapacity;
+
+        // A step returns while the refit of the dynamic tree to the solved poses still runs on job workers. treeReady is 0
+        // from then until the refit has finished, and 1 otherwise. The step clears it under queryLock, held exclusively,
+        // and the refit sets it, so a query that holds queryLock shared and finds it 1 can read the query world. The
+        // refit is shared work: a query that finds it 0 calls ManagedCallbacks::helpRefit with refit, which does the
+        // refit's remaining work on the query's thread, and then waits for the word (see Query.cpp).
+        uint32_t treeReady;
+        uint32_t reserved0;
+        void* refit;
     };
 
-    static_assert(sizeof(WorldData) == 200, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 216, "NativeStore.WorldData mirrors this layout");
+
+    // The value of WorldData::queryDirty while the query world that the step published waits only for the refit of the
+    // dynamic tree. A main-thread query then sends the world through buildQueryWorld, which finishes the refit. Any
+    // change to the store replaces this value with its own.
+    constexpr uint32_t kQueryTreePending = 3;
+
+    // Waits while *word holds expected, for at most the given time. It may return early, so callers check again.
+    void WaitWhileWordIs(int32_t* word, int32_t expected, int32_t timeoutMicroseconds);
 
     // Mirrored. What every world shares, and what a kernel needs from the plugin, which reaches it as function pointers
     // because a Burst function gets everything through its arguments.
@@ -510,9 +527,12 @@ namespace Retooled
         CommandKernel jointCommand;
         // Gets the world's data as the handle, because a vehicle command addresses its vehicle by id.
         CommandKernel vehicleCommand;
+        // Does the work that is left of the refit in WorldData::refit, on any thread, and returns when the refit has
+        // finished or when its last pieces are running on other threads. A Burst function, like query.
+        void (*helpRefit)(void* refit);
     };
 
-    static_assert(sizeof(ManagedCallbacks) == 88, "NativeStore.ManagedCallbacks mirrors this layout");
+    static_assert(sizeof(ManagedCallbacks) == 96, "NativeStore.ManagedCallbacks mirrors this layout");
 
     // Mirrored up to references. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
     // code (see Mesh.cpp) or if finishing it failed. Managed works out a convex mesh's moments on first use and keeps them

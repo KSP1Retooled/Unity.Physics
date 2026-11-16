@@ -50,6 +50,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // The last step's refit of the dynamic tree writes the built world, which this step builds again.
+            state->FinishPendingRefit();
             StepKernel.Current = state;
             group.Step(deltaTime);
         }
@@ -60,13 +62,31 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal int BuildForQueries()
         {
+            // The main thread can get here inside a job that it picked up while it waited for another, where completing
+            // or scheduling a job throws. It finishes the last step's refit on this thread then, and leaves any other
+            // change for a build outside the job.
+            if (Unity.Jobs.LowLevel.Unsafe.JobsUtility.IsExecutingJob)
+            {
+                state->HelpPendingRefit();
+                return state->OnlyRefitPending ? NativeStore.QueryWorldBuilt : NativeStore.QueryWorldDeferred;
+            }
+
             if (!state->CanWriteContainers())
             {
+                state->HelpPendingRefit();
                 return NativeStore.QueryWorldDeferred;
             }
 
             StepKernel.BuildForQueries(state);
             return NativeStore.QueryWorldBuilt;
+        }
+
+        /// <summary>
+        /// Leaves the queries a world that they can read after a step threw: no world, and no refit to wait for.
+        /// </summary>
+        internal void AfterFailedStep()
+        {
+            state->ReleaseTreeAfterThrow();
         }
     }
 }

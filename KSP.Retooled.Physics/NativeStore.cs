@@ -648,6 +648,16 @@ namespace KSP.Retooled.Physics
             public VehicleData** vehicles;
             public uint vehicleCount;
             public uint vehicleCapacity;
+
+            /// <summary>
+            /// 0 while the refit of the dynamic tree that the last step left running is pending, and 1 otherwise. See
+            /// <see cref="StepState.FinishStep"/> and Query.cpp.
+            /// </summary>
+            public int treeReady;
+            private readonly uint reserved0;
+
+            /// <summary>The refit that a query helps to finish while <see cref="treeReady"/> is 0.</summary>
+            public SharedDynamicTreeRefit* refit;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -813,7 +823,12 @@ namespace KSP.Retooled.Physics
             public IntPtr worldCommand;
             public IntPtr jointCommand;
             public IntPtr vehicleCommand;
+            public IntPtr helpRefit;
         }
+
+        /// <summary>Matches ManagedCallbacks::helpRefit: does the work that is left of a pending refit.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void RefitFunction(void* refit);
 
         [DllImport(Library)]
         private static extern int RetooledPhysics_StructSize(int id);

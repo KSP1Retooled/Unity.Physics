@@ -44,6 +44,7 @@ namespace Retooled
         world->data.gravity = ToFloat3(command.gravity);
         world->data.bounceThreshold = command.bounceThreshold;
         world->data.queryDirty = 1;
+        world->data.treeReady = 1;
         g_Worlds.push_back(world);
         command.outWorld = world;
     }

@@ -94,6 +94,8 @@ namespace KSP.Retooled.Physics.Tests
             /// <summary>Looks each part's body up in the last world the backend built, and hands the set to the step.</summary>
             public void Refresh()
             {
+                // The step returns while the refit moves the built bodies to their solved poses.
+                StepKernel.Current->FinishPendingRefit();
                 PhysicsWorld world = StepKernel.Current->World;
                 NativeArray<RigidBody> dynamic = world.DynamicBodies;
                 for (int i = 0; i < Bodies.Count; i++)
