@@ -186,15 +186,19 @@ namespace KSP.Retooled.Physics
         public void Execute(int item)
         {
             int index = Listed ? ListedGroups[item] : item;
-            Share(World, Groups[index], GroupLoads[index], Members, JointLoads);
+            JointGroup group = Groups[index];
+            quaternion frame = JointConstraints.WorldRotation0(World->joints[group.Leader]);
+            Share(group, frame, GroupLoads[index], Members, JointLoads);
         }
 
-        /// <summary>Adds each member's share of the group's load to the member's load.</summary>
-        internal static void Share(NativeStore.WorldData* world, in JointGroup group, in JointLoad carried, NativeArray<JointGroupMember> members,
+        /// <summary>
+        /// Adds each member's share of the group's load to the member's load. The frame is the world rotation of the
+        /// leading joint's frame on body0, which <see cref="JointConstraints.WorldRotation0"/> gives once the poses
+        /// are written back.
+        /// </summary>
+        internal static void Share(in JointGroup group, quaternion frame, in JointLoad carried, NativeArray<JointGroupMember> members,
             NativeArray<JointLoad> jointLoads)
         {
-            NativeStore.JointData* leader = world->joints[group.Leader];
-            quaternion frame = JointConstraints.WorldRotation0(leader);
             float3 share = math.rotate(math.conjugate(frame), carried.Force) / group.MemberCount;
             float3 turn = math.select(math.rotate(math.conjugate(frame), carried.Torque) / group.Stiffness, float3.zero, group.Stiffness <= 0.0f);
             for (int i = 0; i < group.MemberCount; i++)

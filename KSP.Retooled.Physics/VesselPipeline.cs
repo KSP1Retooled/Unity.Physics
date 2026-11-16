@@ -1830,7 +1830,9 @@ namespace KSP.Retooled.Physics
     /// does. Each member's load starts at zero because the bodies of an active vessel are awake. Each joint's load is
     /// then settled as <see cref="SettleJointLoadsJob"/> does, and the job writes the joint's flag for
     /// <see cref="BreakJointsJob"/> . The joints of active vessels have no impulse events, so
-    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints.
+    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints. A group shares
+    /// its load in the frame of its leader's body0. The job takes that body's pose from its solved motion, in the same
+    /// way as <see cref="WriteBackJob"/> , so the job doesn't need to wait for the poses to be written back.
     /// </summary>
     [BurstCompile]
     internal unsafe struct VesselLoadsJob : IJobParallelFor
@@ -1846,6 +1848,14 @@ namespace KSP.Retooled.Physics
 
         [ReadOnly]
         public NativeArray<JointGroupMember> Members;
+
+        /// <summary>The solved motions, which give the poses of the bodies before they are written back.</summary>
+        [ReadOnly]
+        public NativeArray<MotionData> MotionDatas;
+
+        /// <summary>The index of each store body in the built world, which is its motion's index for a moving body.</summary>
+        [ReadOnly]
+        public NativeArray<int> BuiltIndices;
 
         public float DeltaTime;
 
@@ -1944,13 +1954,30 @@ namespace KSP.Retooled.Physics
                 JointLoads[Members[group.FirstMember + i].Joint] = default;
             }
 
-            ShareGroupLoadsJob.Share(World, group, jointLoad, Members, JointLoads);
+            quaternion frame = LeaderFrame(World->joints[group.Leader], MotionDatas, BuiltIndices);
+            ShareGroupLoadsJob.Share(group, frame, jointLoad, Members, JointLoads);
             for (int i = 0; i < group.MemberCount; i++)
             {
                 int joint = Members[group.FirstMember + i].Joint;
                 bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[joint], JointLoads[joint], DeltaTime);
                 Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
             }
+        }
+
+        /// <summary>
+        /// Returns what <see cref="JointConstraints.WorldRotation0"/> returns for the leading joint of a group once the
+        /// poses are written back. The bodies of an active vessel are moving and awake, so the write-back gives body0
+        /// the pose of its solved motion.
+        /// </summary>
+        internal static quaternion LeaderFrame(NativeStore.JointData* leader, NativeArray<MotionData> motionDatas, NativeArray<int> builtIndices)
+        {
+            if (leader->body0 == null)
+            {
+                return leader->rotation0;
+            }
+
+            WriteBackJob.SolvedPose(motionDatas[builtIndices[(int)leader->body0->index]], out _, out quaternion rotation);
+            return math.mul(rotation, leader->rotation0);
         }
 
         /// <summary>How many items ahead this job asks for a joint record.</summary>

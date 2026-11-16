@@ -913,6 +913,39 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void AGroupsFrameFromTheSolvedMotionIsTheWrittenBackFrame()
+        {
+            // A tilted column that spins, so that every pose has a rotation that is not exact in floats.
+            List<Rigidbody> bodies = Column(3);
+            Quaternion tilt = Quaternion.Euler(23.0f, 41.0f, 7.0f);
+            foreach (Rigidbody body in bodies)
+            {
+                body.transform.SetPositionAndRotation(tilt * body.position, tilt);
+                body.angularVelocity = new Vector3(0.3f, 1.7f, -0.9f);
+            }
+
+            Simulate(5);
+            OnlyVessel();
+
+            // VesselLoadsJob shares a group's load in the frame that it finds from the solved motion of the leader's
+            // body0, before the poses are written back. That frame must be the one that the written-back pose gives,
+            // to the last bit, so that the loads don't change.
+            NativeStore.WorldData* store = State->Store;
+            PhysicsWorld world = State->World;
+            int checkedJoints = 0;
+            for (uint i = 0; i < store->jointCount; i++)
+            {
+                NativeStore.JointData* joint = store->joints[i];
+                quaternion fromMotion = VesselLoadsJob.LeaderFrame(joint, world.MotionDatas, State->BuiltIndices.AsArray());
+                quaternion writtenBack = JointConstraints.WorldRotation0(joint);
+                Assert.That(fromMotion.value.Equals(writtenBack.value), Is.True, $"joint {i}: {fromMotion} and {writtenBack}");
+                checkedJoints++;
+            }
+
+            Assert.That(checkedJoints, Is.EqualTo(6), "the column's joints");
+        }
+
+        [Test]
         public void AStrutsLoadActsOnPartB()
         {
             List<Rigidbody> bodies = Column(3);

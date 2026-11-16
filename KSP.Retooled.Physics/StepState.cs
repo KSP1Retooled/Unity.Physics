@@ -254,6 +254,9 @@ namespace KSP.Retooled.Physics
         /// <summary>The world built for the simulation systems to advance.</summary>
         internal readonly PhysicsWorld World => world;
 
+        /// <summary>The index of each store body in the built world.</summary>
+        internal readonly NativeList<int> BuiltIndices => builtIndices;
+
         internal readonly int StaticsChanged => staticsChanged ? 1 : 0;
 
         private readonly NativeReference<int>.ReadOnly BuildStaticTree => (staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
@@ -606,7 +609,8 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Sizes the joint loads for this step, and schedules <see cref="VesselLoadsJob"/> when the step has vessels.
         /// Vessel joints do not produce impulse events. The solver writes their loads into the vessel set instead. The
-        /// dependency must include writing the solved poses back to the store.
+        /// dependency must include the solve. The job reads the poses of the vessel bodies from their solved motions,
+        /// so it doesn't need to wait for the poses to be written back.
         /// </summary>
         private JobHandle ScheduleVesselLoads(float deltaTime, JobHandle dependency)
         {
@@ -627,6 +631,8 @@ namespace KSP.Retooled.Physics
                 Units = jointUnits.AsArray(),
                 Groups = jointGroups.AsArray(),
                 Members = jointGroupMembers.AsArray(),
+                MotionDatas = world.MotionDatas,
+                BuiltIndices = builtIndices.AsArray(),
                 DeltaTime = deltaTime,
                 PartUnits = vesselBuild.PartUnits.AsArray(),
                 ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
@@ -672,9 +678,10 @@ namespace KSP.Retooled.Physics
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
-            // The loads of the vessel joints come from the solve, not from impulse events. Converting them needs the
-            // written-back poses, because a group shares its load in the frame of its leader's body.
-            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, writtenBack);
+            // The loads of the vessel joints come from the solve, not from impulse events. A group shares its load in
+            // the frame of its leader's body, but the job takes that body's pose from its solved motion, so it runs
+            // beside the write-back. Neither job writes what the other reads.
+            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWaitForSolve.Auto())
