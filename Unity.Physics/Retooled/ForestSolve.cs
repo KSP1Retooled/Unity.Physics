@@ -1719,7 +1719,7 @@ namespace Unity.Physics
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
-                        !run.Caps.RefactorEveryRound, &stats, out int rounds);
+                        run.Caps.FactorUpdate, &stats, out int rounds);
                     long solveTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted;
                     int changes = 0;
                     for (int i = 0; i < nb; i++)
@@ -1738,7 +1738,7 @@ namespace Unity.Physics
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(),
-                        BoundarySolver.MaxPivotingIterations, false, !run.Caps.RefactorEveryRound, null, out int rounds);
+                        BoundarySolver.MaxPivotingIterations, false, run.Caps.FactorUpdate, null, out int rounds);
                     if (run.VesselMode)
                     {
                         BoundaryCounters.AddPush(rounds, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
@@ -2477,6 +2477,18 @@ namespace Unity.Physics
         public bool RefactorEveryRound;
 
         /// <summary>
+        /// If true, and <see cref="RefactorEveryRound"/> is false, a round keeps the last round's factor up to the first
+        /// row that left the free set and inserts the rest after it, instead of deleting the rows that left wherever they
+        /// are, see <see cref="Unity.Physics.Numerics.Retooled.FactorUpdate"/>. For measuring the two ways.
+        /// </summary>
+        public bool KeepFactorPrefix;
+
+        /// <summary>The way that the boundary's rounds change their factor, from <see cref="RefactorEveryRound"/> and <see cref="KeepFactorPrefix"/>.</summary>
+        public Unity.Physics.Numerics.Retooled.FactorUpdate FactorUpdate => RefactorEveryRound
+            ? Unity.Physics.Numerics.Retooled.FactorUpdate.Refactor
+            : KeepFactorPrefix ? Unity.Physics.Numerics.Retooled.FactorUpdate.KeepPrefix : Unity.Physics.Numerics.Retooled.BoundarySolver.DefaultUpdate;
+
+        /// <summary>
         /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
         /// keys did before, instead of by its entity. For measuring what the entity keys keep.
         /// </summary>
@@ -2727,6 +2739,11 @@ namespace Unity.Physics
             Interlocked.Add(ref data.Factor.AddedRows, stats.AddedRows);
             Interlocked.Add(ref data.Factor.RemovedRows, stats.RemovedRows);
             Interlocked.Add(ref data.Factor.FactorTicks, stats.FactorTicks);
+            Interlocked.Add(ref data.Factor.SolveTicks, stats.SolveTicks);
+            Interlocked.Add(ref data.Factor.PivotTicks, stats.PivotTicks);
+            Interlocked.Add(ref data.Factor.FreeRows, stats.FreeRows);
+            Most(ref data.Factor.MostFreeRows, stats.MostFreeRows);
+            Fewest(ref data.Factor.FewestFreeRows, stats.FewestFreeRows);
             Interlocked.Add(ref data.SolveTicks, solveTicks);
             if (firstSubstep)
             {
@@ -2772,6 +2789,22 @@ namespace Unity.Physics
             Interlocked.Add(ref Shared.Data.HeldReleases, releases);
             Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
             Interlocked.Add(ref Shared.Data.HeldSupports, supports);
+        }
+
+        /// <summary>Lowers <paramref name="fewest"/> to <paramref name="value"/>. Zero counts as no value in both.</summary>
+        static void Fewest(ref long fewest, long value)
+        {
+            long seen = Interlocked.Read(ref fewest);
+            while (value > 0 && (seen == 0 || value < seen))
+            {
+                long previous = Interlocked.CompareExchange(ref fewest, value, seen);
+                if (previous == seen)
+                {
+                    break;
+                }
+
+                seen = previous;
+            }
         }
 
         static void Most(ref long most, long value)

@@ -490,11 +490,13 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
 
             // RETOOLED_BENCH_BOUNDARY=cold starts every boundary solve cold, and =uncapped also lifts the caps. Self-contact
-            // still keeps at most 25 manifolds, which is the most that the caps allow.
+            // still keeps at most 25 manifolds, which is the most that the caps allow. =refactor factors the free rows from the
+            // start in every round of pivoting, and =prefix keeps the factor up to the first row that left the free set
+            // instead of deleting the rows that left.
             string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
             VesselForest.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
-                : new BoundaryCaps { ColdStart = boundaryMode == "cold", RefactorEveryRound = boundaryMode == "refactor" };
+                : new BoundaryCaps { ColdStart = boundaryMode == "cold", RefactorEveryRound = boundaryMode == "refactor", KeepFactorPrefix = boundaryMode == "prefix" };
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             List<Rigidbody> built = Build(graph, ground, path != "vessel");
             BenchVesselSet vesselSet = null;
@@ -553,9 +555,10 @@ namespace KSP.Retooled.Physics.Tests
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
                 Unity.Physics.Numerics.Retooled.BoundarySolveStats f = boundary.Factor;
                 long laterSolves = System.Math.Max(1, boundary.Solves - boundary.FirstSubstepSolves);
-                lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / Measured:F3} ms a step (factor {f.FactorTicks * tickMs / Measured:F3}); " +
+                lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / Measured:F3} ms a step (factor {f.FactorTicks * tickMs / Measured:F3}, solves {f.SolveTicks * tickMs / Measured:F3}, checks {f.PivotTicks * tickMs / Measured:F3}); " +
                     $"rounds a solve: {f.Factorizations / (double)boundary.Solves:F2} factored, {f.Updates / (double)boundary.Solves:F2} updated, " +
                     $"{f.Reuses / (double)boundary.Solves:F2} reused, {f.CouplingRounds / (double)boundary.Solves:F2} coupling rounds; " +
+                    $"free rows a round {f.FreeRows / (double)System.Math.Max(1, f.Rounds):F1} ({f.FewestFreeRows} to {f.MostFreeRows}); " +
                     $"rows that joined / left the free set a solve {f.AddedRows / (double)boundary.Solves:F1} / {f.RemovedRows / (double)boundary.Solves:F1}; " +
                     $"warm rows that changed state a solve: first substep {boundary.FirstSubstepChanges / (double)System.Math.Max(1, boundary.FirstSubstepSolves):F1}, " +
                     $"later substeps {boundary.LaterSubstepChanges / (double)laterSolves:F1}; " +
