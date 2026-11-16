@@ -55,6 +55,18 @@ namespace Unity.Numerics.Kernels
             return a * b + c;
         }
 
+        public static float8 Fma(float8 a, float8 b, float8 c)
+        {
+            if (X86.Fma.IsFmaSupported)
+            {
+                // float8 and v256 have the same layout, so the vectors pass through without being taken apart.
+                v256 result = X86.Fma.mm256_fmadd_ps(*(v256*)&a, *(v256*)&b, *(v256*)&c);
+                return *(float8*)&result;
+            }
+
+            return a * b + c;
+        }
+
         public static double Fma(double a, double b, double c)
         {
             if (X86.Fma.IsFmaSupported)

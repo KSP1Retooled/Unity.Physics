@@ -40,7 +40,8 @@ Component Name: gemm (version 0.18.0)
 
 Source: https://github.com/sarah-ek/gemm
 
-Used in: Unity.Physics/Numerics/Kernels/Gemm.cs, which follows the shape of gemm's FMA micro-kernel for doubles.
+Used in: Unity.Physics/Numerics/Kernels/Gemm.cs and GemmFloat.cs, which follow the shape of gemm's FMA micro-kernels for
+doubles (gemm-f64) and floats (gemm-f32).
 
 License Type: MIT
 

@@ -95,6 +95,36 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return;
             }
 
+            // When A is not transposed, and A, B and C are each stored in one block with whole columns, the product
+            // goes to the GEMM kernel in Unity.Numerics.Kernels. The kernel adds up the products in another order and
+            // with fused multiply-adds, so the result can differ from the loops below in the last bits.
+            if (opA == Op.None && TryColumnMajor(A, out float* a, out int lda) && TryColumnMajor(B, out float* b, out int ldb) &&
+                TryColumnMajor(this, out float* c, out int ldc) && !Overlaps(this, c, ldc, A, a, lda) && !Overlaps(this, c, ldc, B, b, ldb))
+            {
+                for (int i = 0; i < N; i++)
+                {
+                    if (beta == 0)
+                    {
+                        Cols[i].Clear();
+                    }
+                    else if (beta != 1)
+                    {
+                        Cols[i].Scale(beta);
+                    }
+                }
+
+                if (opB == Op.None)
+                {
+                    Unity.Numerics.Kernels.Blas.GemmNN(M, N, K, alpha, a, lda, b, ldb, c, ldc);
+                }
+                else
+                {
+                    Unity.Numerics.Kernels.Blas.GemmNT(M, N, K, alpha, a, lda, b, ldb, c, ldc);
+                }
+
+                return;
+            }
+
             // start
             if (opB == Op.None)
             {
@@ -189,6 +219,46 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Finds whether the matrix is stored in column-major order in one block: every column is a line of floats, and
+        /// the columns are the same distance apart. If it is, returns the first entry and that distance.
+        /// </summary>
+        static bool TryColumnMajor(in Matrix matrix, out float* first, out int columnStride)
+        {
+            first = null;
+            columnStride = 0;
+            int columns = matrix.NumCols;
+            if (columns == 0 || matrix.NumRows == 0)
+            {
+                return false;
+            }
+
+            first = matrix.Cols[0].ReinterpretCast<float>();
+            columnStride = columns > 1 ? (int)(matrix.Cols[1].ReinterpretCast<float>() - first) : matrix.NumRows;
+            if (columnStride < matrix.NumRows)
+            {
+                return false;
+            }
+
+            for (int j = 0; j < columns; j++)
+            {
+                if (matrix.Cols[j].Stride != 1 || matrix.Cols[j].ReinterpretCast<float>() != first + (long)j * columnStride)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>Whether the storage of two column-major matrices overlaps.</summary>
+        static bool Overlaps(in Matrix x, float* xFirst, int xStride, in Matrix y, float* yFirst, int yStride)
+        {
+            float* xEnd = xFirst + (long)(x.NumCols - 1) * xStride + x.NumRows;
+            float* yEnd = yFirst + (long)(y.NumCols - 1) * yStride + y.NumRows;
+            return xFirst < yEnd && yFirst < xEnd;
         }
 
         /// <summary>
