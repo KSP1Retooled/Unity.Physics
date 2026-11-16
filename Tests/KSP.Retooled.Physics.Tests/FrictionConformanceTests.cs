@@ -101,13 +101,18 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(friction, Is.EqualTo(expected).Within(0.03f));
         }
 
+        /// <summary>
+        /// The sphere and the ground wear a material of their own. The default material is a project setting: the game's
+        /// project sets one with a coefficient of 0.25, but a new project uses Unity's, which has 0.6.
+        /// </summary>
         [Test]
         public void ASlidingSphereSpendsItsCoefficient()
         {
-            Ground();
+            Wear(Ground(), Material(0.25f));
             GameObject sphere = Track(new GameObject("sphere"));
             sphere.transform.position = new Vector3(0.0f, 0.5f, 0.0f);
             sphere.AddComponent<SphereCollider>();
+            Wear(sphere, Material(0.25f));
             Rigidbody body = sphere.AddComponent<Rigidbody>();
             body.freezeRotation = true;
 
@@ -228,12 +233,19 @@ namespace KSP.Retooled.Physics.Tests
             AssertSettles(Plank(), DynamicBox(new Vector3(0.0f, 0.7f, 0.0f)));
         }
 
+        /// <summary>
+        /// The ground, the plank and the box wear a material of their own, as in <see cref="ASlidingSphereSpendsItsCoefficient"/>.
+        /// With Unity's default material, the ground stops the plank in about 6 mm, short of what the test needs to see.
+        /// </summary>
         [Test]
         public void ABoxRidesAMovingPlank()
         {
-            Ground();
+            PhysicsMaterial material = Material(0.25f);
+            Wear(Ground(), material);
             Rigidbody plank = Plank();
             Rigidbody box = DynamicBox(new Vector3(0.0f, 0.7f, 0.0f));
+            Wear(plank.gameObject, material);
+            Wear(box.gameObject, material);
             Simulate(50);
 
             plank.linearVelocity = new Vector3(0.5f, 0.0f, 0.0f);
