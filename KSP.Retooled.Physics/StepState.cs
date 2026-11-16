@@ -42,6 +42,7 @@ namespace KSP.Retooled.Physics
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
+        private NativeReference<int> partitionResult;
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
@@ -135,6 +136,7 @@ namespace KSP.Retooled.Physics
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
+            partitionResult = new NativeReference<int>(1, Allocator.Persistent);
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
@@ -197,6 +199,7 @@ namespace KSP.Retooled.Physics
             dynamicIndices.Dispose();
             staticIndices.Dispose();
             builtIndices.Dispose();
+            partitionResult.Dispose();
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
@@ -998,34 +1001,16 @@ namespace KSP.Retooled.Physics
             vesselsFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
-                dynamicIndices.Clear();
-                staticIndices.Clear();
-                builtIndices.ResizeUninitialized((int)store->bodyCount);
-                motionsMatchStore = true;
-                for (int i = 0; i < store->bodyCount; i++)
+                new PartitionBodiesJob
                 {
-                    NativeStore.BodyFlags flags = store->bodies[i].flags;
-                    builtIndices[i] = -1;
-                    if ((flags & NativeStore.BodyFlags.Simulated) == 0)
-                    {
-                        continue;
-                    }
-
-                    if ((flags & NativeStore.BodyFlags.Static) != 0)
-                    {
-                        builtIndices[i] = staticIndices.Length;
-                        staticIndices.Add(i);
-                    }
-                    else
-                    {
-                        builtIndices[i] = dynamicIndices.Length;
-                        dynamicIndices.Add(i);
-                        if ((flags & PosedByWriteBack) != 0)
-                        {
-                            motionsMatchStore = false;
-                        }
-                    }
-                }
+                    World = store,
+                    DynamicIndices = dynamicIndices,
+                    StaticIndices = staticIndices,
+                    BuiltIndices = builtIndices,
+                    PosedByWriteBack = PosedByWriteBack,
+                    MotionsMatchStore = partitionResult,
+                }.Run();
+                motionsMatchStore = partitionResult.Value != 0;
 
                 // Indices in the static tree are relative to the static bodies. Queries and pair finding add the number
                 // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
@@ -1033,14 +1018,6 @@ namespace KSP.Retooled.Physics
                 builtStaticsVersion = store->staticsVersion;
                 treeMatchesHeld = builtWhole;
                 builtWhole = false;
-
-                for (int i = 0; i < builtIndices.Length; i++)
-                {
-                    if (builtIndices[i] >= 0 && (store->bodies[i].flags & NativeStore.BodyFlags.Static) != 0)
-                    {
-                        builtIndices[i] += dynamicIndices.Length;
-                    }
-                }
             }
 
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
@@ -1239,7 +1216,8 @@ namespace KSP.Retooled.Physics
                         OtherJoints = otherJoints,
                         OtherGroups = otherGroups,
                     }.Schedule(emitted);
-                    vesselsFilled = JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed);
+                    JobHandle loadsCleared = vesselBuild.ScheduleClearLoads(dependency);
+                    vesselsFilled = JobHandle.CombineDependencies(JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed), loadsCleared);
                 }
 
                 JobHandle laidOut = new LayOutJointsJob

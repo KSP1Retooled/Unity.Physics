@@ -799,9 +799,21 @@ namespace Unity.Physics
                 Gravity = gravity,
             }.Schedule(count, 32, inputDeps);
 
-            return new RefitDynamicTreeJob
+            // The subtrees below the cut are fitted in parallel, one iteration per subtree, and then one job fits the
+            // few nodes above the cut. Before, a single job fitted the whole tree, and it was the last job of the
+            // step. With 11,000 bodies it took 0.6 ms in the step, and 0.4 ms alone after the caches were flushed,
+            // against 0.2 ms with the nodes and bounds in the caches. Most of that time goes to waiting for memory:
+            // each node that the job reads tells it which nodes to read next.
+            Broadphase.Tree tree = Broadphase.DynamicTree;
+            handle = new RefitDynamicSubtreesJob
             {
-                Tree = Broadphase.DynamicTree,
+                Tree = tree,
+                Aabbs = aabbs,
+            }.Schedule(BoundingVolumeHierarchy.RefitSubtreeCount, 1, handle);
+
+            return new RefitDynamicTreeTopJob
+            {
+                Tree = tree,
                 Aabbs = aabbs,
             }.Schedule(handle);
         }
@@ -850,9 +862,33 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>Fits the dynamic tree's nodes to the bounds from <see cref="UpdateDynamicBoundsJob"/>.</summary>
+        /// <summary>
+        /// Fits one subtree below the cut of the dynamic tree to the bounds from <see cref="UpdateDynamicBoundsJob"/>
+        /// in each iteration. No two iterations fit the same node.
+        /// </summary>
         [BurstCompile]
-        struct RefitDynamicTreeJob : IJob
+        struct RefitDynamicSubtreesJob : IJobParallelFor
+        {
+            [NativeDisableContainerSafetyRestriction]
+            public Broadphase.Tree Tree;
+
+            [ReadOnly]
+            public NativeArray<Aabb> Aabbs;
+
+            public void Execute(int slot)
+            {
+                BoundingVolumeHierarchy bvh = Tree.BoundingVolumeHierarchy;
+                int root = bvh.FindRefitSubtree(slot);
+                if (root != 0)
+                {
+                    bvh.RefitSubtree(root, Aabbs);
+                }
+            }
+        }
+
+        /// <summary>Fits the nodes above the cut of the dynamic tree, after <see cref="RefitDynamicSubtreesJob"/>.</summary>
+        [BurstCompile]
+        struct RefitDynamicTreeTopJob : IJob
         {
             [NativeDisableContainerSafetyRestriction]
             public Broadphase.Tree Tree;
@@ -862,7 +898,7 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                Tree.BoundingVolumeHierarchy.RefitFromRoot(Aabbs);
+                Tree.BoundingVolumeHierarchy.RefitAboveCut();
             }
         }
 

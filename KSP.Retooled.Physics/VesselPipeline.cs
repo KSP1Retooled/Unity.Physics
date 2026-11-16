@@ -403,9 +403,85 @@ namespace KSP.Retooled.Physics
         /// </summary>
         public void ChooseStepVessels(NativeStore.WorldData* store, NativeArray<int> builtIndices, int dynamicCount)
         {
+            // The job that finds islands reads the parts' bodies, so the job below fills them now. Only the solve waits
+            // for the jobs that fill the edges and closures. Burst runs the loops over the parts much faster than C#.
+            int parts = PartStoreBodies.Length;
+            Active.ResizeUninitialized(Vessels.Length);
+            PartBodies.ResizeUninitialized(parts);
+            new ChooseStepVesselsJob
+            {
+                World = store,
+                BuiltIndices = builtIndices,
+                DynamicCount = dynamicCount,
+                Vessels = Vessels.AsArray(),
+                PartStoreBodies = PartStoreBodies.AsArray(),
+                Active = Active.AsArray(),
+                PartBodies = PartBodies.AsArray(),
+                StepVessels = StepVessels,
+            }.Run();
+
+            Edges.ResizeUninitialized(parts);
+            EdgeLoads.ResizeUninitialized(parts);
+            EdgeLocked.ResizeUninitialized(parts);
+            Closures.ResizeUninitialized(ClosureUnits.Length);
+            ClosureLoads.ResizeUninitialized(ClosureUnits.Length);
+        }
+
+        /// <summary>
+        /// Schedules a job that clears the loads and lock flags of every part and closure. The solver writes them only
+        /// for the vessels that it solves, so the loads of all other vessels stay zero. Only the solve and the jobs
+        /// after it read these arrays, so the solve must wait for the returned handle. Clearing them on the main thread
+        /// took 0.28 ms with four Tu-160s, because other cores had written the arrays in the last step.
+        /// </summary>
+        public JobHandle ScheduleClearLoads(JobHandle dependency)
+        {
+            return new ClearVesselLoadsJob
+            {
+                EdgeLoads = EdgeLoads.AsArray(),
+                ClosureLoads = ClosureLoads.AsArray(),
+                EdgeLocked = EdgeLocked.AsArray(),
+            }.Schedule(dependency);
+        }
+    }
+
+    /// <summary>See <see cref="VesselBuild.ScheduleClearLoads"/>.</summary>
+    [BurstCompile]
+    internal unsafe struct ClearVesselLoadsJob : IJob
+    {
+        public NativeArray<VesselEdgeLoad> EdgeLoads;
+        public NativeArray<VesselEdgeLoad> ClosureLoads;
+        public NativeArray<bool> EdgeLocked;
+
+        public void Execute()
+        {
+            UnsafeUtility.MemClear(EdgeLoads.GetUnsafePtr(), (long)EdgeLoads.Length * sizeof(VesselEdgeLoad));
+            UnsafeUtility.MemClear(ClosureLoads.GetUnsafePtr(), (long)ClosureLoads.Length * sizeof(VesselEdgeLoad));
+            UnsafeUtility.MemClear(EdgeLocked.GetUnsafePtr(), EdgeLocked.Length);
+        }
+    }
+
+    /// <summary>
+    /// Chooses the vessels that take part in the step, as <see cref="VesselBuild.ChooseStepVessels"/> describes, and
+    /// fills each part's built body. The main thread runs this job.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct ChooseStepVesselsJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        [ReadOnly] public NativeArray<int> BuiltIndices;
+        public int DynamicCount;
+        [ReadOnly] public NativeArray<VesselRecord> Vessels;
+        [ReadOnly] public NativeArray<int> PartStoreBodies;
+        [WriteOnly] public NativeArray<byte> Active;
+        [WriteOnly] public NativeArray<int> PartBodies;
+        public NativeList<VesselRecord> StepVessels;
+
+        public void Execute()
+        {
             const NativeStore.BodyFlags held = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
             StepVessels.Clear();
-            Active.ResizeUninitialized(Vessels.Length);
             for (int v = 0; v < Vessels.Length; v++)
             {
                 VesselRecord vessel = Vessels[v];
@@ -413,8 +489,8 @@ namespace KSP.Retooled.Physics
                 for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount && takesPart; part++)
                 {
                     int storeBody = PartStoreBodies[part];
-                    int built = builtIndices[storeBody];
-                    takesPart = built >= 0 && built < dynamicCount && (store->bodies[storeBody].flags & held) == 0;
+                    int built = BuiltIndices[storeBody];
+                    takesPart = built >= 0 && built < DynamicCount && (World->bodies[storeBody].flags & held) == 0;
                 }
 
                 Active[v] = takesPart ? (byte)1 : (byte)0;
@@ -424,27 +500,10 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            int parts = PartStoreBodies.Length;
-            PartBodies.ResizeUninitialized(parts);
-
-            // The job that finds islands reads the parts' bodies, so fill them here. Only the solve waits for the jobs
-            // that fill the edges and closures.
-            for (int part = 0; part < parts; part++)
+            for (int part = 0; part < PartStoreBodies.Length; part++)
             {
-                PartBodies[part] = builtIndices[PartStoreBodies[part]];
+                PartBodies[part] = BuiltIndices[PartStoreBodies[part]];
             }
-
-            Edges.ResizeUninitialized(parts);
-            EdgeLoads.ResizeUninitialized(parts);
-            EdgeLocked.ResizeUninitialized(parts);
-            Closures.ResizeUninitialized(ClosureUnits.Length);
-            ClosureLoads.ResizeUninitialized(ClosureUnits.Length);
-
-            // The solver writes loads for the vessels that it solves. Clear the arrays so that loads for all other
-            // vessels are zero.
-            UnsafeUtility.MemClear(EdgeLoads.GetUnsafePtr(), (long)parts * sizeof(VesselEdgeLoad));
-            UnsafeUtility.MemClear(ClosureLoads.GetUnsafePtr(), (long)ClosureLoads.Length * sizeof(VesselEdgeLoad));
-            UnsafeUtility.MemClear(EdgeLocked.GetUnsafePtr(), parts);
         }
     }
 
