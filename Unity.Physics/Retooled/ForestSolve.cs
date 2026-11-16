@@ -31,6 +31,14 @@ namespace Unity.Physics
         const byte HeldRowClass = 4;
 
         /// <summary>
+        /// A one-sided joint row that stays out of a vessel island's boundary for this solve, because the bodies' motion
+        /// over the step keeps the row more than <see cref="BoundaryCaps.DormantMargin"/> from its stop. Examples are a
+        /// limit far from its stop and a wheel that is far from bottoming out. The row takes no impulse in this solve.
+        /// The next solve checks the row again, and the row joins the boundary when it comes near its stop.
+        /// </summary>
+        const byte DormantRowClass = 5;
+
+        /// <summary>
         /// One island's solve as a forest plus a boundary, see <see cref="ForestSettings"/>. Holds what a second solve with
         /// a changed right-hand side reuses: the factor (in the island's <see cref="ForestIsland"/>), the classes of the
         /// rows and the boundary block W = J_b A^-1 J_b^T + E_b; and, for sections of more than one body, what turns the
@@ -574,6 +582,10 @@ namespace Unity.Physics
             if (run.VesselMode && run.Bounded)
             {
                 CapBoundary(ref run);
+                if (!run.Caps.KeepDormantRows)
+                {
+                    MarkDormantRows(ref run);
+                }
             }
 
             var boundary = new NativeArray<int>(math.max(1, boundaryRows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -897,6 +909,82 @@ namespace Unity.Physics
             outsidePoints.Dispose();
             outsideBlocks.Dispose();
             selfManifolds.Dispose();
+        }
+
+        /// <summary>
+        /// Marks the dormant rows of a vessel island's boundary, see <see cref="DormantRowClass"/>. A dormant row is a
+        /// joint row with one bound at zero and no other bound, which is how a limit's row or a wheel's bottom-out row
+        /// looks once the row is armed. The test uses the velocities that the vessel's own rows and the fixed rows give
+        /// the sections, before the boundary acts. A row whose impulse may only be positive is out of reach if those
+        /// velocities move it away from its stop by more than the margin over one step, and the same holds the other way
+        /// round for a row whose impulse may only be negative. Contact rows and coupled rows always stay in the boundary.
+        /// </summary>
+        static unsafe void MarkDormantRows(ref ForestRun run)
+        {
+            if (run.Headers == null || !run.BaseVelocity.IsCreated || run.Timestep <= 0.0f)
+            {
+                return;
+            }
+
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            int rows = problem.RowCount;
+            var coupled = new NativeArray<bool>(math.max(1, rows), Allocator.Temp);
+            for (int c = 0; c < problem.CouplingCount; c++)
+            {
+                BoundCoupling coupling = problem.Couplings[c];
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    coupled[row] = true;
+                }
+
+                for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                {
+                    coupled[row] = true;
+                }
+            }
+
+            double* velocity = (double*)run.BaseVelocity.GetUnsafeReadOnlyPtr();
+            double margin = BoundaryCaps.DormantMargin / (double)run.Timestep;
+            int dormant = 0;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                JacobianHeader* header = run.Headers[b];
+                if (block.RowCount == 0 || header == null || header->Type == JacobianType.Contact)
+                {
+                    continue;
+                }
+
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                {
+                    if (run.RowClass[row] != BoundaryRowClass || coupled[row])
+                    {
+                        continue;
+                    }
+
+                    float lower = problem.Lower[row], upper = problem.Upper[row];
+                    bool pushes = lower == 0.0f && upper >= float.MaxValue;
+                    bool pulls = upper == 0.0f && lower <= -float.MaxValue;
+                    if (!pushes && !pulls)
+                    {
+                        continue;
+                    }
+
+                    // The row's free impulse has the sign of rhs - J v. A row that may only push stays slack while J v is
+                    // above rhs, and a row that may only pull stays slack while J v is below rhs.
+                    double speed = BlockRows.Dot(velocity, run.BlockSections[run.RowBlock[row]],
+                        run.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    double slack = speed - problem.RightHandSide[row];
+                    if ((pushes && slack > margin) || (pulls && -slack > margin))
+                    {
+                        run.RowClass[row] = DormantRowClass;
+                        dormant++;
+                    }
+                }
+            }
+
+            coupled.Dispose();
+            BoundaryCounters.AddDormant(dormant);
         }
 
         /// <summary>Whether a block joins two parts of the same vessel.</summary>
@@ -1445,7 +1533,7 @@ namespace Unity.Physics
                 {
                     impulses[row] = problem.Lower[row];
                 }
-                else if (rowClass == SectionRowClass || rowClass == HeldRowClass)
+                else if (rowClass == SectionRowClass || rowClass == HeldRowClass || rowClass == DormantRowClass)
                 {
                     impulses[row] = 0.0f;
                 }
@@ -1953,6 +2041,18 @@ namespace Unity.Physics
         /// </summary>
         public bool ColdStart;
 
+        /// <summary>
+        /// If true, every one-sided joint row stays in the boundary, even when the row is far from its stop. If false, the
+        /// solve leaves out a dormant row, see <see cref="Solver"/>'s MarkDormantRows. RETOOLED_DORMANT_ROWS=0 sets this.
+        /// </summary>
+        public bool KeepDormantRows;
+
+        /// <summary>
+        /// How far, in metres or radians, a one-sided joint row must stay from its stop over the step for the solve to
+        /// leave it out of the boundary.
+        /// </summary>
+        public const float DormantMargin = 0.005f;
+
         public const int DefaultOutsideContactPoints = 256;
         public const int DefaultPointsPerManifold = 4;
         public const int DefaultSelfContactManifolds = 8;
@@ -2061,6 +2161,9 @@ namespace Unity.Physics
         public long MostOutsidePoints;
         public long MostSelfManifolds;
 
+        /// <summary>Joint rows that the solves left out of the boundary because they were dormant.</summary>
+        public long DormantRows;
+
         static readonly SharedStatic<BoundaryCounters> Shared = SharedStatic<BoundaryCounters>.GetOrCreate<BoundaryCounters>();
 
         /// <summary>The counts so far. Read them on the main thread between steps.</summary>
@@ -2093,6 +2196,11 @@ namespace Unity.Physics
             Interlocked.Add(ref data.HeldSelfManifolds, heldManifolds);
             Most(ref data.MostOutsidePoints, outsidePoints);
             Most(ref data.MostSelfManifolds, selfManifolds);
+        }
+
+        internal static void AddDormant(int dormantRows)
+        {
+            Interlocked.Add(ref Shared.Data.DormantRows, dormantRows);
         }
 
         static void Most(ref long most, long value)
