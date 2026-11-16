@@ -52,6 +52,8 @@ namespace KSP.Retooled.Physics
             }
 
             initialized = true;
+            string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
+            Unity.Physics.Solver.VesselFused = fused != "0";
             string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
             if (string.IsNullOrEmpty(value))
             {

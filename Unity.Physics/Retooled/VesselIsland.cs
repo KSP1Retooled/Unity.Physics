@@ -141,6 +141,142 @@ namespace Unity.Physics
             }
         }
 
+        static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Fused");
+
+        /// <summary>
+        /// Solves an island that holds only vessels, with no contacts and no joint rows, for every substep of the
+        /// step. The island's moving parts are numbered once for the step. In each substep, the team's lanes fill the
+        /// parts from the bodies, the kernel factors and solves the vessels' own rows, and the lanes compute the loads.
+        /// Then the lanes give each body the motion of its section and integrate the body in the same pass, so the
+        /// island needs no sparse setup, no separate impulse pass and no separate integration job.
+        /// </summary>
+        static unsafe void SolveFusedVesselIsland(int islandIndex, int* islandVessels, int islandVesselCount,
+            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, StepInput stepInput,
+            SparseSolveTeam* team)
+        {
+            using ProfilerMarker.AutoScope span = VesselFusedMarker.Auto();
+            VesselSet set = stepInput.VesselSet;
+            var motions = (MotionVelocity*)motionVelocities.GetUnsafePtr();
+            int motionCount = motionVelocities.Length;
+            var compactOfWorld = new NativeArray<int>(math.max(1, motionCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            UnsafeUtility.MemSet(compactOfWorld.GetUnsafePtr(), 0xFF, compactOfWorld.Length * (long)sizeof(int));
+            var worldBodies = new NativeList<int>(Allocator.Temp);
+            for (int v = 0; v < islandVesselCount; v++)
+            {
+                VesselRecord vessel = set.Vessels[islandVessels[v]];
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    int body = Moving(set.PartBodies[part], motions, motionCount);
+                    if (body >= 0 && compactOfWorld[body] < 0)
+                    {
+                        compactOfWorld[body] = worldBodies.Length;
+                        worldBodies.Add(body);
+                    }
+                }
+            }
+
+            ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
+            bool temporary = forest == null;
+            if (temporary)
+            {
+                forest = ForestIsland.Create();
+            }
+
+            var problem = new SparseConstraintSolver.Problem { BodyCount = worldBodies.Length };
+            var bodyLinear = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int substep = 0; substep < stepInput.NumSubsteps; substep++)
+            {
+                var run = new ForestRun
+                {
+                    Forest = forest,
+                    Problem = problem,
+                    Bounded = false,
+                    VesselMode = true,
+                    Vessels = set,
+                    IslandVessels = islandVessels,
+                    IslandVesselCount = islandVesselCount,
+                    WorldBodies = (int*)worldBodies.GetUnsafeReadOnlyPtr(),
+                    CompactOfWorld = (int*)compactOfWorld.GetUnsafeReadOnlyPtr(),
+                    CompactOfWorldLength = compactOfWorld.Length,
+                    MotionVelocities = motions,
+                    MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
+                    Timestep = stepInput.Timestep,
+                    Team = team,
+                };
+
+                int builds = forest->StructureBuilds;
+                long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                PrepareVesselParts(ref run, substep);
+                StartVesselRun(ref run);
+                long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - started);
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFactorTime, run.FactorTicks);
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
+                stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestSolves);
+                stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
+
+                // With no boundary rows, the sections' velocities are the ones from the vessels' own rows.
+                UnsafeUtility.MemCpy(run.Velocity.GetUnsafePtr(), run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
+                long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
+
+                ref VesselContext context = ref forest->Context;
+                UnsafeUtility.MemCpy(context.Solution, run.Velocity.GetUnsafeReadOnlyPtr(), 6L * forest->SectionCount * sizeof(double));
+                UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
+                RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
+                FinishVesselSections(ref run);
+                var tasks = new VesselTasks
+                {
+                    Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                    Phase = VesselTasks.MoveBodies,
+                    Count = forest->Parts.Length,
+                    Linear = (float3*)bodyLinear.GetUnsafePtr(),
+                    Angular = (float3*)bodyAngular.GetUnsafePtr(),
+                    MotionVelocities = motionVelocities,
+                    MotionDatas = motionDatas,
+                };
+                SparseSolveTeam.RunAll(team, &tasks, SparseSolveTeam.ForestVesselKind, (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
+                    Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
+
+                WriteVesselLoads(ref run, substep, stepInput.NumSubsteps);
+                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
+                    Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
+                run.Dispose();
+            }
+
+            bodyLinear.Dispose();
+            bodyAngular.Dispose();
+            compactOfWorld.Dispose();
+            worldBodies.Dispose();
+            if (temporary)
+            {
+                ForestIsland.Destroy(forest);
+            }
+        }
+
+        /// <summary>
+        /// For the fused vessel solve: gives one part's body the motion of its section, as an impulse in the same way
+        /// as the sparse solve applies it, and then integrates the body over the substep.
+        /// </summary>
+        static unsafe void MoveVesselBody(ref ForestRun run, VesselTasks* tasks, int part)
+        {
+            int body = run.Forest->PartBody[part];
+            if (body < 0)
+            {
+                return;
+            }
+
+            PartImpulse(ref run, part, tasks->Linear, tasks->Angular, false);
+            int worldBody = run.WorldBodies[body];
+            ref MotionVelocity velocity = ref UnsafeUtility.ArrayElementAsRef<MotionVelocity>(tasks->MotionVelocities.GetUnsafePtr(), worldBody);
+            velocity.ApplyLinearImpulse(tasks->Linear[body]);
+            quaternion motionFromWorld = math.conjugate(run.MotionDatas[worldBody].WorldFromMotion.rot);
+            velocity.ApplyAngularImpulse(math.rotate(motionFromWorld, tasks->Angular[body]));
+            Integrator.IntegrateMotion(worldBody, tasks->MotionDatas, tasks->MotionVelocities, run.Timestep);
+        }
+
         /// <summary>
         /// Arranges the island's parts in order: first the parts of each vessel, then a separate part for each moving
         /// body that is not in a vessel. If the vessels or extra bodies have changed, preserves the lock states for
@@ -1115,6 +1251,7 @@ namespace Unity.Physics
             public const int SharedPrefix = 11;
             public const int SharedEdgeLoads = 12;
             public const int FillEdges = 13;
+            public const int MoveBodies = 14;
 
             public ForestRun* Run;
             public int Phase;
@@ -1133,6 +1270,10 @@ namespace Unity.Physics
             /// </summary>
             public int VesselParts;
             public int Rebuild;
+
+            /// <summary>For <see cref="MoveBodies"/>: the bodies that the fused vessel solve moves and integrates.</summary>
+            public NativeArray<MotionVelocity> MotionVelocities;
+            public NativeArray<MotionData> MotionDatas;
 
             /// <summary>
             /// For the stages of a shared section: the section, its range of positions, the centre for the inertia sums,
@@ -1193,6 +1334,9 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.WriteLoads:
                         WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
+                        break;
+                    case VesselTasks.MoveBodies:
+                        MoveVesselBody(ref run, tasks, item);
                         break;
                     case VesselTasks.FillEdges:
                         if (item >= tasks->VesselParts)

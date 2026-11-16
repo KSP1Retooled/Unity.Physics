@@ -214,6 +214,33 @@ namespace Unity.Physics
             substepInput.NumSubsteps = substeps;
             substepInput.DisableExportEvents = true;
 
+            // Mark the islands that the fused vessel job solves, and their bodies, which the substeps' integration
+            // then skips. The fused job runs beside the substeps' jobs, because the two never touch the same bodies.
+            bool fusedVessels = VesselFused;
+            var fusedBodies = new NativeArray<byte>(math.max(1, world.MotionVelocities.Length), Allocator.TempJob);
+            JobHandle fused = default;
+            if (fusedVessels)
+            {
+                handle = new MarkFusedVesselIslandsJob
+                {
+                    Islands = work.Islands,
+                    IslandVessels = work.IslandVessels,
+                    Vessels = stepInput.VesselSet,
+                    MotionVelocities = world.MotionVelocities,
+                    FusedBodies = fusedBodies,
+                }.Schedule(handle);
+
+                fused = new SolveFusedVesselIslandsJob
+                {
+                    Islands = work.Islands.AsDeferredJobArray(),
+                    IslandVessels = work.IslandVessels.AsDeferredJobArray(),
+                    MotionVelocities = world.MotionVelocities,
+                    MotionDatas = world.MotionDatas,
+                    StepInput = substepInput,
+                    Team = work.Buffers.Teams->Ptr + substeps,
+                }.Schedule(lanes, 1, handle);
+            }
+
             for (int substep = 0; substep < substeps; substep++)
             {
                 substepInput.CurrentSubstep = substep;
@@ -283,10 +310,13 @@ namespace Unity.Physics
                     IslandBodies = info.IslandBodies.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
+                    FusedBodies = fusedBodies,
                     Timestep = substepInput.Timestep,
                 }.Schedule(info.IslandBodies, bodiesPerBatch, handle);
             }
 
+            handle = JobHandle.CombineDependencies(handle, fused);
+            handle = fusedBodies.Dispose(handle);
             return work.Dispose(handle);
         }
 
@@ -337,7 +367,37 @@ namespace Unity.Physics
             /// Smaller islands are solved independently in parallel.
             /// </summary>
             public bool SolvesInTeam => Rows >= SharedSolveRows || VesselParts >= SharedSolveParts;
+
+            /// <summary>
+            /// Whether <see cref="SolveFusedVesselIslandsJob"/> solves this island for the whole step. The jobs of each
+            /// substep then skip it.
+            /// </summary>
+            public bool Fused;
         }
+
+        /// <summary>
+        /// Whether a large island that holds only vessels, with no contacts and no other joints that have rows, is
+        /// solved by one fused job for the whole step. That job fills the parts, solves, writes the loads and
+        /// integrates the parts' bodies in every substep, without the per-body setup of the sparse solve and without
+        /// the separate integration job. It is on by default. The backend reads RETOOLED_VESSEL_FUSED when the first
+        /// world attaches, and the value 0 turns it off. The flag is stored in a SharedStatic, because the jobs are
+        /// scheduled from Burst code.
+        /// </summary>
+        public static bool VesselFused
+        {
+            get => !VesselFusedOff.Data;
+            set => VesselFusedOff.Data = !value;
+        }
+
+        struct VesselFusedKey { }
+
+        static readonly SharedStatic<bool> VesselFusedOff = SharedStatic<bool>.GetOrCreate<VesselFusedKey>();
+
+        /// <summary>
+        /// The number of vessel parts at which an island with only vessels goes to the fused vessel job. A smaller
+        /// island stays with the substeps' jobs, which solve the small islands in parallel with each other.
+        /// </summary>
+        const int FusedVesselParts = 256;
 
         /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
         const int SharedSolveParts = 256;
@@ -404,9 +464,10 @@ namespace Unity.Physics
 
             public DirectIslandBuffers(int substeps, Allocator allocator)
             {
-                Teams = UnsafeList<SparseSolveTeam>.Create(substeps, allocator);
-                Teams->Resize(substeps, NativeArrayOptions.ClearMemory);
-                for (int substep = 0; substep < substeps; substep++)
+                // The team after the substeps' teams belongs to the fused vessel job.
+                Teams = UnsafeList<SparseSolveTeam>.Create(substeps + 1, allocator);
+                Teams->Resize(substeps + 1, NativeArrayOptions.ClearMemory);
+                for (int substep = 0; substep <= substeps; substep++)
                 {
                     Teams->ElementAt(substep).Configure();
                 }
@@ -961,7 +1022,7 @@ namespace Unity.Physics
             DirectIsland island = islands[islandIndex];
             using (DirectSolveMarker.Auto())
             {
-                if (island.Rows > 0 || island.VesselCount > 0)
+                if (!island.Fused && (island.Rows > 0 || island.VesselCount > 0))
                 {
                     JacobianRows rows = work.Rows(island);
                     Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
@@ -989,11 +1050,124 @@ namespace Unity.Physics
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionData> MotionDatas;
 
+            /// <summary>Whether the fused vessel job integrates each body itself.</summary>
+            [ReadOnly]
+            public NativeArray<byte> FusedBodies;
+
             public float Timestep;
 
             public void Execute(int index)
             {
-                Integrator.IntegrateMotion(IslandBodies[index], MotionDatas, MotionVelocities, Timestep);
+                int body = IslandBodies[index];
+                if (FusedBodies[body] == 0)
+                {
+                    Integrator.IntegrateMotion(body, MotionDatas, MotionVelocities, Timestep);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Marks each large island that holds only vessels, with no contacts and no joint rows, for the fused vessel
+        /// job, and marks the moving bodies of those islands' vessels.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct MarkFusedVesselIslandsJob : IJob
+        {
+            public NativeList<DirectIsland> Islands;
+
+            [ReadOnly]
+            public NativeList<int> IslandVessels;
+
+            public VesselSet Vessels;
+
+            // The job reads only whether each body is kinematic. The integration of the bodies outside islands can run
+            // at the same time, and it changes only their velocities and poses.
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            public NativeArray<byte> FusedBodies;
+
+            public void Execute()
+            {
+                var motions = (MotionVelocity*)MotionVelocities.GetUnsafeReadOnlyPtr();
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    DirectIsland island = Islands[i];
+                    if (island.VesselCount == 0 || island.VesselParts < FusedVesselParts || island.JointRows > 0 || island.Rows > 0
+                        || island.JointEnd != island.HeaderEnd)
+                    {
+                        continue;
+                    }
+
+                    island.Fused = true;
+                    Islands[i] = island;
+                    for (int v = island.FirstVessel; v < island.FirstVessel + island.VesselCount; v++)
+                    {
+                        VesselRecord vessel = Vessels.Vessels[IslandVessels[v]];
+                        for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                        {
+                            int body = Moving(Vessels.PartBodies[part], motions, MotionVelocities.Length);
+                            if (body >= 0)
+                            {
+                                FusedBodies[body] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Solves every island that <see cref="MarkFusedVesselIslandsJob"/> marked, for all the substeps of the step.
+        /// The first lane leads, and the others help with the stages that split the parts into ranges.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct SolveFusedVesselIslandsJob : IJobParallelFor
+        {
+            // The substeps' jobs change the row counts of the islands while this job runs. This job reads only the
+            // fields that say which islands are fused and which vessels they hold, and those fields do not change.
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<DirectIsland> Islands;
+
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<int> IslandVessels;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionVelocity> MotionVelocities;
+
+            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
+            public NativeArray<MotionData> MotionDatas;
+
+            public StepInput StepInput;
+
+            [NativeDisableUnsafePtrRestriction]
+            public SparseSolveTeam* Team;
+
+            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.HelpFused");
+
+            public void Execute(int lane)
+            {
+                if (!Team->TryLead())
+                {
+                    using (HelpMarker.Auto())
+                    {
+                        Team->Help();
+                    }
+
+                    return;
+                }
+
+                for (int islandIndex = 0; islandIndex < Islands.Length; islandIndex++)
+                {
+                    DirectIsland island = Islands[islandIndex];
+                    if (island.Fused)
+                    {
+                        SolveFusedVesselIsland(islandIndex, (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel,
+                            island.VesselCount, MotionVelocities, MotionDatas, StepInput, Team);
+                    }
+                }
+
+                Team->Finish();
             }
         }
     }
