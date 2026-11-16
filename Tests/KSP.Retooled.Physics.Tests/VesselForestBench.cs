@@ -359,6 +359,12 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.BoundaryRowCap = string.IsNullOrEmpty(cap) ? VesselForest.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
             string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
             VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
+
+            // RETOOLED_BENCH_BOUNDARY=cold starts every boundary solve cold, and =uncapped also lifts the caps.
+            string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
+            VesselForest.Caps = boundaryMode == "uncapped"
+                ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
+                : new BoundaryCaps { ColdStart = boundaryMode == "cold" };
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             List<Rigidbody> built = Build(graph, ground, path != "vessel");
             BenchVesselSet vesselSet = null;
@@ -375,6 +381,7 @@ namespace KSP.Retooled.Physics.Tests
                 out _, out _, out _);
             double settle0 = VesselForest.SettleMilliseconds;
             double[] serial0 = VesselForest.SerialMilliseconds();
+            BoundaryCounters.Reset();
             var samples = new List<double>(Measured);
             for (int i = 0; i < Measured; i++)
             {
@@ -399,6 +406,15 @@ namespace KSP.Retooled.Physics.Tests
                 lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / Measured:F2}, decide {(serial1[1] - serial0[1]) / Measured:F2}, " +
                     $"section sums {(serial1[2] - serial0[2]) / Measured:F2}, body impulses {(serial1[3] - serial0[3]) / Measured:F2}, " +
                     $"subtree {(serial1[4] - serial0[4]) / Measured:F2}";
+            }
+
+            BoundaryCounters boundary = BoundaryCounters.Current;
+            if (boundary.Solves > 0)
+            {
+                lastTimes += $"; vessel boundary: {boundary.Rows / (double)boundary.Solves:F0} rows and " +
+                    $"{boundary.Rounds / (double)boundary.Solves:F2} pivoting rounds a solve ({boundary.CappedSolves} solves at the cap), " +
+                    $"{boundary.HeldPoints / (double)boundary.Solves:F0} points held a solve, " +
+                    $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
             }
 
             if (path == "locked")
