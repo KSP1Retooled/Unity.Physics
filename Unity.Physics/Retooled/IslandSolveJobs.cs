@@ -204,7 +204,6 @@ namespace Unity.Physics
                 JacobiansReader = jacobians.AsReader(),
                 Work = work,
                 Cache = stepInput.DirectSolverCache,
-                Vessels = stepInput.VesselSet,
             }.Schedule(jacobiansBuilt);
 
             handle = JobHandle.CombineDependencies(handle, inputDeps);
@@ -646,39 +645,13 @@ namespace Unity.Physics
 
             public DirectSolverCache Cache;
 
-            public VesselSet Vessels;
-
             public void Execute()
             {
                 int islandCount = Info.NumIslands;
 
-                // Map each dynamic body to the index of its vessel, or -1 if it is not part of a vessel.
-                int bodyCount = Info.BodiesInIslands.Length;
-                var bodyVessel = new NativeArray<int>(Vessels.IsCreated ? bodyCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int i = 0; i < bodyVessel.Length; i++)
-                {
-                    bodyVessel[i] = -1;
-                }
-
-                for (int v = 0; v < Vessels.VesselCount && bodyVessel.Length > 0; v++)
-                {
-                    VesselRecord vessel = Vessels.Vessels[v];
-                    for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
-                    {
-                        int body = Vessels.PartBodies[part];
-                        if (body >= 0 && body < bodyCount)
-                        {
-                            bodyVessel[body] = v;
-                        }
-                    }
-                }
-
-                var vesselSeen = new NativeArray<int>(Vessels.IsCreated ? Vessels.VesselCount : 0, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int v = 0; v < vesselSeen.Length; v++)
-                {
-                    vesselSeen[v] = -1;
-                }
-
+                // The job that found the islands also listed each island's vessels. Without that list, the islands have
+                // no vessels.
+                bool vesselsKnown = Info.IslandVesselInfos.Length == islandCount;
                 Work.IslandVessels.Clear();
                 if (Cache.IsCreated)
                 {
@@ -723,20 +696,12 @@ namespace Unity.Physics
                     }
 
                     int firstVessel = Work.IslandVessels.Length, vesselParts = 0, otherBodies = 0;
-                    if (bodyVessel.Length > 0)
+                    if (vesselsKnown)
                     {
-                        int bodiesEnd = island + 1 < islandCount ? Info.FirstIslandBodyIndices[island + 1] : Info.IslandBodies.Length;
-                        for (int b = Info.FirstIslandBodyIndices[island]; b < bodiesEnd; b++)
-                        {
-                            int v = bodyVessel[Info.IslandBodies[b]];
-                            otherBodies += v < 0 ? 1 : 0;
-                            if (v >= 0 && vesselSeen[v] != island)
-                            {
-                                vesselSeen[v] = island;
-                                Work.IslandVessels.Add(v);
-                                vesselParts += Vessels.Vessels[v].PartCount;
-                            }
-                        }
+                        DispatchPairSequencer.IslandVesselInfo vessels = Info.IslandVesselInfos[island];
+                        Work.IslandVessels.AddRange((int*)Info.IslandVessels.GetUnsafeReadOnlyPtr() + vessels.FirstVessel, vessels.VesselCount);
+                        vesselParts = vessels.VesselParts;
+                        otherBodies = vessels.OtherBodies;
                     }
 
                     Work.Islands[island] = new DirectIsland

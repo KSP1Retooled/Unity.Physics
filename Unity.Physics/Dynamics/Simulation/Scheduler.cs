@@ -310,6 +310,19 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// The vessels of one direct island: the range of their indices in
+        /// <see cref="DirectSolverSchedulerInfo.IslandVessels"/>, the number of their parts, and the number of the
+        /// island's bodies that are not parts of its vessels.
+        /// </summary>
+        internal struct IslandVesselInfo
+        {
+            public int FirstVessel;
+            public int VesselCount;
+            public int VesselParts;
+            public int OtherBodies;
+        }
+
+        /// <summary>
         /// Jacobian mapping information, mapping a dispatch pair in the direct solver to the
         /// location of its associated data in the Jacobian stream buffers.
         /// </summary>
@@ -402,6 +415,20 @@ namespace Unity.Physics
             [NoAlias]
             public NativeList<int> IslandContactCounts;
 
+            /// <summary>
+            /// The vessels of each island, indexed by the island index. The list is empty when the islands were found
+            /// by a job that does not know the vessels.
+            /// </summary>
+            [NoAlias]
+            public NativeList<IslandVesselInfo> IslandVesselInfos;
+
+            /// <summary>
+            /// The indices of each island's vessels in the step's vessel set, in ascending order within each island. See
+            /// <see cref="IslandVesselInfos"/>.
+            /// </summary>
+            [NoAlias]
+            public NativeList<int> IslandVessels;
+
             /// <summary> Number of islands to be solved with the direct solver. </summary>
             public int NumIslands => DispatchPairIslandInfoCounts.Length;
 
@@ -425,6 +452,8 @@ namespace Unity.Physics
                     FirstIslandBodyIndices = new NativeList<int>(128, allocator),
                     BodiesInIslands = new NativeList<bool>(allocator),
                     IslandContactCounts = new NativeList<int>(128, allocator),
+                    IslandVesselInfos = new NativeList<IslandVesselInfo>(allocator),
+                    IslandVessels = new NativeList<int>(allocator),
                     FirstDispatchPairIndex = new NativeReference<int>(0, allocator)
                 };
             }
@@ -449,6 +478,8 @@ namespace Unity.Physics
                 FirstIslandBodyIndices.Dispose();
                 BodiesInIslands.Dispose();
                 IslandContactCounts.Dispose();
+                IslandVesselInfos.Dispose();
+                IslandVessels.Dispose();
                 FirstDispatchPairIndex.Dispose();
             }
 
@@ -457,6 +488,7 @@ namespace Unity.Physics
                 JobHandle islandBodies = JobHandle.CombineDependencies(IslandBodies.Dispose(inputDeps),
                     JobHandle.CombineDependencies(FirstIslandBodyIndices.Dispose(inputDeps), IslandContactCounts.Dispose(inputDeps)),
                     BodiesInIslands.Dispose(inputDeps));
+                islandBodies = JobHandle.CombineDependencies(islandBodies, IslandVesselInfos.Dispose(inputDeps), IslandVessels.Dispose(inputDeps));
 
                 return JobHandle.CombineDependencies(UnphasedToPhasedDispatchPairMap.Dispose(inputDeps), PhasedDispatchPairJacobianMappings.Dispose(inputDeps),
                     JobHandle.CombineDependencies(DispatchPairIslandInfos.Dispose(inputDeps), islandBodies,
