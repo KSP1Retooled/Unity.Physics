@@ -1959,9 +1959,8 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Asks the processor to load the part of an item's leading joint record that
         /// <see cref="SettleJointLoadsJob.SettleAwake"/> reads and writes. That part runs from the state to the end of
-        /// the smoothed breaking torque, which is about 100 bytes. The record need not start on a cache line, so those
-        /// bytes can touch three cache lines. Asking for the first byte, the last byte and the byte 64 after the first
-        /// covers all three.
+        /// the torque, which is 44 bytes. The record need not start on a cache line, so those bytes can touch two cache
+        /// lines. Asking for the first byte and the last byte covers both.
         /// </summary>
         private void Prefetch(int index)
         {
@@ -1979,9 +1978,8 @@ namespace KSP.Retooled.Physics
 
             NativeStore.JointData* joint = World->joints[Units[unit].Joint];
             byte* first = (byte*)&joint->state;
-            byte* last = (byte*)&joint->breakingTorque + sizeof(float) - 1;
+            byte* last = (byte*)&joint->torque + sizeof(float3) - 1;
             Common.Prefetch(first, Common.ReadWrite.Write);
-            Common.Prefetch(first + 64 < last ? first + 64 : last, Common.ReadWrite.Write);
             Common.Prefetch(last, Common.ReadWrite.Write);
         }
     }
