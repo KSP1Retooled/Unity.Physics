@@ -419,6 +419,61 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(load.Ratio, Is.GreaterThan(1.0));
         }
 
+        /// <summary>
+        /// A floating column pulled apart from both ends at 70% of its edges' break force. Its edges yield after a
+        /// few steps. Then the column leaves the fused job for one step and comes back. The edges' lock states go with
+        /// the column from the fused job's forest to the island's forest and back, so the edges stay yielding. Before,
+        /// each forest started the column again with every edge locked.
+        /// </summary>
+        [Test]
+        public void LockStatesFollowAVesselInAndOutOfTheFusedJob()
+        {
+            const float pull = 30.0f;
+            List<Rigidbody> bodies = Column(4, 5.0f, pull / 0.7);
+            foreach (Rigidbody body in bodies)
+            {
+                body.useGravity = false;
+            }
+
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            Unity.Physics.Solver.FusedVesselParts = 2;
+            try
+            {
+                Begin(vessels);
+                void Pull(string when)
+                {
+                    bodies[0].AddForce(new Vector3(0.0f, pull, 0.0f));
+                    bodies[3].AddForce(new Vector3(0.0f, -pull, 0.0f));
+                    vessels.Step();
+                    for (int i = 1; i < 4; i++)
+                    {
+                        Assert.That(vessels.Locked(i), Is.False, $"edge {i} stays yielding {when} (ratio {vessels.Load(i).Ratio:F3})");
+                    }
+                }
+
+                for (int i = 0; i < 5; i++)
+                {
+                    bodies[0].AddForce(new Vector3(0.0f, pull, 0.0f));
+                    bodies[3].AddForce(new Vector3(0.0f, -pull, 0.0f));
+                    vessels.Step();
+                }
+
+                Pull("in the fused job");
+                Unity.Physics.Solver.VesselFused = false;
+                Pull("in the step that leaves the fused job");
+                Pull("outside the fused job");
+                Unity.Physics.Solver.VesselFused = true;
+                Pull("in the step that comes back to the fused job");
+                Pull("back in the fused job");
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+        }
+
         [Test]
         public void AFloatingVesselKeepsItsMomentum()
         {

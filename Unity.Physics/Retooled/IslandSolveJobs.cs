@@ -216,21 +216,24 @@ namespace Unity.Physics
 
             // Mark the islands that the fused vessel job solves, and their bodies, which the substeps' integration
             // then skips. The fused job runs beside the substeps' jobs, because the two never touch the same bodies.
+            // The same job gives every vessel island its forest, with or without the fused job.
             bool fusedVessels = VesselFused;
             var fusedBodies = new NativeArray<byte>(math.max(1, world.MotionVelocities.Length), Allocator.TempJob);
             JobHandle fused = default;
+            handle = new MarkFusedVesselIslandsJob
+            {
+                Islands = work.Islands,
+                IslandVessels = work.IslandVessels,
+                Vessels = stepInput.VesselSet,
+                Cache = stepInput.DirectSolverCache,
+                MotionVelocities = world.MotionVelocities,
+                FusedBodies = fusedBodies,
+                Fuse = fusedVessels,
+                MinimumParts = FusedVesselParts,
+            }.Schedule(handle);
+
             if (fusedVessels)
             {
-                handle = new MarkFusedVesselIslandsJob
-                {
-                    Islands = work.Islands,
-                    IslandVessels = work.IslandVessels,
-                    Vessels = stepInput.VesselSet,
-                    MotionVelocities = world.MotionVelocities,
-                    FusedBodies = fusedBodies,
-                    MinimumParts = FusedVesselParts,
-                }.Schedule(handle);
-
                 fused = new SolveFusedVesselIslandsJob
                 {
                     Islands = work.Islands.AsDeferredJobArray(),
@@ -1100,7 +1103,8 @@ namespace Unity.Physics
 
         /// <summary>
         /// Marks each large island that holds only vessels, with no contacts and no joint rows, for the fused vessel
-        /// job, and marks the moving bodies of those islands' vessels.
+        /// job, and marks the moving bodies of those islands' vessels. Then gives every vessel island the forest that
+        /// will solve it, see <see cref="AssignVesselForests"/>.
         /// </summary>
         [BurstCompile]
         unsafe struct MarkFusedVesselIslandsJob : IJob
@@ -1112,6 +1116,8 @@ namespace Unity.Physics
 
             public VesselSet Vessels;
 
+            public DirectSolverCache Cache;
+
             // The job reads only whether each body is kinematic. The integration of the bodies outside islands can run
             // at the same time, and it changes only their velocities and poses.
             [ReadOnly, NativeDisableContainerSafetyRestriction]
@@ -1119,13 +1125,17 @@ namespace Unity.Physics
 
             public NativeArray<byte> FusedBodies;
 
-            /// <summary>The value of <see cref="FusedVesselParts"/> when the job was scheduled.</summary>
+            /// <summary>
+            /// Whether the fused job is on, and the value of <see cref="FusedVesselParts"/>, when the job was scheduled.
+            /// </summary>
+            public bool Fuse;
+
             public int MinimumParts;
 
             public void Execute()
             {
                 var motions = (MotionVelocity*)MotionVelocities.GetUnsafeReadOnlyPtr();
-                for (int i = 0; i < Islands.Length; i++)
+                for (int i = 0; Fuse && i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
                     if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.JointRows > 0 || island.Rows > 0
@@ -1149,6 +1159,8 @@ namespace Unity.Physics
                         }
                     }
                 }
+
+                AssignVesselForests(Cache, Islands.AsArray(), IslandVessels.AsArray(), Vessels);
             }
         }
 

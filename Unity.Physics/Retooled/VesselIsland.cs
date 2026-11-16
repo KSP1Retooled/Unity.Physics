@@ -162,8 +162,9 @@ namespace Unity.Physics
             var motions = (MotionVelocity*)motionVelocities.GetUnsafePtr();
             int motionCount = motionVelocities.Length;
 
-            // The island's state is kept by the ID of its first vessel, not by the island's index or its first body.
-            ForestIsland* forest = stepInput.DirectSolverCache.FusedForestOf(set.Vessels[islandVessels[0]].Id);
+            // The island's state is kept by the ID of its first vessel, not by the island's index or its first body. The
+            // job that marked the fused islands has already given the island its forest.
+            ForestIsland* forest = stepInput.DirectSolverCache.FindFusedForest(set.Vessels[islandVessels[0]].Id);
             bool temporary = forest == null;
             if (temporary)
             {
@@ -171,8 +172,9 @@ namespace Unity.Physics
             }
 
             // The layout is known if the island holds the same vessels, with the same structure versions and counts, as
-            // when the forest's layout was last built, and if each moving part's body still has the same number.
-            bool known = forest->VesselMode && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
+            // when the forest's layout was last built, and if each moving part's body still has the same number. An
+            // island that takes lock states over from another forest lays its parts out again to take them.
+            bool known = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
                 && forest->VesselSignature[0] == (ulong)islandVesselCount && forest->FusedCompactOfWorld.Length == math.max(1, motionCount);
             int closureStart = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
@@ -381,7 +383,7 @@ namespace Unity.Physics
                 }
             }
 
-            bool same = forest->VesselMode && forest->VesselSignature.Length == signature.Length;
+            bool same = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == signature.Length;
             for (int i = 0; same && i < signature.Length; i++)
             {
                 same = forest->VesselSignature[i] == signature[i];
@@ -644,8 +646,128 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// Gives each vessel island of the step the forest that will solve it, and hands each vessel's lock states to
+        /// that forest if another forest holds the newest ones. A fused island's forest is kept by the ID of its first
+        /// vessel, and any other island's forest is kept by the island's first body, so a vessel changes forests when
+        /// it moves in or out of the fused job or when its island's first body changes. The states are copied in two
+        /// passes, all of them before any forest is handed out, because handing out a fused forest can destroy the
+        /// forest of another vessel. Runs on one thread, after the cache has assigned the islands' slots and before
+        /// any island is solved.
+        /// </summary>
+        static unsafe void AssignVesselForests(DirectSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
+            VesselSet set)
+        {
+            if (!cache.IsCreated || !set.IsCreated)
+            {
+                return;
+            }
+
+            // For each of the island vessels, where its copied states start in the lists below, or -1 if the vessel
+            // keeps its states in the forest that will solve it.
+            var copied = new NativeArray<int>(math.max(1, islandVessels.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var locked = new NativeList<byte>(Allocator.Temp);
+            var held = new NativeList<int>(Allocator.Temp);
+            var ratio = new NativeList<float>(Allocator.Temp);
+            for (int i = 0; i < islands.Length; i++)
+            {
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
+                {
+                    continue;
+                }
+
+                ForestIsland* planned = island.Fused ? cache.FindFusedForest(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
+                {
+                    copied[k] = -1;
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    ForestIsland* owner = cache.OwnerOf(vessel.Id);
+                    if (owner == null || owner == planned || !FindVesselStates(owner, vessel, out int start))
+                    {
+                        continue;
+                    }
+
+                    copied[k] = locked.Length;
+                    locked.AddRange(owner->PartLocked.Ptr + start, vessel.PartCount);
+                    held.AddRange(owner->PartHeld.Ptr + start, vessel.PartCount);
+                    ratio.AddRange(owner->PartRatio.Ptr + start, vessel.PartCount);
+                }
+            }
+
+            for (int i = 0; i < islands.Length; i++)
+            {
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
+                {
+                    continue;
+                }
+
+                ForestIsland* forest = island.Fused ? cache.FusedForestOf(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
+                {
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    cache.SetOwner(vessel.Id, forest);
+                    if (forest == null || copied[k] < 0)
+                    {
+                        continue;
+                    }
+
+                    if (!forest->TakesStates)
+                    {
+                        forest->TakenIds.Clear();
+                        forest->TakenVersions.Clear();
+                        forest->TakenStarts.Clear();
+                        forest->TakenLocked.Clear();
+                        forest->TakenHeld.Clear();
+                        forest->TakenRatio.Clear();
+                        forest->TakesStates = true;
+                    }
+
+                    forest->TakenIds.Add(vessel.Id);
+                    forest->TakenVersions.Add(vessel.StructureVersion);
+                    forest->TakenStarts.Add(forest->TakenLocked.Length);
+                    forest->TakenLocked.AddRange(locked.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenHeld.AddRange(held.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenRatio.AddRange(ratio.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                }
+            }
+
+            cache.PruneOwners();
+            copied.Dispose();
+            locked.Dispose();
+            held.Dispose();
+            ratio.Dispose();
+        }
+
+        /// <summary>
+        /// Finds where a vessel's parts start in a forest's lock states, if the forest's layout holds the vessel with
+        /// the same structure version.
+        /// </summary>
+        static unsafe bool FindVesselStates(ForestIsland* forest, in VesselRecord vessel, out int start)
+        {
+            start = -1;
+            if (!forest->VesselMode || forest->VesselSignature.Length == 0)
+            {
+                return false;
+            }
+
+            int count = (int)forest->VesselSignature[0];
+            for (int i = 0; i < count && 3 + 3 * i < forest->VesselSignature.Length && i < forest->VesselPartStart.Length; i++)
+            {
+                if (forest->VesselSignature[1 + 3 * i] == vessel.Id && forest->VesselSignature[2 + 3 * i] == vessel.StructureVersion)
+                {
+                    start = forest->VesselPartStart[i];
+                    return start >= 0 && start + vessel.PartCount <= forest->PartLocked.Length;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Rebuilds the arrangement of the island's parts and preserves each part's lock state if its vessel has the
-        /// same ID and structure version. For a new vessel, edges that are allowed to lock start locked, so the craft
+        /// same ID and structure version. A vessel that the island takes over from another forest in this step takes
+        /// the states that it had there. For a new vessel, edges that are allowed to lock start locked, so the craft
         /// starts with those connections rigid.
         /// </summary>
         static unsafe void CarryVesselStates(ForestIsland* forest, NativeList<ulong> signature, in ForestRun run, int partCount,
@@ -673,11 +795,23 @@ namespace Unity.Physics
             {
                 VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
                 forest->VesselPartStart[i] = next;
+                int taken = -1;
+                for (int t = 0; forest->TakesStates && t < forest->TakenIds.Length; t++)
+                {
+                    taken = forest->TakenIds[t] == vessel.Id && forest->TakenVersions[t] == vessel.StructureVersion ? forest->TakenStarts[t] : taken;
+                }
+
                 bool kept = old.TryGetValue(vessel.Id, out int2 before) && (uint)before.x == vessel.StructureVersion;
                 for (int k = 0; k < vessel.PartCount; k++)
                 {
                     int part = next + k;
-                    if (kept)
+                    if (taken >= 0)
+                    {
+                        locked[part] = forest->TakenLocked[taken + k];
+                        held[part] = forest->TakenHeld[taken + k];
+                        ratio[part] = forest->TakenRatio[taken + k];
+                    }
+                    else if (kept)
                     {
                         locked[part] = forest->PartLocked[before.y + k];
                         held[part] = forest->PartHeld[before.y + k];
@@ -712,6 +846,13 @@ namespace Unity.Physics
             }
 
             forest->VesselMode = true;
+            forest->TakesStates = false;
+            forest->TakenIds.Clear();
+            forest->TakenVersions.Clear();
+            forest->TakenStarts.Clear();
+            forest->TakenLocked.Clear();
+            forest->TakenHeld.Clear();
+            forest->TakenRatio.Clear();
 
             // Invalidate the signature for the forest built from supplied Jacobian rows, so it is rebuilt if the island
             // returns to that solver path.
