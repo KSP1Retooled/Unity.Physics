@@ -197,6 +197,14 @@ namespace Unity.Physics
 
             /// <summary> See <see cref="SimulationStepInput.VesselSet"/>. </summary>
             public VesselSet VesselSet;
+
+            /// <summary>
+            /// The world's bodies and their number, so that a vessel island's boundary can know a body outside its
+            /// vessels by the body's entity. The pointer is taken without safety checks, and the solver only reads it.
+            /// </summary>
+            [NativeDisableUnsafePtrRestriction]
+            public unsafe RigidBody* Bodies;
+            public int BodyCount;
             /// <summary> The current substep. Is -1 when uninitialized. </summary>
             public int CurrentSubstep;
             /// <summary> The current solver iteration. Is -1 when uninitialized. </summary>

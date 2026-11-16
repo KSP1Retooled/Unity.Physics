@@ -95,6 +95,13 @@ namespace Unity.Physics
             /// <summary>For a vessel island: the substep that the run solves, for the boundary's counters.</summary>
             public int Substep;
 
+            /// <summary>
+            /// For a vessel island: the world's bodies, so that a boundary row's key can know a body outside the island's
+            /// vessels by its entity. Null if the caller has none.
+            /// </summary>
+            public RigidBody* RigidBodies;
+            public int RigidBodyCount;
+
             /// <summary>The change of velocity of every section, and a vector of the same size to work in.</summary>
             public NativeArray<double> Velocity;
             public NativeArray<double> Work;
@@ -1163,9 +1170,15 @@ namespace Unity.Physics
 
         /// <summary>
         /// A key for one side of a block that stays the same while the body stays in the island. A part of one of the
-        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other moving body is known by
-        /// its index in the dynamics world, and a body that does not move by its index among the bodies that do not
-        /// move. Returns 0 for no body.
+        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other body, moving or not, is
+        /// known by the version of its entity. The backend sets that version to the body's serial number, which no other
+        /// body receives, and it keeps it while the body lives. The entity's index is not part of the key, because the
+        /// index is the body's row in the backend's store, and the store moves a body to another row when an earlier
+        /// body is destroyed. So the key does not change when other bodies join or leave the world, and it does not pass
+        /// to a new body. A world whose entities share versions gives several bodies the same key. Then the blocks are
+        /// told apart by how many blocks with the same identity come before them, and the worst case is a missed warm
+        /// start. Without the world's bodies, or with <see cref="BoundaryCaps.KeyByWorldIndex"/>, a body is known by its
+        /// place in the world, as before. Returns 0 for no body.
         /// </summary>
         static unsafe ulong BodyKey(in ForestRun run, int world, int vesselParts, in NativeHashMap<int, ulong> vesselIds)
         {
@@ -1174,12 +1187,7 @@ namespace Unity.Physics
                 return 0;
             }
 
-            if (world >= run.CompactOfWorldLength)
-            {
-                return Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2);
-            }
-
-            int compact = run.CompactOfWorld[world];
+            int compact = world < run.CompactOfWorldLength ? run.CompactOfWorld[world] : -1;
             int part = compact >= 0 && compact < run.Forest->BodyPart.Length ? run.Forest->BodyPart[compact] : -1;
             if (part >= 0 && part < vesselParts)
             {
@@ -1190,7 +1198,16 @@ namespace Unity.Physics
                 }
             }
 
-            return Mix(((ulong)(uint)world << 2) | 1);
+            if (run.RigidBodies != null && world < run.RigidBodyCount && !run.Caps.KeyByWorldIndex)
+            {
+                return Mix(((ulong)(uint)run.RigidBodies[world].Entity.Version << 2) | 2);
+            }
+
+            // Without the bodies, a body that does not move is known by its index among the bodies that do not move,
+            // and a moving body by its index in the world.
+            return world >= run.CompactOfWorldLength
+                ? Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2)
+                : Mix(((ulong)(uint)world << 2) | 1);
         }
 
         /// <summary>
@@ -2417,6 +2434,12 @@ namespace Unity.Physics
         /// <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>. For measuring what the updates save.
         /// </summary>
         public bool RefactorEveryRound;
+
+        /// <summary>
+        /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
+        /// keys did before, instead of by its entity. For measuring what the entity keys keep.
+        /// </summary>
+        public bool KeyByWorldIndex;
 
         /// <summary>
         /// If true, every one-sided joint row stays in the boundary, even when the row is far from its stop. If false, the

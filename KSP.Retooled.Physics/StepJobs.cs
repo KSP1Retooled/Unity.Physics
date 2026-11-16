@@ -141,9 +141,21 @@ namespace KSP.Retooled.Physics
             {
                 Collider = body.collider->Value,
                 WorldFromBody = WorldFromBody(ref body),
-                Entity = new Entity { Index = index, Version = 1 },
+                Entity = new Entity { Index = index, Version = EntityVersion(ref body) },
                 Scale = 1.0f,
             };
+        }
+
+        /// <summary>
+        /// The version of a built body's entity. The entity's index is the body's row in the store, which can change
+        /// while the body lives and can pass to another body, so the version is the body's serial number, which no
+        /// other body receives. The solver keys the boundary rows of bodies outside a vessel by this version. The
+        /// version is never zero, because a version of zero marks the world's anchor, which is no body.
+        /// </summary>
+        private static int EntityVersion(ref NativeStore.BodyData body)
+        {
+            uint serial = body.owner != null ? body.owner->serial : 0u;
+            return serial != 0 ? (int)serial : 1;
         }
 
         internal static RigidTransform WorldFromBody(ref NativeStore.BodyData body)

@@ -385,6 +385,7 @@ namespace Unity.Physics
                 MaxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity > 0
                     ? input.MaxDynamicDepenetrationVelocity : SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
             };
+            Solver.SetBodies(ref stepInput, input.World);
 
             // Event streams are sized by SimulationContext.Reset and must not be reallocated here,
             // since the context may be a copy owned by a job
@@ -661,6 +662,7 @@ namespace Unity.Physics
                 MaxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity > 0
                     ? input.MaxDynamicDepenetrationVelocity : SimulationStepInput.DefaultMaxDynamicDepenetrationVelocity,
             };
+            Solver.SetBodies(ref stepInput, input.World);
 
             if (solvesByIsland)
             {

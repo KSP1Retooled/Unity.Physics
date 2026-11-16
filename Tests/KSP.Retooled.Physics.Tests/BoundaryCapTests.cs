@@ -246,6 +246,61 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A craft of 8 parts lies on the ground with a loose box resting beside each part, so that the island's boundary
+        /// has rows against the boxes, which are not in a vessel. Then 20 kinematic boxes far away, made after the craft
+        /// and before the loose boxes, are destroyed. That moves the loose boxes to other places in the world. The scene
+        /// runs twice: once with the boundary rows' keys by place in the world, as before, and once with the keys by the
+        /// body's serial number, which the backend gives each body's entity. Every row is warm in the steps before the
+        /// boxes go. In the step after, the keys by place miss the rows against the loose boxes, and the keys by serial
+        /// number miss none.
+        /// </summary>
+        [Test]
+        public void RowsAgainstLooseBodiesKeepTheirWarmStartWhenAnotherBodyGoes()
+        {
+            var missed = new long[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { KeyByWorldIndex = pass == 0 });
+                LyingCraft(8);
+                var far = new List<Rigidbody>();
+                for (int i = 0; i < 20; i++)
+                {
+                    Rigidbody body = Box(new Vector3(200.0f + 2.0f * i, 5.0f, 0.0f), new Vector3(1.0f, 1.0f, 1.0f)).AddComponent<Rigidbody>();
+                    body.isKinematic = true;
+                    far.Add(body);
+                }
+
+                for (int i = 0; i < 8; i++)
+                {
+                    Rigidbody box = Box(new Vector3(i - 4.0f, 0.25f, 0.6f), new Vector3(0.8f, 0.5f, 0.6f)).AddComponent<Rigidbody>();
+                    box.mass = PartMass;
+                    box.sleepThreshold = 0.0f;
+                }
+
+                Simulate(30);
+                BoundaryCounters.Reset();
+                Simulate(5);
+                BoundaryCounters before = BoundaryCounters.Current;
+                foreach (Rigidbody body in far)
+                {
+                    Object.DestroyImmediate(body.gameObject);
+                }
+
+                BoundaryCounters.Reset();
+                Simulate();
+                BoundaryCounters after = BoundaryCounters.Current;
+                missed[pass] = after.Rows - after.WarmRows;
+                Debug.Log($"[BoundaryCapTests] another body gone, keys by {(pass == 0 ? "place" : "serial number")}: before, {before.Rows} rows " +
+                    $"and {before.WarmRows} warm; after, {after.Rows} rows and {after.WarmRows} warm");
+                Assert.That(before.WarmRows, Is.EqualTo(before.Rows), "every row is warm while the bodies stay");
+                Assert.That(after.Solves, Is.GreaterThan(0), "the craft's island solves a boundary");
+            }
+
+            Assert.That(missed[0], Is.GreaterThan(0), "the keys by place miss rows");
+            Assert.That(missed[1], Is.EqualTo(0), "the keys by serial number miss none");
+        }
+
+        /// <summary>
         /// A craft of 8 parts lies on the ground, and next to each part a loose box rests on the ground, touching the part,
         /// so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most boxes are
         /// held out of the boundary. A held row used to keep only its warm start, which is 95% of the contact's last
