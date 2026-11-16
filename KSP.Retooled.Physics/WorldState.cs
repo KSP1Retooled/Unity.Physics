@@ -26,6 +26,7 @@ namespace KSP.Retooled.Physics
         {
             VesselForest.Initialize();
             VesselPipeline.Initialize();
+            StepState.ReadBoundsCacheSwitches();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StepState*)UnsafeUtility.MallocTracked(sizeof(StepState), UnsafeUtility.AlignOf<StepState>(), Allocator.Persistent, 0);
             *state = new StepState(store, NativeStore.RetooledPhysics_Globals(), query);

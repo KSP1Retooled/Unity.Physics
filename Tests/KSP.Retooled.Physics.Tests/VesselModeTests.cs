@@ -532,6 +532,77 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A column whose top part is kinematic, moved sideways and up by hand in every step. The fused job moves a
+        /// kinematic part of its island at the end of each substep, and the substeps' jobs move it when the island is
+        /// not fused. The scene runs once with the island in the substeps' jobs and once with it in the fused job. The
+        /// kinematic part ends in the same place to the last bit, and the parts below it end in the same places within
+        /// what the two solvers differ by.
+        /// <para>
+        /// The game never hands the step a vessel with a kinematic part: VesselPipeline leaves a vessel out of the step
+        /// while any of its parts is kinematic, and <see cref="VesselSet"/> says that all vessel bodies are dynamic.
+        /// In this scene the parts below the kinematic part don't follow it, in either path, so the test only checks
+        /// that the two paths agree.
+        /// </para>
+        /// </summary>
+        [Test]
+        public void AKinematicPartMovesTheSameInTheFusedJobAsInTheSubsteps()
+        {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            Unity.Physics.Solver.VesselFused = true;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            var positions = new Vector3[2][];
+            var rotations = new Quaternion[2][];
+            const int steps = 60;
+            try
+            {
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : 2;
+                    List<Rigidbody> bodies = Column(4, 5.0f);
+                    Rigidbody top = bodies[0];
+                    top.isKinematic = true;
+                    Vector3 start = top.position;
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.FusedIslandSolves;
+                    for (int i = 1; i <= steps; i++)
+                    {
+                        top.MovePosition(start + new Vector3(0.02f * i, 0.005f * i, 0.0f));
+                        top.MoveRotation(Quaternion.Euler(0.0f, 0.5f * i, 0.0f));
+                        vessels.Step();
+                    }
+
+                    long fused = Unity.Physics.Solver.FusedIslandSolves - before;
+                    Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.GreaterThanOrEqualTo(steps), "the column goes to the fused job only in the second pass");
+                    positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                    rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
+                }
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                Debug.Log($"[VesselModeTests] kinematic top: part {i} at {positions[0][i]:F6} by the island's jobs, {positions[1][i]:F6} by the fused job");
+            }
+
+            Assert.That(positions[1][0], Is.EqualTo(positions[0][0]), "the kinematic part ends in the same place");
+            Assert.That(rotations[1][0], Is.EqualTo(rotations[0][0]), "and turned the same");
+            Assert.That(positions[0][0].x, Is.EqualTo(0.02f * steps).Within(1e-3f), "the kinematic part went where it was moved");
+            for (int i = 1; i < positions[0].Length; i++)
+            {
+                Assert.That((positions[1][i] - positions[0][i]).magnitude, Is.LessThan(1e-3f), $"part {i} ends in the same place");
+            }
+        }
+
+        /// <summary>
         /// Four columns of different heights fall onto the ground at a slant, each one a fused island of its own. The
         /// fused job solves the four islands at the same time on several threads. The scene runs once on one thread and
         /// once on the default job workers, and the two runs end with the same poses and loads, to the last bit.

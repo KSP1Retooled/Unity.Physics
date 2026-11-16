@@ -779,13 +779,21 @@ namespace Unity.Physics
         /// tree was built for the same dynamic bodies in the same order, for example earlier in the same step. Queries
         /// find the same hits as in a rebuilt tree, but can report them in a different order.
         /// </summary>
-        internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps)
+        /// <remarks>
+        /// With <paramref name="boundsCache"/>, the refit also leaves in the cache the bounds of each body's collider
+        /// at the body's new pose, so that the next build of the tree doesn't compute them again. See
+        /// <see cref="DynamicBoundsCache"/>.
+        /// </remarks>
+        internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps,
+            DynamicBoundsCache boundsCache = default)
         {
             int count = world.NumDynamicBodies;
             if (count == 0)
             {
                 return inputDeps;
             }
+
+            DynamicBoundsCache.View cache = boundsCache.IsCreated && boundsCache.CurrentView.Length == count ? boundsCache.CurrentView : default;
 
             var aabbs = new NativeArray<Aabb>(count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
             JobHandle handle = new UpdateDynamicBoundsJob
@@ -797,6 +805,7 @@ namespace Unity.Physics
                 AabbMargin = world.CollisionWorld.CollisionTolerance * 0.5f, // each body contributes half, as in the build
                 TimeStep = timeStep,
                 Gravity = gravity,
+                Cache = cache,
             }.Schedule(count, 32, inputDeps);
 
             // The subtrees below the cut are fitted in parallel, one iteration per subtree, and then one job fits the
@@ -854,11 +863,26 @@ namespace Unity.Physics
             public float TimeStep;
             public float3 Gravity;
 
-            public void Execute(int i)
+            /// <summary>The cache of the bodies' bounds for the next build, or a view that is not created.</summary>
+            public DynamicBoundsCache.View Cache;
+
+            public unsafe void Execute(int i)
             {
                 UpdateRigidBodyTransformsJob.ExecuteImpl(i, MotionDatas, RigidBodies);
                 RigidBody body = RigidBodies[i];
-                Aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.CalculateAabb(ref body, AabbMargin, Gravity, TimeStep, MotionVelocities[i]);
+                MotionVelocity motion = MotionVelocities[i];
+                Aabb bounds = body.CalculateAabb();
+                Aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, AabbMargin, Gravity, TimeStep, motion);
+
+                // The bounds in the cache go with the body that the world now holds at index i: its collider at its
+                // new pose. The step writes back the pose of a moving body with its rotation normalized, and the next
+                // build starts from that pose. Normalizing changes the last bits of the rotation of some bodies, and
+                // those bodies compute their bounds again in the next build. Normalizing here, and computing the
+                // bounds of those bodies at the normalized pose, cost the refit more than it saved.
+                if (Cache.IsCreated && body.Collider.IsCreated)
+                {
+                    Cache.Bounds[i] = bounds;
+                }
             }
         }
 

@@ -248,6 +248,98 @@ namespace KSP.Retooled.Physics.Tests
             AssertSame(RunLanding(forest, false), RunLanding(forest, true));
         }
 
+        /// <summary>
+        /// A column that lands on the ground, a box that is moved by hand, turned and given a larger collider, and a
+        /// kinematic box that is carried along, with the bounds cache on or off. In each step, a ray and a box query
+        /// look through the scene. Returns the poses at the end and the queries' hits, sorted by collider.
+        /// </summary>
+        private ((Vector3[], Quaternion[]) poses, List<string> hits) RunBounds(bool boundsCache)
+        {
+            TearDownScene();
+            SetUpScene();
+            StepState.BoundsCacheEnabled = boundsCache;
+            VesselForest.ForgetIslands();
+            GameObject ground = Ground();
+            List<Rigidbody> bodies = Column(0.3f, false);
+            bodies[Parts - 1].linearVelocity = new Vector3(0.5f, 0.0f, 0.2f);
+            Rigidbody loose = DynamicBox(new Vector3(3.0f, 2.0f, 0.0f));
+            Rigidbody carried = DynamicBox(new Vector3(-3.0f, 1.0f, 0.0f));
+            carried.isKinematic = true;
+            bodies.Add(loose);
+            bodies.Add(carried);
+
+            // The runs make new colliders, so the hits name each collider by its body.
+            var names = new Dictionary<Collider, string> { [ground.GetComponent<Collider>()] = "ground" };
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                names[bodies[i].GetComponent<Collider>()] = $"body {i}";
+            }
+
+            var hits = new List<string>();
+            for (int step = 0; step < 90; step++)
+            {
+                switch (step)
+                {
+                    case 10:
+                        loose.position += new Vector3(0.5f, 0.0f, 0.0f);
+                        break;
+                    case 20:
+                        loose.GetComponent<BoxCollider>().size = new Vector3(2.0f, 0.5f, 1.0f);
+                        break;
+                    case 30:
+                        loose.rotation = Quaternion.Euler(0.0f, 30.0f, 0.0f);
+                        break;
+                }
+
+                carried.MovePosition(new Vector3(-3.0f + 0.05f * step, 1.0f, 0.0f));
+                StepOnce(false);
+
+                var found = new List<string>();
+                foreach (RaycastHit hit in UnityEngine.Physics.RaycastAll(new Vector3(-6.0f, 1.0f, 0.1f), Vector3.right, 12.0f))
+                {
+                    found.Add($"ray {names[hit.collider]} {hit.point.x:R} {hit.point.y:R} {hit.point.z:R} {hit.distance:R}");
+                }
+
+                foreach (Collider collider in UnityEngine.Physics.OverlapBox(new Vector3(0.0f, 1.5f, 0.0f), new Vector3(3.0f, 1.0f, 1.0f)))
+                {
+                    found.Add($"box {names[collider]}");
+                }
+
+                found.Sort(string.CompareOrdinal);
+                hits.Add($"step {step}: {string.Join(", ", found)}");
+            }
+
+            return (Poses(bodies), hits);
+        }
+
+        /// <summary>
+        /// The build of the dynamic tree takes the bodies' bounds from what the refit at the end of the last step left
+        /// in a cache. The same scene with the cache on and off moves every body the same, to the last bit, and its
+        /// queries find the same hits.
+        /// </summary>
+        [Test]
+        public void TheBoundsCacheChangesNoPoseAndNoHit()
+        {
+            // RETOOLED_BOUNDS_CACHE=0 turns the cache off for a whole run, so give the later tests the switch as it was.
+            bool wasEnabled = StepState.BoundsCacheEnabled;
+            try
+            {
+                // As above: the first scene of this shape can land a few ulps from every later one.
+                RunBounds(false);
+                ((Vector3[], Quaternion[]) poses, List<string> hits) cached = RunBounds(true);
+                ((Vector3[], Quaternion[]) poses, List<string> hits) computed = RunBounds(false);
+                AssertSame(cached.poses, computed.poses);
+                for (int step = 0; step < computed.hits.Count; step++)
+                {
+                    Assert.That(cached.hits[step], Is.EqualTo(computed.hits[step]));
+                }
+            }
+            finally
+            {
+                StepState.BoundsCacheEnabled = wasEnabled;
+            }
+        }
+
         [Test]
         public void EveryChangeToTheJointsMovesTheirVersion()
         {

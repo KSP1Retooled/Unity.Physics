@@ -122,6 +122,49 @@ namespace KSP.Retooled.Physics
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
+
+        // The number of collider refreshes that gave any body a new collider, and the bounds of the dynamic bodies'
+        // colliders that the refit at the end of a step leaves for the build at the start of the next.
+        private NativeReference<uint> colliderChanges;
+        private DynamicBoundsCache boundsCache;
+
+        // Whether the last build of the dynamic tree used the bounds cache. Only then does the cache hold the current
+        // colliders after the build.
+        private bool boundsCacheBuilt;
+
+        /// <summary>
+        /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
+        /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
+        /// so it lives in a shared static, which holds whether the cache is off.
+        /// </summary>
+        internal static bool BoundsCacheEnabled
+        {
+            get => BoundsCacheOff.Data == 0;
+            set => BoundsCacheOff.Data = value ? 0 : 1;
+        }
+
+        private sealed class BoundsCacheOffKey
+        {
+        }
+
+        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, BoundsCacheOffKey>();
+
+        /// <summary>
+        /// Reads the switches of the bounds cache from the environment: RETOOLED_BOUNDS_CACHE=0 turns the cache off, and
+        /// RETOOLED_BOUNDS_CHECK=1 turns on the check of every body that takes its bounds from the cache
+        /// (DynamicBoundsCache.CheckEnabled), whose mismatches the step logs.
+        /// </summary>
+        internal static void ReadBoundsCacheSwitches()
+        {
+            string cache = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CACHE");
+            BoundsCacheEnabled = cache != "0";
+            string check = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
+            DynamicBoundsCache.CheckEnabled = check == "1";
+            if (cache == "0" || check == "1")
+            {
+                UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}");
+            }
+        }
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
         private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
@@ -186,6 +229,8 @@ namespace KSP.Retooled.Physics
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
             wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
+            colliderChanges = new NativeReference<uint>(0, Allocator.Persistent);
+            boundsCache = new DynamicBoundsCache(colliderChanges.GetUnsafePtr(), Allocator.Persistent);
             knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
             learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
@@ -255,6 +300,8 @@ namespace KSP.Retooled.Physics
             colliderWork.Dispose();
             colliderResults.Dispose();
             wholeColliderBuilds.Dispose();
+            boundsCache.Dispose();
+            colliderChanges.Dispose();
             knownBodyPairs.Dispose();
             learnedBodyPairs.Dispose();
         }
@@ -697,13 +744,26 @@ namespace KSP.Retooled.Physics
             // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
             // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
             // reads only Static, and neither job changes it.
-            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved);
+            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved,
+                boundsCacheBuilt ? boundsCache : default);
             JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWaitForSolve.Auto())
             {
                 solved.Complete();
+            }
+
+            // The build of this step has completed, so every entry of the bounds cache that a body could take holds
+            // the body's current collider: the build wrote it, and the refit writes it again now.
+            if (boundsCacheBuilt)
+            {
+                boundsCache.MarkCurrent();
+            }
+
+            if (DynamicBoundsCache.CheckEnabled)
+            {
+                LogBoundsCheck();
             }
 
             // SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
@@ -829,8 +889,31 @@ namespace KSP.Retooled.Physics
             JobHandle colliders = RefreshColliders(default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
+            broadphase.Complete();
+            if (boundsCacheBuilt)
+            {
+                boundsCache.MarkCurrent();
+            }
             FinishQuerySnapshot();
             PublishQueryWorld();
+        }
+
+        /// <summary>
+        /// Logs the check's mismatches of the bounds cache when there are new ones, and the counts every 1,000 steps.
+        /// </summary>
+        private static void LogBoundsCheck()
+        {
+            DynamicBoundsCache.CheckCounts* counts = DynamicBoundsCache.Counts;
+            if (++counts->Steps % 1000 == 0)
+            {
+                UnityEngine.Debug.Log($"[BoundsCheck] {counts->Steps} steps: {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache");
+            }
+
+            if (counts->Mismatches != counts->LoggedMismatches)
+            {
+                counts->LoggedMismatches = counts->Mismatches;
+                UnityEngine.Debug.LogError($"[BoundsCheck] {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache; last at index {counts->LastIndex}, entity {counts->LastEntity}, computed min {counts->LastComputedMin}, cached min {counts->LastCachedMin}");
+            }
         }
 
         /// <summary>
@@ -861,7 +944,8 @@ namespace KSP.Retooled.Physics
             int threads = JobsUtility.JobWorkerCount + 1;
             Broadphase broadphase = world.CollisionWorld.Broadphase;
             JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
-            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built);
+            boundsCacheBuilt = BoundsCacheEnabled;
+            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, boundsCacheBuilt ? boundsCache : default);
             return JobHandle.CombineDependencies(statics, dynamics);
         }
 
@@ -1008,7 +1092,7 @@ namespace KSP.Retooled.Physics
 
             uint materialVersion = globals->materialVersion;
             collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults,
-                wholeColliderBuilds, dependency);
+                wholeColliderBuilds, colliderChanges, dependency);
             builtMaterialVersion = materialVersion;
             return collidersBuilt;
         }
@@ -1054,6 +1138,12 @@ namespace KSP.Retooled.Physics
                 builtWhole = false;
             }
 
+            // The bounds cache holds the bounds of the bodies that the world holds now. The body build compares each
+            // dynamic body with the body that it overwrites, but only if the world keeps its bodies' memory and the
+            // same number of dynamic bodies, and if the last build and refit kept the cache.
+            void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
+            bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == dynamicIndices.Length;
+
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
             // read the joints, so jobs can be scheduled before the joint count is known.
             using (BackendMarkers.BuildReset.Auto())
@@ -1061,6 +1151,9 @@ namespace KSP.Retooled.Physics
                 world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
             }
+
+            compareBodies &= NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
+            DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(dynamicIndices.Length) : default;
 
             // The bodies and the broadphase trees lead the longest chain before the solve: the pairs and islands wait
             // for the trees, and the trees wait for the bodies. Schedule them before this thread groups and compiles
@@ -1078,6 +1171,8 @@ namespace KSP.Retooled.Physics
                     MotionDatas = world.MotionDatas,
                     MotionVelocities = world.MotionVelocities,
                     DeltaTime = deltaTime,
+                    Same = boundsView.Same,
+                    CompareBodies = compareBodies,
                 };
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
