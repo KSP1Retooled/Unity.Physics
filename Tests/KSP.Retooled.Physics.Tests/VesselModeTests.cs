@@ -159,6 +159,13 @@ namespace KSP.Retooled.Physics.Tests
 
         private TestVessels vessels;
         private bool wasEnabled;
+        private int wasFusedParts;
+
+        /// <summary>
+        /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
+        /// default. <see cref="FusedVesselModeTests"/> runs the same tests with every vessel island in the fused job.
+        /// </summary>
+        protected virtual int FusedParts => 0;
 
         [SetUp]
         public void Begin()
@@ -171,6 +178,12 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Initialize();
             wasEnabled = VesselForest.Enabled;
             VesselForest.Enabled = true;
+            wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
+            if (FusedParts > 0)
+            {
+                Unity.Physics.Solver.FusedVesselParts = FusedParts;
+            }
+
             vessels = new TestVessels();
         }
 
@@ -180,6 +193,7 @@ namespace KSP.Retooled.Physics.Tests
             vessels?.Dispose();
             vessels = null;
             VesselForest.Enabled = wasEnabled;
+            Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
         }
 
         /// <summary>
@@ -498,5 +512,14 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(hingeGap, Is.LessThan(0.01f), "the hinge holds");
             Assert.That((rightBodies[1].position - rightBodies[0].position).magnitude, Is.EqualTo(gap.magnitude).Within(1e-3f), "each vessel stays rigid");
         }
+    }
+
+    /// <summary>
+    /// The tests of <see cref="VesselModeTests"/> with the fused vessel job taking every vessel island of two parts or
+    /// more, so that the fused job's results are checked against the same expectations as the ordinary path's.
+    /// </summary>
+    public class FusedVesselModeTests : VesselModeTests
+    {
+        protected override int FusedParts => 2;
     }
 }

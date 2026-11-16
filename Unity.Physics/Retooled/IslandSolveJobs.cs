@@ -228,6 +228,7 @@ namespace Unity.Physics
                     Vessels = stepInput.VesselSet,
                     MotionVelocities = world.MotionVelocities,
                     FusedBodies = fusedBodies,
+                    MinimumParts = FusedVesselParts,
                 }.Schedule(handle);
 
                 fused = new SolveFusedVesselIslandsJob
@@ -395,9 +396,23 @@ namespace Unity.Physics
 
         /// <summary>
         /// The number of vessel parts at which an island with only vessels goes to the fused vessel job. A smaller
-        /// island stays with the substeps' jobs, which solve the small islands in parallel with each other.
+        /// island stays with the substeps' jobs, which solve the small islands in parallel with each other. The
+        /// backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches, and tests set this to send small
+        /// vessels to the fused job. The value is stored in a SharedStatic, because the jobs are scheduled from Burst
+        /// code.
         /// </summary>
-        const int FusedVesselParts = 256;
+        public static int FusedVesselParts
+        {
+            get => FusedVesselPartsValue.Data > 0 ? FusedVesselPartsValue.Data : DefaultFusedVesselParts;
+            set => FusedVesselPartsValue.Data = value;
+        }
+
+        /// <summary>The value of <see cref="FusedVesselParts"/> until something sets it.</summary>
+        public const int DefaultFusedVesselParts = 256;
+
+        struct FusedVesselPartsKey { }
+
+        static readonly SharedStatic<int> FusedVesselPartsValue = SharedStatic<int>.GetOrCreate<FusedVesselPartsKey>();
 
         /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
         const int SharedSolveParts = 256;
@@ -725,7 +740,10 @@ namespace Unity.Physics
 
             public void Execute(int index)
             {
-                if (ContactsOnly && index < Islands[Headers[index].Island].JointEnd)
+                // The fused vessel job updates the Jacobians of its own islands, at the same time as this job runs, so
+                // skip them here.
+                DirectIsland island = Islands[Headers[index].Island];
+                if (island.Fused || (ContactsOnly && index < island.JointEnd))
                 {
                     return;
                 }
@@ -772,6 +790,12 @@ namespace Unity.Physics
                         {
                             (*headerRows)[h] = -1;
                         }
+                    }
+                    else if (island.Fused)
+                    {
+                        // The fused vessel job counts the rows of its own islands, and it changes their Jacobians while
+                        // this job runs.
+                        rows = 0;
                     }
                     else
                     {
@@ -841,6 +865,14 @@ namespace Unity.Physics
                 int islandIndex = Headers[index].Island;
                 DirectIsland island = Islands[islandIndex];
                 ref JacobianHeader header = ref *Headers[index].Header;
+
+                // The fused vessel job builds the rows of its own islands and moves their bodies at the same time as this
+                // job runs, so this job must not read those Jacobians or bodies.
+                if (island.Fused)
+                {
+                    return;
+                }
+
                 if (UpdateJoints && index < island.JointEnd)
                 {
                     UpdateJacobian(ref header, MotionDatas, MotionVelocities, Bodies, StepInput);
@@ -1087,13 +1119,16 @@ namespace Unity.Physics
 
             public NativeArray<byte> FusedBodies;
 
+            /// <summary>The value of <see cref="FusedVesselParts"/> when the job was scheduled.</summary>
+            public int MinimumParts;
+
             public void Execute()
             {
                 var motions = (MotionVelocity*)MotionVelocities.GetUnsafeReadOnlyPtr();
                 for (int i = 0; i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
-                    if (island.VesselCount == 0 || island.VesselParts < FusedVesselParts || island.JointRows > 0 || island.Rows > 0
+                    if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.JointRows > 0 || island.Rows > 0
                         || island.JointEnd != island.HeaderEnd)
                     {
                         continue;

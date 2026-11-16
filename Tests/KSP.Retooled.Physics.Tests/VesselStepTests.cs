@@ -19,6 +19,13 @@ namespace KSP.Retooled.Physics.Tests
 
         private bool wasVessels;
         private bool wasForest;
+        private int wasFusedParts;
+
+        /// <summary>
+        /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
+        /// default. <see cref="FusedVesselStepTests"/> runs the same tests with every vessel island in the fused job.
+        /// </summary>
+        protected virtual int FusedParts => 0;
 
         [SetUp]
         public void TurnVesselsOn()
@@ -35,6 +42,12 @@ namespace KSP.Retooled.Physics.Tests
 
             // These crafts are small, so let them compile into vessels.
             VesselPipeline.MinimumParts = 2;
+            wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
+            if (FusedParts > 0)
+            {
+                Unity.Physics.Solver.FusedVesselParts = FusedParts;
+            }
+
             Fresh(true);
         }
 
@@ -44,6 +57,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselPipeline.Enabled = wasVessels;
             VesselForest.Enabled = wasForest;
             VesselPipeline.MinimumParts = 0;
+            Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
         }
 
         private void Fresh(bool vessels)
@@ -328,5 +342,14 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That((after - before).magnitude, Is.LessThan(1e-3f * before.magnitude), "momentum is kept");
             Assert.That((bodies[3].position - bodies[0].position).magnitude, Is.EqualTo(3.0f).Within(1e-3f), "the stack stays rigid");
         }
+    }
+
+    /// <summary>
+    /// The tests of <see cref="VesselStepTests"/> with the fused vessel job taking every vessel island of two parts or
+    /// more, so that the fused job's results are checked against the same expectations as the ordinary path's.
+    /// </summary>
+    public class FusedVesselStepTests : VesselStepTests
+    {
+        protected override int FusedParts => 2;
     }
 }
