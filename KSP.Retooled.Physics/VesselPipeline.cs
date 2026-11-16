@@ -102,10 +102,13 @@ namespace KSP.Retooled.Physics
     /// Stores the vessels compiled from the store's joints and prepares the set passed to each step.
     /// <para>
     /// A vessel is a group of moving bodies connected by part joints. Vessels are compiled only when the joint topology
-    /// changes ( <see cref="JointTopology"/> ). Parts are listed with parents before children. Each part has an edge
-    /// connecting it to its parent, and joints that close loops are listed as closures. For every step, the backend
-    /// recalculates the edge parameters from the stored joints and bodies. Changes to a drive, anchor or mass therefore
-    /// affect the solver in that same step.
+    /// changes ( <see cref="JointTopology"/> ) or when a tombstone expires. Parts are listed with parents before
+    /// children. Each part has an edge connecting it to its parent, and joints that close loops are listed as closures.
+    /// For every step, the fill jobs give the solver the edges and closures of the vessels that take part in the step.
+    /// They reuse an edge or closure that they computed in an earlier step, and compute it again from the stored joints
+    /// and bodies when the motion frame of one of its bodies changed or when the settings of one of its joints changed
+    /// ( <see cref="JointSettings"/> ). Changes to a drive, anchor or mass therefore affect the solver in that same
+    /// step.
     /// </para>
     /// </summary>
     internal unsafe struct VesselBuild : IDisposable
@@ -170,6 +173,11 @@ namespace KSP.Retooled.Physics
         public NativeList<IntPtr> PartJointRecords;
         public NativeList<IntPtr> ClosureJointRecords;
 
+        // The serial numbers of the joints at those records. The store reuses the memory of a destroyed joint, so a
+        // joint is the same joint only if its record and its serial number are the same.
+        public NativeList<uint> PartJointSerials;
+        public NativeList<uint> ClosureJointSerials;
+
         /// <summary>For each compiled vessel, 1 when the vessel takes part in this step.</summary>
         public NativeList<byte> Active;
 
@@ -186,12 +194,15 @@ namespace KSP.Retooled.Physics
         public NativeList<bool> EdgeLocked;
 
         // The edges and closures that the fill jobs computed in an earlier step, with the motion frames of the two
-        // bodies that each one used (the child's or part A's first, then the parent's or part B's). The fill jobs reuse
-        // an entry while the joint settings, the units and both motion frames stay the same.
+        // bodies that each one used (the child's or part A's first, then the parent's or part B's), and the highest
+        // settings stamp among the joints of its unit. The fill jobs reuse an entry while the units, both motion frames
+        // and the stamp stay the same.
         public NativeList<VesselEdge> EdgeCache;
         public NativeList<VesselClosure> ClosureCache;
         public NativeList<RigidTransform> EdgeCacheFrames;
         public NativeList<RigidTransform> ClosureCacheFrames;
+        public NativeList<uint> EdgeCacheStamps;
+        public NativeList<uint> ClosureCacheStamps;
 
         public static VesselBuild Create()
         {
@@ -214,6 +225,8 @@ namespace KSP.Retooled.Physics
                 PartBodyRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 PartJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 ClosureJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
+                PartJointSerials = new NativeList<uint>(Allocator.Persistent),
+                ClosureJointSerials = new NativeList<uint>(Allocator.Persistent),
                 Active = new NativeList<byte>(Allocator.Persistent),
                 StepVessels = new NativeList<VesselRecord>(Allocator.Persistent),
                 PartBodies = new NativeList<int>(Allocator.Persistent),
@@ -226,6 +239,8 @@ namespace KSP.Retooled.Physics
                 ClosureCache = new NativeList<VesselClosure>(Allocator.Persistent),
                 EdgeCacheFrames = new NativeList<RigidTransform>(Allocator.Persistent),
                 ClosureCacheFrames = new NativeList<RigidTransform>(Allocator.Persistent),
+                EdgeCacheStamps = new NativeList<uint>(Allocator.Persistent),
+                ClosureCacheStamps = new NativeList<uint>(Allocator.Persistent),
             };
         }
 
@@ -248,6 +263,8 @@ namespace KSP.Retooled.Physics
             PartBodyRecords.Dispose();
             PartJointRecords.Dispose();
             ClosureJointRecords.Dispose();
+            PartJointSerials.Dispose();
+            ClosureJointSerials.Dispose();
             Active.Dispose();
             StepVessels.Dispose();
             PartBodies.Dispose();
@@ -260,6 +277,8 @@ namespace KSP.Retooled.Physics
             ClosureCache.Dispose();
             EdgeCacheFrames.Dispose();
             ClosureCacheFrames.Dispose();
+            EdgeCacheStamps.Dispose();
+            ClosureCacheStamps.Dispose();
         }
 
         /// <summary>Clears all compiled vessels, as required when vessels are disabled.</summary>
@@ -279,6 +298,8 @@ namespace KSP.Retooled.Physics
             PartBodyRecords.Clear();
             PartJointRecords.Clear();
             ClosureJointRecords.Clear();
+            PartJointSerials.Clear();
+            ClosureJointSerials.Clear();
             Active.Clear();
             StepVessels.Clear();
             BodyVessels.Clear();
@@ -287,6 +308,8 @@ namespace KSP.Retooled.Physics
             ClosureCache.Clear();
             EdgeCacheFrames.Clear();
             ClosureCacheFrames.Clear();
+            EdgeCacheStamps.Clear();
+            ClosureCacheStamps.Clear();
             UnitVessels.ResizeUninitialized(unitCount);
             for (int i = 0; i < unitCount; i++)
             {
@@ -327,6 +350,8 @@ namespace KSP.Retooled.Physics
             EdgeCacheFrames.ResizeUninitialized(2 * parts);
             ClosureCache.ResizeUninitialized(closures);
             ClosureCacheFrames.ResizeUninitialized(2 * closures);
+            EdgeCacheStamps.ResizeUninitialized(parts);
+            ClosureCacheStamps.ResizeUninitialized(closures);
             return resized;
         }
 
@@ -429,6 +454,18 @@ namespace KSP.Retooled.Physics
     /// the tombstone.
     /// </para>
     /// <para>
+    /// A tombstone is meant for a joint that the game destroys and creates again, as it does with autostruts. A joint
+    /// that still exists but can no longer be part of a vessel, such as a servo that was given a target, won't come back
+    /// in that way. A vessel with such a joint is therefore not kept. It is compiled anew in the same step, and the
+    /// joint becomes a Unity Physics joint between two vessels.
+    /// </para>
+    /// <para>
+    /// Two units can join the same two bodies, for example when their joint frames differ. When the job keeps a vessel,
+    /// each edge and closure first takes the unit that holds the joint that it had before, and only then any other unit
+    /// between its bodies. An edge that takes a unit without the joint that it had before counts as a change to the
+    /// vessel's structure, because the solver keeps a lock state for each edge.
+    /// </para>
+    /// <para>
     /// A new vessel has as its root the body with the lowest store index. Parts are listed in breadth-first order from
     /// the root, so every parent precedes its children. A new vessel with fewer than <see cref="MinimumParts"/> parts is
     /// not emitted: its joints stay Unity Physics joints, as the joints of loose bodies and debris do. A new vessel
@@ -448,6 +485,12 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointForestRole> Roles;
 
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
         public VesselBuild Build;
 
         /// <summary>The number of the step that is being built. A new tombstone records it.</summary>
@@ -466,6 +509,8 @@ namespace KSP.Retooled.Physics
                 World = World,
                 Units = Units,
                 Roles = Roles,
+                Groups = Groups,
+                Members = Members,
                 Build = Build,
                 Step = Step,
                 TombstoneSteps = TombstoneSteps,
@@ -479,6 +524,8 @@ namespace KSP.Retooled.Physics
             public NativeStore.WorldData* World;
             public NativeArray<JointUnit> Units;
             public NativeArray<JointForestRole> Roles;
+            public NativeArray<JointGroup> Groups;
+            public NativeArray<JointGroupMember> Members;
             public VesselBuild Build;
             public int Step;
             public int TombstoneSteps;
@@ -489,6 +536,8 @@ namespace KSP.Retooled.Physics
             private NativeArray<IntPtr> oldBodies;
             private NativeArray<IntPtr> oldJoints;
             private NativeArray<IntPtr> oldClosures;
+            private NativeArray<uint> oldJointSerials;
+            private NativeArray<uint> oldClosureSerials;
             private NativeArray<int> oldParents;
             private NativeArray<byte> oldIsBody0;
             private NativeArray<int> oldPartTombstones;
@@ -503,6 +552,9 @@ namespace KSP.Retooled.Physics
             // For each store body, its part index in the new build, or -1.
             private NativeArray<int> partOf;
 
+            // The records of all joints in the store.
+            private NativeHashSet<IntPtr> liveJoints;
+
             public void Run()
             {
                 int bodyCount = (int)World->bodyCount;
@@ -513,6 +565,8 @@ namespace KSP.Retooled.Physics
                 oldBodies = new NativeArray<IntPtr>(Build.PartBodyRecords.AsArray(), Allocator.Temp);
                 oldJoints = new NativeArray<IntPtr>(Build.PartJointRecords.AsArray(), Allocator.Temp);
                 oldClosures = new NativeArray<IntPtr>(Build.ClosureJointRecords.AsArray(), Allocator.Temp);
+                oldJointSerials = new NativeArray<uint>(Build.PartJointSerials.AsArray(), Allocator.Temp);
+                oldClosureSerials = new NativeArray<uint>(Build.ClosureJointSerials.AsArray(), Allocator.Temp);
                 oldParents = new NativeArray<int>(Build.PartParents.AsArray(), Allocator.Temp);
                 oldIsBody0 = new NativeArray<byte>(Build.PartIsBody0.AsArray(), Allocator.Temp);
                 oldPartTombstones = new NativeArray<int>(Build.PartTombstones.AsArray(), Allocator.Temp);
@@ -539,6 +593,12 @@ namespace KSP.Retooled.Physics
                 for (int i = 0; i < bodyCount; i++)
                 {
                     partOf[i] = -1;
+                }
+
+                liveJoints = new NativeHashSet<IntPtr>(math.max(1, (int)World->jointCount), Allocator.Temp);
+                for (int i = 0; i < World->jointCount; i++)
+                {
+                    liveJoints.Add((IntPtr)World->joints[i]);
                 }
 
                 KeepVessels(unitsByBodies);
@@ -671,11 +731,33 @@ namespace KSP.Retooled.Physics
                     keptBy[body] = v;
                 }
 
+                // First give every edge and closure the unit that still holds its old joint, so that no other edge or
+                // closure between the same two bodies takes that unit.
                 for (int part = vessel.FirstPart + 1; part < vessel.FirstPart + vessel.PartCount; part++)
                 {
                     int parent = vessel.FirstPart + oldParents[part];
-                    partUnit[part] = Claim(unitsByBodies, partBody[part], partBody[parent]);
-                    if (partUnit[part] < 0 && Expired(oldPartTombstones[part]))
+                    partUnit[part] = Claim(unitsByBodies, partBody[part], partBody[parent], oldJoints[part], oldJointSerials[part]);
+                }
+
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    int a = partBody[vessel.FirstPart + oldClosurePartA[c]];
+                    int b = partBody[vessel.FirstPart + oldClosurePartB[c]];
+                    closureUnit[c] = Claim(unitsByBodies, a, b, oldClosures[c], oldClosureSerials[c]);
+                }
+
+                // Then give the others any unit between their bodies, or make them tombstones.
+                for (int part = vessel.FirstPart + 1; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    if (partUnit[part] >= 0)
+                    {
+                        continue;
+                    }
+
+                    int parent = vessel.FirstPart + oldParents[part];
+                    partUnit[part] = Claim(unitsByBodies, partBody[part], partBody[parent], IntPtr.Zero, 0);
+                    if (partUnit[part] < 0
+                        && (Expired(oldPartTombstones[part]) || StillJoins(oldJoints[part], oldJointSerials[part], partBody[part], partBody[parent])))
                     {
                         return false;
                     }
@@ -683,10 +765,15 @@ namespace KSP.Retooled.Physics
 
                 for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
                 {
+                    if (closureUnit[c] >= 0)
+                    {
+                        continue;
+                    }
+
                     int a = partBody[vessel.FirstPart + oldClosurePartA[c]];
                     int b = partBody[vessel.FirstPart + oldClosurePartB[c]];
-                    closureUnit[c] = Claim(unitsByBodies, a, b);
-                    if (closureUnit[c] < 0 && Expired(oldClosureTombstones[c]))
+                    closureUnit[c] = Claim(unitsByBodies, a, b, IntPtr.Zero, 0);
+                    if (closureUnit[c] < 0 && (Expired(oldClosureTombstones[c]) || StillJoins(oldClosures[c], oldClosureSerials[c], a, b)))
                     {
                         return false;
                     }
@@ -695,20 +782,67 @@ namespace KSP.Retooled.Physics
                 return true;
             }
 
+            /// <summary>
+            /// Returns true if a joint from the previous compilation still exists, still joins the same two bodies and is
+            /// not broken. Such a joint lost its unit because it can no longer be part of a vessel, not because it went
+            /// away, so its edge or closure must not become a tombstone.
+            /// </summary>
+            private bool StillJoins(IntPtr record, uint serial, int bodyA, int bodyB)
+            {
+                if (record == IntPtr.Zero || !liveJoints.Contains(record))
+                {
+                    return false;
+                }
+
+                var joint = (NativeStore.JointData*)record;
+                return joint->serial == serial && (joint->state & JointConstraints.Inactive) == 0 && joint->body0 != null && joint->body1 != null
+                    && VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index) == VesselBuild.PairKey(bodyA, bodyB);
+            }
+
+            /// <summary>Returns true if one of the unit's joints is the joint with the given record and serial number.</summary>
+            private bool Holds(int unit, IntPtr record, uint serial)
+            {
+                JointUnit jointUnit = Units[unit];
+                if (jointUnit.Group < 0)
+                {
+                    return Is(World->joints[jointUnit.Joint], record, serial);
+                }
+
+                JointGroup group = Groups[jointUnit.Group];
+                for (int i = 0; i < group.MemberCount; i++)
+                {
+                    if (Is(World->joints[Members[group.FirstMember + i].Joint], record, serial))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool Is(NativeStore.JointData* joint, IntPtr record, uint serial)
+            {
+                return (IntPtr)joint == record && joint->serial == serial;
+            }
+
             /// <summary>Returns whether a tombstone made at the given step (or one made now, for -1) has expired.</summary>
             private bool Expired(int stamp)
             {
                 return Step - (stamp >= 0 ? stamp : Step) >= TombstoneSteps;
             }
 
-            /// <summary>Claims an unclaimed eligible unit between two bodies, or returns -1 if there is none.</summary>
-            private int Claim(NativeParallelMultiHashMap<ulong, int> unitsByBodies, int bodyA, int bodyB)
+            /// <summary>
+            /// Claims an unclaimed eligible unit between two bodies, or returns -1 if there is none. If a record is given,
+            /// claims only a unit that holds the joint with that record and serial number. The map lists the units between two bodies in no
+            /// useful order.
+            /// </summary>
+            private int Claim(NativeParallelMultiHashMap<ulong, int> unitsByBodies, int bodyA, int bodyB, IntPtr record, uint serial)
             {
                 if (unitsByBodies.TryGetFirstValue(VesselBuild.PairKey(bodyA, bodyB), out int unit, out NativeParallelMultiHashMapIterator<ulong> iterator))
                 {
                     do
                     {
-                        if (!claimed[unit])
+                        if (!claimed[unit] && (record == IntPtr.Zero || Holds(unit, record, serial)))
                         {
                             claimed[unit] = true;
                             return unit;
@@ -765,6 +899,11 @@ namespace KSP.Retooled.Physics
                         NativeStore.JointData* joint = World->joints[Units[unit].Joint];
                         isBody0 = (int)joint->body0->index == partBody[old] ? (byte)1 : (byte)0;
                         Build.UnitVessels[unit] = index;
+
+                        // A different joint between the same two bodies took the edge. The solver must not carry the
+                        // old joint's lock state over to it. The old joint of a tombstone is no joint, and that case
+                        // is counted below.
+                        changed |= oldJoints[old] != IntPtr.Zero && !Holds(unit, oldJoints[old], oldJointSerials[old]);
                     }
                     else if (k > 0)
                     {
@@ -979,6 +1118,7 @@ namespace KSP.Retooled.Physics
                 Build.ClosurePartA.ResizeUninitialized(closures);
                 Build.ClosurePartB.ResizeUninitialized(closures);
                 Build.ClosureJointRecords.ResizeUninitialized(closures);
+                Build.ClosureJointSerials.ResizeUninitialized(closures);
                 Build.ClosureTombstones.ResizeUninitialized(closures);
                 for (int u = 0; u < unitCount; u++)
                 {
@@ -994,6 +1134,7 @@ namespace KSP.Retooled.Physics
                     Build.ClosurePartA[slot] = partOf[a] - firstPart;
                     Build.ClosurePartB[slot] = partOf[b] - firstPart;
                     Build.ClosureJointRecords[slot] = (IntPtr)World->joints[Units[u].Joint];
+                    Build.ClosureJointSerials[slot] = World->joints[Units[u].Joint]->serial;
                     Build.ClosureTombstones[slot] = -1;
                     Build.UnitVessels[u] = vessel;
                 }
@@ -1051,6 +1192,7 @@ namespace KSP.Retooled.Physics
                 Build.PartTombstones.Add(tombstone);
                 Build.PartBodyRecords.Add((IntPtr)World->bodies[body].owner);
                 Build.PartJointRecords.Add(unit >= 0 ? (IntPtr)World->joints[Units[unit].Joint] : IntPtr.Zero);
+                Build.PartJointSerials.Add(unit >= 0 ? World->joints[Units[unit].Joint]->serial : 0u);
             }
 
             private void AddClosure(int unit, int partA, int partB, IntPtr record, int tombstone)
@@ -1059,6 +1201,7 @@ namespace KSP.Retooled.Physics
                 Build.ClosurePartA.Add(partA);
                 Build.ClosurePartB.Add(partB);
                 Build.ClosureJointRecords.Add(record);
+                Build.ClosureJointSerials.Add(record != IntPtr.Zero ? ((NativeStore.JointData*)record)->serial : 0u);
                 Build.ClosureTombstones.Add(tombstone);
             }
 
@@ -1122,7 +1265,8 @@ namespace KSP.Retooled.Physics
                 for (int i = 0; i < vessel.PartCount; i++)
                 {
                     if (Build.PartBodyRecords[vessel.FirstPart + i] != oldBodies[old.FirstPart + i]
-                        || Build.PartJointRecords[vessel.FirstPart + i] != oldJoints[old.FirstPart + i])
+                        || Build.PartJointRecords[vessel.FirstPart + i] != oldJoints[old.FirstPart + i]
+                        || Build.PartJointSerials[vessel.FirstPart + i] != oldJointSerials[old.FirstPart + i])
                     {
                         return false;
                     }
@@ -1130,7 +1274,8 @@ namespace KSP.Retooled.Physics
 
                 for (int i = 0; i < vessel.ClosureCount; i++)
                 {
-                    if (Build.ClosureJointRecords[vessel.FirstClosure + i] != oldClosures[old.FirstClosure + i])
+                    if (Build.ClosureJointRecords[vessel.FirstClosure + i] != oldClosures[old.FirstClosure + i]
+                        || Build.ClosureJointSerials[vessel.FirstClosure + i] != oldClosureSerials[old.FirstClosure + i])
                     {
                         return false;
                     }
@@ -1276,6 +1421,30 @@ namespace KSP.Retooled.Physics
             return UnsafeUtility.MemCmp(&a, &b, sizeof(RigidTransform)) == 0;
         }
 
+        /// <summary>
+        /// Returns the highest settings stamp among the joints of a unit. A command that changes a joint gives the joint
+        /// a stamp that is higher than all earlier stamps, so the result changes whenever one of the unit's joints
+        /// changes.
+        /// </summary>
+        public static uint Stamp(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
+            NativeArray<JointGroupMember> members)
+        {
+            if (unit.Group < 0)
+            {
+                return world->joints[unit.Joint]->settingsStamp;
+            }
+
+            // The leader is one of the group's members.
+            JointGroup group = groups[unit.Group];
+            uint stamp = 0;
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                stamp = math.max(stamp, world->joints[members[group.FirstMember + i].Joint]->settingsStamp);
+            }
+
+            return stamp;
+        }
+
         public static double3x3 Frame(NativeStore.BodyData* body, quaternion frame)
         {
             return new double3x3(new float3x3(InMotionFrame(body, frame)));
@@ -1297,7 +1466,8 @@ namespace KSP.Retooled.Physics
 
         // This job runs at the same time as BuildJointsJob and FillVesselClosuresJob. All three jobs write groups, but
         // never the same group: this job writes only the groups of the edges in active vessels, FillVesselClosuresJob
-        // writes only those of the closures, and BuildJointsJob writes only the groups outside active vessels.
+        // writes only those of the closures, and BuildJointsJob writes only the groups outside active vessels. This job
+        // therefore reads no group of an inactive vessel, because BuildJointsJob may be writing it.
         [NativeDisableParallelForRestriction]
         [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroup> Groups;
@@ -1334,15 +1504,23 @@ namespace KSP.Retooled.Physics
         public NativeArray<int> PartVesselFirst;
 
         /// <summary>
-        /// True when the cached edges can't be reused, because the joint settings, the units or the compiled vessels
-        /// changed since the cache was filled.
+        /// True when the cached edges can't be reused, because the units or the compiled vessels changed since the
+        /// cache was filled.
         /// </summary>
         public bool RefillAll;
+
+        /// <summary>
+        /// True when some joint's settings changed since the cache was filled. Each entry then compares the settings
+        /// stamp of its unit with the stamp that it recorded.
+        /// </summary>
+        public bool SettingsChanged;
 
         public NativeArray<VesselEdge> EdgeCache;
 
         [NativeDisableParallelForRestriction]
         public NativeArray<RigidTransform> EdgeCacheFrames;
+
+        public NativeArray<uint> EdgeCacheStamps;
 
         public void Execute(int part)
         {
@@ -1364,16 +1542,30 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            if (Active[UnitVessels[unit]] != 0)
+            if (Active[UnitVessels[unit]] == 0)
             {
-                BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
+                // The vessel takes no part in this step, so the solver doesn't read its edges. Clear the cached frames,
+                // so that the edge is computed again when the vessel takes part again. The joint's settings may change
+                // in the meantime, and this job doesn't record that change.
+                Edges[part] = new VesselEdge
+                {
+                    Parent = PartParents[part],
+                    State = VesselEdgeState.Broken,
+                    Frame = double3x3.identity,
+                    Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                };
+                EdgeCacheFrames[2 * part] = default;
+                EdgeCacheFrames[2 * part + 1] = default;
+                return;
             }
 
+            BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
             NativeStore.BodyData* child = World->bodies + storeBody;
             NativeStore.BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
             RigidTransform childMotion = child->mass->Transform;
             RigidTransform parentMotion = parent->mass->Transform;
-            if (!RefillAll && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
+            uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, Units[unit], Groups, Members) : EdgeCacheStamps[part];
+            if (!RefillAll && stamp == EdgeCacheStamps[part] && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
                 && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))
             {
                 Edges[part] = EdgeCache[part];
@@ -1410,6 +1602,7 @@ namespace KSP.Retooled.Physics
             EdgeCache[part] = edge;
             EdgeCacheFrames[2 * part] = childMotion;
             EdgeCacheFrames[2 * part + 1] = parentMotion;
+            EdgeCacheStamps[part] = stamp;
         }
     }
 
@@ -1456,10 +1649,15 @@ namespace KSP.Retooled.Physics
         /// <summary>See <see cref="FillVesselEdgesJob.RefillAll"/>.</summary>
         public bool RefillAll;
 
+        /// <summary>See <see cref="FillVesselEdgesJob.SettingsChanged"/>.</summary>
+        public bool SettingsChanged;
+
         public NativeArray<VesselClosure> ClosureCache;
 
         [NativeDisableParallelForRestriction]
         public NativeArray<RigidTransform> ClosureCacheFrames;
+
+        public NativeArray<uint> ClosureCacheStamps;
 
         public void Execute(int closure)
         {
@@ -1477,17 +1675,29 @@ namespace KSP.Retooled.Physics
             }
 
             JointUnit unit = Units[ClosureUnits[closure]];
-            if (Active[UnitVessels[ClosureUnits[closure]]] != 0)
+            if (Active[UnitVessels[ClosureUnits[closure]]] == 0)
             {
-                BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
+                // The vessel takes no part in this step. See the same case in FillVesselEdgesJob.
+                Closures[closure] = new VesselClosure
+                {
+                    PartA = ClosurePartA[closure],
+                    PartB = ClosurePartB[closure],
+                    Frame = double3x3.identity,
+                    Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                };
+                ClosureCacheFrames[2 * closure] = default;
+                ClosureCacheFrames[2 * closure + 1] = default;
+                return;
             }
 
+            BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
             NativeStore.JointData* leader = World->joints[unit.Joint];
             NativeStore.BodyData* bodyA = StoreOps.Hot(leader->body0);
             NativeStore.BodyData* bodyB = StoreOps.Hot(leader->body1);
             RigidTransform motionA = bodyA->mass->Transform;
             RigidTransform motionB = bodyB->mass->Transform;
-            if (!RefillAll && UnitParameters.Same(ClosureCacheFrames[2 * closure], motionA)
+            uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, unit, Groups, Members) : ClosureCacheStamps[closure];
+            if (!RefillAll && stamp == ClosureCacheStamps[closure] && UnitParameters.Same(ClosureCacheFrames[2 * closure], motionA)
                 && UnitParameters.Same(ClosureCacheFrames[2 * closure + 1], motionB))
             {
                 Closures[closure] = ClosureCache[closure];
@@ -1517,6 +1727,7 @@ namespace KSP.Retooled.Physics
             ClosureCache[closure] = filled;
             ClosureCacheFrames[2 * closure] = motionA;
             ClosureCacheFrames[2 * closure + 1] = motionB;
+            ClosureCacheStamps[closure] = stamp;
         }
     }
 

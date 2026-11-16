@@ -438,6 +438,179 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(OnlyVessel().Id, Is.Not.EqualTo(id));
         }
 
+        /// <summary>
+        /// Adds a body far from the crafts with a joint to the world. The new joint changes the joint topology, so the
+        /// next step compiles the vessels again, but it joins no vessel.
+        /// </summary>
+        private Rigidbody AnchoredBody()
+        {
+            Rigidbody body = Box(new Vector3(50.0f, 10.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+            body.useGravity = false;
+            body.gameObject.AddComponent<FixedJoint>();
+            return body;
+        }
+
+        /// <summary>The edge of the part whose body is the given one.</summary>
+        private static VesselEdge EdgeOf(List<Rigidbody> bodies, Rigidbody body)
+        {
+            VesselRecord vessel = OnlyVessel();
+            int part = VesselsOf(bodies)[0].IndexOf(body);
+            Assert.That(part, Is.GreaterThan(0), "the body is a part with a parent");
+            return State->VesselSet.Edges[vessel.FirstPart + part];
+        }
+
+        [Test]
+        public void ASecondUnitBetweenTheSameBodiesKeepsItsPlaceWhenTheVesselIsKept()
+        {
+            List<Rigidbody> bodies = Column(4);
+
+            // A strut beside the stack joints of the lowest part. Its frame differs from theirs, so it isn't in their
+            // group: it is a second unit between the same two bodies. The stack joints come first in the store, so they
+            // are the edge, and the strut is a closure. Only the strut has a break force.
+            ConfigurableJoint strut = Strut(bodies[3], bodies[2]);
+            strut.axis = Vector3.forward;
+            strut.breakForce = 777.0f;
+            Simulate();
+            VesselRecord before = OnlyVessel();
+            Assert.That(before.ClosureCount, Is.EqualTo(1), "the strut is a closure");
+            Assert.That(EdgeOf(bodies, bodies[3]).BreakForce, Is.EqualTo(double.PositiveInfinity), "the stack joints are the edge");
+
+            AnchoredBody();
+            Simulate();
+            VesselRecord after = OnlyVessel();
+            Assert.That(after.Id, Is.EqualTo(before.Id), "the vessel is kept");
+            Assert.That(after.StructureVersion, Is.EqualTo(before.StructureVersion), "its structure is the same");
+            Assert.That(EdgeOf(bodies, bodies[3]).BreakForce, Is.EqualTo(double.PositiveInfinity), "the stack joints are still the edge");
+        }
+
+        [Test]
+        public void AnEdgeWhoseJointsAreReplacedChangesTheStructure()
+        {
+            List<Rigidbody> bodies = Column(4);
+            Simulate();
+            VesselRecord before = OnlyVessel();
+
+            // The game destroys a part's attachment and makes it again in the same frame.
+            foreach (ConfigurableJoint joint in bodies[3].GetComponents<ConfigurableJoint>())
+            {
+                Object.DestroyImmediate(joint);
+            }
+
+            StackJoint(bodies[3], bodies[2], new Vector3(0.0f, 10.0f - 3.0f * PartHeight, 0.0f));
+            Simulate();
+            VesselRecord after = OnlyVessel();
+            Assert.That(after.Id, Is.EqualTo(before.Id), "the vessel is kept");
+            Assert.That(after.PartCount, Is.EqualTo(4));
+            Assert.That(EdgeOf(bodies, bodies[3]).State, Is.Not.EqualTo(VesselEdgeState.Broken), "the new joints hold the edge");
+            Assert.That(after.StructureVersion, Is.Not.EqualTo(before.StructureVersion),
+                "the lock state of the old joints doesn't carry over to the new ones");
+        }
+
+        [Test]
+        public void AJointThatMovesInTheStoreKeepsItsEdge()
+        {
+            // The anchored body's joint is first in the store. Destroying it moves the store's last joint, one of the
+            // lowest part's stack joints, into its place, and that joint then leads its group.
+            Rigidbody anchored = AnchoredBody();
+            List<Rigidbody> bodies = Column(4);
+            Simulate();
+            VesselRecord before = OnlyVessel();
+
+            Object.DestroyImmediate(anchored.GetComponent<FixedJoint>());
+            Simulate();
+            VesselRecord after = OnlyVessel();
+            Assert.That(after.Id, Is.EqualTo(before.Id), "the vessel is kept");
+            Assert.That(after.StructureVersion, Is.EqualTo(before.StructureVersion), "the same joints hold every edge");
+        }
+
+        [Test]
+        public void AServoThatGetsATargetSplitsItsVesselAtOnce()
+        {
+            List<Rigidbody> bodies = Column(4);
+            Simulate();
+            ulong id = OnlyVessel().Id;
+
+            // A target takes the joints out of the vessel. They still hold the parts together, as a Unity Physics
+            // joint, so the vessel splits in two at once instead of keeping a tombstone.
+            foreach (ConfigurableJoint joint in bodies[2].GetComponents<ConfigurableJoint>())
+            {
+                joint.targetRotation = Quaternion.Euler(0.0f, 10.0f, 0.0f);
+            }
+
+            Simulate();
+            List<List<Rigidbody>> vessels = VesselsOf(bodies);
+            Assert.That(vessels.Count, Is.EqualTo(2), "two vessels");
+            CollectionAssert.AreEquivalent(new[] { bodies[0], bodies[1] }, vessels.Find(v => v.Contains(bodies[0])));
+            CollectionAssert.AreEquivalent(new[] { bodies[2], bodies[3] }, vessels.Find(v => v.Contains(bodies[3])));
+            for (int v = 0; v < 2; v++)
+            {
+                Assert.That(State->VesselSet.Vessels[v].Id, Is.Not.EqualTo(id), "both vessels are new");
+            }
+        }
+
+        [Test]
+        public void ASettingThatChangesWhileItsVesselSleepsReachesItsEdge()
+        {
+            Rigidbody parent = Box(new Vector3(0.0f, 10.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+            Rigidbody child = Box(new Vector3(1.0f, 10.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+            parent.useGravity = child.useGravity = false;
+            ConfigurableJoint joint = SurfaceJoint(child, parent, new Vector3(0.5f, 10.0f, 0.0f), 3000.0f);
+            Simulate(2);
+            Assert.That(State->VesselSet.Edges[OnlyVessel().FirstPart + 1].SwingStiffness, Is.EqualTo(3000.0).Within(1e-3));
+
+            // Setting a drive wakes the joint's bodies, so put them to sleep after the change.
+            joint.angularYZDrive = new JointDrive { positionSpring = 5000.0f, positionDamper = 50.0f, maximumForce = 1e20f };
+            parent.Sleep();
+            child.Sleep();
+            Simulate();
+            if (State->VesselSet.IsCreated)
+            {
+                Assert.Inconclusive("the vessel didn't sleep through the change");
+            }
+
+            parent.WakeUp();
+            Simulate();
+            VesselRecord vessel = OnlyVessel();
+            Assert.That(State->VesselSet.Edges[vessel.FirstPart + 1].SwingStiffness, Is.EqualTo(5000.0).Within(1e-3),
+                "the edge is computed again when the vessel wakes");
+        }
+
+        [Test]
+        public void ASettingRefillsOnlyTheEdgesOfItsJoint()
+        {
+            var bodies = new List<Rigidbody>();
+            for (int i = 0; i < 3; i++)
+            {
+                Rigidbody body = Box(new Vector3(1.0f * i, 10.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+                body.useGravity = false;
+                bodies.Add(body);
+            }
+
+            SurfaceJoint(bodies[1], bodies[0], new Vector3(0.5f, 10.0f, 0.0f), 1000.0f);
+            ConfigurableJoint second = SurfaceJoint(bodies[2], bodies[1], new Vector3(1.5f, 10.0f, 0.0f), 2000.0f);
+            Simulate(2);
+
+            // Mark the cached edge of the first joint. The mark reaches the step only if the fill job reuses that edge.
+            VesselRecord vessel = OnlyVessel();
+            int first = vessel.FirstPart + VesselsOf(bodies)[0].IndexOf(bodies[1]);
+            VesselBuild build = State->Vessels;
+            VesselEdge marked = build.EdgeCache[first];
+            marked.SwingDamping = 12345.0;
+            build.EdgeCache[first] = marked;
+
+            uint version = JointSettings.Version;
+            second.angularYZDrive = new JointDrive { positionSpring = 4000.0f, positionDamper = 400.0f, maximumForce = 1e20f };
+            Assert.That(JointSettings.Version, Is.Not.EqualTo(version), "a new drive moves the version");
+            Simulate();
+            Assert.That(EdgeOf(bodies, bodies[2]).SwingStiffness, Is.EqualTo(4000.0).Within(1e-3), "the changed joint's edge is new");
+            Assert.That(EdgeOf(bodies, bodies[1]).SwingDamping, Is.EqualTo(12345.0), "the other edge is reused");
+
+            version = JointSettings.Version;
+            second.angularYZDrive = new JointDrive { positionSpring = 4000.0f, positionDamper = 400.0f, maximumForce = 1e20f };
+            second.breakForce = second.breakForce;
+            Assert.That(JointSettings.Version, Is.EqualTo(version), "sending the same settings again changes nothing");
+        }
+
         [Test]
         public void AThreePartCraftStaysOnUnityJointsByDefault()
         {
