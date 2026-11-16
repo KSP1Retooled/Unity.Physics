@@ -172,6 +172,15 @@ internal unsafe partial struct FinishStepSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
+        // Finish the step while its solve is still running, so that FinishStep schedules the write-back and the jobs
+        // that read the solved motions before the solve ends. Those jobs then start as soon as the motions are solved.
+        // Reading the simulation singleton here would first wait for every job of the solve, and then for the jobs
+        // that free its buffers and export its events. FinishStep waits for the whole solve itself.
+        if (StepKernel.FinishPreparedStep(state.WorldUnmanaged.Time.DeltaTime) != 0)
+        {
+            return;
+        }
+
         state.CompleteDependency();
         Simulation simulation = simulations.GetSingleton<SimulationSingleton>().AsSimulation();
         StepKernel.FinishStep(&simulation, state.WorldUnmanaged.Time.DeltaTime);

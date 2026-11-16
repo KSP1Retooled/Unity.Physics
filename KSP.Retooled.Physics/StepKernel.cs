@@ -56,7 +56,26 @@ namespace KSP.Retooled.Physics
         [BurstCompile]
         internal static void FinishStep(Simulation* simulation, float deltaTime)
         {
+            Current->preparedSimulation = null;
             Current->FinishStep(*simulation, deltaTime);
+        }
+
+        /// <summary>
+        /// Finishes the step whose solve PrepareSolve prepared, while that solve may still be running, and returns 1.
+        /// Returns 0 and does nothing if no solve has been prepared since the last step finished.
+        /// </summary>
+        [BurstCompile]
+        internal static int FinishPreparedStep(float deltaTime)
+        {
+            Simulation* simulation = Current->preparedSimulation;
+            if (simulation == null)
+            {
+                return 0;
+            }
+
+            Current->preparedSimulation = null;
+            Current->FinishStep(*simulation, deltaTime);
+            return 1;
         }
 
         [BurstCompile]
