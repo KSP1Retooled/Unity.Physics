@@ -242,6 +242,15 @@ namespace Unity.Physics
         public UnsafeList<double3> PrefixForce;
         public UnsafeList<double3> PrefixTorque;
 
+        /// <summary>
+        /// For a fused vessel island: the world index of each moving part's body, in the order that the island numbers
+        /// them, and the island's number for each body in the world, or -1 for a body that is not in the island. The
+        /// fused solve keeps this numbering from step to step while the island's vessels and bodies stay the same.
+        /// </summary>
+        public UnsafeList<int> FusedWorldBodies;
+
+        public UnsafeList<int> FusedCompactOfWorld;
+
         /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
         public bool VesselMode;
 
@@ -315,6 +324,8 @@ namespace Unity.Physics
                 SubtreeLast = new UnsafeList<int>(16, Allocator.Persistent),
                 PrefixForce = new UnsafeList<double3>(16, Allocator.Persistent),
                 PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
+                FusedWorldBodies = new UnsafeList<int>(16, Allocator.Persistent),
+                FusedCompactOfWorld = new UnsafeList<int>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -389,6 +400,8 @@ namespace Unity.Physics
             forest->SubtreeLast.Dispose();
             forest->PrefixForce.Dispose();
             forest->PrefixTorque.Dispose();
+            forest->FusedWorldBodies.Dispose();
+            forest->FusedCompactOfWorld.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 

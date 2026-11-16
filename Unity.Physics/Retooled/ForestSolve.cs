@@ -42,6 +42,13 @@ namespace Unity.Physics
             public SparseConstraintSolver.Problem Problem;
             public bool Bounded;
 
+            /// <summary>
+            /// Whether the caller knows that the island's vessels, their structure versions and the numbering of
+            /// its bodies are the same as when the forest's layout was last built, and that the island has no body
+            /// outside its vessels. Then the vessel preparation does not build and compare the layout's signature.
+            /// </summary>
+            public bool KnownLayout;
+
             /// <summary>Each block's Jacobian, for its regularization.</summary>
             public JacobianHeader** Headers;
 
