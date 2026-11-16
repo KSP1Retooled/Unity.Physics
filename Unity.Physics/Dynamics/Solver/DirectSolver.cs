@@ -1244,7 +1244,8 @@ namespace Unity.Physics
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
             int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
-            int* headerRows = null, int headerCount = 0, float* recovery = null, int* islandVessels = null, int islandVesselCount = 0)
+            int* headerRows = null, int headerCount = 0, float* recovery = null, int* islandVessels = null, int islandVesselCount = 0,
+            RigidBody* rigidBodies = null, int rigidBodyCount = 0)
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -1366,7 +1367,8 @@ namespace Unity.Physics
                 ForestRun run = default;
                 int fallbackBoundaryRows = 0;
                 bool started = forest != null && TryStartForest(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), bounded,
-                    forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), motionVelocities, motionDatas,
+                    forest, forestSettings, team, (int*)setup.WorldBodies.GetUnsafeReadOnlyPtr(), rigidBodies, rigidBodyCount,
+                    motionVelocities, motionDatas,
                     stepInput.Timestep, stepInput.CurrentSubstep, out run, out fallbackBoundaryRows);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)

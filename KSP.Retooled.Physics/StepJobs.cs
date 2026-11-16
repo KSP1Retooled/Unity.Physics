@@ -135,13 +135,22 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>
+        /// Builds the Unity Physics body for a store row. The entity's index is the row, and its version is the body's
+        /// serial number. The store gives a destroyed body's row to the next body that it makes, but it never gives two
+        /// bodies the same serial number. So Unity Physics can tell two bodies apart by the whole entity, even when they
+        /// had the same row: the island cache uses this to drop the lock states of a body that no longer exists. The
+        /// version is never zero, because the code that reads these bodies treats a version of zero as a body that is
+        /// not in the store.
+        /// </summary>
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
+            uint serial = body.owner->serial;
             return new RigidBody
             {
                 Collider = body.collider->Value,
                 WorldFromBody = WorldFromBody(ref body),
-                Entity = new Entity { Index = index, Version = 1 },
+                Entity = new Entity { Index = index, Version = serial != 0 ? (int)serial : 1 },
                 Scale = 1.0f,
             };
         }

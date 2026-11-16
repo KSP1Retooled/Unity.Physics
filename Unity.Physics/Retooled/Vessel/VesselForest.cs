@@ -142,7 +142,12 @@ namespace Unity.Physics
         // each, their lock state and the deflection their springs would take under their last load.
         public UnsafeList<int> BlockPair;
         public UnsafeList<int2> PairBodies;
-        public UnsafeList<ulong> PairWorldKey;
+
+        /// <summary>
+        /// Each pair's bodies by their identities (see <see cref="DirectSolverCache.BodyIdentity"/>), the lower identity
+        /// first, each as its low and high halves. The next <see cref="BuildPairs"/> finds a pair's old lock state by these.
+        /// </summary>
+        public UnsafeList<int4> PairWorldKey;
         public UnsafeList<byte> PairTree;
         public UnsafeList<byte> PairEdge;
         public UnsafeList<byte> PairLocked;
@@ -291,7 +296,7 @@ namespace Unity.Physics
                 PartPair = new UnsafeList<int>(16, Allocator.Persistent),
                 BlockPair = new UnsafeList<int>(16, Allocator.Persistent),
                 PairBodies = new UnsafeList<int2>(16, Allocator.Persistent),
-                PairWorldKey = new UnsafeList<ulong>(16, Allocator.Persistent),
+                PairWorldKey = new UnsafeList<int4>(16, Allocator.Persistent),
                 PairTree = new UnsafeList<byte>(16, Allocator.Persistent),
                 PairEdge = new UnsafeList<byte>(16, Allocator.Persistent),
                 PairLocked = new UnsafeList<byte>(16, Allocator.Persistent),
@@ -440,15 +445,17 @@ namespace Unity.Physics
         /// Finds the island's body pairs among its forest blocks <paramref name="forestBlocks"/> and the spanning forest over
         /// them: a tree edge for each pair that a tree joint joins first without closing a loop, and a closure for every
         /// other pair. Pairs are counted once however many joints and rows they have. Numbers the parts parents first. A
-        /// pair that was here before keeps its lock state, found by its bodies' numbers in the world.
+        /// pair that was here before keeps its lock state, found by the identities of its bodies, which
+        /// <paramref name="identities"/> gives for each body of the problem. The world can give a destroyed body's index to
+        /// a new body, so the bodies' indices in the world would let a new pair take over a destroyed pair's lock state.
         /// </summary>
         public void BuildPairs(in SparseConstraintSolver.Problem problem, int* forestBlocks, bool* treeBlocks, int forestBlockCount,
-            int* worldBodies)
+            ulong* identities)
         {
             Builds++;
             int bodies = problem.BodyCount;
 
-            var previous = new NativeHashMap<ulong, int>(PairWorldKey.Length, Allocator.Temp);
+            var previous = new NativeHashMap<int4, int>(PairWorldKey.Length, Allocator.Temp);
             for (int p = 0; p < PairWorldKey.Length; p++)
             {
                 previous.TryAdd(PairWorldKey[p], p);
@@ -641,7 +648,7 @@ namespace Unity.Physics
                 }
             }
 
-            // Lock states carried over by the pairs' bodies in the world.
+            // Lock states carried over by the identities of the pairs' bodies.
             PairWorldKey.Resize(pairCount);
             PairLocked.Resize(pairCount);
             PairDeflection.Resize(pairCount);
@@ -667,8 +674,8 @@ namespace Unity.Physics
             for (int p = 0; p < pairCount; p++)
             {
                 int2 pb = PairBodies[p];
-                uint wa = (uint)worldBodies[pb.x], wb = (uint)worldBodies[pb.y];
-                ulong key = ((ulong)math.min(wa, wb) << 32) | math.max(wa, wb);
+                ulong low = math.min(identities[pb.x], identities[pb.y]), high = math.max(identities[pb.x], identities[pb.y]);
+                var key = new int4((int)(uint)low, (int)(uint)(low >> 32), (int)(uint)high, (int)(uint)(high >> 32));
                 PairWorldKey[p] = key;
                 if (previous.TryGetValue(key, out int old))
                 {

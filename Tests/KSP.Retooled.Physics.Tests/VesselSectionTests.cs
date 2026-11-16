@@ -142,6 +142,37 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A column locks, and then it is destroyed and a new column is built in its place. The store gives the new
+        /// column's bodies the rows of the old column's bodies, so the new bodies have the same indices in the world, and
+        /// the new island has the same first body index and the same shape as the old one. But the new bodies are other
+        /// bodies, so the new column's pairs must start unlocked, rather than take over the old column's lock states.
+        /// </summary>
+        [Test]
+        public void ANewColumnDoesNotTakeOverTheLockStatesOfADestroyedOne()
+        {
+            Fresh(true);
+            HangingColumn(out List<Rigidbody> old);
+            Simulate(60);
+            Sections(out _, out long lockedBefore);
+            Assert.That(lockedBefore, Is.EqualTo(ColumnParts - 1), "the old column locks");
+
+            foreach (Rigidbody body in old)
+            {
+                Object.DestroyImmediate(body.gameObject);
+            }
+
+            HangingColumn(out _);
+            Simulate();
+            Sections(out long sections, out long lockedAfter);
+            Debug.Log($"[VesselSectionTests] new column, first step: {sections} sections, {lockedAfter} locked pairs");
+            Assert.That(lockedAfter, Is.EqualTo(0), "the new column's pairs start unlocked");
+
+            Simulate(60);
+            Sections(out _, out long lockedLater);
+            Assert.That(lockedLater, Is.EqualTo(ColumnParts - 1), "the new column then locks on its own");
+        }
+
+        /// <summary>
         /// Two floating bodies held by a swing spring, twisted apart by a torque that rises and falls again: the pair locks
         /// while the torque is small, yields once it would bend the spring past the yield angle, and locks again as it
         /// falls. The relative turn follows the run without locking to within the angles, with no jump at either change.

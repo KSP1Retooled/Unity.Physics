@@ -224,8 +224,8 @@ namespace Unity.Physics
         /// nothing, when the island isn't one for it: no forest rows, or more boundary rows than the cap.
         /// </summary>
         static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
-            ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies,
-            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep, int substep,
+            ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies, RigidBody* rigidBodies,
+            int rigidBodyCount, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep, int substep,
             out ForestRun run, out int fallbackBoundaryRows)
         {
             run = default;
@@ -320,12 +320,26 @@ namespace Unity.Physics
 
             long classified = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
-            // The pairs, kept while the island's bodies and forest blocks stay the same.
+            // The pairs, kept while the island's bodies and forest blocks stay the same. The signature names the bodies by
+            // their identities, not by their indices in the world: a body that the world made where a destroyed body was
+            // has the destroyed body's index, and it must not take over the destroyed body's lock states.
+            int bodyCount = problem.BodyCount;
+            var identities = new NativeArray<ulong>(math.max(1, bodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int b = 0; b < bodyCount; b++)
+            {
+                identities[b] = DirectSolverCache.BodyIdentity(rigidBodies, rigidBodyCount, worldBodies[b]);
+            }
+
             ref UnsafeList<ulong> signature = ref forest->Signature;
-            bool same = signature.Length == forestBlocks.Length + 1 && signature[0] == (ulong)problem.BodyCount;
+            bool same = signature.Length == 1 + bodyCount + forestBlocks.Length && signature[0] == (ulong)bodyCount;
+            for (int b = 0; same && b < bodyCount; b++)
+            {
+                same = signature[1 + b] == identities[b];
+            }
+
             for (int f = 0; same && f < forestBlocks.Length; f++)
             {
-                same = signature[f + 1] == BlockKey(problem.Blocks[forestBlocks[f]], treeBlocks[f]);
+                same = signature[1 + bodyCount + f] == BlockKey(problem.Blocks[forestBlocks[f]], treeBlocks[f]);
             }
 
             long structureStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
@@ -333,15 +347,22 @@ namespace Unity.Physics
             if (!same)
             {
                 signature.Clear();
-                signature.Add((ulong)problem.BodyCount);
+                signature.Add((ulong)bodyCount);
+                for (int b = 0; b < bodyCount; b++)
+                {
+                    signature.Add(identities[b]);
+                }
+
                 for (int f = 0; f < forestBlocks.Length; f++)
                 {
                     signature.Add(BlockKey(problem.Blocks[forestBlocks[f]], treeBlocks[f]));
                 }
 
                 forest->BuildPairs(problem, (int*)forestBlocks.GetUnsafeReadOnlyPtr(), (bool*)treeBlocks.GetUnsafeReadOnlyPtr(),
-                    forestBlocks.Length, worldBodies);
+                    forestBlocks.Length, (ulong*)identities.GetUnsafeReadOnlyPtr());
             }
+
+            identities.Dispose();
 
             long decideStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
