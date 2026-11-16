@@ -140,8 +140,8 @@ namespace Unity.Physics
             {
                 var drift = new NativeArray<float>(problem.RowCount, Allocator.Temp);
                 float* driftPtr = (float*)drift.GetUnsafePtr();
-                if (AimAtPredictedDrift(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities,
-                    motionDatas, stepInput.Timestep, jacobianRows, driftPtr, team, true))
+                if (AimAtPredictedDrift(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList,
+                    impulses, motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, driftPtr, team, true))
                 {
                     for (int row = 0; row < problem.RowCount; row++)
                     {
@@ -158,8 +158,8 @@ namespace Unity.Physics
             if (applyImpulses)
             {
                 long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                ApplySparseImpulses(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities, motionDatas,
-                    sparseContacts, team);
+                ApplySparseImpulses(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList, impulses,
+                    motionVelocities, motionDatas, sparseContacts, team);
                 long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (recovery != null)
                 {
@@ -211,7 +211,7 @@ namespace Unity.Physics
             // when the forest's layout was last built, and if each moving part's body still has the same number. An
             // island that takes lock states over from another forest lays its parts out again to take them.
             bool known = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
-                && forest->VesselSignature[0] == (ulong)islandVesselCount && forest->FusedCompactOfWorld.Length == math.max(1, motionCount);
+                && forest->VesselSignature[0] == (ulong)islandVesselCount;
             int closureStart = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
             {
@@ -238,19 +238,35 @@ namespace Unity.Physics
                     int body = Moving(set.PartBodies[part], motions, motionCount);
                     if (body >= 0)
                     {
-                        known = numbered < forest->FusedWorldBodies.Length && forest->FusedWorldBodies[numbered] == body
-                            && forest->FusedCompactOfWorld[body] == numbered;
+                        known = numbered < forest->FusedWorldBodies.Length && forest->FusedWorldBodies[numbered] == body;
                         numbered++;
                     }
                 }
             }
 
             known &= numbered == forest->FusedWorldBodies.Length;
-            if (!known)
+
+            // The island writes its numbering into the index of bodies that all the islands of the step share, and sets
+            // its entries to -1 again when it is done. Without a shared index, the island fills one of its own.
+            int* compactOfWorld = stepInput.DirectSolverCache.CompactIndex(motionCount);
+            NativeArray<int> ownIndex = default;
+            if (compactOfWorld == null)
+            {
+                ownIndex = new NativeArray<int>(math.max(1, motionCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                UnsafeUtility.MemSet(ownIndex.GetUnsafePtr(), 0xFF, ownIndex.Length * (long)sizeof(int));
+                compactOfWorld = (int*)ownIndex.GetUnsafePtr();
+            }
+
+            if (known)
+            {
+                for (int compact = 0; compact < forest->FusedWorldBodies.Length; compact++)
+                {
+                    compactOfWorld[forest->FusedWorldBodies[compact]] = compact;
+                }
+            }
+            else
             {
                 // Number the moving parts again, one vessel after another.
-                forest->FusedCompactOfWorld.Resize(math.max(1, motionCount));
-                UnsafeUtility.MemSet(forest->FusedCompactOfWorld.Ptr, 0xFF, forest->FusedCompactOfWorld.Length * (long)sizeof(int));
                 forest->FusedWorldBodies.Clear();
                 for (int v = 0; v < islandVesselCount; v++)
                 {
@@ -258,9 +274,9 @@ namespace Unity.Physics
                     for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
                     {
                         int body = Moving(set.PartBodies[part], motions, motionCount);
-                        if (body >= 0 && forest->FusedCompactOfWorld[body] < 0)
+                        if (body >= 0 && compactOfWorld[body] < 0)
                         {
-                            forest->FusedCompactOfWorld[body] = forest->FusedWorldBodies.Length;
+                            compactOfWorld[body] = forest->FusedWorldBodies.Length;
                             forest->FusedWorldBodies.Add(body);
                         }
                     }
@@ -269,7 +285,7 @@ namespace Unity.Physics
 
             // All the island's moving bodies are vessel parts, so the numbering above numbers every body that the island's
             // contacts and joints reach.
-            NativeArray<int> compactBodies = View(forest->FusedCompactOfWorld.Ptr, forest->FusedCompactOfWorld.Length);
+            NativeArray<int> compactBodies = View(compactOfWorld, motionCount);
             int headerCount = island.HeaderEnd - island.FirstHeader;
             int solveCount = island.SolveEnd - island.FirstHeader;
             var headerRows = new NativeArray<int>(math.max(1, solveCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -376,8 +392,8 @@ namespace Unity.Physics
                     IslandVessels = islandVessels,
                     IslandVesselCount = islandVesselCount,
                     WorldBodies = forest->FusedWorldBodies.Ptr,
-                    CompactOfWorld = forest->FusedCompactOfWorld.Ptr,
-                    CompactOfWorldLength = forest->FusedCompactOfWorld.Length,
+                    CompactOfWorld = compactOfWorld,
+                    CompactOfWorldLength = motionCount,
                     MotionVelocities = motions,
                     MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
                     Timestep = stepInput.Timestep,
@@ -467,6 +483,16 @@ namespace Unity.Physics
             headerRows.Dispose();
             bodyLinear.Dispose();
             bodyAngular.Dispose();
+            for (int compact = 0; compact < forest->FusedWorldBodies.Length; compact++)
+            {
+                compactOfWorld[forest->FusedWorldBodies[compact]] = -1;
+            }
+
+            if (ownIndex.IsCreated)
+            {
+                ownIndex.Dispose();
+            }
+
             if (temporary)
             {
                 ForestIsland.Destroy(forest);

@@ -248,12 +248,11 @@ namespace Unity.Physics
 
         /// <summary>
         /// For a fused vessel island: the world index of each moving part's body, in the order that the island numbers
-        /// them, and the island's number for each body in the world, or -1 for a body that is not in the island. The
-        /// fused solve keeps this numbering from step to step while the island's vessels and bodies stay the same.
+        /// them. The fused solve keeps this numbering from step to step while the island's vessels and bodies stay the
+        /// same. While the island solves, it writes the inverse, each body's number, into the index of bodies that the
+        /// islands share (see <see cref="DirectSolverCache.CompactIndex"/>).
         /// </summary>
         public UnsafeList<int> FusedWorldBodies;
-
-        public UnsafeList<int> FusedCompactOfWorld;
 
         /// <summary>
         /// The lock states of the vessels that this island takes over from other forests in this step, see
@@ -344,7 +343,6 @@ namespace Unity.Physics
                 PrefixForce = new UnsafeList<double3>(16, Allocator.Persistent),
                 PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
                 FusedWorldBodies = new UnsafeList<int>(16, Allocator.Persistent),
-                FusedCompactOfWorld = new UnsafeList<int>(16, Allocator.Persistent),
                 TakenIds = new UnsafeList<ulong>(4, Allocator.Persistent),
                 TakenVersions = new UnsafeList<uint>(4, Allocator.Persistent),
                 TakenStarts = new UnsafeList<int>(4, Allocator.Persistent),
@@ -426,7 +424,6 @@ namespace Unity.Physics
             forest->PrefixForce.Dispose();
             forest->PrefixTorque.Dispose();
             forest->FusedWorldBodies.Dispose();
-            forest->FusedCompactOfWorld.Dispose();
             forest->TakenIds.Dispose();
             forest->TakenVersions.Dispose();
             forest->TakenStarts.Dispose();

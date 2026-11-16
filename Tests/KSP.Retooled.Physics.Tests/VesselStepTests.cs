@@ -343,6 +343,118 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That((after - before).magnitude, Is.LessThan(1e-3f * before.magnitude), "momentum is kept");
             Assert.That((bodies[3].position - bodies[0].position).magnitude, Is.EqualTo(3.0f).Within(1e-3f), "the stack stays rigid");
         }
+
+        /// <summary>
+        /// A column of parts held together by stack joints, upright, with the centre of its bottom part at the given x
+        /// and z and at the height <paramref name="bottom"/>.
+        /// </summary>
+        private List<Rigidbody> StandingColumn(int count, float x, float bottom = 1.0f, float z = 0.0f)
+        {
+            var bodies = new List<Rigidbody>();
+            for (int i = 0; i < count; i++)
+            {
+                Rigidbody body = Box(new Vector3(x, bottom + i, z), new Vector3(0.8f, 1.0f, 0.8f)).AddComponent<Rigidbody>();
+                body.mass = PartMass;
+                bodies.Add(body);
+                if (i > 0)
+                {
+                    StackJoint(body, bodies[i - 1], new Vector3(x, bottom - 0.5f + i, z));
+                }
+            }
+
+            return bodies;
+        }
+
+        /// <summary>
+        /// The islands of a step number their bodies in one index that they share, and each island sets its entries to -1
+        /// again when its solve ends. After steps with a vessel, a craft on Unity joints and a loose box, all of them on
+        /// the ground, every entry of the index is -1.
+        /// </summary>
+        [Test]
+        public void TheIslandsLeaveTheSharedIndexOfBodiesEmpty()
+        {
+            // The three-part column stays on Unity joints, and the five-part column is a vessel.
+            VesselPipeline.MinimumParts = 4;
+            Ground();
+            StandingColumn(5, 0.0f);
+            StandingColumn(3, 3.0f);
+            Box(new Vector3(6.0f, 1.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+            Simulate(10);
+            Assert.That(VesselCount(), Is.EqualTo(1), "only the five-part column is a vessel");
+
+            int motionCount = StepKernel.Current->World.MotionVelocities.Length;
+            int* index = StepKernel.Current->DirectSolverCache.CompactIndex(motionCount);
+            Assert.That(index != null, "the islands share an index");
+            for (int body = 0; body < motionCount; body++)
+            {
+                Assert.That(index[body], Is.EqualTo(-1), $"body {body} has no number between steps");
+            }
+        }
+
+        /// <summary>
+        /// A fleet of twelve small craft of 2 to 7 parts on stack joints falls 0.2 m onto the ground with a slow spin and
+        /// settles. The scene runs twice: once with every craft on Unity joints, and once with the default minimum size
+        /// of a vessel, which makes every craft a vessel. The vessels land where the craft on Unity joints land, with the
+        /// same loads in their joints, within the tolerance of
+        /// VesselModeTests.AFleetOfSmallVesselsLandsTheSameInTheFusedJobAsInTheSubsteps. With a spin five to six times as
+        /// fast, a column of five parts rocks on the ground, and the two runs end centimetres apart: stack joints on Unity
+        /// joints flex by millimetres where a vessel's edge doesn't (see <see cref="AStackArmDroopsFarLessThanToday"/>),
+        /// and the rocking makes that difference grow.
+        /// </summary>
+        [Test]
+        public void AFleetOfTinyCraftLandsTheSameAsOnUnityJoints()
+        {
+            const int craft = 12;
+            const int steps = 60;
+            var positions = new Vector3[2][];
+            var loads = new Vector3[2][];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(true);
+                VesselPipeline.MinimumParts = pass == 0 ? 1000 : 0;
+                Ground();
+                var bodies = new List<Rigidbody>();
+                for (int c = 0; c < craft; c++)
+                {
+                    // Four rows of three craft, all on the ground, which is 20 m square.
+                    foreach (Rigidbody body in StandingColumn(2 + c % 6, -6.0f + 4.0f * (c % 4), 1.2f, -4.0f + 4.0f * (c / 4)))
+                    {
+                        body.angularVelocity = new Vector3(0.01f * c, 0.0f, 0.05f);
+                        bodies.Add(body);
+                    }
+                }
+
+                // Count the vessels in the first step: a vessel that sleeps is not handed to the step.
+                Simulate();
+                Assert.That(VesselCount(), pass == 0 ? Is.EqualTo(0) : Is.EqualTo(craft),
+                    $"in pass {pass}, the craft are vessels only in the second pass, and then every one of them");
+                Simulate(steps - 1);
+                positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                loads[pass] = bodies.ConvertAll(b =>
+                {
+                    Vector3 sum = Vector3.zero;
+                    foreach (ConfigurableJoint joint in b.GetComponents<ConfigurableJoint>())
+                    {
+                        sum += joint.currentForce;
+                    }
+
+                    return sum;
+                }).ToArray();
+            }
+
+            float largestPose = 0.0f, largestLoad = 0.0f;
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                float pose = (positions[1][i] - positions[0][i]).magnitude;
+                float load = (loads[1][i] - loads[0][i]).magnitude;
+                largestPose = Mathf.Max(largestPose, pose);
+                largestLoad = Mathf.Max(largestLoad, load);
+                Assert.That(pose, Is.LessThan(1e-3f), $"part {i} lands in the same place");
+                Assert.That(load, Is.LessThan(0.01f * loads[0][i].magnitude + 0.01f), $"part {i}'s joints carry the same load");
+            }
+
+            Debug.Log($"[VesselStepTests] tiny fleet: largest difference from Unity joints {largestPose:E2} m in pose, {largestLoad:E2} N in load");
+        }
     }
 
     /// <summary>

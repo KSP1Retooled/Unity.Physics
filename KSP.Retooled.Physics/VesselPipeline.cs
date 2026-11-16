@@ -30,8 +30,19 @@ namespace KSP.Retooled.Physics
 
         private static readonly SharedStatic<int> MinimumPartsShared = SharedStatic<int>.GetOrCreate<MinimumPartsKey>();
 
-        /// <summary>The value of <see cref="MinimumParts"/> until something sets it.</summary>
-        public const int DefaultMinimumParts = 8;
+        /// <summary>
+        /// The value of <see cref="MinimumParts"/> until something sets it. Two parts, the smallest craft that has a
+        /// joint, so that every craft whose joints can join a vessel is one, debris and spent stages too. Small vessels
+        /// go to the fused job, which solves many of them at once, and on the bench (whole steps, three rounds, the
+        /// minimum and the median of the medians) that is faster than solving their Unity joints in the substeps' jobs.
+        /// The minimum used to be 8. These times were measured before the islands shared one index of bodies. With 8,
+        /// 128 floating craft of 4 parts took 1.32 / 1.68 ms on eight threads and 5.66 / 7.08 ms on one; with 2, they
+        /// took 0.55 / 0.83 ms and 1.65 / 2.90 ms. On the ground, they took 1.74 / 2.25 ms and 7.69 / 9.79 ms with 8,
+        /// and 1.30 / 1.63 ms and 5.29 / 6.49 ms with 2. A Tu-160 with 64 craft of 4 parts on the ground took
+        /// 3.72 / 4.80 ms on eight threads with 8, and 2.17 / 3.76 ms with 2. Only 64 craft of 2 parts on the ground
+        /// took about as long either way (0.60 / 0.93 ms and 0.68 / 0.92 ms).
+        /// </summary>
+        public const int DefaultMinimumParts = 2;
 
         /// <summary>
         /// The number of steps for which an edge or closure whose joint went away stays in its vessel as a tombstone.
@@ -41,7 +52,8 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// The smallest number of parts for which the backend compiles a vessel. The joints of a smaller craft stay Unity
-        /// Physics joints, as the joints of loose bodies and debris do. A value below 1 restores the default. When the
+        /// Physics joints, as the joints that the backend can't put into a vessel do. A value below 1 restores the
+        /// default. When the
         /// first world attaches, the backend reads RETOOLED_VESSEL_MIN_PARTS. A change to this value affects a vessel
         /// only when the vessels are compiled again.
         /// </summary>
@@ -541,9 +553,9 @@ namespace KSP.Retooled.Physics
     /// <para>
     /// A new vessel has as its root the body with the lowest store index. Parts are listed in breadth-first order from
     /// the root, so every parent precedes its children. A new vessel with fewer than <see cref="MinimumParts"/> parts is
-    /// not emitted: its joints stay Unity Physics joints, as the joints of loose bodies and debris do. A new vessel
-    /// retains the Id of a vessel from the previous compilation if it has the same root, parts, connecting joints and
-    /// closures in the same order. Otherwise, it receives a new Id.
+    /// not emitted: its joints stay Unity Physics joints. A new vessel retains the Id of a vessel from the previous
+    /// compilation if it has the same root, parts, connecting joints and closures in the same order. Otherwise, it
+    /// receives a new Id.
     /// </para>
     /// </summary>
     [BurstCompile]
