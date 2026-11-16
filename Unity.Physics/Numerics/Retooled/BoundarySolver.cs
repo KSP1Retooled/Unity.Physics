@@ -266,6 +266,7 @@ namespace Unity.Physics.Numerics.Retooled
             NativeArray<int> placeArray;
             NativeArray<double> rhsArray;
             NativeArray<double> workArray;
+            NativeArray<double> rotationArray;
             NativeArray<int> tightArray;
             int m;
             bool valid;
@@ -281,6 +282,7 @@ namespace Unity.Physics.Numerics.Retooled
                 placeArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 rhsArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 workArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                rotationArray = new NativeArray<double>(2 * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 tightArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 int* place = (int*)placeArray.GetUnsafePtr();
                 for (int i = 0; i < n; i++)
@@ -299,6 +301,7 @@ namespace Unity.Physics.Numerics.Retooled
                 placeArray.Dispose();
                 rhsArray.Dispose();
                 workArray.Dispose();
+                rotationArray.Dispose();
                 tightArray.Dispose();
             }
 
@@ -512,22 +515,28 @@ namespace Unity.Physics.Numerics.Retooled
                 }
 
                 m--;
-                for (int a = k; a < m; a++)
+
+                // The rotation of column a depends on row a's diagonal and on x[a] after the rotations of the columns
+                // before a. So the rows can take the rotations one row at a time, in order, which reads each row of L
+                // where it lies in memory instead of down its columns.
+                double* cosines = (double*)rotationArray.GetUnsafePtr();
+                double* sines = cosines + n;
+                for (int r = k; r < m; r++)
                 {
-                    double* ra = l + (long)a * n;
-                    double d = ra[a];
-                    double xa = x[a - k];
-                    double r = math.sqrt(d * d + xa * xa);
-                    double c = r / d;
-                    double s = xa / d;
-                    ra[a] = r;
-                    for (int i = a + 1; i < m; i++)
+                    double* row = l + (long)r * n;
+                    double xr = x[r - k];
+                    for (int a = k; a < r; a++)
                     {
-                        double* entry = l + (long)i * n + a;
-                        double updated = (*entry + s * x[i - k]) / c;
-                        x[i - k] = c * x[i - k] - s * updated;
-                        *entry = updated;
+                        double updated = (row[a] + sines[a - k] * xr) / cosines[a - k];
+                        xr = cosines[a - k] * xr - sines[a - k] * updated;
+                        row[a] = updated;
                     }
+
+                    double d = row[r];
+                    double rotated = math.sqrt(d * d + xr * xr);
+                    cosines[r - k] = rotated / d;
+                    sines[r - k] = xr / d;
+                    row[r] = rotated;
                 }
             }
 
