@@ -166,6 +166,13 @@ namespace KSP.Retooled.Physics
     {
         public uint LastSeen;
         public bool Trigger;
+
+        /// <summary>
+        /// For a trigger pair, whether the first shape of the pair's key is the trigger. When a shape of the pair is
+        /// removed, its memory may already be freed or reused, so <see cref="ForgetRemovedShapesJob"/> can't read the
+        /// shape's flags then. It reads this field instead to put the two shapes in the order that Unity knows them by.
+        /// </summary>
+        public bool FirstIsTrigger;
     }
 
     /// <summary>
@@ -1159,6 +1166,17 @@ namespace KSP.Retooled.Physics
     /// new shapes may reuse their addresses. PhysX wakes a body when the shape supporting it is removed. Do the same
     /// here before sleeping and contact reporting, since both depend on whether the body is awake.
     /// </summary>
+    /// <remarks>
+    /// Unity keeps each trigger pair that entered in a cache, by the addresses of the pair's two shapes, and sends
+    /// OnTriggerStay for each entry in every step. It removes an entry only when it gets an exit event whose two
+    /// colliders still exist and are enabled, or an event of type <see cref="NativeStore.TriggerEventShapeRemoved"/>
+    /// with a zero id. A removed shape's collider is usually destroyed or disabled, so Unity ignores an exit event for
+    /// its pair. For each trigger pair that this job removes, it therefore adds an event of the second kind to
+    /// <see cref="RemovedTriggerPairs"/>, as Unity's PhysX backend does for a pair that PhysX reports with
+    /// eREMOVED_SHAPE_TRIGGER or eREMOVED_SHAPE_OTHER. Without that event, Unity kept the entry: a collider that was
+    /// disabled inside a trigger and enabled again elsewhere got OnTriggerStay in every step, and a new pair whose shapes
+    /// took the two addresses got one OnTriggerStay and then no more, because Unity kept the old entry and its old ids.
+    /// </remarks>
     [BurstCompile]
     internal unsafe struct ForgetRemovedShapesJob : IJob
     {
@@ -1166,6 +1184,9 @@ namespace KSP.Retooled.Physics
         public NativeStore.WorldData* World;
 
         public NativeHashMap<ShapePairKey, ShapePairState> Touching;
+
+        /// <summary>The events that end the trigger pairs that this job removes, which the next contact report sends.</summary>
+        public NativeList<NativeStore.TriggerEvent> RemovedTriggerPairs;
 
         public void Execute()
         {
@@ -1188,6 +1209,19 @@ namespace KSP.Retooled.Physics
                 bool secondGone = removed.Contains(key.Second);
                 if (firstGone || secondGone)
                 {
+                    ShapePairState state = Touching[key];
+                    if (state.Trigger)
+                    {
+                        // The removed shape's memory may already hold a new shape, so this code reads only the
+                        // addresses. The ids stay zero, which tells Unity that the pair ended without a message.
+                        RemovedTriggerPairs.Add(new NativeStore.TriggerEvent
+                        {
+                            triggerShape = (NativeStore.Shape*)(state.FirstIsTrigger ? key.First : key.Second),
+                            colliderShape = (NativeStore.Shape*)(state.FirstIsTrigger ? key.Second : key.First),
+                            type = NativeStore.TriggerEventShapeRemoved,
+                        });
+                    }
+
                     Touching.Remove(key);
                     WakeOwner(firstGone ? key.Second : key.First, firstGone && secondGone);
                 }
@@ -1234,6 +1268,12 @@ namespace KSP.Retooled.Physics
 
         public NativeHashMap<ShapePairKey, ShapePairState> Touching;
 
+        /// <summary>
+        /// The events that end trigger pairs whose shapes were removed (<see cref="ForgetRemovedShapesJob"/>). This job
+        /// reports them before this step's own trigger events and then clears the list.
+        /// </summary>
+        public NativeList<NativeStore.TriggerEvent> RemovedTriggerPairs;
+
         public uint Step;
 
         public void Execute()
@@ -1245,6 +1285,16 @@ namespace KSP.Retooled.Physics
 
             Records.AsArray().Sort(new ManifoldOrder());
             Reserve();
+
+            // Unity removes the old pair from its cache when it reads such an event. A new pair at the same two
+            // addresses can enter in this same step, and Unity adds an entering pair to the cache only after it has
+            // read all of the step's events, so the order of the two events doesn't matter.
+            for (int i = 0; i < RemovedTriggerPairs.Length; i++)
+            {
+                World->triggers[World->triggerCount++] = RemovedTriggerPairs[i];
+            }
+
+            RemovedTriggerPairs.Clear();
 
             int rowA = -1;
             int rowB = -1;
@@ -1271,6 +1321,7 @@ namespace KSP.Retooled.Physics
                 bool found = !Touching.TryGetValue(key, out ShapePairState state);
                 state.LastSeen = Step;
                 state.Trigger = record.Trigger;
+                state.FirstIsTrigger = (IntPtr)TriggerOf(record.ShapeA, record.ShapeB) == key.First;
                 Touching[key] = state;
 
                 if (record.Trigger)
@@ -1318,7 +1369,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private void Reserve()
         {
-            uint pairs = (uint)(Records.Length + Touching.Count);
+            uint pairs = (uint)(Records.Length + Touching.Count + RemovedTriggerPairs.Length);
             Grow(ref World->contactBodies, ref World->contactBodyCapacity, pairs);
             Grow(ref World->contactShapes, ref World->contactShapeCapacity, pairs);
             Grow(ref World->contactPoints, ref World->contactPointCapacity, (uint)Points.Length);
@@ -1421,11 +1472,20 @@ namespace KSP.Retooled.Physics
             bodyPair->shapeCount++;
         }
 
+        /// <summary>
+        /// Picks the shape that Unity hears about as the trigger: the first shape if it is a trigger, else the second.
+        /// The pair's enter, exit and removal events must name the shapes in the same order, because Unity keeps the
+        /// pair by the two addresses in that order.
+        /// </summary>
+        private static NativeStore.ShapeData* TriggerOf(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        {
+            return (a->flags & NativeStore.ShapeFlagTrigger) != 0 ? a : b;
+        }
+
         private void AddTrigger(NativeStore.ShapeData* a, NativeStore.ShapeData* b, uint type)
         {
-            bool firstIsTrigger = (a->flags & NativeStore.ShapeFlagTrigger) != 0;
-            NativeStore.ShapeData* trigger = firstIsTrigger ? a : b;
-            NativeStore.ShapeData* other = firstIsTrigger ? b : a;
+            NativeStore.ShapeData* trigger = TriggerOf(a, b);
+            NativeStore.ShapeData* other = trigger == a ? b : a;
             World->triggers[World->triggerCount++] = new NativeStore.TriggerEvent
             {
                 triggerShape = trigger->owner,
@@ -1463,7 +1523,17 @@ namespace KSP.Retooled.Physics
                 Touching.Remove(key);
                 if (state.Trigger)
                 {
-                    AddTrigger(first, second, NativeStore.TriggerEventExit);
+                    // Name the trigger first, as the pair's enter event did. When both shapes are triggers, the order
+                    // of the key can differ from the order that the enter event used.
+                    if (state.FirstIsTrigger)
+                    {
+                        AddTrigger(first, second, NativeStore.TriggerEventExit);
+                    }
+                    else
+                    {
+                        AddTrigger(second, first, NativeStore.TriggerEventExit);
+                    }
+
                     continue;
                 }
 

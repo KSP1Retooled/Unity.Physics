@@ -112,6 +112,9 @@ namespace KSP.Retooled.Physics
         private NativeList<ContactBucket> contactBuckets;
         private NativeReference<int> filledContactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
+
+        // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
+        private NativeList<NativeStore.TriggerEvent> removedTriggerPairs;
         private NativeList<int> sleepParents;
         private NativeList<int> sleepContacts;
         private NativeList<bool> sleepTouchesStill;
@@ -219,6 +222,7 @@ namespace KSP.Retooled.Physics
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+            removedTriggerPairs = new NativeList<NativeStore.TriggerEvent>(Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
             sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
@@ -290,6 +294,7 @@ namespace KSP.Retooled.Physics
             contactBuckets.Dispose();
             filledContactBuckets.Dispose();
             touching.Dispose();
+            removedTriggerPairs.Dispose();
             sleepParents.Dispose();
             sleepContacts.Dispose();
             sleepTouchesStill.Dispose();
@@ -796,7 +801,7 @@ namespace KSP.Retooled.Physics
             if (store->removedShapeCount != 0)
             {
                 forces.Complete();
-                new ForgetRemovedShapesJob { World = store, Touching = touching }.Run();
+                new ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
             }
 
             JobHandle counted = new UpdateWakeCountersJob
@@ -838,6 +843,7 @@ namespace KSP.Retooled.Physics
                     Records = manifolds,
                     Points = manifoldPoints,
                     Touching = touching,
+                    RemovedTriggerPairs = removedTriggerPairs,
                     Step = ++stepCount,
                 }.Run();
             }

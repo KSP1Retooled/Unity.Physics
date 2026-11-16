@@ -528,6 +528,103 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(zone.Stays.Count, Is.EqualTo(stays));
         }
 
+        /// <summary>
+        /// Unity keeps each trigger pair that entered, and it sends OnTriggerStay for the pair in every step until an
+        /// event ends the pair. When a collider is disabled inside a trigger, the backend has to end the pair with the
+        /// event for a removed shape, as PhysX does. Otherwise Unity keeps the pair, and when the collider is enabled
+        /// again far from the trigger, Unity starts sending OnTriggerStay for it again.
+        /// </summary>
+        [Test]
+        public void AColliderEnabledAgainOutsideATriggerGetsNoStays()
+        {
+            TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 4.0f, 4.0f)).AddComponent<TriggerLog>();
+            Rigidbody body = WeightlessBox(Vector3.zero);
+            TriggerLog visitor = body.gameObject.AddComponent<TriggerLog>();
+
+            Simulate(3);
+            Assert.That(zone.Enters.Count, Is.EqualTo(1));
+            Assert.That(zone.Stays.Count, Is.GreaterThan(0));
+
+            body.GetComponent<Collider>().enabled = false;
+            Simulate(2);
+            body.position = new Vector3(20.0f, 0.0f, 0.0f);
+            body.GetComponent<Collider>().enabled = true;
+            int zoneStays = zone.Stays.Count;
+            int visitorStays = visitor.Stays.Count;
+            Simulate(5);
+
+            Assert.That(zone.Stays.Count, Is.EqualTo(zoneStays), "the trigger hears no stays from a collider outside it");
+            Assert.That(visitor.Stays.Count, Is.EqualTo(visitorStays), "the collider hears no stays from a trigger far away");
+            Assert.That(zone.Enters.Count, Is.EqualTo(1));
+            Assert.That(zone.Exits, Is.Empty, "a disabled collider sends no exit");
+        }
+
+        /// <summary>
+        /// A new trigger pair whose two shapes took the addresses of a pair that ended because its shapes were
+        /// destroyed. Unity keeps the trigger pairs by the addresses of their shapes, and it adds an entering pair only
+        /// if it has no pair at those addresses. If the backend didn't end the old pair, Unity kept the old pair with
+        /// the ids of the destroyed colliders, and the new pair got one OnTriggerStay and then no more. The store frees
+        /// the memory of destroyed shapes, but the heap doesn't hand the same addresses back in any fixed order, so the
+        /// test repeats the scene until the new pair took the addresses of an earlier destroyed pair a few times. Without
+        /// the fix, Unity kept the old pairs of every earlier iteration, so the new pair can match any of them.
+        /// </summary>
+        [Test]
+        public unsafe void ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays()
+        {
+            const int wantedReuses = 3;
+            int reuses = 0;
+            var destroyedPairs = new HashSet<(long, long)>();
+            for (int iteration = 0; iteration < 200 && reuses < wantedReuses; iteration++)
+            {
+                GameObject oldZone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f));
+                Rigidbody oldBody = WeightlessBox(Vector3.zero);
+                Simulate(3);
+                destroyedPairs.Add((ShapeAddress(oldZone), ShapeAddress(oldBody.gameObject)));
+                DestroyAll();
+
+                TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f)).AddComponent<TriggerLog>();
+                Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
+                Simulate();
+                bool reused = destroyedPairs.Contains((ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)));
+                Simulate(100);
+
+                Assert.That(zone.Enters.Count, Is.EqualTo(1), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
+                Assert.That(zone.Stays.Count, Is.GreaterThan(3), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
+                Assert.That(zone.Exits.Count, Is.EqualTo(1), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
+                reuses += reused ? 1 : 0;
+                DestroyAll();
+            }
+
+            Assert.That(reuses, Is.EqualTo(wantedReuses), "the new shapes took the old shapes' addresses often enough");
+        }
+
+        /// <summary>The address of the backend's shape for the collider on an object, which Unity knows the shape by.</summary>
+        private static unsafe long ShapeAddress(GameObject gameObject)
+        {
+            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            NativeStore.WorldData* store = StepKernel.Current != null ? StepKernel.Current->Store : null;
+            if (globals == null || store == null)
+            {
+                Assert.Ignore("The test reads the shapes of the Retooled backend's store.");
+            }
+
+            ulong id = EntityId.ToULong(gameObject.GetComponent<Collider>().GetEntityId());
+            for (uint row = 0; row < store->bodyCount; row++)
+            {
+                NativeStore.Body* owner = store->bodies[row].owner;
+                for (uint i = 0; owner != null && i < owner->shapeCount; i++)
+                {
+                    NativeStore.ShapeData* shape = owner->shapes[i];
+                    if (shape->userData != null && *(ulong*)((byte*)shape->userData + globals->engineObjectIdOffset) == id)
+                    {
+                        return (long)shape->owner;
+                    }
+                }
+            }
+
+            return 0;
+        }
+
         [Test]
         public void AStaticTriggerAndAStaticColliderStaySilent()
         {
