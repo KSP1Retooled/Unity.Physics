@@ -32,6 +32,9 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Initialize();
             wasVessels = VesselPipeline.Enabled;
             wasForest = VesselForest.Enabled;
+
+            // These crafts are small, so let them compile into vessels.
+            VesselPipeline.MinimumParts = 2;
             Fresh(true);
         }
 
@@ -40,6 +43,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             VesselPipeline.Enabled = wasVessels;
             VesselForest.Enabled = wasForest;
+            VesselPipeline.MinimumParts = 0;
         }
 
         private void Fresh(bool vessels)

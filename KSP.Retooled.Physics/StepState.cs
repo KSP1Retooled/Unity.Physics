@@ -68,6 +68,9 @@ namespace KSP.Retooled.Physics
 
         // The jobs that fill the vessels' edges and closures for this step. Only the solve waits for them.
         private JobHandle vesselsFilled;
+
+        // The step at which the oldest tombstone in the vessels expires, or -1. See CompileVesselsJob.
+        private int tombstoneExpiry;
         private SolverIslandCache solverIslandCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -103,6 +106,7 @@ namespace KSP.Retooled.Physics
         internal StepState(NativeStore.WorldData* store, NativeStore.StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
+            tombstoneExpiry = -1;
             this.store = store;
             this.globals = globals;
             this.query = query;
@@ -964,7 +968,9 @@ namespace KSP.Retooled.Physics
                 // enabled or when the groups are rebuilt because the topology or forest setting changed. Compilation
                 // runs synchronously because the vessel count must be known before scheduling the jobs that find
                 // islands.
-                if (vessels && (!compiled || regrouped))
+                // A tombstone also needs a compilation when it expires.
+                bool tombstoneExpired = tombstoneExpiry >= 0 && (int)stepCount >= tombstoneExpiry;
+                if (vessels && (!compiled || regrouped || tombstoneExpired))
                 {
                     groupsFound.Complete();
                     new CompileVesselsJob
@@ -973,13 +979,18 @@ namespace KSP.Retooled.Physics
                         Units = jointUnits.AsArray(),
                         Roles = jointRoles.AsArray(),
                         Build = vesselBuild,
+                        Step = (int)stepCount,
+                        TombstoneSteps = VesselPipeline.TombstoneSteps,
+                        MinimumParts = VesselPipeline.MinimumParts,
                     }.Run();
                     compiled = true;
+                    tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselPipeline.TombstoneSteps);
                 }
                 else if (!vessels && compiled)
                 {
                     vesselBuild.Clear(0);
                     compiled = false;
+                    tombstoneExpiry = -1;
                 }
 
                 vesselSet = default;

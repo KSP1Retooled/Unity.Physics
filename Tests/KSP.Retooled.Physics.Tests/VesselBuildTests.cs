@@ -29,12 +29,16 @@ namespace KSP.Retooled.Physics.Tests
             VesselPipeline.Initialize();
             wasEnabled = VesselPipeline.Enabled;
             VesselPipeline.Enabled = true;
+
+            // These crafts are small, so let them compile into vessels.
+            VesselPipeline.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
             VesselPipeline.Enabled = wasEnabled;
+            VesselPipeline.MinimumParts = 0;
         }
 
         private static StepState* State => StepKernel.Current;
@@ -339,22 +343,134 @@ namespace KSP.Retooled.Physics.Tests
 
             Object.DestroyImmediate(strut);
             Simulate();
+            Assert.That(OnlyVessel().Id, Is.EqualTo(strutted), "a removed strut stays in its vessel as a tombstone for a while");
+            Simulate(VesselPipeline.TombstoneSteps);
             ulong unstrutted = OnlyVessel().Id;
+            Assert.That(OnlyVessel().ClosureCount, Is.Zero, "the tombstone has expired");
             Assert.That(unstrutted, Is.Not.EqualTo(strutted).And.Not.EqualTo(first), "Ids are never reused");
 
-            // Decoupling: the joints between parts 1 and 2 go, and the column becomes two vessels.
+            // Decoupling: the joints between parts 1 and 2 go. The column stays one vessel with a broken edge for a
+            // while, then it becomes two vessels.
             foreach (ConfigurableJoint joint in bodies[2].GetComponents<ConfigurableJoint>())
             {
                 Object.DestroyImmediate(joint);
             }
 
             Simulate();
+            Assert.That(OnlyVessel().Id, Is.EqualTo(unstrutted), "the removed edge is a tombstone");
+            Simulate(VesselPipeline.TombstoneSteps);
             List<List<Rigidbody>> vessels = VesselsOf(bodies);
             Assert.That(vessels.Count, Is.EqualTo(2));
             for (int v = 0; v < 2; v++)
             {
                 Assert.That(State->VesselSet.Vessels[v].Id, Is.Not.EqualTo(unstrutted));
             }
+        }
+
+        [Test]
+        public void AStrutDestroyedAndCreatedAgainInOneFrameKeepsItsVessel()
+        {
+            List<Rigidbody> bodies = Column(4);
+            ConfigurableJoint strut = Strut(bodies[0], bodies[3]);
+            Simulate();
+            VesselRecord before = OnlyVessel();
+
+            Object.DestroyImmediate(strut);
+            Strut(bodies[0], bodies[3]);
+            Simulate();
+
+            VesselRecord after = OnlyVessel();
+            Assert.That(after.Id, Is.EqualTo(before.Id), "the vessel keeps its Id");
+            Assert.That(after.StructureVersion, Is.EqualTo(before.StructureVersion), "the vessel keeps its structure");
+            Assert.That(after.ClosureCount, Is.EqualTo(1));
+            Assert.That(State->VesselSet.Closures[after.FirstClosure].LinearStiffness, Is.EqualTo(double.PositiveInfinity), "the new strut holds");
+        }
+
+        [Test]
+        public void AStrutDestroyedAndCreatedAgainInTheNextFrameKeepsItsVessel()
+        {
+            List<Rigidbody> bodies = Column(4);
+            ConfigurableJoint strut = Strut(bodies[0], bodies[3]);
+            Simulate();
+            VesselRecord before = OnlyVessel();
+
+            Object.DestroyImmediate(strut);
+            Simulate();
+            VesselRecord gone = OnlyVessel();
+            Assert.That(gone.Id, Is.EqualTo(before.Id), "the vessel keeps its Id while the strut is gone");
+            Assert.That(gone.ClosureCount, Is.EqualTo(1), "the closure of the strut stays as a tombstone");
+            VesselClosure tombstone = State->VesselSet.Closures[gone.FirstClosure];
+            Assert.That(tombstone.LinearStiffness, Is.Zero, "a tombstone has no stiffness");
+            Assert.That(tombstone.AngularStiffness, Is.Zero);
+
+            Strut(bodies[0], bodies[3]);
+            Simulate();
+            VesselRecord after = OnlyVessel();
+            Assert.That(after.Id, Is.EqualTo(before.Id), "the vessel keeps its Id when the strut comes back");
+            Assert.That(State->VesselSet.Closures[after.FirstClosure].LinearStiffness, Is.EqualTo(double.PositiveInfinity), "the new strut holds");
+        }
+
+        [Test]
+        public void ARemovedEdgeIsBrokenInPlaceUntilItsTombstoneExpires()
+        {
+            List<Rigidbody> bodies = Column(4);
+            Simulate();
+            ulong id = OnlyVessel().Id;
+            foreach (ConfigurableJoint joint in bodies[3].GetComponents<ConfigurableJoint>())
+            {
+                Object.DestroyImmediate(joint);
+            }
+
+            Simulate();
+            VesselRecord vessel = OnlyVessel();
+            Assert.That(vessel.Id, Is.EqualTo(id));
+            Assert.That(vessel.PartCount, Is.EqualTo(4), "the loose part stays in the vessel for now");
+            int broken = 0;
+            for (int part = 0; part < vessel.PartCount; part++)
+            {
+                broken += State->VesselSet.Edges[vessel.FirstPart + part].State == VesselEdgeState.Broken ? 1 : 0;
+            }
+
+            Assert.That(broken, Is.EqualTo(1), "its edge is broken");
+
+            Simulate(VesselPipeline.TombstoneSteps);
+            Assert.That(OnlyVessel().PartCount, Is.EqualTo(3), "after the tombstone expires, the loose part is no longer a part");
+            Assert.That(OnlyVessel().Id, Is.Not.EqualTo(id));
+        }
+
+        [Test]
+        public void AThreePartCraftStaysOnUnityJointsByDefault()
+        {
+            VesselPipeline.MinimumParts = 0;
+            List<Rigidbody> bodies = Column(3);
+            bodies[2].linearVelocity = new Vector3(1.0f, 0.0f, 0.0f);
+            Simulate(20);
+
+            Assert.That(State->VesselSet.IsCreated, Is.False, "a craft below the minimum size is no vessel");
+            int constrained = 0;
+            foreach (Unity.Physics.Joint joint in State->World.Joints)
+            {
+                constrained += joint.Constraints.Length > 0 ? 1 : 0;
+            }
+
+            Assert.That(constrained, Is.GreaterThanOrEqualTo(2), "both stack joints are built as Unity Physics joints");
+            for (int i = 1; i < 3; i++)
+            {
+                Assert.That(Vector3.Distance(bodies[i].position, bodies[i - 1].position), Is.EqualTo(PartHeight).Within(1e-3f),
+                    $"the joint between parts {i - 1} and {i} holds");
+            }
+
+            float meanX = (bodies[0].linearVelocity.x + bodies[1].linearVelocity.x + bodies[2].linearVelocity.x) / 3.0f;
+            Assert.That(meanX, Is.EqualTo(1.0f / 3.0f).Within(1e-3f), "the craft keeps the momentum of the push");
+        }
+
+        [Test]
+        public void ACraftOfTheMinimumSizeIsAVessel()
+        {
+            VesselPipeline.MinimumParts = 0;
+            Column(VesselPipeline.DefaultMinimumParts);
+            Simulate();
+            Assert.That(OnlyVessel().PartCount, Is.EqualTo(VesselPipeline.DefaultMinimumParts));
         }
 
         [Test]
@@ -479,8 +595,11 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(BrokenJoints(), Is.EqualTo(3), "the edge's joints broke");
             Assert.That(State->Store->jointBreakCount, Is.EqualTo(3), "the breaks are reported");
 
-            // The broken joints are no edge any more, so the column comes apart into two parts that are no vessel.
+            // The broken joints are no edge any more. The edge stays in the vessel as a tombstone for a while, and then
+            // the column comes apart into two parts that are no vessel.
             Simulate();
+            Assert.That(State->VesselSet.Edges[childPart].State, Is.EqualTo(VesselEdgeState.Broken), "the edge is broken in place");
+            Simulate(VesselPipeline.TombstoneSteps);
             Assert.That(State->VesselSet.VesselCount, Is.Zero);
         }
 
