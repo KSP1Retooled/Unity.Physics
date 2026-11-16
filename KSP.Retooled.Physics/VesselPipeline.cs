@@ -86,6 +86,13 @@ namespace KSP.Retooled.Physics
 
             string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
             Unity.Physics.Solver.VesselFused = fused != "0";
+            string fusedParts = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED_PARTS");
+            if (int.TryParse(fusedParts, out int fusedMinimum) && fusedMinimum > 0)
+            {
+                Unity.Physics.Solver.FusedVesselParts = fusedMinimum;
+                UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL_FUSED_PARTS={fusedParts}: the fused job takes vessel islands of {fusedMinimum} parts or more");
+            }
+
             string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
             if (string.IsNullOrEmpty(value))
             {

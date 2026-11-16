@@ -72,6 +72,30 @@ namespace Unity.Physics
         FusedSlot* fusedSlots;
 
         /// <summary>
+        /// The forest that holds the newest lock states of a vessel, and the step in which that forest was handed the
+        /// vessel. A vessel can move between forests: from the fused job's forest to an island's forest when it stops
+        /// being fused for a step, from one island's forest to another's when its island's first body changes, and
+        /// back. The forest that takes the vessel over copies the lock states from the forest named here, so that the
+        /// lock states don't start again.
+        /// </summary>
+        internal struct VesselOwner
+        {
+            public ForestIsland* Forest;
+            public long Step;
+        }
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeHashMap<ulong, VesselOwner>* vesselOwners;
+
+        /// <summary>
+        /// When the record of owners holds more vessels than this, the vessels that no step has solved for
+        /// <see cref="OwnerSteps"/> steps are dropped from it.
+        /// </summary>
+        const int OwnerCapacity = 1024;
+
+        const int OwnerSteps = 600;
+
+        /// <summary>
         /// The cache slot for each island in this step, or -1 if the island has no slot and must solve without cached
         /// data. Before slots have been assigned, this list is empty and lookups use the island index as the slot
         /// index.
@@ -174,6 +198,9 @@ namespace Unity.Physics
             cache.fusedSlots = (FusedSlot*)UnsafeUtility.MallocTracked(FusedCapacity * sizeof(FusedSlot), UnsafeUtility.AlignOf<FusedSlot>(),
                 Allocator.Persistent, 0);
             UnsafeUtility.MemClear(cache.fusedSlots, FusedCapacity * sizeof(FusedSlot));
+            cache.vesselOwners = (UnsafeHashMap<ulong, VesselOwner>*)UnsafeUtility.MallocTracked(UnsafeUtility.SizeOf<UnsafeHashMap<ulong, VesselOwner>>(),
+                UnsafeUtility.AlignOf<UnsafeHashMap<ulong, VesselOwner>>(), Allocator.Persistent, 0);
+            *cache.vesselOwners = new UnsafeHashMap<ulong, VesselOwner>(64, Allocator.Persistent);
             *cache.step = 0;
             return cache;
         }
@@ -429,13 +456,97 @@ namespace Unity.Physics
                 ForestIsland.Destroy(fusedSlots[slot].Forest);
                 fusedSlots[slot] = default;
             }
+
+            if (vesselOwners != null)
+            {
+                vesselOwners->Clear();
+            }
+        }
+
+        /// <summary>Returns the forest that holds the newest lock states of a vessel, or null if no forest holds them.</summary>
+        internal ForestIsland* OwnerOf(ulong vesselId)
+        {
+            return vesselOwners != null && vesselOwners->TryGetValue(vesselId, out VesselOwner owner) ? owner.Forest : null;
+        }
+
+        /// <summary>
+        /// Records the forest that solves a vessel in this step. If the vessel solves with a forest that lasts for this
+        /// step only, the cache forgets the vessel's forest instead.
+        /// </summary>
+        internal void SetOwner(ulong vesselId, ForestIsland* forest)
+        {
+            if (vesselOwners == null)
+            {
+                return;
+            }
+
+            if (forest == null)
+            {
+                vesselOwners->Remove(vesselId);
+                return;
+            }
+
+            (*vesselOwners)[vesselId] = new VesselOwner { Forest = forest, Step = *step };
+        }
+
+        /// <summary>
+        /// Forgets the vessels whose newest lock states are in a forest that is about to be destroyed. With no forest,
+        /// and only when the record has grown large, forgets the vessels that no step has solved for a long time.
+        /// </summary>
+        void ForgetOwners(ForestIsland* destroyed)
+        {
+            if (vesselOwners == null || (destroyed == null && vesselOwners->Count <= OwnerCapacity))
+            {
+                return;
+            }
+
+            long now = *step;
+            var dropped = new NativeList<ulong>(Allocator.Temp);
+            foreach (KVPair<ulong, VesselOwner> pair in *vesselOwners)
+            {
+                VesselOwner owner = pair.Value;
+                if (destroyed != null ? owner.Forest == destroyed : owner.Step < now - OwnerSteps)
+                {
+                    dropped.Add(pair.Key);
+                }
+            }
+
+            for (int i = 0; i < dropped.Length; i++)
+            {
+                vesselOwners->Remove(dropped[i]);
+            }
+
+            dropped.Dispose();
+        }
+
+        /// <summary>Forgets the vessels that no step has solved for a long time, once the record has grown large.</summary>
+        internal void PruneOwners() => ForgetOwners(null);
+
+        /// <summary>
+        /// Returns the persistent forest of the fused vessel island whose first vessel has this ID if a slot holds
+        /// one, or null if no slot holds it. Marks the slot as used in this step, so that no other vessel takes the
+        /// slot over in this step.
+        /// </summary>
+        internal ForestIsland* FindFusedForest(ulong vesselId)
+        {
+            for (int slot = 0; fusedSlots != null && slot < FusedCapacity; slot++)
+            {
+                if (fusedSlots[slot].Used && fusedSlots[slot].VesselId == vesselId)
+                {
+                    fusedSlots[slot].LastUsed = *step;
+                    return fusedSlots[slot].Forest;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
         /// Returns the persistent forest of the fused vessel island whose first vessel has this ID, creating it if
         /// needed, or null if every slot was already used in this step. A slot that no vessel used in this step goes
-        /// to a new vessel, the least recently used slot first. Only the leader of the fused job calls this, one island
-        /// after another, so no two threads change the slots at once.
+        /// to a new vessel, the least recently used slot first. Only the job that marks the fused islands calls this,
+        /// one island after another and before any island is solved, so no two threads change the slots at once. The
+        /// fused job then finds the same forest with <see cref="FindFusedForest"/>.
         /// </summary>
         internal ForestIsland* FusedForestOf(ulong vesselId)
         {
@@ -461,14 +572,6 @@ namespace Unity.Physics
                 }
             }
 
-            if (found >= 0 && fusedSlots[found].LastUsed < now - 1)
-            {
-                // The vessel was not solved in a fused island in the previous step, so its lock states in this forest
-                // are old. Start again from an empty forest, as for a new vessel.
-                ForestIsland.Destroy(fusedSlots[found].Forest);
-                fusedSlots[found].Forest = ForestIsland.Create();
-            }
-
             if (found < 0)
             {
                 if (oldest < 0)
@@ -478,6 +581,7 @@ namespace Unity.Physics
 
                 // The slot's old forest belongs to another vessel, so start again from an empty one.
                 found = oldest;
+                ForgetOwners(fusedSlots[found].Forest);
                 ForestIsland.Destroy(fusedSlots[found].Forest);
                 fusedSlots[found].Forest = ForestIsland.Create();
                 fusedSlots[found].VesselId = vesselId;
@@ -626,6 +730,9 @@ namespace Unity.Physics
 
             UnsafeUtility.FreeTracked(fusedSlots, Allocator.Persistent);
             fusedSlots = null;
+            vesselOwners->Dispose();
+            UnsafeUtility.FreeTracked(vesselOwners, Allocator.Persistent);
+            vesselOwners = null;
             UnsafeUtility.FreeTracked(forestSettings, Allocator.Persistent);
             UnsafeUtility.FreeTracked(forestCounters, Allocator.Persistent);
             forestSettings = null;

@@ -1,6 +1,7 @@
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Physics.Numerics.Retooled;
 using Unity.Profiling;
 
@@ -90,12 +91,41 @@ namespace Unity.Physics
             var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
+            long solved = SolveVesselBoundary(ref run, problem, headers, headerList, worldBodies, compactBodies, holdsPositions,
+                motionVelocities, motionDatas, stepInput, jacobianRows, recovery, sparseContacts, team, applyImpulses, impulses, linear,
+                angular);
+            WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
+                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
+            bodyLinear.Dispose();
+            bodyAngular.Dispose();
+            run.Dispose();
+            if (temporary)
+            {
+                ForestIsland.Destroy(forest);
+            }
+        }
+
+        /// <summary>
+        /// Solves a vessel island's boundary rows against the factor that <see cref="StartVesselRun"/> made, and finds
+        /// each body's impulse from its section's new motion. For boundary rows that hold positions, aims the rows at
+        /// the drift that the integration will cause, and solves again. Then, if <paramref name="applyImpulses"/> is
+        /// set, gives the bodies their impulses and pushes the bodies of deep contacts out. Returns the time at which
+        /// the first solve ended, for the island's timers.
+        /// </summary>
+        static unsafe long SolveVesselBoundary(ref ForestRun run, in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+            in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool holdsPositions,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
+            in JacobianRows jacobianRows, float* recovery, bool sparseContacts, SparseSolveTeam* team, bool applyImpulses, float* impulses,
+            float3* linear, float3* angular)
+        {
+            long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
             // If the boundary ran out of pivoting rounds, SolveForest returns false, but its impulses are still inside
             // their bounds and near the answer, so the vessel applies them. BoundaryCounters counts such solves.
             SolveForest(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
+            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - started);
             SettleForest(ref run, problem, impulses, linear, angular, false);
             stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
@@ -129,44 +159,41 @@ namespace Unity.Physics
                 if (recovery != null)
                 {
                     SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
-                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run);
+                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
+                        (ForestRun*)UnsafeUtility.AddressOf(ref run));
                 }
             }
 
-            WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
-            stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
-                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
-            bodyLinear.Dispose();
-            bodyAngular.Dispose();
-            run.Dispose();
-            if (temporary)
-            {
-                ForestIsland.Destroy(forest);
-            }
+            return solved;
         }
 
         static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Fused");
 
         /// <summary>
-        /// Solves an island that holds only vessels, with no contacts and no joint rows, for every substep of the
-        /// step. The island's state is kept by the ID of its first vessel, and the island keeps the numbering of its
-        /// moving parts from step to step while its vessels and bodies stay the same. In the first substep, the team's
-        /// lanes copy the edges and test the locks. In each substep, the lanes fill the parts' poses and velocities
-        /// from the bodies, the kernel factors and solves the vessels' own rows, and the lanes compute the loads.
-        /// Then the lanes give each body the motion of its section and integrate the body in the same pass, so the
-        /// island needs no sparse setup, no separate impulse pass and no separate integration job.
+        /// Solves an island whose bodies are all vessel parts for every substep of the step. The island's state is kept
+        /// by the ID of its first vessel, and the island keeps the numbering of its moving parts from step to step
+        /// while its vessels and bodies stay the same. In the first substep, the team's lanes copy the edges and test
+        /// the locks. In each substep, the lanes update the island's contacts and joints and build their rows, and fill
+        /// the parts' poses and velocities from the bodies. The kernel factors and solves the vessels' own rows, and the
+        /// contacts and joints are solved against that factor as the boundary block, with the same code as the
+        /// ordinary vessel island's. Then the lanes compute the loads, give each body its impulse and integrate the
+        /// bodies. An island without boundary rows gives each body the motion of its section and integrates it in the
+        /// same pass. The island needs no per-body sparse setup, no jobs and waits of its own in each substep, and no
+        /// separate integration job.
         /// </summary>
-        static unsafe void SolveFusedVesselIsland(int islandIndex, int* islandVessels, int islandVesselCount,
-            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, StepInput stepInput,
-            SparseSolveTeam* team)
+        static unsafe void SolveFusedVesselIsland(in DirectIsland island, IslandHeader* islandHeaders, int* islandVessels,
+            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, NativeArray<RigidBody> rigidBodies,
+            StepInput stepInput, SparseSolveTeam* team)
         {
             using ProfilerMarker.AutoScope span = VesselFusedMarker.Auto();
             VesselSet set = stepInput.VesselSet;
             var motions = (MotionVelocity*)motionVelocities.GetUnsafePtr();
             int motionCount = motionVelocities.Length;
 
-            // The island's state is kept by the ID of its first vessel, not by the island's index or its first body.
-            ForestIsland* forest = stepInput.DirectSolverCache.FusedForestOf(set.Vessels[islandVessels[0]].Id);
+            // The island's state is kept by the ID of its first vessel, not by the island's index or its first body. The
+            // job that marked the fused islands has already given the island its forest.
+            ForestIsland* forest = stepInput.DirectSolverCache.FindFusedForest(set.Vessels[islandVessels[0]].Id);
+            int islandVesselCount = island.VesselCount;
             bool temporary = forest == null;
             if (temporary)
             {
@@ -174,8 +201,9 @@ namespace Unity.Physics
             }
 
             // The layout is known if the island holds the same vessels, with the same structure versions and counts, as
-            // when the forest's layout was last built, and if each moving part's body still has the same number.
-            bool known = forest->VesselMode && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
+            // when the forest's layout was last built, and if each moving part's body still has the same number. An
+            // island that takes lock states over from another forest lays its parts out again to take them.
+            bool known = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
                 && forest->VesselSignature[0] == (ulong)islandVesselCount && forest->FusedCompactOfWorld.Length == math.max(1, motionCount);
             int closureStart = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
@@ -232,16 +260,105 @@ namespace Unity.Physics
                 }
             }
 
-            var problem = new SparseConstraintSolver.Problem { BodyCount = forest->FusedWorldBodies.Length };
-            var bodyLinear = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            // All the island's moving bodies are vessel parts, so the numbering above numbers every body that the island's
+            // contacts and joints reach.
+            NativeArray<int> compactBodies = View(forest->FusedCompactOfWorld.Ptr, forest->FusedCompactOfWorld.Length);
+            int headerCount = island.HeaderEnd - island.FirstHeader;
+            int solveCount = island.SolveEnd - island.FirstHeader;
+            var headerRows = new NativeArray<int>(math.max(1, solveCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bodyLinear = new NativeArray<float3>(math.max(1, forest->FusedWorldBodies.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bodyAngular = new NativeArray<float3>(math.max(1, forest->FusedWorldBodies.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var linear = (float3*)bodyLinear.GetUnsafePtr();
+            var angular = (float3*)bodyAngular.GetUnsafePtr();
             for (int substep = 0; substep < stepInput.NumSubsteps; substep++)
             {
+                StepInput substepInput = stepInput;
+                substepInput.CurrentSubstep = substep;
+
+                // The Jacobians were built from the poses at the start of the step. After the first substep, update
+                // them from the current poses, as the substeps' jobs do for the other islands.
+                var tasks = new VesselTasks
+                {
+                    Headers = islandHeaders,
+                    HeaderRows = (int*)headerRows.GetUnsafePtr(),
+                    MotionVelocities = motionVelocities,
+                    MotionDatas = motionDatas,
+                    RigidBodies = rigidBodies,
+                    StepInput = substepInput,
+                    SparseContacts = island.ContactPairs > 0,
+                };
+                if (substep > 0 && headerCount > 0)
+                {
+                    tasks.Phase = VesselTasks.UpdateJacobians;
+                    tasks.Count = headerCount;
+                    SparseSolveTeam.RunAll(team, &tasks, SparseSolveTeam.ForestVesselKind, (headerCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                }
+
+                int rows = 0;
+                for (int h = 0; h < solveCount; h++)
+                {
+                    headerRows[h] = rows;
+                    rows += GetConstraintRows(ref *islandHeaders[h].Header);
+                }
+
+                // The boundary rows: one block of floats for the Jacobian, epsilon, the bounds, the right-hand side and
+                // the push-out of every row.
+                var rowValues = new NativeArray<float>(math.max(1, rows * (SparseConstraintSolver.ColumnsPerRow + 6)), Allocator.Temp,
+                    NativeArrayOptions.UninitializedMemory);
+                var flags = new NativeArray<LCP.MLCPIndexFlag>(math.max(1, rows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                float* values = (float*)rowValues.GetUnsafePtr();
+                var buffers = new IslandRowBuffers
+                {
+                    Jacobian = values,
+                    Epsilon = values + rows * SparseConstraintSolver.ColumnsPerRow,
+                    Lower = values + rows * (SparseConstraintSolver.ColumnsPerRow + 1),
+                    Upper = values + rows * (SparseConstraintSolver.ColumnsPerRow + 2),
+                    RightHandSide = values + rows * (SparseConstraintSolver.ColumnsPerRow + 3),
+                    Recovery = values + rows * (SparseConstraintSolver.ColumnsPerRow + 4),
+                    Flags = (LCP.MLCPIndexFlag*)flags.GetUnsafePtr(),
+                    Rows = rows,
+                };
+
+                var setup = new SparseSetup
+                {
+                    Blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp),
+                    Couplings = new NativeList<BoundCoupling>(island.ContactPairs, Allocator.Temp),
+                    Headers = new NativeList<System.IntPtr>(Allocator.Temp),
+                    WorldBodies = new NativeList<int>(Allocator.Temp),
+                    CompactBodies = compactBodies,
+                };
+
+                var problem = new SparseConstraintSolver.Problem { BodyCount = forest->FusedWorldBodies.Length };
+                if (rows > 0)
+                {
+                    tasks.Phase = VesselTasks.BuildRows;
+                    tasks.Count = solveCount;
+                    tasks.Rows = buffers;
+                    tasks.Regularization = RowRegularization.Of(substepInput);
+                    SparseSolveTeam.RunAll(team, &tasks, SparseSolveTeam.ForestVesselKind, (solveCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    GatherSparseBlocks(ref setup, islandHeaders, (int*)headerRows.GetUnsafeReadOnlyPtr(), solveCount, rows, motionVelocities, team);
+
+                    // The solve that pushes bodies out of deep contacts needs the island's bodies in a list.
+                    setup.WorldBodies.AddRange(forest->FusedWorldBodies.Ptr, forest->FusedWorldBodies.Length);
+                    problem.BlockCount = setup.Blocks.Length;
+                    problem.Blocks = setup.Blocks.GetUnsafePtr();
+                    problem.RowCount = rows;
+                    problem.Jacobian = buffers.Jacobian;
+                    problem.Epsilon = buffers.Epsilon;
+                    problem.RightHandSide = buffers.RightHandSide;
+                    problem.Lower = buffers.Lower;
+                    problem.Upper = buffers.Upper;
+                    problem.InitialStates = (byte*)buffers.Flags;
+                    problem.CouplingCount = setup.Couplings.Length;
+                    problem.Couplings = setup.Couplings.GetUnsafePtr();
+                }
+
                 var run = new ForestRun
                 {
                     Forest = forest,
                     Problem = problem,
-                    Bounded = false,
+                    Bounded = tasks.Bounded != 0,
+                    Headers = (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(),
                     // After the first substep, the layout is the one that the first substep built or kept.
                     KnownLayout = known || substep > 0,
                     VesselMode = true,
@@ -255,6 +372,7 @@ namespace Unity.Physics
                     MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
                     Timestep = stepInput.Timestep,
                     Team = team,
+                    Caps = stepInput.DirectSolverCache.Forest.Caps,
                 };
 
                 int builds = forest->StructureBuilds;
@@ -268,41 +386,109 @@ namespace Unity.Physics
                 stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestSolves);
                 stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
 
-                // With no boundary rows, the sections' velocities are the ones from the vessels' own rows.
-                UnsafeUtility.MemCpy(run.Velocity.GetUnsafePtr(), run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
-                long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
-
-                ref VesselContext context = ref forest->Context;
-                UnsafeUtility.MemCpy(context.Solution, run.Velocity.GetUnsafeReadOnlyPtr(), 6L * forest->SectionCount * sizeof(double));
-                UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
-                RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
-                FinishVesselSections(ref run);
-                var tasks = new VesselTasks
+                var bodyTasks = new VesselTasks
                 {
                     Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
-                    Phase = VesselTasks.MoveBodies,
                     Count = forest->Parts.Length,
-                    Linear = (float3*)bodyLinear.GetUnsafePtr(),
-                    Angular = (float3*)bodyAngular.GetUnsafePtr(),
+                    Linear = linear,
+                    Angular = angular,
                     MotionVelocities = motionVelocities,
                     MotionDatas = motionDatas,
                 };
-                SparseSolveTeam.RunAll(team, &tasks, SparseSolveTeam.ForestVesselKind, (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
-                stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
-                    Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
+
+                long solved;
+                if (rows > 0)
+                {
+                    // The same boundary solve as the ordinary vessel island's, and then the lanes integrate the bodies.
+                    var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    solved = SolveVesselBoundary(ref run, problem, (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(), setup.Headers,
+                        setup.WorldBodies, compactBodies, setup.HoldsPositions, motionVelocities, motionDatas, substepInput,
+                        new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team, true,
+                        (float*)impulses.GetUnsafePtr(), linear, angular);
+                    bodyTasks.Phase = VesselTasks.IntegrateBodies;
+                    SparseSolveTeam.RunAll(team, &bodyTasks, SparseSolveTeam.ForestVesselKind,
+                        (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    impulses.Dispose();
+                }
+                else
+                {
+                    // With no boundary rows, the sections' velocities are the ones from the vessels' own rows.
+                    UnsafeUtility.MemCpy(run.Velocity.GetUnsafePtr(), run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
+                    solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
+
+                    ref VesselContext context = ref forest->Context;
+                    UnsafeUtility.MemCpy(context.Solution, run.Velocity.GetUnsafeReadOnlyPtr(), 6L * forest->SectionCount * sizeof(double));
+                    UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
+                    RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
+                    FinishVesselSections(ref run);
+                    bodyTasks.Phase = VesselTasks.MoveBodies;
+                    SparseSolveTeam.RunAll(team, &bodyTasks, SparseSolveTeam.ForestVesselKind,
+                        (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
+                        Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
+                }
 
                 WriteVesselLoads(ref run, substep, stepInput.NumSubsteps);
                 stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
                     Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 run.Dispose();
+                setup.Blocks.Dispose();
+                setup.Couplings.Dispose();
+                setup.Headers.Dispose();
+                setup.WorldBodies.Dispose();
+                rowValues.Dispose();
+                flags.Dispose();
             }
 
+            headerRows.Dispose();
             bodyLinear.Dispose();
             bodyAngular.Dispose();
             if (temporary)
             {
                 ForestIsland.Destroy(forest);
+            }
+        }
+
+        /// <summary>
+        /// For the fused vessel solve with boundary rows: integrates one part's body over the substep, after the
+        /// boundary solve has given the body its impulse. A body is integrated once, by the part that the island maps
+        /// it to.
+        /// </summary>
+        static unsafe void IntegrateVesselBody(ref ForestRun run, VesselTasks* tasks, int part)
+        {
+            int body = run.Forest->PartBody[part];
+            if (body >= 0 && run.Forest->BodyPart[body] == part)
+            {
+                Integrator.IntegrateMotion(run.WorldBodies[body], tasks->MotionDatas, tasks->MotionVelocities, run.Timestep);
+            }
+        }
+
+        /// <summary>
+        /// For the fused vessel solve: updates or builds the rows of one of the island's Jacobians, as the substeps'
+        /// jobs do for the other islands.
+        /// </summary>
+        static unsafe void FusedJacobianTask(VesselTasks* tasks, int index)
+        {
+            ref JacobianHeader header = ref *tasks->Headers[index].Header;
+            if (tasks->Phase == VesselTasks.UpdateJacobians)
+            {
+                UpdateJacobian(ref header, tasks->MotionDatas, tasks->MotionVelocities, tasks->RigidBodies, tasks->StepInput);
+                return;
+            }
+
+            int startRow = tasks->HeaderRows[index];
+            int jacRows = GetConstraintRows(ref header);
+            if (jacRows == 0)
+            {
+                return;
+            }
+
+            // Every lane that sees a bounded row stores the same value, so the lanes need no lock.
+            if (BuildHeaderRows(ref header, startRow, jacRows, tasks->Rows, tasks->MotionVelocities, tasks->MotionDatas, tasks->StepInput,
+                tasks->SparseContacts, &tasks->Regularization) && tasks->Bounded == 0)
+            {
+                tasks->Bounded = 1;
             }
         }
 
@@ -384,7 +570,7 @@ namespace Unity.Physics
                 }
             }
 
-            bool same = forest->VesselMode && forest->VesselSignature.Length == signature.Length;
+            bool same = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == signature.Length;
             for (int i = 0; same && i < signature.Length; i++)
             {
                 same = forest->VesselSignature[i] == signature[i];
@@ -647,8 +833,128 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// Gives each vessel island of the step the forest that will solve it, and hands each vessel's lock states to
+        /// that forest if another forest holds the newest ones. A fused island's forest is kept by the ID of its first
+        /// vessel, and any other island's forest is kept by the island's first body, so a vessel changes forests when
+        /// it moves in or out of the fused job or when its island's first body changes. The states are copied in two
+        /// passes, all of them before any forest is handed out, because handing out a fused forest can destroy the
+        /// forest of another vessel. Runs on one thread, after the cache has assigned the islands' slots and before
+        /// any island is solved.
+        /// </summary>
+        static unsafe void AssignVesselForests(DirectSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
+            VesselSet set)
+        {
+            if (!cache.IsCreated || !set.IsCreated)
+            {
+                return;
+            }
+
+            // For each of the island vessels, where its copied states start in the lists below, or -1 if the vessel
+            // keeps its states in the forest that will solve it.
+            var copied = new NativeArray<int>(math.max(1, islandVessels.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var locked = new NativeList<byte>(Allocator.Temp);
+            var held = new NativeList<int>(Allocator.Temp);
+            var ratio = new NativeList<float>(Allocator.Temp);
+            for (int i = 0; i < islands.Length; i++)
+            {
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
+                {
+                    continue;
+                }
+
+                ForestIsland* planned = island.Fused ? cache.FindFusedForest(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
+                {
+                    copied[k] = -1;
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    ForestIsland* owner = cache.OwnerOf(vessel.Id);
+                    if (owner == null || owner == planned || !FindVesselStates(owner, vessel, out int start))
+                    {
+                        continue;
+                    }
+
+                    copied[k] = locked.Length;
+                    locked.AddRange(owner->PartLocked.Ptr + start, vessel.PartCount);
+                    held.AddRange(owner->PartHeld.Ptr + start, vessel.PartCount);
+                    ratio.AddRange(owner->PartRatio.Ptr + start, vessel.PartCount);
+                }
+            }
+
+            for (int i = 0; i < islands.Length; i++)
+            {
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
+                {
+                    continue;
+                }
+
+                ForestIsland* forest = island.Fused ? cache.FusedForestOf(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
+                {
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    cache.SetOwner(vessel.Id, forest);
+                    if (forest == null || copied[k] < 0)
+                    {
+                        continue;
+                    }
+
+                    if (!forest->TakesStates)
+                    {
+                        forest->TakenIds.Clear();
+                        forest->TakenVersions.Clear();
+                        forest->TakenStarts.Clear();
+                        forest->TakenLocked.Clear();
+                        forest->TakenHeld.Clear();
+                        forest->TakenRatio.Clear();
+                        forest->TakesStates = true;
+                    }
+
+                    forest->TakenIds.Add(vessel.Id);
+                    forest->TakenVersions.Add(vessel.StructureVersion);
+                    forest->TakenStarts.Add(forest->TakenLocked.Length);
+                    forest->TakenLocked.AddRange(locked.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenHeld.AddRange(held.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenRatio.AddRange(ratio.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                }
+            }
+
+            cache.PruneOwners();
+            copied.Dispose();
+            locked.Dispose();
+            held.Dispose();
+            ratio.Dispose();
+        }
+
+        /// <summary>
+        /// Finds where a vessel's parts start in a forest's lock states, if the forest's layout holds the vessel with
+        /// the same structure version.
+        /// </summary>
+        static unsafe bool FindVesselStates(ForestIsland* forest, in VesselRecord vessel, out int start)
+        {
+            start = -1;
+            if (!forest->VesselMode || forest->VesselSignature.Length == 0)
+            {
+                return false;
+            }
+
+            int count = (int)forest->VesselSignature[0];
+            for (int i = 0; i < count && 3 + 3 * i < forest->VesselSignature.Length && i < forest->VesselPartStart.Length; i++)
+            {
+                if (forest->VesselSignature[1 + 3 * i] == vessel.Id && forest->VesselSignature[2 + 3 * i] == vessel.StructureVersion)
+                {
+                    start = forest->VesselPartStart[i];
+                    return start >= 0 && start + vessel.PartCount <= forest->PartLocked.Length;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Rebuilds the arrangement of the island's parts and preserves each part's lock state if its vessel has the
-        /// same ID and structure version. For a new vessel, edges that are allowed to lock start locked, so the craft
+        /// same ID and structure version. A vessel that the island takes over from another forest in this step takes
+        /// the states that it had there. For a new vessel, edges that are allowed to lock start locked, so the craft
         /// starts with those connections rigid.
         /// </summary>
         static unsafe void CarryVesselStates(ForestIsland* forest, NativeList<ulong> signature, in ForestRun run, int partCount,
@@ -676,11 +982,23 @@ namespace Unity.Physics
             {
                 VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
                 forest->VesselPartStart[i] = next;
+                int taken = -1;
+                for (int t = 0; forest->TakesStates && t < forest->TakenIds.Length; t++)
+                {
+                    taken = forest->TakenIds[t] == vessel.Id && forest->TakenVersions[t] == vessel.StructureVersion ? forest->TakenStarts[t] : taken;
+                }
+
                 bool kept = old.TryGetValue(vessel.Id, out int2 before) && (uint)before.x == vessel.StructureVersion;
                 for (int k = 0; k < vessel.PartCount; k++)
                 {
                     int part = next + k;
-                    if (kept)
+                    if (taken >= 0)
+                    {
+                        locked[part] = forest->TakenLocked[taken + k];
+                        held[part] = forest->TakenHeld[taken + k];
+                        ratio[part] = forest->TakenRatio[taken + k];
+                    }
+                    else if (kept)
                     {
                         locked[part] = forest->PartLocked[before.y + k];
                         held[part] = forest->PartHeld[before.y + k];
@@ -715,6 +1033,13 @@ namespace Unity.Physics
             }
 
             forest->VesselMode = true;
+            forest->TakesStates = false;
+            forest->TakenIds.Clear();
+            forest->TakenVersions.Clear();
+            forest->TakenStarts.Clear();
+            forest->TakenLocked.Clear();
+            forest->TakenHeld.Clear();
+            forest->TakenRatio.Clear();
 
             // Invalidate the signature for the forest built from supplied Jacobian rows, so it is rebuilt if the island
             // returns to that solver path.
@@ -1386,6 +1711,12 @@ namespace Unity.Physics
             public const int MoveBodies = 14;
             public const int FillPoses = 15;
 
+            // The stages of the fused vessel solve that update the island's Jacobians, build their rows, and integrate
+            // the bodies after a boundary solve.
+            public const int UpdateJacobians = 16;
+            public const int BuildRows = 17;
+            public const int IntegrateBodies = 18;
+
             public ForestRun* Run;
             public int Phase;
             public int Count;
@@ -1407,6 +1738,21 @@ namespace Unity.Physics
             /// <summary>For <see cref="MoveBodies"/>: the bodies that the fused vessel solve moves and integrates.</summary>
             public NativeArray<MotionVelocity> MotionVelocities;
             public NativeArray<MotionData> MotionDatas;
+
+            /// <summary>
+            /// For <see cref="UpdateJacobians"/> and <see cref="BuildRows"/>: the island's Jacobians and each one's first
+            /// row, the world's bodies, the substep, where the rows go, the regularization that the rows share, whether
+            /// the island's contacts are in the solve, and a flag that a task sets when a row needs a bounded solve.
+            /// </summary>
+            public IslandHeader* Headers;
+
+            public int* HeaderRows;
+            public NativeArray<RigidBody> RigidBodies;
+            public StepInput StepInput;
+            public IslandRowBuffers Rows;
+            public RowRegularization Regularization;
+            public bool SparseContacts;
+            public int Bounded;
 
             /// <summary>
             /// For the stages of a shared section: the section, its range of positions, the centre for the inertia sums,
@@ -1446,6 +1792,17 @@ namespace Unity.Physics
                 return;
             }
 
+            if (tasks->Phase == VesselTasks.UpdateJacobians || tasks->Phase == VesselTasks.BuildRows)
+            {
+                int last = math.min((task + 1) * VesselItemsPerTask, tasks->Count);
+                for (int index = task * VesselItemsPerTask; index < last; index++)
+                {
+                    FusedJacobianTask(tasks, index);
+                }
+
+                return;
+            }
+
             ref ForestRun run = ref *tasks->Run;
             ref VesselContext kernel = ref run.Forest->Context;
             int end = math.min((task + 1) * VesselItemsPerTask, tasks->Count);
@@ -1473,6 +1830,9 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.MoveBodies:
                         MoveVesselBody(ref run, tasks, item);
+                        break;
+                    case VesselTasks.IntegrateBodies:
+                        IntegrateVesselBody(ref run, tasks, item);
                         break;
                     case VesselTasks.FillEdges:
                         if (item >= tasks->VesselParts)

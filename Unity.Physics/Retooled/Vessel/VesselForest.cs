@@ -251,6 +251,21 @@ namespace Unity.Physics
 
         public UnsafeList<int> FusedCompactOfWorld;
 
+        /// <summary>
+        /// The lock states of the vessels that this island takes over from other forests in this step, see
+        /// <see cref="DirectSolverCache.OwnerOf"/>. For each vessel: its ID, its structure version, and where its parts'
+        /// states start in the three lists of states. When <see cref="TakesStates"/> is set, the island's next first
+        /// substep lays its parts out again and takes these states before the states that it kept itself.
+        /// </summary>
+        public UnsafeList<ulong> TakenIds;
+
+        public UnsafeList<uint> TakenVersions;
+        public UnsafeList<int> TakenStarts;
+        public UnsafeList<byte> TakenLocked;
+        public UnsafeList<int> TakenHeld;
+        public UnsafeList<float> TakenRatio;
+        public bool TakesStates;
+
         /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
         public bool VesselMode;
 
@@ -326,6 +341,12 @@ namespace Unity.Physics
                 PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
                 FusedWorldBodies = new UnsafeList<int>(16, Allocator.Persistent),
                 FusedCompactOfWorld = new UnsafeList<int>(16, Allocator.Persistent),
+                TakenIds = new UnsafeList<ulong>(4, Allocator.Persistent),
+                TakenVersions = new UnsafeList<uint>(4, Allocator.Persistent),
+                TakenStarts = new UnsafeList<int>(4, Allocator.Persistent),
+                TakenLocked = new UnsafeList<byte>(16, Allocator.Persistent),
+                TakenHeld = new UnsafeList<int>(16, Allocator.Persistent),
+                TakenRatio = new UnsafeList<float>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -402,6 +423,12 @@ namespace Unity.Physics
             forest->PrefixTorque.Dispose();
             forest->FusedWorldBodies.Dispose();
             forest->FusedCompactOfWorld.Dispose();
+            forest->TakenIds.Dispose();
+            forest->TakenVersions.Dispose();
+            forest->TakenStarts.Dispose();
+            forest->TakenLocked.Dispose();
+            forest->TakenHeld.Dispose();
+            forest->TakenRatio.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 
