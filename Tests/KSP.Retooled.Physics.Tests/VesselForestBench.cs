@@ -35,7 +35,7 @@ namespace KSP.Retooled.Physics.Tests
         private const int WarmUp = 20;
         private const int Measured = 60;
 
-        private struct Graph
+        internal struct Graph
         {
             public string Name;
             public int[] Parent;
@@ -54,10 +54,35 @@ namespace KSP.Retooled.Physics.Tests
 
         /// <summary>
         /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x4", names a scene of
-        /// that many whole copies of the craft side by side, so that the step has several large vessels.
+        /// that many whole copies of the craft side by side, so that the step has several large vessels. A name with a
+        /// part count after a colon, such as "tu160:128x16", names a scene of sixteen small crafts, each one a copy of
+        /// the first 128 parts of the Tu-160. The parts come parents first, so the first parts of a craft are one
+        /// connected tree from its root. Names joined by "+", such as "tu160+tu160:128x8", put their scenes side by
+        /// side in one scene, so that the step has large and small vessels together. ZzTimeline reads the same names.
         /// </summary>
-        private static Graph Load(string name)
+        internal static Graph Load(string name)
         {
+            string[] scenes = name.Split('+');
+            if (scenes.Length > 1)
+            {
+                Graph joined = Load(scenes[0]);
+                for (int i = 1; i < scenes.Length; i++)
+                {
+                    joined = Join(joined, Load(scenes[i]));
+                }
+
+                joined.Name = name;
+                return joined;
+            }
+
+            System.Text.RegularExpressions.Match cut = System.Text.RegularExpressions.Regex.Match(name, @"^(.+):(\d+)x(\d+)$");
+            if (cut.Success)
+            {
+                Graph whole = LoadFile(cut.Groups[1].Value);
+                int parts = System.Math.Min(int.Parse(cut.Groups[2].Value, CultureInfo.InvariantCulture), whole.Parent.Length);
+                return Copies(whole, parts, int.Parse(cut.Groups[3].Value, CultureInfo.InvariantCulture));
+            }
+
             System.Text.RegularExpressions.Match copies = System.Text.RegularExpressions.Regex.Match(name, @"^(.+)x(\d+)$");
             if (copies.Success)
             {
@@ -66,6 +91,30 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return LoadFile(name);
+        }
+
+        /// <summary>
+        /// Puts the scene <paramref name="right"/> beside the scene <paramref name="left"/> along x, 10 m past the
+        /// right edge of the left scene, and returns the two as one scene.
+        /// </summary>
+        private static Graph Join(Graph left, Graph right)
+        {
+            float edge = left.Position.Max(p => p.x);
+            float start = right.Position.Min(p => p.x);
+            var offset = new Vector3(edge + 10.0f - start, 0.0f, 0.0f);
+            int count = left.Parent.Length;
+            return new Graph
+            {
+                Name = left.Name + " + " + right.Name,
+                Parent = left.Parent.Concat(right.Parent.Select(p => p >= 0 ? p + count : -1)).ToArray(),
+                Mass = left.Mass.Concat(right.Mass).ToArray(),
+                Inertia = left.Inertia.Concat(right.Inertia).ToArray(),
+                Position = left.Position.Concat(right.Position.Select(p => p + offset)).ToArray(),
+                Joint = left.Joint.Concat(right.Joint.Select(p => p + offset)).ToArray(),
+                Swing = left.Swing.Concat(right.Swing).ToArray(),
+                ClosureA = left.ClosureA.Concat(right.ClosureA.Select(a => a + count)).ToArray(),
+                ClosureB = left.ClosureB.Concat(right.ClosureB.Select(b => b + count)).ToArray(),
+            };
         }
 
         private static Graph LoadFile(string name)

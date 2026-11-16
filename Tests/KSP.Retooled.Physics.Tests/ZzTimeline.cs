@@ -17,6 +17,8 @@ using Debug = UnityEngine.Debug;
 
 namespace KSP.Retooled.Physics.Tests
 {
+    using Graph = VesselForestBench.Graph;
+
     // A profiling harness. It builds the VesselForestBench crafts, steps them with the editor profiler on, and reads the
     // profiler's raw frames for every thread. For each marker it reports the first start, the last end and the summed
     // CPU inside each Physics.Simulate call, as medians per step. Rows that start with "M" are the main thread, rows that
@@ -30,103 +32,6 @@ namespace KSP.Retooled.Physics.Tests
     {
         private const int PartLayer = 30;
         private const int Profiled = 30;
-
-        private struct Graph
-        {
-            public int[] Parent;
-            public float[] Mass;
-            public Vector3[] Inertia;
-            public Vector3[] Position;
-            public Vector3[] Joint;
-            public float[] Swing;
-            public int[] ClosureA;
-            public int[] ClosureB;
-        }
-
-        /// <summary>
-        /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x2", names that many
-        /// copies of the craft side by side along x, 10 m apart, as in <see cref="VesselForestBench"/>.
-        /// </summary>
-        private static Graph Load(string name)
-        {
-            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(name, @"^(.+)x(\d+)$");
-            if (!match.Success)
-            {
-                return LoadFile(name);
-            }
-
-            Graph single = LoadFile(match.Groups[1].Value);
-            int copies = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-            int parts = single.Parent.Length;
-            float spacing = single.Position.Max(p => p.x) - single.Position.Min(p => p.x) + 10.0f;
-            var graph = new Graph
-            {
-                Parent = new int[parts * copies], Mass = new float[parts * copies], Inertia = new Vector3[parts * copies],
-                Position = new Vector3[parts * copies], Joint = new Vector3[parts * copies], Swing = new float[parts * copies],
-                ClosureA = new int[single.ClosureA.Length * copies], ClosureB = new int[single.ClosureA.Length * copies],
-            };
-            for (int copy = 0; copy < copies; copy++)
-            {
-                var offset = new Vector3(copy * spacing, 0.0f, 0.0f);
-                for (int i = 0; i < parts; i++)
-                {
-                    int to = copy * parts + i;
-                    graph.Parent[to] = single.Parent[i] >= 0 ? copy * parts + single.Parent[i] : -1;
-                    graph.Mass[to] = single.Mass[i];
-                    graph.Inertia[to] = single.Inertia[i];
-                    graph.Position[to] = single.Position[i] + offset;
-                    graph.Joint[to] = single.Joint[i] + offset;
-                    graph.Swing[to] = single.Swing[i];
-                }
-
-                for (int k = 0; k < single.ClosureA.Length; k++)
-                {
-                    graph.ClosureA[copy * single.ClosureA.Length + k] = copy * parts + single.ClosureA[k];
-                    graph.ClosureB[copy * single.ClosureA.Length + k] = copy * parts + single.ClosureB[k];
-                }
-            }
-
-            return graph;
-        }
-
-        private static Graph LoadFile(string name)
-        {
-            string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Packages", "io.github.ksp1retooled.physics",
-                "Tests", "VesselGraphs~"));
-            using var file = File.OpenRead(Path.Combine(folder, name + ".txt.gz"));
-            using var unzip = new GZipStream(file, CompressionMode.Decompress);
-            using var reader = new StreamReader(unzip);
-            reader.ReadLine();
-            int count = int.Parse(reader.ReadLine().Split(' ')[1], CultureInfo.InvariantCulture);
-            var graph = new Graph
-            {
-                Parent = new int[count], Mass = new float[count], Inertia = new Vector3[count], Position = new Vector3[count],
-                Joint = new Vector3[count], Swing = new float[count],
-            };
-            for (int i = 0; i < count; i++)
-            {
-                string[] f = reader.ReadLine().Split(' ');
-                float F(int k) => float.Parse(f[k], CultureInfo.InvariantCulture);
-                graph.Parent[i] = int.Parse(f[0], CultureInfo.InvariantCulture);
-                graph.Mass[i] = F(2);
-                graph.Inertia[i] = new Vector3(F(3), F(4), F(5));
-                graph.Position[i] = new Vector3(F(6), F(7), F(8));
-                graph.Joint[i] = new Vector3(F(9), F(10), F(11));
-                graph.Swing[i] = F(15);
-            }
-
-            int closures = int.Parse(reader.ReadLine().Split(' ')[1], CultureInfo.InvariantCulture);
-            graph.ClosureA = new int[closures];
-            graph.ClosureB = new int[closures];
-            for (int c = 0; c < closures; c++)
-            {
-                string[] f = reader.ReadLine().Split(' ');
-                graph.ClosureA[c] = int.Parse(f[0], CultureInfo.InvariantCulture);
-                graph.ClosureB[c] = int.Parse(f[1], CultureInfo.InvariantCulture);
-            }
-
-            return graph;
-        }
 
         private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked)
         {
@@ -234,11 +139,12 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Initialize();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
             UnityEngine.Profiling.Profiler.maxUsedMemory = 1 << 30;
-            // PROFILE_CRAFT lists the crafts, separated by commas, such as "tu160x2" for two copies of the Tu-160.
+            // PROFILE_CRAFT lists the crafts, separated by commas, in the names that VesselForestBench reads: "tu160x2"
+            // for two copies of the Tu-160, or "tu160:128x16" for sixteen copies of its first 128 parts.
             string crafts = Environment.GetEnvironmentVariable("PROFILE_CRAFT");
             foreach (string craft in string.IsNullOrEmpty(crafts) ? new[] { "tu160", "synthetic4500" } : crafts.Split(','))
             {
-                Graph graph = Load(craft);
+                Graph graph = VesselForestBench.Load(craft);
                 foreach (bool ground in new[] { false, true })
                 {
                     foreach (int threads in new[] { 8, 1 })
