@@ -73,6 +73,41 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        private static Vector3Int Bits(Vector3 v)
+        {
+            return new Vector3Int(BitConverter.SingleToInt32Bits(v.x), BitConverter.SingleToInt32Bits(v.y), BitConverter.SingleToInt32Bits(v.z));
+        }
+
+        [Test]
+        public void SettingTheStoredPoseKeepsTheVelocityToTheLastBit()
+        {
+            // Setting a rotation converts the angular velocity to world space and back, which can change its last bits.
+            // A pose that equals the stored one to the last bit leaves the body as it is.
+            var bodies = new List<Rigidbody>();
+            var random = new System.Random(3);
+            for (int i = 0; i < 32; i++)
+            {
+                Rigidbody body = SpinningBox(new Vector3(2.0f * i, 0.0f, 0.0f));
+                body.rotation = Quaternion.Euler(random.Next(360), random.Next(360), random.Next(360));
+                body.angularVelocity = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) * 3.0f;
+                bodies.Add(body);
+            }
+
+            Simulate(3);
+            foreach (Rigidbody body in bodies)
+            {
+                Vector3 angular = body.angularVelocity;
+                Vector3 position = body.position;
+                Quaternion rotation = body.rotation;
+
+                body.position = position;
+                body.rotation = rotation;
+
+                Assert.That(Bits(body.angularVelocity), Is.EqualTo(Bits(angular)), body.name);
+                Assert.That(body.position, Is.EqualTo(position), body.name);
+            }
+        }
+
         [Test]
         public void EveryReadRunsWithoutItsCategorysSpan()
         {

@@ -413,6 +413,17 @@ namespace KSP.Retooled.Physics
         {
             float3 position = hot->pose->Position;
             quaternion rotation = hot->pose->Rotation;
+
+            // A pose that equals the stored one to the last bit changes nothing. Setting the rotation again would convert
+            // the angular velocity to world space and back, which can change its last bits, so the body stays as it is.
+            // The body still wakes if Unity asks, as a PhysX body does. The bits are compared rather than the floats, so
+            // that -0 against 0, or a NaN, still counts as a change.
+            if (math.all(math.asuint(a->position) == math.asuint(position)) && math.all(math.asuint(a->rotation.value) == math.asuint(rotation.value)))
+            {
+                WakeIfAsked(hot, a);
+                return;
+            }
+
             hot->pose->Position = a->position;
             StoreOps.SetRotation(*hot, a->rotation);
             WakeIfAsked(hot, a);
