@@ -443,13 +443,13 @@ namespace Unity.Physics
         /// The number of vessel parts at which an island whose bodies are all vessel parts goes to the fused vessel
         /// job. A smaller island stays with the substeps' jobs. By default, every such island goes to the fused job,
         /// however small it is and however many there are. The fused job gives each island a team of its own and
-        /// solves several islands at once, so on the bench (whole steps, minimum of three rounds) small craft are as
-        /// fast or faster there than in the substeps' jobs. Sixteen craft of 128 parts take 1.82 ms instead of 1.98 ms
-        /// floating on one thread and 0.91 ms instead of 1.10 ms on eight. On the ground they take about the same,
-        /// 6.1 to 6.2 ms on one thread and 2.2 ms on eight. Thirty-two craft of 32 parts take 0.43 ms instead of
-        /// 0.53 ms floating on eight threads, and 64 craft of 8 parts take 0.36 ms instead of 0.43 ms. Before round 4,
-        /// the fused job solved one island after another, and sixteen craft of 128 parts took 0.8 ms more floating and
-        /// 2 ms more on the ground there. The backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches,
+        /// solves several islands at once, so on the bench (whole steps, the minimum of three rounds) small craft are
+        /// as fast or faster there than in the substeps' jobs. Floating, sixteen craft of 128 parts take 0.78 ms
+        /// instead of 1.10 ms on eight threads and 1.94 ms instead of 2.26 ms on one. Thirty-two craft of 32 parts take
+        /// 0.48 ms instead of 0.53 ms on eight threads, and 64 craft of 8 parts take 0.37 ms instead of 0.46 ms. On
+        /// the ground the times are about the same: sixteen craft of 128 parts take 2.17 ms instead of 2.24 ms on eight
+        /// threads and 6.08 ms instead of 6.14 ms on one. Before round 4, the fused job solved one island after
+        /// another, and sixteen craft of 128 parts took 0.8 ms more floating and 2 ms more on the ground there. The backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches,
         /// and tests set this to keep small vessels in the substeps' jobs. The value is stored in a SharedStatic,
         /// because the jobs are scheduled from Burst code.
         /// </summary>
