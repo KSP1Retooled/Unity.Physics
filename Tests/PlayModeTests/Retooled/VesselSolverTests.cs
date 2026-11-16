@@ -5,7 +5,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Kernels;
 using Unity.Physics;
 using Debug = UnityEngine.Debug;
 

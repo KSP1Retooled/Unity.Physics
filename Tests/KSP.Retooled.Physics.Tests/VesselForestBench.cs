@@ -577,7 +577,7 @@ namespace KSP.Retooled.Physics.Tests
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
                 double tickMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
-                Unity.Physics.Numerics.Retooled.BoundarySolveStats f = boundary.Factor;
+                Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivotingStats f = boundary.Factor;
                 long laterSolves = System.Math.Max(1, boundary.Solves - boundary.FirstSubstepSolves);
                 lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / Measured:F3} ms a step (factor {f.FactorTicks * tickMs / Measured:F3}, of it from the start {f.FullFactorTicks * tickMs / Measured:F3}, solves {f.SolveTicks * tickMs / Measured:F3}, checks {f.PivotTicks * tickMs / Measured:F3}); " +
                     $"rounds a solve: {f.Factorizations / (double)boundary.Solves:F2} factored, {f.Updates / (double)boundary.Solves:F2} updated, " +

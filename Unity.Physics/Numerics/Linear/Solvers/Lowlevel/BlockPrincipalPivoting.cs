@@ -3,75 +3,29 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Linear.Solvers.Lowlevel
 {
     /// <summary>
-    /// What boundary solves did with the factor of their free rows, summed over the solves that were given the same
-    /// counts. A round of pivoting either factored W_FF from the start, changed the last round's factor, or used it as it
-    /// was. The rows that joined and left the free set are counted against the round before, so a solve's first round
-    /// adds none.
+    /// Solves a bounded linear complementarity problem by block principal pivoting. The problem has a matrix W that is
+    /// dense, symmetric and positive definite, and that is stored row by row. Each unknown z_i has a lower and an upper
+    /// bound. In the answer, a free row has W z - q = 0, and a row at a bound has W z - q with the sign that the bound
+    /// requires. The bounds of some rows can depend on the values of other rows, as <see cref="BoundCoupling"/>
+    /// describes. For example, the bounds of a friction impulse depend on a normal impulse.
+    /// <para>
+    /// Each round of pivoting splits the rows into free rows and rows at a bound, and solves for the free rows with a
+    /// dense Cholesky factor in double precision. Then every row that breaks its conditions changes its state. If the
+    /// number of such rows stops going down, only the last such row changes its state instead (Murty's rule). The
+    /// coupled bounds lag behind: after each answer that meets every condition, the solver moves the coupled bounds
+    /// and solves again. The factor of the free rows carries over from one round to the next, and each round changes it
+    /// only by the rows that joined or left the free set, in the way that <see cref="FactorUpdate"/> picks.
+    /// </para>
+    /// <para>
+    /// The vessel solver's forest solve is one user. It solves its boundary block, the dense matrix
+    /// W = J_b A^-1 J_b^T + E_b, with this solver. The sparse constraint solver uses the same method on its own sparse
+    /// factor.
+    /// </para>
     /// </summary>
-    public struct BoundarySolveStats
-    {
-        public long Rounds;
-        public long CouplingRounds;
-        public long Factorizations;
-        public long Updates;
-        public long Reuses;
-        public long AddedRows;
-        public long RemovedRows;
-
-        /// <summary>
-        /// The free rows that the rounds solved for, summed over the rounds, and the most and the fewest free rows that
-        /// one round had. The fewest leaves out rounds with no free rows.
-        /// </summary>
-        public long FreeRows;
-        public long MostFreeRows;
-        public long FewestFreeRows;
-
-        /// <summary>The time spent factoring or changing the factor, in profiler timestamp units.</summary>
-        public long FactorTicks;
-
-        /// <summary>
-        /// The time spent on the right-hand side and the solves with the factor, and the time spent checking the rows'
-        /// conditions, in profiler timestamp units.
-        /// </summary>
-        public long SolveTicks;
-        public long PivotTicks;
-
-        /// <summary>The part of <see cref="FactorTicks"/> spent on factors from the start, with the copy of W_FF into them.</summary>
-        public long FullFactorTicks;
-    }
-
-    /// <summary>How a round of the boundary solve changes the factor of its free rows when they differ from the last round's.</summary>
-    public enum FactorUpdate : byte
-    {
-        /// <summary>Every round factors the free rows from the start.</summary>
-        Refactor,
-
-        /// <summary>
-        /// The factor keeps its rows up to the first row that left the free set. The rows after it that stay and the
-        /// rows that joined are inserted after them, with faer's insertion of rows and columns at the end.
-        /// </summary>
-        KeepPrefix,
-
-        /// <summary>
-        /// The rows that left the free set are deleted from the factor wherever they are, with faer's deletion of rows
-        /// and columns, and the rows that joined are inserted at the end.
-        /// </summary>
-        Edit,
-    }
-
-    /// <summary>
-    /// Solves the boundary block of a forest solve. The block is a dense matrix W = J_b A^-1 J_b^T + E_b, which is
-    /// symmetric and positive definite. Its unknowns have bounds, and some of those bounds depend on other unknowns,
-    /// for example friction bounds that depend on a normal impulse. The solver uses the same method as the sparse
-    /// constraint solver, which is block principal pivoting. Each step flips every row that breaks its conditions. If
-    /// the number of such rows stops going down, the solver flips only the last such row instead (Murty's rule). The
-    /// coupled bounds lag behind: after each feasible answer, the solver moves the coupled bounds and solves again.
-    /// Each pivoting step solves for the free rows with a dense Cholesky factorization in double precision.
-    /// </summary>
-    public static unsafe class BoundarySolver
+    public static unsafe class BlockPrincipalPivoting
     {
         const double Tolerance = 1e-4;
         /// <summary>The most rounds of pivoting that a solve without a cap of its own takes.</summary>
@@ -127,7 +81,7 @@ namespace Unity.Physics.Numerics.Retooled
         /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, bool update,
-            BoundarySolveStats* stats, out int rounds)
+            BlockPrincipalPivotingStats* stats, out int rounds)
         {
             return Solve(n, w, q, problemLower, problemUpper, states, couplings, couplingCount, bounded, z, maxRounds, warm,
                 update ? DefaultUpdate : FactorUpdate.Refactor, null, stats, out rounds);
@@ -145,7 +99,7 @@ namespace Unity.Physics.Numerics.Retooled
         /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, FactorUpdate update,
-            byte* priority, BoundarySolveStats* stats, out int rounds)
+            byte* priority, BlockPrincipalPivotingStats* stats, out int rounds)
         {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -319,7 +273,7 @@ namespace Unity.Physics.Numerics.Retooled
             readonly int n;
             readonly FactorUpdate mode;
             readonly byte* priority;
-            readonly BoundarySolveStats* stats;
+            readonly BlockPrincipalPivotingStats* stats;
 
             /// <summary>The lower triangle L, in column-major order with a column stride of n.</summary>
             NativeArray<double> factorArray;
@@ -341,7 +295,7 @@ namespace Unity.Physics.Numerics.Retooled
             int m;
             bool valid;
 
-            public FreeFactor(int n, FactorUpdate mode, byte* priority, BoundarySolveStats* stats)
+            public FreeFactor(int n, FactorUpdate mode, byte* priority, BlockPrincipalPivotingStats* stats)
             {
                 this.n = n;
                 this.mode = mode;

@@ -2,7 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Sparse;
 
 namespace Unity.Physics
 {
@@ -389,7 +389,7 @@ namespace Unity.Physics
             if (MinimumDegree)
             {
                 order.Clear();
-                SparseSymbolic.MinimumDegreeOrder(labelCount, adjacency, adjacencyStart, order);
+                MinimumDegreeOrdering.Compute(labelCount, adjacency, adjacencyStart, order);
             }
 
             // The symbolic factor in that order gives the elimination tree. A postorder of that tree eliminates the same
@@ -400,7 +400,7 @@ namespace Unity.Physics
             var firstChild = new NativeArray<int>(labelCount, Allocator.Temp);
             var nextSibling = new NativeArray<int>(labelCount, Allocator.Temp);
             var rows = new NativeList<int>(labelCount * 2, Allocator.Temp);
-            SparseSymbolic.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+            SymbolicCholesky.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
                 firstChild, nextSibling);
 
             var postorder = new NativeList<int>(labelCount, Allocator.Temp);
@@ -435,7 +435,7 @@ namespace Unity.Physics
             }
 
             rows.Clear();
-            SparseSymbolic.FactorStructure(postorder, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+            SymbolicCholesky.FactorStructure(postorder, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
                 firstChild, nextSibling);
             int sectionCount = labelCount;
             int offDiagonal = rows.Length;

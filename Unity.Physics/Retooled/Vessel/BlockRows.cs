@@ -1,13 +1,14 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
+using Unity.Numerics.Kernels;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Physics
 {
     /// <summary>
     /// Holds helpers for a row of twelve floats that acts on two blocks of a block vector. The first six floats of the
     /// row act on one block, and the last six act on the other block. A block vector holds six doubles for each block.
     /// </summary>
-    public static unsafe class BlockRows
+    internal static unsafe class BlockRows
     {
         /// <summary>
         /// Reads six floats at <paramref name="columns"/> as a double6.

@@ -4,7 +4,7 @@ using Unity.Burst;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Kernels;
 using Unity.Physics;
 using Debug = UnityEngine.Debug;
 
@@ -88,7 +88,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     for (int i = 0; i < count; i++)
                     {
-                        DenseKernels.SubtractProduct(target, blocks + 36 * i, sources + 6 * i, 6, 6, 1.0);
+                        SmallBlockKernels.SubtractProduct(target, blocks + 36 * i, sources + 6 * i, 6, 6, 1.0);
                     }
                 }
             }
@@ -121,7 +121,7 @@ namespace KSP.Retooled.Physics.Tests
                     {
                         for (int row = 0; row < 6; row++)
                         {
-                            DenseKernels.AddScaled(target, blocks + 36 * i + 6 * row, -sources[6 * i + row], 6);
+                            SmallBlockKernels.AddScaled(target, blocks + 36 * i + 6 * row, -sources[6 * i + row], 6);
                         }
                     }
                 }

@@ -4,7 +4,8 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
+using Unity.Numerics.Kernels;
 using Unity.Profiling;
 
 namespace Unity.Physics
@@ -1716,9 +1717,9 @@ namespace Unity.Physics
                 if (vesselSolve)
                 {
                     int maxRounds = run.Caps.PivotRoundLimit;
-                    var stats = new BoundarySolveStats();
+                    var stats = new BlockPrincipalPivotingStats();
                     long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
+                    solved = BlockPrincipalPivoting.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
                         run.Caps.FactorUpdate, run.Caps.UnorderedFactor ? null : (byte*)ages.GetUnsafePtr(), &stats, out int rounds);
@@ -1739,10 +1740,10 @@ namespace Unity.Physics
                 else
                 {
                     long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
+                    solved = BlockPrincipalPivoting.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(),
-                        BoundarySolver.MaxPivotingIterations, false, run.Caps.FactorUpdate, null, null, out int rounds);
+                        BlockPrincipalPivoting.MaxPivotingIterations, false, run.Caps.FactorUpdate, null, null, out int rounds);
                     if (run.VesselMode)
                     {
                         BoundaryCounters.AddPush(rounds, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
@@ -2477,14 +2478,14 @@ namespace Unity.Physics
         /// <summary>
         /// If true, every round of pivoting factors its free rows from the start. If false, a round keeps what it can of
         /// the last round's factor, see
-        /// <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>. For measuring what the updates save.
+        /// <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting"/>. For measuring what the updates save.
         /// </summary>
         public bool RefactorEveryRound;
 
         /// <summary>
         /// If true, and <see cref="RefactorEveryRound"/> is false, a round keeps the last round's factor up to the first
         /// row that left the free set and inserts the rest after it, instead of deleting the rows that left wherever they
-        /// are, see <see cref="Unity.Physics.Numerics.Retooled.FactorUpdate"/>. For measuring the two ways.
+        /// are, see <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate"/>. For measuring the two ways.
         /// </summary>
         public bool KeepFactorPrefix;
 
@@ -2496,9 +2497,9 @@ namespace Unity.Physics
         public bool UnorderedFactor;
 
         /// <summary>The way that the boundary's rounds change their factor, from <see cref="RefactorEveryRound"/> and <see cref="KeepFactorPrefix"/>.</summary>
-        public Unity.Physics.Numerics.Retooled.FactorUpdate FactorUpdate => RefactorEveryRound
-            ? Unity.Physics.Numerics.Retooled.FactorUpdate.Refactor
-            : KeepFactorPrefix ? Unity.Physics.Numerics.Retooled.FactorUpdate.KeepPrefix : Unity.Physics.Numerics.Retooled.BoundarySolver.DefaultUpdate;
+        public Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate FactorUpdate => RefactorEveryRound
+            ? Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate.Refactor
+            : KeepFactorPrefix ? Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate.KeepPrefix : Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting.DefaultUpdate;
 
         /// <summary>
         /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
@@ -2641,7 +2642,7 @@ namespace Unity.Physics
 
         /// <summary>
         /// Solves that ran out of rounds before they found any answer that met every condition. Sweeps of projected
-        /// Gauss-Seidel finished these solves, see <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>.
+        /// Gauss-Seidel finished these solves, see <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting"/>.
         /// </summary>
         public long UnsettledSolves;
 
@@ -2673,10 +2674,10 @@ namespace Unity.Physics
         public long DormantRows;
 
         /// <summary>
-        /// What the solves did with the factor of their free rows, see <see cref="BoundarySolveStats"/>. Ticks are in
+        /// What the solves did with the factor of their free rows, see <see cref="BlockPrincipalPivotingStats"/>. Ticks are in
         /// profiler timestamp units.
         /// </summary>
-        public BoundarySolveStats Factor;
+        public BlockPrincipalPivotingStats Factor;
 
         /// <summary>The time spent in the dense solve of the boundary, in profiler timestamp units.</summary>
         public long SolveTicks;
@@ -2752,7 +2753,7 @@ namespace Unity.Physics
             Most(ref data.MostSelfManifolds, selfManifolds);
         }
 
-        internal static void AddFactor(in BoundarySolveStats stats, long solveTicks, int changes, bool firstSubstep)
+        internal static void AddFactor(in BlockPrincipalPivotingStats stats, long solveTicks, int changes, bool firstSubstep)
         {
             ref BoundaryCounters data = ref Shared.Data;
             Interlocked.Add(ref data.Factor.Rounds, stats.Rounds);

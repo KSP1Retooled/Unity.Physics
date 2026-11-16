@@ -1,11 +1,13 @@
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Linear.Solvers.Lowlevel
 {
     /// <summary>
-    /// Describes a group of rows whose bounds depend on the impulses of other rows. The solver widens the problem
-    /// bounds of the rows from FirstRow up to, but not including, FirstRow + RowCount. It widens them by <see
-    /// cref="Factor"/> times the total source impulse, or by zero if that total is negative. The total source impulse
-    /// is the sum of the impulses that the solve finds for the source rows, plus <see cref="HeldSourceImpulse"/>. For
-    /// contact friction, the friction rows are the coupled rows and the normal row is the source. Both the normal
+    /// Describes a group of rows in a problem for <see cref="BlockPrincipalPivoting"/> whose bounds depend on the
+    /// values of other rows. The rows are impulses in the physics solvers that use it, so the fields speak of impulses.
+    /// The solver widens the problem bounds of the rows from FirstRow up to, but not including, FirstRow + RowCount. It
+    /// widens them by <see cref="Factor"/> times the total source impulse, or by zero if that total is negative. The
+    /// total source impulse is the sum of the impulses that the solve finds for the source rows, plus <see
+    /// cref="HeldSourceImpulse"/>. For contact friction, the friction rows are the coupled rows and the normal row is
+    /// the source, and the factor is the friction coefficient. Both the normal
     /// impulse and the friction impulse count over the whole step. The problem bounds of a friction row are therefore
     /// the negative of the impulse that the row already applied earlier in the step. If the total normal impulse is
     /// zero, the total friction impulse for the step is also zero.

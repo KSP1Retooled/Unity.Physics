@@ -1,13 +1,13 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Physics
 {
     /// <summary>
     /// Holds small helpers for 3-vectors, 3x3 matrices and quaternions in double precision. A quaternion is stored in a
     /// double4 as x, y, z, w.
     /// </summary>
-    public static unsafe class VectorMath
+    internal static unsafe class VectorMath
     {
         /// <summary>
         /// Reads three doubles at <paramref name="from"/> as a double3.

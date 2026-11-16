@@ -5,7 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -166,7 +166,7 @@ namespace KSP.Retooled.Physics.Tests
             [NativeDisableUnsafePtrRestriction] public byte* States;
             [NativeDisableUnsafePtrRestriction] public double* Z;
             [NativeDisableUnsafePtrRestriction] public BoundCoupling* Couplings;
-            [NativeDisableUnsafePtrRestriction] public BoundarySolveStats* Stats;
+            [NativeDisableUnsafePtrRestriction] public BlockPrincipalPivotingStats* Stats;
             [NativeDisableUnsafePtrRestriction] public long* Ticks;
             public int Rows;
             public int CouplingCount;
@@ -183,7 +183,7 @@ namespace KSP.Retooled.Physics.Tests
                         States[i] = Start[i];
                     }
 
-                    BoundarySolver.Solve(Rows, W, Q, Lower, Upper, States, Couplings, CouplingCount, true, Z, 200, true, Update,
+                    BlockPrincipalPivoting.Solve(Rows, W, Q, Lower, Upper, States, Couplings, CouplingCount, true, Z, 200, true, Update,
                         null, Stats, out _);
                 }
 
@@ -230,7 +230,7 @@ namespace KSP.Retooled.Physics.Tests
             var states = new NativeArray<byte>(rows, Allocator.Persistent);
             var z = new NativeArray<double>(rows, Allocator.Persistent);
             var couplings = new NativeArray<BoundCoupling>(contacts, Allocator.Persistent);
-            var stats = new NativeArray<BoundarySolveStats>(1, Allocator.Persistent);
+            var stats = new NativeArray<BlockPrincipalPivotingStats>(1, Allocator.Persistent);
             var ticks = new NativeArray<long>(1, Allocator.Persistent);
             for (int c = 0; c < contacts; c++)
             {
@@ -255,7 +255,7 @@ namespace KSP.Retooled.Physics.Tests
                 States = (byte*)states.GetUnsafePtr(),
                 Z = (double*)z.GetUnsafePtr(),
                 Couplings = (BoundCoupling*)couplings.GetUnsafePtr(),
-                Stats = (BoundarySolveStats*)stats.GetUnsafePtr(),
+                Stats = (BlockPrincipalPivotingStats*)stats.GetUnsafePtr(),
                 Ticks = (long*)ticks.GetUnsafePtr(),
                 Rows = rows,
                 CouplingCount = contacts,
@@ -283,7 +283,7 @@ namespace KSP.Retooled.Physics.Tests
                 stats[0] = default;
                 job.Repeats = repeats;
                 job.Run();
-                BoundarySolveStats s = stats[0];
+                BlockPrincipalPivotingStats s = stats[0];
                 report += $"\n  {update}: {ticks[0] * toMicroseconds / repeats:F2} us a solve, factor {s.FactorTicks * toMicroseconds / repeats:F2} us, " +
                     $"solves {s.SolveTicks * toMicroseconds / repeats:F2} us, checks {s.PivotTicks * toMicroseconds / repeats:F2} us; " +
                     $"rounds {s.Rounds / (double)repeats:F2} ({s.Factorizations / (double)repeats:F2} factored, {s.Updates / (double)repeats:F2} changed, " +

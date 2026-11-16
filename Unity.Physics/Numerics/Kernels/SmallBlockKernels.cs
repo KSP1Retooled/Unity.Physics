@@ -1,21 +1,22 @@
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Numerics.Kernels;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Kernels
 {
     /// <summary>
-    /// Holds the dense kernels that the sparse constraint solver runs on its blocks: the Cholesky factor of a block,
-    /// triangular solves, and products that are subtracted from a target. Every block is a dense matrix of doubles that
-    /// is stored row by row.
+    /// Holds dense kernels for small blocks: the Cholesky factor of a block, a triangular solve with that factor, the
+    /// inverse of a 6 by 6 factor, and products that are subtracted from a target. Every block is a dense matrix of
+    /// doubles that is stored row by row, with no gap between the rows. The routines are written for blocks of about
+    /// 6 by 6, the size of <see cref="double6x6"/>.
     /// <para>
-    /// Almost every block in the solver is 6 by 6, one row and column per body's unknowns. At that size, these routines
-    /// are faster than the general kernels in Unity.Numerics.Kernels, which take the blocks as row-major views
-    /// (DenseKernelBench times both): the factor by about 10%, the products and the solves by 25% to 3 times. So they
-    /// stay, except <see cref="AddScaled"/>, which runs the same loop as the kernel and now calls it.
+    /// The sparse constraint solver is the main user. Almost every block in that solver is 6 by 6, one row and column
+    /// per body's unknowns. At that size, these routines are faster than the general kernels in this assembly, which
+    /// take the blocks as row-major views (SmallBlockKernelBench times both): the factor by about 10%, the products and
+    /// the solves by 25% to 3 times. <see cref="AddScaled"/> runs the same loop as the general kernel, so it calls that
+    /// kernel.
     /// </para>
     /// </summary>
-    public static unsafe class DenseKernels
+    public static unsafe class SmallBlockKernels
     {
         /// <summary>
         /// The smallest pivot that <see cref="CholeskyInPlace"/> accepts. The routine raises a smaller pivot to this
@@ -222,41 +223,6 @@ namespace Unity.Physics.Numerics.Retooled
         public static void AddScaled(double* into, double* from, double scale, int count)
         {
             Blas.Axpy(count, scale, from, into);
-        }
-
-        /// <summary>
-        /// Solves C y = own in place, where C is a lower triangular block with <paramref name="size"/> rows that was
-        /// not replaced by its inverse. <paramref name="inverse"/> holds the reciprocal of each diagonal entry of C.
-        /// </summary>
-        public static void SolveLower(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = 0; row < size; row++)
-            {
-                double sum = own[row];
-                for (int j = 0; j < row; j++)
-                {
-                    sum = FusedMath.Fma(-c[row * size + j], own[j], sum);
-                }
-
-                own[row] = sum * inverse[row];
-            }
-        }
-
-        /// <summary>
-        /// Solves C^T y = own in place, where C is a lower triangular block with <paramref name="size"/> rows that was
-        /// not replaced by its inverse. <paramref name="inverse"/> holds the reciprocal of each diagonal entry of C.
-        /// </summary>
-        public static void SolveUpper(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = size - 1; row >= 0; row--)
-            {
-                double answer = own[row] * inverse[row];
-                own[row] = answer;
-                for (int j = 0; j < row; j++)
-                {
-                    own[j] = FusedMath.Fma(-c[row * size + j], answer, own[j]);
-                }
-            }
         }
     }
 }
