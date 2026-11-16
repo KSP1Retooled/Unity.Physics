@@ -7,8 +7,9 @@ Component Name: faer (version 0.19.4)
 Source: https://github.com/sarah-quinones/faer-rs
 
 Used in: Unity.Physics/Numerics/Kernels (assembly Unity.Numerics.Kernels): CholeskyLLT.cs, CholeskyLLTUpdate.cs,
-Trsm.cs, Trsv.cs, Gemv.cs, Gemm.cs. These files are C# ports of faer's Cholesky (LLT) factor, its solves, its rank
-update, its insertion and deletion of rows and columns, and the triangular solves that they use.
+Trsm.cs, Trsv.cs, Gemv.cs, Gemm.cs, MatrixView.cs. These files are C# ports of faer's Cholesky (LLT) factor, its solves,
+its rank update, its insertion and deletion of rows and columns, the triangular solves that they use, and the shape of
+faer's matrix views (a pointer, the sizes, and a stride for rows and one for columns).
 
 License Type: MIT
 

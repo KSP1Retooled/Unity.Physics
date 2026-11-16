@@ -39,5 +39,26 @@ namespace Unity.Numerics.Kernels
 
             return sum;
         }
+
+        /// <summary>
+        /// Returns the dot product of <paramref name="count"/> entries of two vectors that are <paramref name="incx"/>
+        /// and <paramref name="incy"/> entries apart. Two vectors with a stride of 1 take the fast path above; any
+        /// other strides take a plain loop.
+        /// </summary>
+        public static double Dot(int count, double* x, int incx, double* y, int incy)
+        {
+            if (incx == 1 && incy == 1)
+            {
+                return Dot(count, x, y);
+            }
+
+            double sum = 0.0;
+            for (int k = 0; k < count; k++)
+            {
+                sum = FusedMath.Fma(x[(long)k * incx], y[(long)k * incy], sum);
+            }
+
+            return sum;
+        }
     }
 }

@@ -24,6 +24,41 @@ namespace Unity.Numerics.Kernels
             }
         }
 
+        /// <summary>
+        /// y += alpha x, for <paramref name="count"/> entries of two vectors that are <paramref name="incx"/> and
+        /// <paramref name="incy"/> entries apart. Two vectors with a stride of 1 take the fast path above; any other
+        /// strides take a plain loop.
+        /// </summary>
+        public static void Axpy(int count, double alpha, double* x, int incx, double* y, int incy)
+        {
+            if (incx == 1 && incy == 1)
+            {
+                Axpy(count, alpha, x, y);
+                return;
+            }
+
+            for (int k = 0; k < count; k++)
+            {
+                double* yk = y + (long)k * incy;
+                *yk = FusedMath.Fma(alpha, x[(long)k * incx], *yk);
+            }
+        }
+
+        /// <summary>x := alpha x, for <paramref name="count"/> entries that are <paramref name="incx"/> entries apart.</summary>
+        public static void Scale(int count, double alpha, double* x, int incx)
+        {
+            if (incx == 1)
+            {
+                Scale(count, alpha, x);
+                return;
+            }
+
+            for (int k = 0; k < count; k++)
+            {
+                x[(long)k * incx] *= alpha;
+            }
+        }
+
         /// <summary>x := alpha x, for the first <paramref name="count"/> entries.</summary>
         public static void Scale(int count, double alpha, double* x)
         {
