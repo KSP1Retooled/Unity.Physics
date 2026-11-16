@@ -212,6 +212,14 @@ namespace Unity.Physics
         public UnsafeList<int> ClosureSetIndex;
 
         /// <summary>
+        /// The island's index of the first part of each part's vessel, or -1 for a body that is not in a vessel, and
+        /// the same index for each closure's vessel. A vessel's parents and closures number its parts from there.
+        /// </summary>
+        public UnsafeList<int> PartVesselStart;
+
+        public UnsafeList<int> ClosureVesselStart;
+
+        /// <summary>
         /// The sections that are one task each, and the sections that the team's lanes share by ranges of parts. For
         /// the parts of a shared section: each depth-first position's part, each part's depth-first position, the last
         /// position in each part's subtree, and the prefix sums of the parts' forces and torques by position.
@@ -289,6 +297,8 @@ namespace Unity.Physics
                 PartRatio = new UnsafeList<float>(16, Allocator.Persistent),
                 PartSetPart = new UnsafeList<int>(16, Allocator.Persistent),
                 ClosureSetIndex = new UnsafeList<int>(16, Allocator.Persistent),
+                PartVesselStart = new UnsafeList<int>(16, Allocator.Persistent),
+                ClosureVesselStart = new UnsafeList<int>(16, Allocator.Persistent),
                 SmallSections = new UnsafeList<int>(16, Allocator.Persistent),
                 SharedSections = new UnsafeList<int>(16, Allocator.Persistent),
                 DepthFirstPart = new UnsafeList<int>(16, Allocator.Persistent),
@@ -360,6 +370,8 @@ namespace Unity.Physics
             forest->PartRatio.Dispose();
             forest->PartSetPart.Dispose();
             forest->ClosureSetIndex.Dispose();
+            forest->PartVesselStart.Dispose();
+            forest->ClosureVesselStart.Dispose();
             forest->SmallSections.Dispose();
             forest->SharedSections.Dispose();
             forest->DepthFirstPart.Dispose();
