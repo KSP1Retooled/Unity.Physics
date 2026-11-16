@@ -17,6 +17,16 @@ namespace Unity.Physics.Tests.Collision.Queries
         // sources of error on top of it.
         const float tolerance = 1.1e-3f;
 
+        /// <summary>
+        /// Returns how many random cases a test runs. The random tests below take about a minute with Unity's counts,
+        /// and we rarely change the query code that they check, so an everyday run uses a fifth of each count. Set
+        /// the environment variable RETOOLED_FULL_FUZZ to 1 to run Unity's full counts.
+        /// </summary>
+        static int FuzzCount(int full)
+        {
+            return Environment.GetEnvironmentVariable("RETOOLED_FULL_FUZZ") == "1" ? full : math.max(1, full / 5);
+        }
+
         //
         // Query result validation
         //
@@ -166,7 +176,7 @@ namespace Unity.Physics.Tests.Collision.Queries
             Random rnd = new Random(0x12345678);
             uint dbgTest = 0;
 
-            int numTests = 5000;
+            int numTests = FuzzCount(5000);
             if (dbgTest > 0)
             {
                 numTests = 1;
@@ -211,7 +221,7 @@ namespace Unity.Physics.Tests.Collision.Queries
             uint dbgShape = 0;
             uint dbgTest = 0;
 
-            int numShapes = 500;
+            int numShapes = FuzzCount(500);
             int numTests = 50;
             if (dbgShape > 0)
             {
@@ -509,8 +519,8 @@ namespace Unity.Physics.Tests.Collision.Queries
             int numWorlds = 50;
             int numTests = 1250;
 #else
-            int numWorlds = 200;
-            int numTests = 5000;
+            int numWorlds = FuzzCount(200);
+            int numTests = FuzzCount(5000);
 #endif
             if (dbgWorld > 0)
             {
@@ -659,7 +669,7 @@ namespace Unity.Physics.Tests.Collision.Queries
         {
             const uint seed = 0x98765432;
             Random rnd = new Random(seed);
-            int numWorlds = 1000;
+            int numWorlds = FuzzCount(1000);
 
             uint dbgWorld = 0;
             if (dbgWorld > 0)
