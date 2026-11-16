@@ -180,6 +180,27 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>As above, but the layers stop colliding before the wheel and the ground are made.</summary>
+        [Test]
+        public void AWheelMadeOnALayerItDoesNotCollideWithPassesThrough()
+        {
+            bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(26, 30);
+            UnityEngine.Physics.IgnoreLayerCollision(26, 30, true);
+            try
+            {
+                GameObject ground = Ground();
+                ground.layer = 30;
+                (_, WheelCollider wheel) = Unicycle();
+                wheel.gameObject.layer = 26;
+                Simulate(25);
+                Assert.IsFalse(wheel.isGrounded);
+            }
+            finally
+            {
+                UnityEngine.Physics.IgnoreLayerCollision(26, 30, ignored);
+            }
+        }
+
         [Test]
         public void AWheelPassesThroughATrigger()
         {
