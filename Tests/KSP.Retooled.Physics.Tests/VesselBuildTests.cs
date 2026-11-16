@@ -747,10 +747,14 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(JointSettings.Version, Is.EqualTo(version), "sending the same settings again changes nothing");
         }
 
+        /// <summary>
+        /// A craft of three parts, below a minimum size of four, keeps its Unity Physics joints. Until the default
+        /// minimum became 2, a craft of three parts did this by default.
+        /// </summary>
         [Test]
-        public void AThreePartCraftStaysOnUnityJointsByDefault()
+        public void ACraftBelowTheMinimumSizeStaysOnUnityJoints()
         {
-            VesselPipeline.MinimumParts = 0;
+            VesselPipeline.MinimumParts = 4;
             List<Rigidbody> bodies = Column(3);
             bodies[2].linearVelocity = new Vector3(1.0f, 0.0f, 0.0f);
             Simulate(20);
@@ -773,6 +777,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(meanX, Is.EqualTo(1.0f / 3.0f).Within(1e-3f), "the craft keeps the momentum of the push");
         }
 
+        /// <summary>A craft of the default minimum size, two parts and one joint, is a vessel.</summary>
         [Test]
         public void ACraftOfTheMinimumSizeIsAVessel()
         {
