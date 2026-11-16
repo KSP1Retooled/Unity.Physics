@@ -14,6 +14,13 @@ namespace Unity.Physics
         static readonly ProfilerMarker ForestFactorMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Factor");
         static readonly ProfilerMarker ForestBoundaryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Boundary");
         static readonly ProfilerMarker ForestSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Solve");
+
+        // The serial parts of SolveForest, which the leader runs alone.
+        static readonly ProfilerMarker ForestHeldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.HeldRows");
+        static readonly ProfilerMarker ForestBoundaryInputMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.BoundaryInput");
+        static readonly ProfilerMarker ForestDenseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Dense");
+        static readonly ProfilerMarker ForestSpreadMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Spread");
+        static readonly ProfilerMarker ForestRowImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.RowImpulses");
         static readonly ProfilerMarker ForestStructureMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Structure");
 
         const byte ForestRowClass = 0;
@@ -1617,7 +1624,10 @@ namespace Unity.Physics
             bool heldSolved = run.VesselMode && run.Bounded;
             if (heldSolved && vesselStart)
             {
-                SolveHeldRows(ref run, rhs, impulses, v, false);
+                using (ForestHeldMarker.Auto())
+                {
+                    SolveHeldRows(ref run, rhs, impulses, v, false);
+                }
             }
 
             // The boundary: (J_b A^-1 J_b^T + E_b) z = r_b - J_b v0, bounded.
@@ -1625,6 +1635,7 @@ namespace Unity.Physics
             bool solved = true;
             if (nb > 0)
             {
+                ProfilerMarker.AutoScope inputSpan = ForestBoundaryInputMarker.Auto();
                 var q = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 var lower = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 var upper = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -1698,6 +1709,8 @@ namespace Unity.Physics
                     couplings.Add(coupling);
                 }
 
+                inputSpan.Dispose();
+                ProfilerMarker.AutoScope denseSpan = ForestDenseMarker.Auto();
                 if (vesselSolve)
                 {
                     int maxRounds = run.Caps.PivotRoundLimit;
@@ -1732,7 +1745,10 @@ namespace Unity.Physics
                     }
                 }
 
+                denseSpan.Dispose();
+
                 // v += A^-1 J_b^T z.
+                using ProfilerMarker.AutoScope spreadSpan = ForestSpreadMarker.Auto();
                 UnsafeUtility.MemClear(work, run.Work.Length * (long)sizeof(double));
                 for (int i = 0; i < nb; i++)
                 {
@@ -1760,10 +1776,14 @@ namespace Unity.Physics
             // their own.
             if (heldSolved && !vesselStart)
             {
-                SolveHeldRows(ref run, rhs, impulses, v, true);
+                using (ForestHeldMarker.Auto())
+                {
+                    SolveHeldRows(ref run, rhs, impulses, v, true);
+                }
             }
 
             // Every forest row's impulse from the velocities: z = E^-1 (r - J v).
+            using ProfilerMarker.AutoScope rowSpan = ForestRowImpulsesMarker.Auto();
             for (int row = 0; row < rows; row++)
             {
                 byte rowClass = run.RowClass[row];

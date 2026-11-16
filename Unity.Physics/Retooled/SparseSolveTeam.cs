@@ -34,6 +34,11 @@ namespace Unity.Physics
 
         static readonly ProfilerMarker ParkMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Park");
 
+        // The leader's part of a stage that it publishes to the helpers, and a stage of one task, which the leader runs
+        // alone while the helpers stay parked.
+        static readonly ProfilerMarker LeadStageMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.LeadStage");
+        static readonly ProfilerMarker LeadAloneMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.LeadAlone");
+
         /// <summary>Identifies the direct solver stages that run around the sparse solver stages.</summary>
         public const int PredictDriftKind = -1;
         public const int ApplyImpulsesKind = -2;
@@ -154,9 +159,15 @@ namespace Unity.Physics
             // the parked helpers would wake up, find nothing to do, and spin again before they park.
             if (taskCount == 1)
             {
-                Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
+                using (LeadAloneMarker.Auto())
+                {
+                    Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
+                }
+
                 return;
             }
+
+            using ProfilerMarker.AutoScope span = LeadStageMarker.Auto();
 
             long generation = (Interlocked.Read(ref next) >> 32) + 1;
             var stage = new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = taskCount };

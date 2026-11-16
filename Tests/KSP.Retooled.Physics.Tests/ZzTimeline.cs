@@ -20,7 +20,8 @@ namespace KSP.Retooled.Physics.Tests
     // A profiling harness. It builds the VesselForestBench crafts, steps them with the editor profiler on, and reads the
     // profiler's raw frames for every thread. For each marker it reports the first start, the last end and the summed
     // CPU inside each Physics.Simulate call, as medians per step. Rows that start with "M" are the main thread, rows that
-    // start with "A" merge all threads. PROFILE_ONLY picks configurations by name, PROFILE_PATHS picks the paths
+    // start with "A" merge all threads. Rows that start with "O" are the main thread's work within 10 ms before or after
+    // the Physics.Simulate marker, with negative times before it. PROFILE_ONLY picks configurations by name, PROFILE_PATHS picks the paths
     // (compiled by default), and PROFILE_TAG names the output file Logs/Timeline-<tag>.txt. PROFILE_SAVE=1 also saves
     // each configuration's profiler frames as Logs/Timeline-<tag>-<configuration>.data, which the Profiler window opens.
     [Explicit("profiling")]
@@ -290,12 +291,25 @@ namespace KSP.Retooled.Physics.Tests
                                 unprofiled.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
                             }
 
+                            // The same steps with an editor frame between them, as the profiled steps have. Work that a
+                            // step leaves running when it returns finishes during the frame here, but it delays the next
+                            // step in the loop above.
+                            var framed = new List<double>();
+                            for (int i = 0; i < 20; i++)
+                            {
+                                yield return null;
+                                long start = Stopwatch.GetTimestamp();
+                                UnityEngine.Physics.Simulate(Step);
+                                framed.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
+                            }
+
                             VesselForest.GetCounts(out long solves1, out _, out _);
                             VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out _, out _, out _, out _, out _);
                             long solved = Math.Max(1, solves1 - solves0);
-                            report.Append($"# {craft} {(ground ? "ground" : "floating")} {threads}T: {solves1 - solves0} vessel solves in 20 steps, " +
+                            report.Append($"# {craft} {(ground ? "ground" : "floating")} {threads}T: {solves1 - solves0} vessel solves in 40 steps, " +
                                 $"{(sections1 - sections0) / (double)solved:F0} sections and {(locked1 - locked0) / (double)solved:F0} locked edges per solve, " +
                                 $"{builds1 - builds0} structure builds\n");
+                            report.Append($"# unprofiled step median: {Median(unprofiled):F2} ms back to back, {Median(framed):F2} ms with an editor frame between steps\n");
                             ProfilerDriver.ClearAllFrames();
                             ProfilerDriver.profileEditor = true;
                             ProfilerDriver.enabled = true;
@@ -311,12 +325,16 @@ namespace KSP.Retooled.Physics.Tests
                                 yield return null;
                             }
 
+                            var timedWhileProfiled = new List<double>();
                             for (int s = 0; s < Profiled; s++)
                             {
+                                long start = Stopwatch.GetTimestamp();
                                 UnityEngine.Physics.Simulate(Step);
+                                timedWhileProfiled.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
                                 yield return null;
                             }
 
+                            report.Append($"# profiled steps by the stopwatch: median {Median(timedWhileProfiled):F2} ms\n");
                             yield return null;
                             UnityEngine.Profiling.Profiler.enabled = false;
                             ProfilerDriver.enabled = false;
@@ -397,6 +415,43 @@ namespace KSP.Retooled.Physics.Tests
                 }
 
                 steps.Add((windowEnd - windowStart) / 1e6);
+
+                // The main thread's work within 10 ms before and after the step's marker. Physics.Simulate does work
+                // of its own around the backend's step, which the stopwatch counts and the marker doesn't.
+                using (RawFrameDataView main = ProfilerDriver.GetRawFrameDataView(frame, 0))
+                {
+                    var around = new Dictionary<string, (double from, double ms)>();
+                    for (int i = 0; i < main.sampleCount; i++)
+                    {
+                        ulong start = main.GetSampleStartTimeNs(i);
+                        double ms = main.GetSampleTimeMs(i);
+                        ulong end = start + (ulong)(ms * 1e6);
+                        bool before = end <= windowStart && start + 10_000_000 >= windowStart;
+                        bool after = start >= windowEnd && start <= windowEnd + 10_000_000;
+                        if (!before && !after)
+                        {
+                            continue;
+                        }
+
+                        double from = before ? -((windowStart - start) / 1e6) : (start - windowStart) / 1e6;
+                        string key = "O " + main.GetSampleName(i);
+                        around[key] = around.TryGetValue(key, out var have) ? (Math.Min(have.from, from), have.ms + ms) : (from, ms);
+                    }
+
+                    foreach (var pair in around)
+                    {
+                        if (!stats.TryGetValue(pair.Key, out Stat stat))
+                        {
+                            stat = new Stat();
+                            stats[pair.Key] = stat;
+                        }
+
+                        stat.First.Add(pair.Value.from);
+                        stat.Last.Add(pair.Value.from + pair.Value.ms);
+                        stat.Cpu.Add(pair.Value.ms);
+                    }
+                }
+
                 var seen = new Dictionary<string, (double first, double last, double cpu)>();
                 for (int thread = 0; ; thread++)
                 {
@@ -447,6 +502,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             var text = new StringBuilder();
+            text.Append(WhileParked(first, last));
             text.Append($"## {name}: profiled step median {Median(steps):F2} ms over {steps.Count}, unprofiled median {unprofiled:F2}\n");
             text.Append("   first     last     span      cpu  marker\n");
             foreach (var pair in stats.OrderBy(p => Median(p.Value.First)))
@@ -464,6 +520,143 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return text.ToString();
+        }
+
+        /// <summary>
+        /// What the threads do while two or more lanes of a solver team are parked (Retooled.Physics.Island.Park), in
+        /// ms per profiled frame. A parked lane waits for its leader to publish the next stage, so this shows the work
+        /// that keeps the others waiting. Each marker gets the time of its own work, without its children's, that falls
+        /// inside those windows.
+        /// </summary>
+        private static string WhileParked(int first, int last)
+        {
+            const string park = "Retooled.Physics.Island.Park";
+            var total = new Dictionary<string, double>();
+            double parkedWindow = 0.0;
+            int frames = 0;
+            for (int frame = first; frame <= last; frame++)
+            {
+                var events = new List<(ulong time, int change)>();
+                var views = new List<RawFrameDataView>();
+                for (int thread = 0; ; thread++)
+                {
+                    RawFrameDataView view = ProfilerDriver.GetRawFrameDataView(frame, thread);
+                    if (!view.valid)
+                    {
+                        view.Dispose();
+                        break;
+                    }
+
+                    views.Add(view);
+                    for (int i = 0; i < view.sampleCount; i++)
+                    {
+                        if (view.GetSampleName(i) == park)
+                        {
+                            ulong start = view.GetSampleStartTimeNs(i);
+                            events.Add((start, 1));
+                            events.Add((start + (ulong)(view.GetSampleTimeMs(i) * 1e6), -1));
+                        }
+                    }
+                }
+
+                // The windows in which two or more lanes are parked.
+                var windows = new List<(ulong from, ulong to)>();
+                events.Sort((a, b) => a.time != b.time ? a.time.CompareTo(b.time) : a.change.CompareTo(b.change));
+                int parked = 0;
+                ulong opened = 0;
+                foreach (var e in events)
+                {
+                    int before = parked;
+                    parked += e.change;
+                    if (before < 2 && parked >= 2)
+                    {
+                        opened = e.time;
+                    }
+                    else if (before >= 2 && parked < 2)
+                    {
+                        windows.Add((opened, e.time));
+                    }
+                }
+
+                if (windows.Count > 0)
+                {
+                    frames++;
+                    foreach (var w in windows)
+                    {
+                        parkedWindow += (w.to - w.from) / 1e6;
+                    }
+
+                    foreach (RawFrameDataView view in views)
+                    {
+                        int index = 0;
+                        while (index < view.sampleCount)
+                        {
+                            index = AddSelfOverlap(view, index, windows, total);
+                        }
+                    }
+                }
+
+                foreach (RawFrameDataView view in views)
+                {
+                    view.Dispose();
+                }
+            }
+
+            var text = new StringBuilder();
+            if (frames == 0)
+            {
+                return "";
+            }
+
+            text.Append($"# while two or more lanes are parked: {parkedWindow / frames:F3} ms per frame; own time of each marker in those windows, all threads:\n");
+            // Each thread's root sample has no name and covers the whole frame, so its own time is mostly the thread's
+            // idle time; leave it out.
+            foreach (var pair in total.Where(p => p.Key != park && p.Key != "(a sample without a name)").OrderByDescending(p => p.Value).Take(25))
+            {
+                text.Append($"#   {pair.Value / frames,8:F3}  {pair.Key}\n");
+            }
+
+            return text.ToString();
+        }
+
+        /// <summary>
+        /// Adds the sample's own time (its time without its children's) inside the windows to its marker's total, and
+        /// does the same for its children. Returns the index of the sample after its subtree.
+        /// </summary>
+        private static int AddSelfOverlap(RawFrameDataView view, int index, List<(ulong from, ulong to)> windows, Dictionary<string, double> total)
+        {
+            ulong start = view.GetSampleStartTimeNs(index);
+            ulong end = start + (ulong)(view.GetSampleTimeMs(index) * 1e6);
+            double own = Overlap(start, end, windows);
+            int children = view.GetSampleChildrenCount(index);
+            int next = index + 1;
+            for (int c = 0; c < children && next < view.sampleCount; c++)
+            {
+                ulong childStart = view.GetSampleStartTimeNs(next);
+                ulong childEnd = childStart + (ulong)(view.GetSampleTimeMs(next) * 1e6);
+                own -= Overlap(childStart, childEnd, windows);
+                next = AddSelfOverlap(view, next, windows, total);
+            }
+
+            string name = view.GetSampleName(index);
+            name = string.IsNullOrEmpty(name) ? "(a sample without a name)" : name;
+            total[name] = (total.TryGetValue(name, out double have) ? have : 0.0) + Math.Max(0.0, own);
+            return next;
+        }
+
+        private static double Overlap(ulong start, ulong end, List<(ulong from, ulong to)> windows)
+        {
+            double ms = 0.0;
+            foreach (var w in windows)
+            {
+                ulong from = Math.Max(start, w.from), to = Math.Min(end, w.to);
+                if (to > from)
+                {
+                    ms += (to - from) / 1e6;
+                }
+            }
+
+            return ms;
         }
     }
 }
