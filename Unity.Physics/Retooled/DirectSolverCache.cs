@@ -46,6 +46,31 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         Slot* slots;
 
+        // Keep the state of at most this many fused vessel islands. Any additional fused island solves with a
+        // forest that it creates for the step only.
+        const int FusedCapacity = 32;
+
+        /// <summary>
+        /// The persistent state of one fused vessel island. The key is the ID of the island's first vessel, which the
+        /// backend keeps while the vessel's structure stays the same. The state does not depend on the island's index
+        /// or on its first body.
+        /// </summary>
+        struct FusedSlot
+        {
+            public ForestIsland* Forest;
+
+            public ulong VesselId;
+
+            /// <summary>Whether the slot holds a vessel's state. A slot that was never used holds none.</summary>
+            public bool Used;
+
+            /// <summary>The step in which the slot was last used.</summary>
+            public long LastUsed;
+        }
+
+        [NativeDisableUnsafePtrRestriction]
+        FusedSlot* fusedSlots;
+
         /// <summary>
         /// The cache slot for each island in this step, or -1 if the island has no slot and must solve without cached
         /// data. Before slots have been assigned, this list is empty and lookups use the island index as the slot
@@ -146,6 +171,9 @@ namespace Unity.Physics
                 cache.slots[slot].LastUsed = -1;
             }
 
+            cache.fusedSlots = (FusedSlot*)UnsafeUtility.MallocTracked(FusedCapacity * sizeof(FusedSlot), UnsafeUtility.AlignOf<FusedSlot>(),
+                Allocator.Persistent, 0);
+            UnsafeUtility.MemClear(cache.fusedSlots, FusedCapacity * sizeof(FusedSlot));
             *cache.step = 0;
             return cache;
         }
@@ -395,6 +423,69 @@ namespace Unity.Physics
                 ForestIsland.Destroy(slots[slot].Forest);
                 slots[slot].Forest = null;
             }
+
+            for (int slot = 0; fusedSlots != null && slot < FusedCapacity; slot++)
+            {
+                ForestIsland.Destroy(fusedSlots[slot].Forest);
+                fusedSlots[slot] = default;
+            }
+        }
+
+        /// <summary>
+        /// Returns the persistent forest of the fused vessel island whose first vessel has this ID, creating it if
+        /// needed, or null if every slot was already used in this step. A slot that no vessel used in this step goes
+        /// to a new vessel, the least recently used slot first. Only the leader of the fused job calls this, one island
+        /// after another, so no two threads change the slots at once.
+        /// </summary>
+        internal ForestIsland* FusedForestOf(ulong vesselId)
+        {
+            if (fusedSlots == null)
+            {
+                return null;
+            }
+
+            long now = *step;
+            int found = -1, oldest = -1;
+            for (int slot = 0; slot < FusedCapacity; slot++)
+            {
+                if (fusedSlots[slot].Used && fusedSlots[slot].VesselId == vesselId)
+                {
+                    found = slot;
+                    break;
+                }
+
+                if ((!fusedSlots[slot].Used || fusedSlots[slot].LastUsed != now) && (oldest < 0 || !fusedSlots[slot].Used
+                    || (fusedSlots[oldest].Used && fusedSlots[slot].LastUsed < fusedSlots[oldest].LastUsed)))
+                {
+                    oldest = slot;
+                }
+            }
+
+            if (found >= 0 && fusedSlots[found].LastUsed < now - 1)
+            {
+                // The vessel was not solved in a fused island in the previous step, so its lock states in this forest
+                // are old. Start again from an empty forest, as for a new vessel.
+                ForestIsland.Destroy(fusedSlots[found].Forest);
+                fusedSlots[found].Forest = ForestIsland.Create();
+            }
+
+            if (found < 0)
+            {
+                if (oldest < 0)
+                {
+                    return null;
+                }
+
+                // The slot's old forest belongs to another vessel, so start again from an empty one.
+                found = oldest;
+                ForestIsland.Destroy(fusedSlots[found].Forest);
+                fusedSlots[found].Forest = ForestIsland.Create();
+                fusedSlots[found].VesselId = vesselId;
+                fusedSlots[found].Used = true;
+            }
+
+            fusedSlots[found].LastUsed = now;
+            return fusedSlots[found].Forest;
         }
 
         /// <summary>
@@ -528,6 +619,13 @@ namespace Unity.Physics
                 ForestIsland.Destroy(slots[slot].Forest);
             }
 
+            for (int slot = 0; slot < FusedCapacity; slot++)
+            {
+                ForestIsland.Destroy(fusedSlots[slot].Forest);
+            }
+
+            UnsafeUtility.FreeTracked(fusedSlots, Allocator.Persistent);
+            fusedSlots = null;
             UnsafeUtility.FreeTracked(forestSettings, Allocator.Persistent);
             UnsafeUtility.FreeTracked(forestCounters, Allocator.Persistent);
             forestSettings = null;

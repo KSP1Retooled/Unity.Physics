@@ -159,31 +159,65 @@ namespace Unity.Physics
             VesselSet set = stepInput.VesselSet;
             var motions = (MotionVelocity*)motionVelocities.GetUnsafePtr();
             int motionCount = motionVelocities.Length;
-            var compactOfWorld = new NativeArray<int>(math.max(1, motionCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            UnsafeUtility.MemSet(compactOfWorld.GetUnsafePtr(), 0xFF, compactOfWorld.Length * (long)sizeof(int));
-            var worldBodies = new NativeList<int>(Allocator.Temp);
-            for (int v = 0; v < islandVesselCount; v++)
-            {
-                VesselRecord vessel = set.Vessels[islandVessels[v]];
-                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
-                {
-                    int body = Moving(set.PartBodies[part], motions, motionCount);
-                    if (body >= 0 && compactOfWorld[body] < 0)
-                    {
-                        compactOfWorld[body] = worldBodies.Length;
-                        worldBodies.Add(body);
-                    }
-                }
-            }
 
-            ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
+            // The island's state is kept by the ID of its first vessel, not by the island's index or its first body.
+            ForestIsland* forest = stepInput.DirectSolverCache.FusedForestOf(set.Vessels[islandVessels[0]].Id);
             bool temporary = forest == null;
             if (temporary)
             {
                 forest = ForestIsland.Create();
             }
 
-            var problem = new SparseConstraintSolver.Problem { BodyCount = worldBodies.Length };
+            // The layout is known if the island holds the same vessels, with the same structure versions and counts, as
+            // when the forest's layout was last built, and if each moving part's body still has the same number.
+            bool known = forest->VesselMode && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
+                && forest->VesselSignature[0] == (ulong)islandVesselCount && forest->FusedCompactOfWorld.Length == math.max(1, motionCount);
+            for (int v = 0; known && v < islandVesselCount; v++)
+            {
+                VesselRecord vessel = set.Vessels[islandVessels[v]];
+                known = forest->VesselSignature[1 + 3 * v] == vessel.Id && forest->VesselSignature[2 + 3 * v] == vessel.StructureVersion
+                    && forest->VesselSignature[3 + 3 * v] == (((ulong)(uint)vessel.PartCount << 32) | (uint)vessel.ClosureCount);
+            }
+
+            int numbered = 0;
+            for (int v = 0; known && v < islandVesselCount; v++)
+            {
+                VesselRecord vessel = set.Vessels[islandVessels[v]];
+                for (int part = vessel.FirstPart; known && part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    int body = Moving(set.PartBodies[part], motions, motionCount);
+                    if (body >= 0)
+                    {
+                        known = numbered < forest->FusedWorldBodies.Length && forest->FusedWorldBodies[numbered] == body
+                            && forest->FusedCompactOfWorld[body] == numbered;
+                        numbered++;
+                    }
+                }
+            }
+
+            known &= numbered == forest->FusedWorldBodies.Length;
+            if (!known)
+            {
+                // Number the moving parts again, one vessel after another.
+                forest->FusedCompactOfWorld.Resize(math.max(1, motionCount));
+                UnsafeUtility.MemSet(forest->FusedCompactOfWorld.Ptr, 0xFF, forest->FusedCompactOfWorld.Length * (long)sizeof(int));
+                forest->FusedWorldBodies.Clear();
+                for (int v = 0; v < islandVesselCount; v++)
+                {
+                    VesselRecord vessel = set.Vessels[islandVessels[v]];
+                    for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                    {
+                        int body = Moving(set.PartBodies[part], motions, motionCount);
+                        if (body >= 0 && forest->FusedCompactOfWorld[body] < 0)
+                        {
+                            forest->FusedCompactOfWorld[body] = forest->FusedWorldBodies.Length;
+                            forest->FusedWorldBodies.Add(body);
+                        }
+                    }
+                }
+            }
+
+            var problem = new SparseConstraintSolver.Problem { BodyCount = forest->FusedWorldBodies.Length };
             var bodyLinear = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int substep = 0; substep < stepInput.NumSubsteps; substep++)
@@ -193,13 +227,14 @@ namespace Unity.Physics
                     Forest = forest,
                     Problem = problem,
                     Bounded = false,
+                    KnownLayout = known,
                     VesselMode = true,
                     Vessels = set,
                     IslandVessels = islandVessels,
                     IslandVesselCount = islandVesselCount,
-                    WorldBodies = (int*)worldBodies.GetUnsafeReadOnlyPtr(),
-                    CompactOfWorld = (int*)compactOfWorld.GetUnsafeReadOnlyPtr(),
-                    CompactOfWorldLength = compactOfWorld.Length,
+                    WorldBodies = forest->FusedWorldBodies.Ptr,
+                    CompactOfWorld = forest->FusedCompactOfWorld.Ptr,
+                    CompactOfWorldLength = forest->FusedCompactOfWorld.Length,
                     MotionVelocities = motions,
                     MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
                     Timestep = stepInput.Timestep,
@@ -249,8 +284,6 @@ namespace Unity.Physics
 
             bodyLinear.Dispose();
             bodyAngular.Dispose();
-            compactOfWorld.Dispose();
-            worldBodies.Dispose();
             if (temporary)
             {
                 ForestIsland.Destroy(forest);
@@ -290,6 +323,11 @@ namespace Unity.Physics
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             VesselSet set = run.Vessels;
             int bodies = problem.BodyCount;
+            if (run.KnownLayout)
+            {
+                PrepareKnownVesselParts(ref run, substep);
+                return;
+            }
 
             // Record which bodies in the compact array are vessel parts, and build a signature for the island's layout.
             var bodyIsPart = new NativeArray<byte>(math.max(1, bodies), Allocator.Temp);
@@ -434,6 +472,49 @@ namespace Unity.Physics
 
             bodyIsPart.Dispose();
             signature.Dispose();
+        }
+
+        /// <summary>
+        /// Prepares the parts of an island whose layout the caller knows is the same as when the forest's layout was
+        /// last built: the same vessels with the same structure versions, the same numbering of the bodies, and no body
+        /// outside the vessels. The part numbering, the closures and the mapping from bodies to sections stay as they
+        /// are. On the first substep of each step, the team's lanes copy the edges again and test the locks, because
+        /// the edges' drive and break values can change between steps. In every substep, the lanes fill the parts'
+        /// poses and velocities from the bodies.
+        /// </summary>
+        static unsafe void PrepareKnownVesselParts(ref ForestRun run, int substep)
+        {
+            ForestIsland* forest = run.Forest;
+            int partCount = forest->Parts.Length;
+            int closureCount = forest->Closures.Length;
+            bool rebuild = false;
+            if (substep <= 0)
+            {
+                var tasks = new VesselTasks
+                {
+                    Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                    Phase = VesselTasks.FillEdges,
+                    Count = partCount + closureCount,
+                    VesselParts = partCount,
+                    Substep = substep,
+                };
+                SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind,
+                    (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                rebuild = tasks.Rebuild != 0;
+            }
+
+            RunVesselStage(ref run, VesselTasks.FillParts, partCount);
+            if (rebuild)
+            {
+                BuildVesselStructure(forest);
+
+                // A change of lock state can change the sections, so map the bodies to their sections again.
+                for (int body = 0; body < forest->BodySection.Length && body < forest->BodyPart.Length; body++)
+                {
+                    int part = forest->BodyPart[body];
+                    forest->BodySection[body] = part >= 0 ? forest->Structure.PartSection[part] : -1;
+                }
+            }
         }
 
         /// <summary>
