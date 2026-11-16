@@ -51,7 +51,7 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Initializes each joint's load to zero, or to its previous load if both bodies are held in place and the joint is
-    /// not solved.
+    /// not solved. When <see cref="Listed"/> is true, the job handles only the joints in <see cref="Joints"/>.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SeedJointLoadsJob : IJobParallelFor
@@ -59,10 +59,17 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        [NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> Loads;
 
-        public void Execute(int index)
+        [ReadOnly]
+        public NativeArray<int> Joints;
+
+        public bool Listed;
+
+        public void Execute(int item)
         {
+            int index = Listed ? Joints[item] : item;
             NativeStore.JointData* joint = World->joints[index];
             bool asleep = JointForceJobs.IsAsleep(joint);
             Loads[index] = new JointLoad
@@ -175,21 +182,33 @@ namespace KSP.Retooled.Physics
         [NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> JointLoads;
 
-        public void Execute(int index)
+        /// <summary>When <see cref="Listed"/> is true, the job handles only the groups in this list.</summary>
+        [ReadOnly]
+        public NativeArray<int> ListedGroups;
+
+        public bool Listed;
+
+        public void Execute(int item)
         {
-            JointGroup group = Groups[index];
-            JointLoad carried = GroupLoads[index];
-            NativeStore.JointData* leader = World->joints[group.Leader];
+            int index = Listed ? ListedGroups[item] : item;
+            Share(World, Groups[index], GroupLoads[index], Members, JointLoads);
+        }
+
+        /// <summary>Adds each member's share of the group's load to the member's load.</summary>
+        internal static void Share(NativeStore.WorldData* world, in JointGroup group, in JointLoad carried, NativeArray<JointGroupMember> members,
+            NativeArray<JointLoad> jointLoads)
+        {
+            NativeStore.JointData* leader = world->joints[group.Leader];
             quaternion frame = JointConstraints.WorldRotation0(leader);
             float3 share = math.rotate(math.conjugate(frame), carried.Force) / group.MemberCount;
             float3 turn = math.select(math.rotate(math.conjugate(frame), carried.Torque) / group.Stiffness, float3.zero, group.Stiffness <= 0.0f);
             for (int i = 0; i < group.MemberCount; i++)
             {
-                JointGroupMember member = Members[group.FirstMember + i];
-                JointLoad load = JointLoads[member.Joint];
+                JointGroupMember member = members[group.FirstMember + i];
+                JointLoad load = jointLoads[member.Joint];
                 load.Force += math.rotate(frame, share + group.LinearRatio * math.cross(turn, member.Offset));
                 load.Torque += math.rotate(frame, member.AngularStiffness * turn);
-                JointLoads[member.Joint] = load;
+                jointLoads[member.Joint] = load;
             }
         }
     }
@@ -213,14 +232,28 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        [NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> Loads;
+
+        /// <summary>When <see cref="Listed"/> is true, the job handles only the joints in this list.</summary>
+        [ReadOnly]
+        public NativeArray<int> Joints;
+
+        public bool Listed;
 
         public float DeltaTime;
 
-        public void Execute(int index)
+        public void Execute(int item)
         {
-            NativeStore.JointData* joint = World->joints[index];
+            int index = Listed ? Joints[item] : item;
             JointLoad load = Loads[index];
+            Settle(World->joints[index], ref load, DeltaTime);
+            Loads[index] = load;
+        }
+
+        /// <summary>Writes one joint's load to the store and smooths it, as described for this job.</summary>
+        internal static void Settle(NativeStore.JointData* joint, ref JointLoad load, float deltaTime)
+        {
             joint->force = load.Force;
             joint->torque = load.Torque;
             if (JointForceJobs.IsAsleep(joint))
@@ -228,12 +261,11 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            float follow = DeltaTime / (BreakingTimeConstant + DeltaTime);
+            float follow = deltaTime / (BreakingTimeConstant + deltaTime);
             joint->breakingForce += (math.length(joint->force) - joint->breakingForce) * follow;
             joint->breakingTorque += (math.length(joint->torque) - joint->breakingTorque) * follow;
             bool overloaded = joint->breakingForce > joint->breakForce || joint->breakingTorque > joint->breakTorque;
             load.Overloaded = (joint->state & JointConstraints.Inactive) == 0 && overloaded;
-            Loads[index] = load;
         }
     }
 

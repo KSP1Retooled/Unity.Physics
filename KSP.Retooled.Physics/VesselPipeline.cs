@@ -950,16 +950,30 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Converts the vessel loads from the solver into loads for their joint units. As with Unity Physics impulse
-    /// events, the result is the force and torque acting on the leading joint's body0. Edge loads describe what the
-    /// parent applied to the child. Closure loads describe what part A applied to part B. Store loads for groups in the
-    /// group array; <see cref="ShareGroupLoadsJob"/> distributes them among the members afterwards.
+    /// Converts the vessel loads from the solver into loads for their joint units, then settles the loads of the
+    /// units' joints. As with Unity Physics impulse events, the load of a unit is the force and torque acting on the
+    /// leading joint's body0. Edge loads describe what the parent applied to the child. Closure loads describe what
+    /// part A applied to part B. The load of a group is shared among its members as <see cref="ShareGroupLoadsJob"/>
+    /// does. Each member's load starts at zero because the bodies of an active vessel are awake. Each joint's load is
+    /// then settled as <see cref="SettleJointLoadsJob"/> does. The joints of active vessels have no impulse events, so
+    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints.
     /// </summary>
     [BurstCompile]
     internal unsafe struct VesselLoadsJob : IJobParallelFor
     {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
         [ReadOnly]
         public NativeArray<JointUnit> Units;
+
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
+        public float DeltaTime;
 
         /// <summary>
         /// For each part, the joint unit for its edge, or -1 for a vessel root. Closure units are stored separately in
@@ -986,11 +1000,10 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<VesselEdgeLoad> ClosureLoads;
 
+        // The jobs for the other joints write their loads at the same time. No joint is in both sets.
         [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointLoad> JointLoads;
-
-        [NativeDisableParallelForRestriction]
-        public NativeArray<JointLoad> GroupLoads;
 
         /// <summary>Processes part indices first, followed by closure indices.</summary>
         public void Execute(int index)
@@ -1029,11 +1042,77 @@ namespace KSP.Retooled.Physics
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
+                SettleJointLoadsJob.Settle(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
                 JointLoads[jointUnit.Joint] = jointLoad;
+                return;
             }
-            else
+
+            JointGroup group = Groups[jointUnit.Group];
+            for (int i = 0; i < group.MemberCount; i++)
             {
-                GroupLoads[jointUnit.Group] = jointLoad;
+                JointLoads[Members[group.FirstMember + i].Joint] = default;
+            }
+
+            ShareGroupLoadsJob.Share(World, group, jointLoad, Members, JointLoads);
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                int joint = Members[group.FirstMember + i].Joint;
+                JointLoad memberLoad = JointLoads[joint];
+                SettleJointLoadsJob.Settle(World->joints[joint], ref memberLoad, DeltaTime);
+                JointLoads[joint] = memberLoad;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Lists the joints and groups that are not in an active vessel. The jobs that read the impulse events and settle
+    /// the loads handle only these joints and groups, and <see cref="VesselLoadsJob"/> handles the others.
+    /// </summary>
+    [BurstCompile]
+    internal struct ListOtherJointsJob : IJob
+    {
+        [ReadOnly]
+        public NativeArray<JointUnit> Units;
+
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
+
+        public NativeList<int> OtherJoints;
+        public NativeList<int> OtherGroups;
+
+        public void Execute()
+        {
+            OtherJoints.Clear();
+            OtherGroups.Clear();
+            for (int u = 0; u < Units.Length; u++)
+            {
+                if (UnitVessels[u] >= 0 && Active[UnitVessels[u]] != 0)
+                {
+                    continue;
+                }
+
+                JointUnit unit = Units[u];
+                if (unit.Group < 0)
+                {
+                    OtherJoints.Add(unit.Joint);
+                    continue;
+                }
+
+                OtherGroups.Add(unit.Group);
+                JointGroup group = Groups[unit.Group];
+                for (int i = 0; i < group.MemberCount; i++)
+                {
+                    OtherJoints.Add(Members[group.FirstMember + i].Joint);
+                }
             }
         }
     }

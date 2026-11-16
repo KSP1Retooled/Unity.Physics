@@ -1036,7 +1036,10 @@ namespace KSP.Retooled.Physics
 
         public CollisionEvents Events;
 
+        // The job reads only the motions. The safety system would otherwise stop it while the dynamic tree is rebuilt,
+        // which writes the built bodies.
         [ReadOnly]
+        [NativeDisableContainerSafetyRestriction]
         public PhysicsWorld Built;
 
         public void Execute()

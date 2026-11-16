@@ -246,7 +246,10 @@ namespace KSP.Retooled.Physics
         public NativeStore.BodyData* Store;
 
         [ReadOnly]
-        public NativeArray<RigidBody> Bodies;
+        public NativeArray<int> DynamicIndices;
+
+        [ReadOnly]
+        public NativeArray<int> StaticIndices;
 
         public NativeArray<int> FirstShapes;
 
@@ -255,17 +258,33 @@ namespace KSP.Retooled.Physics
         public void Execute()
         {
             int count = 0;
-            for (int i = 0; i < Bodies.Length; i++)
+            for (int i = 0; i < FirstShapes.Length; i++)
             {
                 FirstShapes[i] = count;
-                Entity entity = Bodies[i].Entity;
-                if (entity.Version != 0)
+                int row = StoreRow(DynamicIndices, StaticIndices, i);
+                if (row >= 0)
                 {
-                    count += (int)Store[entity.Index].shapeCount;
+                    count += (int)Store[row].shapeCount;
                 }
             }
 
             QueryShapes.ResizeUninitialized(count);
+        }
+
+        /// <summary>
+        /// The store index of a built body, or -1 for the anchor. <see cref="BuildBodiesJob"/> builds the moving bodies
+        /// first, then the static bodies, then the anchor. Reading the indices instead of the built bodies lets the
+        /// snapshot run while the dynamic tree is rebuilt, which writes the built bodies.
+        /// </summary>
+        internal static int StoreRow(NativeArray<int> dynamicIndices, NativeArray<int> staticIndices, int builtIndex)
+        {
+            if (builtIndex < dynamicIndices.Length)
+            {
+                return dynamicIndices[builtIndex];
+            }
+
+            builtIndex -= dynamicIndices.Length;
+            return builtIndex < staticIndices.Length ? staticIndices[builtIndex] : -1;
         }
     }
 
@@ -281,7 +300,10 @@ namespace KSP.Retooled.Physics
         public NativeStore.BodyData* Store;
 
         [ReadOnly]
-        public NativeArray<RigidBody> Bodies;
+        public NativeArray<int> DynamicIndices;
+
+        [ReadOnly]
+        public NativeArray<int> StaticIndices;
 
         [ReadOnly]
         public NativeArray<int> FirstShapes;
@@ -295,15 +317,15 @@ namespace KSP.Retooled.Physics
 
         public void Execute(int i)
         {
-            Entity entity = Bodies[i].Entity;
-            if (entity.Version == 0)
+            int row = FindFirstShapesJob.StoreRow(DynamicIndices, StaticIndices, i);
+            if (row < 0)
             {
                 QueryBodies[i] = default;
                 return;
             }
 
             int nextShape = FirstShapes[i];
-            NativeStore.BodyData* body = Store + entity.Index;
+            NativeStore.BodyData* body = Store + row;
             QueryBodies[i] = new QueryBody
             {
                 Owner = body->owner,
