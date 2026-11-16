@@ -772,6 +772,40 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// Schedules jobs that move the dynamic bodies to their motions' poses and fit the dynamic tree's bounds to
+        /// them, as <see cref="ScheduleUpdateDynamicTree"/> does, but without building the tree again. The tree keeps
+        /// the shape that it was built with, so it holds the same bodies in the same leaves. Use this only when the
+        /// tree was built for the same dynamic bodies in the same order, for example earlier in the same step. Queries
+        /// find the same hits as in a rebuilt tree, but can report them in a different order.
+        /// </summary>
+        internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps)
+        {
+            int count = world.NumDynamicBodies;
+            if (count == 0)
+            {
+                return inputDeps;
+            }
+
+            var aabbs = new NativeArray<Aabb>(count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            JobHandle handle = new UpdateDynamicBoundsJob
+            {
+                MotionDatas = world.MotionDatas,
+                MotionVelocities = world.MotionVelocities,
+                RigidBodies = m_Bodies.GetSubArray(0, count),
+                Aabbs = aabbs,
+                AabbMargin = world.CollisionWorld.CollisionTolerance * 0.5f, // each body contributes half, as in the build
+                TimeStep = timeStep,
+                Gravity = gravity,
+            }.Schedule(count, 32, inputDeps);
+
+            return new RefitDynamicTreeJob
+            {
+                Tree = Broadphase.DynamicTree,
+                Aabbs = aabbs,
+            }.Schedule(handle);
+        }
+
         #region Jobs
 
         [BurstCompile]
@@ -790,6 +824,45 @@ namespace Unity.Physics
                 RigidBody rb = rigidBodies[i];
                 rb.WorldFromBody = math.mul(motionDatas[i].WorldFromMotion, math.inverse(motionDatas[i].BodyFromMotion));
                 rigidBodies[i] = rb;
+            }
+        }
+
+        /// <summary>
+        /// Moves each dynamic body to its motion's pose, as <see cref="UpdateRigidBodyTransformsJob"/> does, and
+        /// computes the body's bounds as the broadphase build does.
+        /// </summary>
+        [BurstCompile]
+        struct UpdateDynamicBoundsJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<MotionData> MotionDatas;
+            [ReadOnly] public NativeArray<MotionVelocity> MotionVelocities;
+            public NativeArray<RigidBody> RigidBodies;
+            [WriteOnly] public NativeArray<Aabb> Aabbs;
+            public float AabbMargin;
+            public float TimeStep;
+            public float3 Gravity;
+
+            public void Execute(int i)
+            {
+                UpdateRigidBodyTransformsJob.ExecuteImpl(i, MotionDatas, RigidBodies);
+                RigidBody body = RigidBodies[i];
+                Aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.CalculateAabb(ref body, AabbMargin, Gravity, TimeStep, MotionVelocities[i]);
+            }
+        }
+
+        /// <summary>Fits the dynamic tree's nodes to the bounds from <see cref="UpdateDynamicBoundsJob"/>.</summary>
+        [BurstCompile]
+        struct RefitDynamicTreeJob : IJob
+        {
+            [NativeDisableContainerSafetyRestriction]
+            public Broadphase.Tree Tree;
+
+            [ReadOnly, DeallocateOnJobCompletion]
+            public NativeArray<Aabb> Aabbs;
+
+            public void Execute()
+            {
+                Tree.BoundingVolumeHierarchy.RefitFromRoot(Aabbs);
             }
         }
 

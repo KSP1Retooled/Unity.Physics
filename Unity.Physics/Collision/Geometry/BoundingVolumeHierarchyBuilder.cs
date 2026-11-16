@@ -672,54 +672,120 @@ namespace Unity.Physics
             for (int i = nodeEndIndex; i >= nodeStartIndex; i--, currentNode--)
             {
                 SafetyChecks.CheckIndexAndThrow(i, m_MaxNodeCount);
-                if (currentNode->IsLeaf)
+                RefitOne(aabbs, baseNode, currentNode);
+            }
+        }
+
+        /// <summary>
+        /// Fits the bounds of every node that the root reaches to <paramref name="aabbs"/>, without changing the shape
+        /// of the tree. A parallel build can leave unused nodes between its branches, and <see cref="Refit"/> would
+        /// read those too. This method visits only the nodes in the tree. It lists them parent first, then fits them
+        /// in the reverse order, so that each node is fitted after all of its children.
+        /// </summary>
+        internal unsafe void RefitFromRoot(NativeArray<Aabb> aabbs)
+        {
+            Node* baseNode = m_Nodes;
+            Aabb* bounds = (Aabb*)aabbs.GetUnsafeReadOnlyPtr();
+
+            // Every node in the tree is listed once, so the list never holds more than the node count. The pending
+            // stack holds at most three entries for each level of the tree, plus one.
+            int capacity = m_NodesList != null ? m_NodesList->Length : m_MaxNodeCount;
+            int* order = (int*)UnsafeUtility.Malloc((long)capacity * sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Temp);
+            int* pending = (int*)UnsafeUtility.Malloc((long)capacity * sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Temp);
+            int listed = 0;
+            int waiting = 0;
+            pending[waiting++] = 1;
+            while (waiting > 0)
+            {
+                int index = pending[--waiting];
+                SafetyChecks.CheckIndexAndThrow(index, m_MaxNodeCount);
+                order[listed++] = index;
+                Node* node = baseNode + index;
+                if (node->IsInternal)
                 {
-                    ushort numFreeLeafSlots = 0;
-                    uint numElements = 0;
+                    for (int j = 0; j < 4; j++)
+                    {
+                        if (node->IsInternalValid(j))
+                        {
+                            pending[waiting++] = node->Data[j];
+                        }
+                    }
+                }
+            }
+
+            for (int i = listed - 1; i >= 0; i--)
+            {
+                Node* node = baseNode + order[i];
+                if (node->IsLeaf)
+                {
+                    // Only the bounds change. The counts of elements and free slots stay as the build left them.
                     for (int j = 0; j < 4; ++j)
                     {
-                        Aabb aabb;
-                        if (currentNode->IsLeafValid(j))
-                        {
-                            aabb = aabbs[currentNode->Data[j]];
-                            ++numElements;
-                        }
-                        else
-                        {
-                            aabb = Aabb.Empty;
-                            ++numFreeLeafSlots;
-                        }
-
-                        currentNode->Bounds.SetAabb(j, aabb);
+                        node->Bounds.SetAabb(j, node->IsLeafValid(j) ? bounds[node->Data[j]] : Aabb.Empty);
                     }
-                    currentNode->NumFreeSlotsInLeaf = numFreeLeafSlots;
-                    currentNode->NumElements = numElements;
                 }
                 else
                 {
-                    uint numElements = 0;
                     for (int j = 0; j < 4; j++)
                     {
-                        Aabb aabb;
-                        if (currentNode->IsInternalValid(j))
-                        {
-                            ref var childNode = ref baseNode[currentNode->Data[j]];
-                            aabb = childNode.Bounds.GetCompoundAabb();
-
-                            currentNode->NumFreeLeafSlots[j] = (ushort)childNode.NumFreeLeafSlotsTotal;
-                            numElements += childNode.NumElements;
-                        }
-                        else
-                        {
-                            aabb = Aabb.Empty;
-
-                            // could add a new leaf node here which would provide 4 available leaf slots
-                            currentNode->NumFreeLeafSlots[j] = 4;
-                        }
-
-                        currentNode->Bounds.SetAabb(j, aabb);
-                        currentNode->NumElements = numElements;
+                        node->Bounds.SetAabb(j, node->IsInternalValid(j) ? baseNode[node->Data[j]].Bounds.GetCompoundAabb() : Aabb.Empty);
                     }
+                }
+            }
+
+            UnsafeUtility.Free(order, Allocator.Temp);
+            UnsafeUtility.Free(pending, Allocator.Temp);
+        }
+
+        static unsafe void RefitOne(NativeArray<Aabb> aabbs, Node* baseNode, Node* currentNode)
+        {
+            if (currentNode->IsLeaf)
+            {
+                ushort numFreeLeafSlots = 0;
+                uint numElements = 0;
+                for (int j = 0; j < 4; ++j)
+                {
+                    Aabb aabb;
+                    if (currentNode->IsLeafValid(j))
+                    {
+                        aabb = aabbs[currentNode->Data[j]];
+                        ++numElements;
+                    }
+                    else
+                    {
+                        aabb = Aabb.Empty;
+                        ++numFreeLeafSlots;
+                    }
+
+                    currentNode->Bounds.SetAabb(j, aabb);
+                }
+                currentNode->NumFreeSlotsInLeaf = numFreeLeafSlots;
+                currentNode->NumElements = numElements;
+            }
+            else
+            {
+                uint numElements = 0;
+                for (int j = 0; j < 4; j++)
+                {
+                    Aabb aabb;
+                    if (currentNode->IsInternalValid(j))
+                    {
+                        ref var childNode = ref baseNode[currentNode->Data[j]];
+                        aabb = childNode.Bounds.GetCompoundAabb();
+
+                        currentNode->NumFreeLeafSlots[j] = (ushort)childNode.NumFreeLeafSlotsTotal;
+                        numElements += childNode.NumElements;
+                    }
+                    else
+                    {
+                        aabb = Aabb.Empty;
+
+                        // could add a new leaf node here which would provide 4 available leaf slots
+                        currentNode->NumFreeLeafSlots[j] = 4;
+                    }
+
+                    currentNode->Bounds.SetAabb(j, aabb);
+                    currentNode->NumElements = numElements;
                 }
             }
         }

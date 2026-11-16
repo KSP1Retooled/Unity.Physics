@@ -213,6 +213,7 @@ namespace KSP.Retooled.Physics
                 world->staticsVersion++;
             }
 
+            QuerySnapshotVersion.Changed();
             StoreOps.MarkQueryDirty(world);
             return body;
         }
@@ -261,6 +262,8 @@ namespace KSP.Retooled.Physics
                 world->staticsVersion++;
             }
 
+            // The last body moved into the destroyed body's row, so the snapshot's rows no longer match the store.
+            QuerySnapshotVersion.Changed();
             StoreOps.MarkQueryDirty(world);
         }
 

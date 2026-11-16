@@ -28,6 +28,11 @@ namespace Unity.Physics
         internal NativeStream TriggerEventDataStream;
         internal NativeStream ImpulseEventDataStream;
 
+        // The number of dispatch pairs that the last step sorted for its islands. The next step reads it when it
+        // schedules its jobs, to choose between one job that sorts the pairs on one thread and the parallel chain. See
+        // DispatchPairSequencer.SerialIslandPairLimit.
+        internal NativeReference<int> IslandPairCount;
+
         /// <summary>   Gets the collision events. </summary>
         ///
         /// <value> The collision events. </value>
@@ -109,6 +114,11 @@ namespace Unity.Physics
 
         internal JobHandle ScheduleReset(SimulationStepInput stepInput, JobHandle inputDeps)
         {
+            if (!IslandPairCount.IsCreated)
+            {
+                IslandPairCount = new NativeReference<int>(0, Allocator.Persistent);
+            }
+
             m_NumDynamicBodies = stepInput.World.NumDynamicBodies;
             if (!m_InputVelocities.IsCreated || m_InputVelocities.Length < m_NumDynamicBodies)
             {
@@ -166,6 +176,11 @@ namespace Unity.Physics
                 m_InputVelocities.Dispose();
             }
 
+            if (IslandPairCount.IsCreated)
+            {
+                IslandPairCount.Dispose();
+            }
+
             if (m_SolverStabilizationMotionData.IsCreated)
             {
                 m_SolverStabilizationMotionData.Dispose();
@@ -211,6 +226,17 @@ namespace Unity.Physics
 
         public NativeStream Contacts;
         public NativeStream Jacobians;
+
+        // When the step solves by island, this handle completes when the solve has written its last motion. The jobs
+        // that free the solve's buffers and export the direct islands' events run after it. See
+        // Simulation.MotionsSolvedHandle.
+        public JobHandle MotionsSolved;
+        public bool HasMotionsSolved;
+
+        // When the step solves by island, gravity is applied while the pairs are found and sorted. The narrow phase
+        // waits for this handle instead of scheduling gravity itself.
+        public JobHandle GravityApplied;
+        public bool HasGravityApplied;
     }
 
     /// <summary>   Steps a physics world. </summary>
@@ -230,6 +256,14 @@ namespace Unity.Physics
         ///
         /// <value> The final job handle. </value>
         public JobHandle FinalJobHandle => JobHandle.CombineDependencies(FinalSimulationJobHandle, m_StepHandles.FinalDisposeHandle);
+
+        /// <summary>
+        /// Gets a handle that completes when the step's motions are final. A step that solves by island reaches this
+        /// point before the jobs that free its buffers and export the events of its direct islands. Other steps
+        /// reach it with <see cref="FinalSimulationJobHandle"/>. Jobs that read only the motions can wait for this
+        /// handle. Jobs that read the events must wait for <see cref="FinalSimulationJobHandle"/>.
+        /// </summary>
+        internal JobHandle MotionsSolvedHandle => StepContext.HasMotionsSolved ? StepContext.MotionsSolved : FinalSimulationJobHandle;
 
         internal SimulationScheduleStage m_SimulationScheduleStage;
 
@@ -462,6 +496,16 @@ namespace Unity.Physics
                 return m_StepHandles;
             }
 
+            // In a step that solves by island, no job between the broadphase and the narrow phase reads or writes the
+            // motion velocities or the input velocities. Apply gravity now, beside the jobs that find and sort the
+            // pairs, so that the narrow phase doesn't wait for it. ScheduleNarrowphaseJobs waits for this handle.
+            if (multiThreaded && input.DirectIslandSubsteps > 0 && input.NumSubsteps <= 1)
+            {
+                StepContext.GravityApplied = Solver.ScheduleApplyGravityAndUpdateInputVelocitiesJob(ref input.World.DynamicsWorld,
+                    SimulationContext.InputVelocities, input.Gravity, input.TimeStep, input.EnableGyroscopicTorque, handle, multiThreaded);
+                StepContext.HasGravityApplied = true;
+            }
+
             // Find all body pairs that overlap in the broadphase
             var handles = input.World.CollisionWorld.ScheduleFindOverlapsJobsInternal(
                 out NativeStream dynamicVsDynamicBodyPairs, out NativeStream dynamicVsStaticBodyPairs,
@@ -474,7 +518,7 @@ namespace Unity.Physics
             handles = DispatchPairSequencer.ScheduleCreatePhasedDispatchPairsJob(input,
                 ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, JobHandle.CombineDependencies(handle, joints),
                 ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, out StepContext.PairsToSortByIsland,
-                multiThreaded);
+                multiThreaded, SimulationContext.IslandPairCount);
 
             StepContext.CreateDispatchPairsJobHandle = handles.FinalExecutionHandle;
 
@@ -499,11 +543,11 @@ namespace Unity.Physics
             }
 
             JobHandle handle = DispatchPairSequencer.ScheduleSortPairsByIsland(input, StepContext.PairsToSortByIsland,
-                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps);
+                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps, out JobHandle disposed);
 
             StepContext.CreateDispatchPairsJobHandle = handle;
             m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(m_StepHandles.FinalDisposeHandle,
-                StepContext.PairsToSortByIsland.Dispose(handle));
+                StepContext.PairsToSortByIsland.Dispose(handle), disposed);
             m_StepHandles.FinalExecutionHandle = handle;
             return handle;
         }
@@ -531,8 +575,9 @@ namespace Unity.Physics
             if (input.NumSubsteps <= 1)
             {
                 // Integrate gravity so Jacobian Build is using same source data as Jacobian Solve
-                var handle = Solver.ScheduleApplyGravityAndUpdateInputVelocitiesJob(ref input.World.DynamicsWorld,
-                    SimulationContext.InputVelocities, input.Gravity, input.TimeStep, input.EnableGyroscopicTorque, inputDeps, multiThreaded);
+                var handle = StepContext.HasGravityApplied ? JobHandle.CombineDependencies(inputDeps, StepContext.GravityApplied)
+                    : Solver.ScheduleApplyGravityAndUpdateInputVelocitiesJob(ref input.World.DynamicsWorld,
+                        SimulationContext.InputVelocities, input.Gravity, input.TimeStep, input.EnableGyroscopicTorque, inputDeps, multiThreaded);
 
                 m_StepHandles = NarrowPhase.ScheduleCreateContactsJobs(ref input.World, input.TimeStep,
                     SimulationContext.InputVelocities, ref StepContext.Contacts, ref StepContext.Jacobians,
@@ -668,8 +713,10 @@ namespace Unity.Physics
                 m_StepHandles = Solver.ScheduleIslandSolveJobs(input.World, stepInput, input.DirectIslandSubsteps,
                     StepContext.Jacobians, SimulationContext.CollisionEventDataStream,
                     SimulationContext.TriggerEventDataStream, SimulationContext.ImpulseEventDataStream,
-                    StepContext.SolverSchedulerInfo, solverStabilizationData, executionHandle, jobHandle);
+                    StepContext.SolverSchedulerInfo, solverStabilizationData, executionHandle, jobHandle, out JobHandle motionsSolved);
 
+                StepContext.MotionsSolved = JobHandle.CombineDependencies(executionHandle, motionsSolved);
+                StepContext.HasMotionsSolved = true;
                 m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandle, m_StepHandles.FinalDisposeHandle);
                 jobHandle = JobHandle.CombineDependencies(executionHandle, m_StepHandles.FinalExecutionHandle);
                 m_StepHandles.FinalExecutionHandle = jobHandle;

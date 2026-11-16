@@ -1,5 +1,6 @@
 using System.Threading;
 using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
@@ -11,6 +12,31 @@ namespace KSP.Retooled.Physics
     /// lists of shapes attached to bodies. A world's handle points to its <see cref="NativeStore.WorldData"/>, and a
     /// shape's handle points to its <see cref="NativeStore.ShapeData"/>.
     /// </summary>
+    /// <summary>
+    /// A version counter for the store data that the query snapshot copies (see <see cref="SnapshotQueryDataJob"/>).
+    /// The snapshot holds no poses. For each built body it holds the body's record, its shapes and whether it is
+    /// static. For each shape it holds the shape's record, user data, engine object id, flags and geometry type. The
+    /// version moves when a body is created or destroyed, when a body's list of shapes changes, and when a command
+    /// changes an attached shape's flags, filter, material or geometry. The step also compares the built body order
+    /// with the order that the snapshot was taken in, so a body that moves to a new row or stops being simulated
+    /// still causes a new snapshot. The plugin mirrors the store's records, so there is no space for this counter in
+    /// them. All worlds share it, as they share <see cref="JointTopology"/>.
+    /// </summary>
+    internal static class QuerySnapshotVersion
+    {
+        private readonly struct Key { }
+
+        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
+
+        internal static uint Version => (uint)Shared.Data;
+
+        /// <summary>Moves the version on.</summary>
+        internal static unsafe void Changed()
+        {
+            Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+        }
+    }
+
     internal static unsafe class StoreOps
     {
         // The initial counter value when a body wakes. PhysX's Dy::sleepCheck uses 20 steps of 0.02 s, regardless of
@@ -183,10 +209,15 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>
+        /// Marks a body whose collider must be built again because its shapes changed. A change to the shapes can also
+        /// change what the query snapshot holds, so this moves <see cref="QuerySnapshotVersion"/> as well.
+        /// </summary>
         internal static void MarkColliderDirty(NativeStore.Body* body)
         {
             NativeStore.BodyData* hot = Hot(body);
             hot->flags |= NativeStore.BodyFlags.ColliderDirty;
+            QuerySnapshotVersion.Changed();
             MarkPoseChanged(body, hot->flags);
         }
 
