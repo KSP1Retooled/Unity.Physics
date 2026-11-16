@@ -1,5 +1,6 @@
 using System;
 using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
@@ -1842,11 +1843,18 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // The joint records are spread over memory and are rarely in the cache at this point of the step, so ask
+            // for the record of a later item while this item waits for its own.
+            Prefetch(index + PrefetchDistance);
+
+            // Every body of an active vessel was awake and moving when the step began, and nothing puts a body to sleep
+            // before the step's sleep jobs, which run after this job. So skip the test for sleeping bodies, which would
+            // read both bodies of each joint.
             var jointLoad = new JointLoad { Force = sign * (float3)load.Force, Torque = sign * (float3)load.Torque };
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
-                SettleJointLoadsJob.Settle(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
+                SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
                 JointLoads[jointUnit.Joint] = jointLoad;
                 return;
             }
@@ -1862,9 +1870,41 @@ namespace KSP.Retooled.Physics
             {
                 int joint = Members[group.FirstMember + i].Joint;
                 JointLoad memberLoad = JointLoads[joint];
-                SettleJointLoadsJob.Settle(World->joints[joint], ref memberLoad, DeltaTime);
+                SettleJointLoadsJob.SettleAwake(World->joints[joint], ref memberLoad, DeltaTime);
                 JointLoads[joint] = memberLoad;
             }
+        }
+
+        /// <summary>How many items ahead this job asks for a joint record.</summary>
+        private const int PrefetchDistance = 8;
+
+        /// <summary>
+        /// Asks the processor to load the part of an item's leading joint record that
+        /// <see cref="SettleJointLoadsJob.SettleAwake"/> reads and writes. That part runs from the state to the end of
+        /// the smoothed breaking torque, which is about 100 bytes. The record need not start on a cache line, so those
+        /// bytes can touch three cache lines. Asking for the first byte, the last byte and the byte 64 after the first
+        /// covers all three.
+        /// </summary>
+        private void Prefetch(int index)
+        {
+            int parts = PartUnits.Length;
+            if (index >= parts + ClosureUnits.Length)
+            {
+                return;
+            }
+
+            int unit = index < parts ? PartUnits[index] : ClosureUnits[index - parts];
+            if (unit < 0)
+            {
+                return;
+            }
+
+            NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+            byte* first = (byte*)&joint->state;
+            byte* last = (byte*)&joint->breakingTorque + sizeof(float) - 1;
+            Common.Prefetch(first, Common.ReadWrite.Write);
+            Common.Prefetch(first + 64 < last ? first + 64 : last, Common.ReadWrite.Write);
+            Common.Prefetch(last, Common.ReadWrite.Write);
         }
     }
 
