@@ -1118,10 +1118,36 @@ namespace Unity.Physics
         internal static SimulationJobHandles ScheduleCreatePhasedDispatchPairsJob(in SimulationStepInput stepInput,
             ref NativeStream dynamicVsDynamicBroadphasePairsStream, ref NativeStream staticVsDynamicBroadphasePairsStream,
             JobHandle inputDeps, ref NativeList<DispatchPair> dispatchPairs, out SolverSchedulerInfo solverSchedulerInfo,
-            out NativeList<DispatchPair> pairsToSortByIsland, bool multiThreaded = true)
+            out NativeList<DispatchPair> pairsToSortByIsland, bool multiThreaded = true, NativeReference<int> islandPairCount = default)
         {
             SimulationJobHandles returnHandles = default;
             pairsToSortByIsland = default;
+
+            // A step that solves by island needs only the pairs sorted, without phases. The parallel chain below takes
+            // about a dozen small jobs to do that, and most of its time goes to waiting for the next job to start.
+            // When the last step had few pairs, one job sorts them on one thread instead. See SortPairsForIslandsJob.
+            if (multiThreaded && stepInput.DirectIslandSubsteps > 0 && !stepInput.DirectSolverSettings.ForceDirectSolver
+                && islandPairCount.IsCreated && islandPairCount.Value <= SerialIslandPairLimit)
+            {
+                dispatchPairs = new NativeList<DispatchPair>(Allocator.TempJob);
+                pairsToSortByIsland = new NativeList<DispatchPair>(Allocator.TempJob);
+                solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
+                JobHandle sorted = new SortPairsForIslandsJob
+                {
+                    Joints = stepInput.World.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
+                    DynamicVsDynamicPairs = dynamicVsDynamicBroadphasePairsStream.AsReader(),
+                    StaticVsDynamicPairs = staticVsDynamicBroadphasePairsStream.AsReader(),
+                    NumBodies = stepInput.World.NumBodies,
+                    UnsortedPairs = dispatchPairs,
+                    SortedPairs = pairsToSortByIsland,
+                    PairCount = islandPairCount,
+                }.Schedule(inputDeps);
+
+                returnHandles.FinalExecutionHandle = sorted;
+                returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(
+                    dynamicVsDynamicBroadphasePairsStream.Dispose(sorted), staticVsDynamicBroadphasePairsStream.Dispose(sorted));
+                return returnHandles;
+            }
 
             if (!multiThreaded)
             {
@@ -1375,15 +1401,21 @@ namespace Unity.Physics
             // by the DirectSolverUsed flag. The EnableCouplingDetectionAndPairGroupingJob checks this flag and sets the number
             // of pairs to process for the coupling analysis to 0 or the total number of dispatch pairs accordingly.
             // Analogously, it sets the number of workers for the grouping process to 0 or the actual worker count.
-            JobHandle couplingDetectionHandle = new EnableCouplingDetectionAndPairGroupingJob
+            // A step that solves by island neither detects coupling nor groups pairs, so it skips this job. The job also
+            // holds the whole world, and in such a step, gravity is applied to the motions while this chain runs.
+            JobHandle couplingDetectionHandle = dispatchPairsHandle;
+            if (stepInput.DirectIslandSubsteps == 0)
             {
-                StepInput = stepInput,
-                DispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                NumPairsToProcessForCouplingDetection = numPairsToProcessForCouplingDetection,
-                DirectSolverUsed = directSolverUsed,
-                NumWorkersForPairGrouping = numWorkersForPairGrouping,
-                NumWorkers = numWorkers
-            }.Schedule(dispatchPairsHandle);
+                couplingDetectionHandle = new EnableCouplingDetectionAndPairGroupingJob
+                {
+                    StepInput = stepInput,
+                    DispatchPairs = unsortedPairs.AsDeferredJobArray(),
+                    NumPairsToProcessForCouplingDetection = numPairsToProcessForCouplingDetection,
+                    DirectSolverUsed = directSolverUsed,
+                    NumWorkersForPairGrouping = numWorkersForPairGrouping,
+                    NumWorkers = numWorkers
+                }.Schedule(dispatchPairsHandle);
+            }
 
             // Detect coupling unless all pairs are forced to use the direct solver or solver selection is determined
             // per island.
@@ -1425,6 +1457,10 @@ namespace Unity.Physics
                 dispatchPairs = unsortedPairs;
                 solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
                 pairsToSortByIsland = sortedPairs;
+                if (islandPairCount.IsCreated)
+                {
+                    sortHandle = new CountIslandPairsJob { Pairs = sortedPairs, PairCount = islandPairCount }.Schedule(sortHandle);
+                }
 
                 returnHandles.FinalExecutionHandle = sortHandle;
                 disposeHandles.Add(numWorkersForPairGrouping.Dispose(sortHandle));
@@ -1697,6 +1733,129 @@ namespace Unity.Physics
         #endregion
 
         #region Jobs
+
+        /// <summary>
+        /// The largest number of pairs, counted in the last step, for which a step that solves by island sorts its
+        /// pairs in one job on one thread. Above it, the step uses the parallel chain of jobs. Tests set this to -1 to
+        /// use the parallel chain. The value is stored in a SharedStatic, because the jobs are scheduled from Burst
+        /// code.
+        /// </summary>
+        internal static int SerialIslandPairLimit
+        {
+            get => DefaultSerialIslandPairLimit + SerialIslandPairLimitValue.Data;
+            set => SerialIslandPairLimitValue.Data = value - DefaultSerialIslandPairLimit;
+        }
+
+        /// <summary>
+        /// The value of <see cref="SerialIslandPairLimit"/> until something sets it. One thread sorts this many pairs
+        /// in a few tens of microseconds, about as long as the parallel chain spends waiting between its jobs.
+        /// </summary>
+        internal const int DefaultSerialIslandPairLimit = 4096;
+
+        struct SerialIslandPairLimitKey { }
+
+        // Holds the limit minus the default, so that the zero that a SharedStatic starts with means the default.
+        static readonly SharedStatic<int> SerialIslandPairLimitValue = SharedStatic<int>.GetOrCreate<SerialIslandPairLimitKey>();
+
+        /// <summary>
+        /// Sorts the pairs of a step that solves by island, in one job on one thread. It does what the parallel chain
+        /// does up to <see cref="SetDisableCollisionFlagsJob"/>. It writes the dynamic pairs, then the static pairs,
+        /// then one pair for each valid joint. It sorts them by body A with one pass of a radix sort, then sorts each
+        /// body's pairs by the rest of their key. Then it disables the contacts between bodies whose joints don't allow
+        /// collision. No two pairs have the same key, so the sorted order is the same as the parallel chain's. The job
+        /// also records the number of pairs, so that the next step can choose between this job and the chain.
+        /// </summary>
+        [BurstCompile]
+        struct SortPairsForIslandsJob : IJob
+        {
+            [ReadOnly] public NativeArray<Joint> Joints;
+            public NativeStream.Reader DynamicVsDynamicPairs;
+            public NativeStream.Reader StaticVsDynamicPairs;
+            public int NumBodies;
+            public NativeList<DispatchPair> UnsortedPairs;
+            public NativeList<DispatchPair> SortedPairs;
+            public NativeReference<int> PairCount;
+
+            public void Execute()
+            {
+                int count = Count(DynamicVsDynamicPairs) + Count(StaticVsDynamicPairs);
+                for (int i = 0; i < Joints.Length; i++)
+                {
+                    count += Joints[i].BodyPair.IsValid ? 1 : 0;
+                }
+
+                PairCount.Value = count;
+                UnsortedPairs.ResizeUninitialized(count);
+                SortedPairs.ResizeUninitialized(count);
+                if (count == 0)
+                {
+                    return;
+                }
+
+                NativeArray<DispatchPair> pairs = UnsortedPairs.AsArray();
+                int next = 0;
+                Append(DynamicVsDynamicPairs, pairs, ref next);
+                Append(StaticVsDynamicPairs, pairs, ref next);
+                for (int i = 0; i < Joints.Length; i++)
+                {
+                    Joint joint = Joints[i];
+                    if (joint.BodyPair.IsValid)
+                    {
+                        pairs[next++] = DispatchPair.CreateJoint(joint.BodyPair, i, joint.EnableCollision, joint.SolverType);
+                    }
+                }
+
+                // After the radix sort, entry b of the histogram is the index just past body b's pairs.
+                var histogram = new NativeArray<int>(NumBodies + 1, Allocator.Temp, NativeArrayOptions.ClearMemory);
+                RadixSortPerBodyAJob.RadixSortPerBodyA(pairs, SortedPairs.AsArray(), histogram, NumBodies - 1);
+                var subArrays = new SortSubArraysJob { InOutArray = SortedPairs.AsArray(), NextElementIndex = histogram };
+                for (int b = 0; b < histogram.Length; b++)
+                {
+                    subArrays.Execute(b);
+                }
+
+                histogram.Dispose();
+                SetDisableCollisionFlags(SortedPairs);
+            }
+
+            static int Count(NativeStream.Reader reader)
+            {
+                int count = 0;
+                for (int i = 0; i < reader.ForEachCount; i++)
+                {
+                    count += reader.BeginForEachIndex(i);
+                }
+
+                return count;
+            }
+
+            static void Append(NativeStream.Reader reader, NativeArray<DispatchPair> pairs, ref int next)
+            {
+                for (int i = 0; i < reader.ForEachCount; i++)
+                {
+                    int count = reader.BeginForEachIndex(i);
+                    for (int j = 0; j < count; j++)
+                    {
+                        pairs[next++] = DispatchPair.CreateCollisionPair(reader.Read<Broadphase.OverlapResult>());
+                    }
+
+                    reader.EndForEachIndex();
+                }
+            }
+        }
+
+        /// <summary>Records the number of pairs that the parallel chain sorted. See <see cref="SortPairsForIslandsJob"/>.</summary>
+        [BurstCompile]
+        struct CountIslandPairsJob : IJob
+        {
+            [ReadOnly] public NativeList<DispatchPair> Pairs;
+            public NativeReference<int> PairCount;
+
+            public void Execute()
+            {
+                PairCount.Value = Pairs.Length;
+            }
+        }
 
         [BurstCompile]
         struct FinalizeIterativeWorkItemInfoJob : IJob

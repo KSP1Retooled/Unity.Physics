@@ -27,11 +27,16 @@ namespace Unity.Physics
         /// concurrently because they modify different bodies. <paramref name="jacobiansBuilt"/> marks completion of
         /// Jacobian construction, before jobs that change impulses or velocities in preparation for solving. Listing
         /// the direct islands' Jacobians depends only on construction, so it waits for that handle alone.
+        /// <para>
+        /// <paramref name="motionsSolved"/> completes when every job that writes the motions has finished. The jobs
+        /// that free the solve's buffers and export the direct islands' events come after it. Work that reads only
+        /// the solved motions can wait for this handle and skip that chain of small jobs.
+        /// </para>
         /// </summary>
         internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
             in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData,
-            JobHandle jacobiansBuilt, JobHandle inputDeps)
+            JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle motionsSolved)
         {
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
             DispatchPairSequencer.IterativeSolverSchedulerInfo iterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling;
@@ -82,10 +87,12 @@ namespace Unity.Physics
                 Team = teams->Ptr + 1,
             }.Schedule(lanes, 1, iterativeHandle);
 
+            JobHandle iterativeSolved = iterativeHandle;
             iterativeHandle = new DestroyTeamsJob { Teams = teams }.Schedule(iterativeHandle);
 
             JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
-                solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps);
+                solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps, out JobHandle islandsSolved);
+            motionsSolved = JobHandle.CombineDependencies(iterativeSolved, islandsSolved);
 
             islandHandle = new ParallelExportEventsJob
             {
@@ -187,10 +194,11 @@ namespace Unity.Physics
         /// Small islands are solved independently on worker threads. One team job solves all large islands
         /// sequentially, sharing each solve among its lanes. The first substep's row counts depend only on the
         /// constructed Jacobians, so they can be counted while listing the islands, concurrently with jobs that finish
-        /// preparing the solve.
+        /// preparing the solve. <paramref name="solved"/> completes when the islands' bodies are integrated, before
+        /// the job that frees the islands' buffers.
         /// </summary>
         static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
-            in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps)
+            in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle solved)
         {
             const int headersPerBatch = 16;
             const int bodiesPerBatch = 32;
@@ -320,6 +328,7 @@ namespace Unity.Physics
             }
 
             handle = JobHandle.CombineDependencies(handle, fused);
+            solved = handle;
             return work.Dispose(handle);
         }
 

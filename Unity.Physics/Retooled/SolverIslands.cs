@@ -23,10 +23,11 @@ namespace Unity.Physics
         /// Finds the islands in one job, then sorts their pairs into buckets in parallel across islands. The array of
         /// phased pairs contains <see cref="NumIslandBuckets"/> equally sized buckets, each large enough to hold every
         /// pair. Each job can therefore reserve space in its bucket independently, without a later pass to combine the
-        /// results.
+        /// results. Returns the handle of the last job that sorts. <paramref name="disposed"/> completes when the
+        /// temporary lists are freed. Later stages don't need to wait for that.
         /// </summary>
         internal static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
-            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps)
+            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps, out JobHandle disposed)
         {
             int numDynamicBodies = stepInput.World.NumDynamicBodies;
             var islands = new NativeList<SolverIsland>(Allocator.TempJob);
@@ -75,10 +76,10 @@ namespace Unity.Physics
                 NumDynamicBodies = numDynamicBodies
             }.Schedule(handle);
 
-            return JobHandle.CombineDependencies(
+            disposed = JobHandle.CombineDependencies(
                 JobHandle.CombineDependencies(islands.Dispose(handle), islandPairs.Dispose(handle), islandBodies.Dispose(handle)),
-                JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle), islandVessels.Dispose(handle)),
-                bucketCounts.Dispose(handle));
+                JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle), islandVessels.Dispose(handle)));
+            return handle;
         }
 
         /// <summary>
@@ -977,7 +978,9 @@ namespace Unity.Physics
             [ReadOnly]
             public NativeArray<int> IslandVessels;
 
-            [ReadOnly]
+            // Freed when this job completes. A NativeArray's own dispose job runs in Mono, which takes tens of
+            // microseconds, and the narrow phase would have to wait for it.
+            [ReadOnly, DeallocateOnJobCompletion]
             public NativeArray<int> BucketCounts;
 
             [NativeDisableContainerSafetyRestriction]
