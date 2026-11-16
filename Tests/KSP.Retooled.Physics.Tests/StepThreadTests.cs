@@ -14,6 +14,7 @@ namespace KSP.Retooled.Physics.Tests
     public class StepThreadTests : PhysicsScene
     {
         private const double PhaseSeconds = 10.0;
+        private const int CompiledAgainSteps = 100;
         private const double KernelCompileSeconds = 120.0;
 
         [SetUp]
@@ -76,7 +77,9 @@ namespace KSP.Retooled.Physics.Tests
         /// The first phase ends as soon as one whole step runs without Mono jobs, because from then on the step is in
         /// the same state as the last phase. The middle phase ends after its first step that ran Mono jobs, because
         /// that is all that the test checks about it. Each step in the middle phase takes several seconds in Mono. Both
-        /// phases still stop after PhaseSeconds if that point never comes. The last phase always runs for PhaseSeconds.
+        /// phases still stop after PhaseSeconds if that point never comes. The last phase stops after
+        /// CompiledAgainSteps steps, because a Mono job after the compiler is switched back on would show up in the
+        /// first steps. It also stops after PhaseSeconds if those steps take longer than that.
         /// </para>
         /// </summary>
         [UnityTest]
@@ -117,7 +120,7 @@ namespace KSP.Retooled.Physics.Tests
                                 $"{step.Elapsed.TotalMilliseconds:F2} ms, Mono job runs {BackendHost.ManagedJobRuns - monoBefore}");
                         }
 
-                        if ((phase == 0 && !stepRanMono) || (phase == 1 && stepRanMono))
+                        if ((phase == 0 && !stepRanMono) || (phase == 1 && stepRanMono) || (phase == 2 && steps >= CompiledAgainSteps))
                         {
                             break;
                         }
