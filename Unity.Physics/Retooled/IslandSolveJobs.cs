@@ -228,7 +228,7 @@ namespace Unity.Physics
                 Cache = stepInput.DirectSolverCache,
                 MotionVelocities = world.MotionVelocities,
                 FusedBodies = fusedBodies,
-                Fuse = fusedVessels,
+                Fuse = fusedVessels && !LegacyRowBuild,
                 MinimumParts = FusedVesselParts,
             }.Schedule(handle);
 
@@ -238,8 +238,10 @@ namespace Unity.Physics
                 {
                     Islands = work.Islands.AsDeferredJobArray(),
                     IslandVessels = work.IslandVessels.AsDeferredJobArray(),
+                    Headers = work.Headers.AsDeferredJobArray(),
                     MotionVelocities = world.MotionVelocities,
                     MotionDatas = world.MotionDatas,
+                    Bodies = world.Bodies,
                     StepInput = substepInput,
                     Team = work.Buffers.Teams->Ptr + substeps,
                 }.Schedule(lanes, 1, handle);
@@ -366,6 +368,9 @@ namespace Unity.Physics
             public int VesselCount;
             public int VesselParts;
 
+            /// <summary>The number of the island's bodies that are not parts of its vessels.</summary>
+            public int OtherBodies;
+
             /// <summary>
             /// Whether the island has enough rows or vessel parts to benefit from sharing the solve among lanes.
             /// Smaller islands are solved independently in parallel.
@@ -380,10 +385,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Whether a large island that holds only vessels, with no contacts and no other joints that have rows, is
-        /// solved by one fused job for the whole step. That job fills the parts, solves, writes the loads and
-        /// integrates the parts' bodies in every substep, without the per-body setup of the sparse solve and without
-        /// the separate integration job. It is on by default. The backend reads RETOOLED_VESSEL_FUSED when the first
+        /// Whether a large island whose bodies are all vessel parts is solved by one fused job for the whole step. In
+        /// every substep, that job updates the island's contacts and joints and builds their rows, fills the parts,
+        /// solves the vessels with the contacts and joints as their boundary block, writes the loads and integrates
+        /// the parts' bodies. It does this without the per-body setup of the sparse solve, without the jobs and waits
+        /// of each substep, and without the separate integration job. It is on by default. The backend reads RETOOLED_VESSEL_FUSED when the first
         /// world attaches, and the value 0 turns it off. The flag is stored in a SharedStatic, because the jobs are
         /// scheduled from Burst code.
         /// </summary>
@@ -394,6 +400,16 @@ namespace Unity.Physics
         }
 
         struct VesselFusedKey { }
+
+        /// <summary>
+        /// The number of island solves, each one for a whole step, that the fused vessel job has done since the
+        /// program started. Tests read it to check that an island went to the fused job.
+        /// </summary>
+        internal static long FusedIslandSolves => FusedIslandSolveCount.Data;
+
+        struct FusedIslandSolveKey { }
+
+        static readonly SharedStatic<long> FusedIslandSolveCount = SharedStatic<long>.GetOrCreate<FusedIslandSolveKey>();
 
         static readonly SharedStatic<bool> VesselFusedOff = SharedStatic<bool>.GetOrCreate<VesselFusedKey>();
 
@@ -681,13 +697,14 @@ namespace Unity.Physics
                         headerRows->Add(GetConstraintRows(ref header));
                     }
 
-                    int firstVessel = Work.IslandVessels.Length, vesselParts = 0;
+                    int firstVessel = Work.IslandVessels.Length, vesselParts = 0, otherBodies = 0;
                     if (bodyVessel.Length > 0)
                     {
                         int bodiesEnd = island + 1 < islandCount ? Info.FirstIslandBodyIndices[island + 1] : Info.IslandBodies.Length;
                         for (int b = Info.FirstIslandBodyIndices[island]; b < bodiesEnd; b++)
                         {
                             int v = bodyVessel[Info.IslandBodies[b]];
+                            otherBodies += v < 0 ? 1 : 0;
                             if (v >= 0 && vesselSeen[v] != island)
                             {
                                 vesselSeen[v] = island;
@@ -707,6 +724,7 @@ namespace Unity.Physics
                         FirstVessel = firstVessel,
                         VesselCount = Work.IslandVessels.Length - firstVessel,
                         VesselParts = vesselParts,
+                        OtherBodies = otherBodies,
                     };
                 }
 
@@ -893,32 +911,7 @@ namespace Unity.Physics
                     return;
                 }
 
-                // Initialize every row as free and unbounded. Row construction then sets bounds where required.
-                int firstRow = island.FirstRow + startRow;
-                for (int row = firstRow; row < firstRow + jacRows; row++)
-                {
-                    (*Work.Lower)[row] = float.MinValue;
-                    (*Work.Upper)[row] = float.MaxValue;
-                    (*Work.IndexFlags)[row] = LCP.MLCPIndexFlag.Free;
-                    (*Work.Recovery)[row] = -1.0f;
-                }
-
-                var context = new RowBuildContext
-                {
-                    MotionVelocities = MotionVelocities,
-                    MotionDatas = MotionDatas,
-                    StepInput = StepInput,
-                    JacobianRows = Work.Rows(island),
-                    Eps = DirectIslandBuffers.View(Work.Epsilon, island),
-                    L = DirectIslandBuffers.View(Work.Lower, island),
-                    U = DirectIslandBuffers.View(Work.Upper, island),
-                    RightHandSide = DirectIslandBuffers.View(Work.RightHandSide, island),
-                    Recovery = Work.Recovery->Ptr + island.FirstRow,
-                    IndexSetArray = Work.Flags(island),
-                    SparseContacts = island.ContactPairs > 0,
-                    SolveSparsely = true,
-                };
-
+                RowRegularization* shared = null;
                 if (ShareRegularization)
                 {
                     if (!hasRegularization)
@@ -927,21 +920,96 @@ namespace Unity.Physics
                         hasRegularization = true;
                     }
 
-                    context.Regularization = (RowRegularization*)UnsafeUtility.AddressOf(ref regularization);
+                    shared = (RowRegularization*)UnsafeUtility.AddressOf(ref regularization);
                 }
 
-                Vector* JBlocks = stackalloc Vector[jacRows];
-                BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
+                bool lcp = BuildHeaderRows(ref header, startRow, jacRows, IslandRowBuffers.Of(Work, island), MotionVelocities, MotionDatas,
+                    StepInput, island.ContactPairs > 0, shared);
 
                 // All workers that update this flag store 1, and the solver reads it only after this job finishes, so a
                 // plain store is enough. Check the flag first to avoid repeated writes to the same cache line by
                 // workers building rows for one island.
                 int* bounded = Work.Bounded->Ptr + islandIndex;
-                if (context.IsLCP && *bounded == 0)
+                if (lcp && *bounded == 0)
                 {
                     *bounded = 1;
                 }
             }
+        }
+
+        /// <summary>
+        /// Where one island's rows are kept for a substep: the Jacobian, epsilon, bounds, right-hand side, push-out
+        /// and index flag of each row, from the island's first row on.
+        /// </summary>
+        unsafe struct IslandRowBuffers
+        {
+            public float* Jacobian;
+            public float* Epsilon;
+            public float* Lower;
+            public float* Upper;
+            public float* RightHandSide;
+            public float* Recovery;
+            public LCP.MLCPIndexFlag* Flags;
+            public int Rows;
+
+            public static IslandRowBuffers Of(in DirectIslandBuffers work, in DirectIsland island)
+            {
+                return new IslandRowBuffers
+                {
+                    Jacobian = work.Jacobian->Ptr + island.FirstRow * (long)SparseConstraintSolver.ColumnsPerRow,
+                    Epsilon = work.Epsilon->Ptr + island.FirstRow,
+                    Lower = work.Lower->Ptr + island.FirstRow,
+                    Upper = work.Upper->Ptr + island.FirstRow,
+                    RightHandSide = work.RightHandSide->Ptr + island.FirstRow,
+                    Recovery = work.Recovery->Ptr + island.FirstRow,
+                    Flags = work.IndexFlags->Ptr + island.FirstRow,
+                    Rows = island.Rows,
+                };
+            }
+        }
+
+        /// <summary>
+        /// Builds the rows of one Jacobian of an island, from its first row <paramref name="startRow"/> among the
+        /// island's rows. Every row starts free and unbounded, and the row build sets the bounds that the row needs.
+        /// Returns whether a row needs a bounded solve. A Jacobian writes only its own rows, so the lanes can build
+        /// the Jacobians of one island at the same time.
+        /// </summary>
+        static unsafe bool BuildHeaderRows(ref JacobianHeader header, int startRow, int jacRows, in IslandRowBuffers buffers,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
+            bool sparseContacts, RowRegularization* regularization)
+        {
+            for (int row = startRow; row < startRow + jacRows; row++)
+            {
+                buffers.Lower[row] = float.MinValue;
+                buffers.Upper[row] = float.MaxValue;
+                buffers.Flags[row] = LCP.MLCPIndexFlag.Free;
+                buffers.Recovery[row] = -1.0f;
+            }
+
+            var flags = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<LCP.MLCPIndexFlag>(buffers.Flags, buffers.Rows, Allocator.None);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref flags, AtomicSafetyHandle.GetTempMemoryHandle());
+#endif
+            var context = new RowBuildContext
+            {
+                MotionVelocities = motionVelocities,
+                MotionDatas = motionDatas,
+                StepInput = stepInput,
+                JacobianRows = new JacobianRows(buffers.Jacobian, buffers.Rows),
+                Eps = Vector.Create(default, buffers.Epsilon, 1, buffers.Rows),
+                L = Vector.Create(default, buffers.Lower, 1, buffers.Rows),
+                U = Vector.Create(default, buffers.Upper, 1, buffers.Rows),
+                RightHandSide = Vector.Create(default, buffers.RightHandSide, 1, buffers.Rows),
+                Recovery = buffers.Recovery,
+                IndexSetArray = flags,
+                SparseContacts = sparseContacts,
+                SolveSparsely = true,
+                Regularization = regularization,
+            };
+
+            Vector* JBlocks = stackalloc Vector[jacRows];
+            BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
+            return context.IsLCP;
         }
 
         /// <summary>
@@ -1102,8 +1170,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Marks each large island that holds only vessels, with no contacts and no joint rows, for the fused vessel
-        /// job, and marks the moving bodies of those islands' vessels. Then gives every vessel island the forest that
+        /// Marks each large island whose bodies are all vessel parts for the fused vessel job, and marks the moving
+        /// bodies of those islands' vessels. The island's contacts and joints go into the fused job's boundary block. Then gives every vessel island the forest that
         /// will solve it, see <see cref="AssignVesselForests"/>.
         /// </summary>
         [BurstCompile]
@@ -1138,8 +1206,7 @@ namespace Unity.Physics
                 for (int i = 0; Fuse && i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
-                    if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.JointRows > 0 || island.Rows > 0
-                        || island.JointEnd != island.HeaderEnd)
+                    if (island.VesselCount == 0 || island.VesselParts < MinimumParts || island.OtherBodies > 0)
                     {
                         continue;
                     }
@@ -1179,11 +1246,21 @@ namespace Unity.Physics
             [ReadOnly, NativeDisableContainerSafetyRestriction]
             public NativeArray<int> IslandVessels;
 
+            /// <summary>
+            /// The Jacobians of every island. This job updates and reads only the Jacobians of the fused islands, which
+            /// the substeps' jobs skip.
+            /// </summary>
+            [ReadOnly, NativeDisableContainerSafetyRestriction]
+            public NativeArray<IslandHeader> Headers;
+
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
 
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionData> MotionDatas;
+
+            [ReadOnly]
+            public NativeArray<RigidBody> Bodies;
 
             public StepInput StepInput;
 
@@ -1209,8 +1286,10 @@ namespace Unity.Physics
                     DirectIsland island = Islands[islandIndex];
                     if (island.Fused)
                     {
-                        SolveFusedVesselIsland(islandIndex, (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel,
-                            island.VesselCount, MotionVelocities, MotionDatas, StepInput, Team);
+                        FusedIslandSolveCount.Data++;
+                        SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
+                            (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
+                            StepInput, Team);
                     }
                 }
 

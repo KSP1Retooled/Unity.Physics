@@ -1263,63 +1263,7 @@ namespace Unity.Physics
 
             if (islandHeaders != null)
             {
-                // Only numbering the bodies, in the order the Jacobians reach them, has to follow the Jacobians in order. The
-                // lanes split reading the Jacobians and then writing the lists, each task starting where the tasks before it
-                // end.
-                int taskCount = (headerCount + JacobiansPerSummaryTask - 1) / JacobiansPerSummaryTask;
-                var summaries = new NativeArray<JacobianSummary>(headerCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                var taskBlocks = new NativeArray<int>(taskCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                var taskCouplings = new NativeArray<int>(taskCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                var summarizing = new JacobianSummaries
-                {
-                    Headers = islandHeaders,
-                    HeaderRows = headerRows,
-                    Count = headerCount,
-                    Rows = rows,
-                    MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
-                    MotionCount = motionVelocities.Length,
-                    Summaries = (JacobianSummary*)summaries.GetUnsafePtr(),
-                    TaskBlocks = (int*)taskBlocks.GetUnsafePtr(),
-                    TaskCouplings = (int*)taskCouplings.GetUnsafePtr(),
-                    CompactBodies = (int*)setup.CompactBodies.GetUnsafePtr(),
-                };
-
-                SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.SummarizeJacobiansKind, taskCount, null);
-
-                for (int h = 0; h < headerCount; h++)
-                {
-                    if (summaries[h].Rows > 0)
-                    {
-                        setup.HoldsPositions |= summaries[h].HoldsPosition;
-                        setup.Number(summaries[h].BodyA);
-                        setup.Number(summaries[h].BodyB);
-                    }
-                }
-
-                // From each task's counts to where its blocks and couplings start.
-                int blockCount = 0;
-                int couplingCount = 0;
-                for (int task = 0; task < taskCount; task++)
-                {
-                    int ownBlocks = taskBlocks[task];
-                    int ownCouplings = taskCouplings[task];
-                    taskBlocks[task] = blockCount;
-                    taskCouplings[task] = couplingCount;
-                    blockCount += ownBlocks;
-                    couplingCount += ownCouplings;
-                }
-
-                setup.Blocks.ResizeUninitialized(blockCount);
-                setup.Headers.ResizeUninitialized(blockCount);
-                setup.Couplings.ResizeUninitialized(couplingCount);
-                summarizing.Blocks = setup.Blocks.GetUnsafePtr();
-                summarizing.HeaderPointers = setup.Headers.GetUnsafePtr();
-                summarizing.Couplings = setup.Couplings.GetUnsafePtr();
-                SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.FillBlocksKind, taskCount, null);
-
-                summaries.Dispose();
-                taskBlocks.Dispose();
-                taskCouplings.Dispose();
+                GatherSparseBlocks(ref setup, islandHeaders, headerRows, headerCount, rows, motionVelocities, team);
             }
             else
             {
@@ -1586,6 +1530,73 @@ namespace Unity.Physics
             compactBodies.Dispose();
             setup.WorldBodies.Dispose();
             impulses.Dispose();
+        }
+
+        /// <summary>
+        /// Gathers the blocks and couplings of a sparse solve from an island's Jacobians, and numbers the bodies that the
+        /// Jacobians reach, in the order that the Jacobians reach them. Each Jacobian's rows start at its entry in
+        /// <paramref name="headerRows"/> and end where the next Jacobian's rows start.
+        /// </summary>
+        static unsafe void GatherSparseBlocks(ref SparseSetup setup, IslandHeader* islandHeaders, int* headerRows, int headerCount, int rows,
+            in NativeArray<MotionVelocity> motionVelocities, SparseSolveTeam* team)
+        {
+            // Only numbering the bodies, in the order the Jacobians reach them, has to follow the Jacobians in order. The
+            // lanes split reading the Jacobians and then writing the lists, each task starting where the tasks before it
+            // end.
+            int taskCount = (headerCount + JacobiansPerSummaryTask - 1) / JacobiansPerSummaryTask;
+            var summaries = new NativeArray<JacobianSummary>(math.max(1, headerCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var taskBlocks = new NativeArray<int>(math.max(1, taskCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var taskCouplings = new NativeArray<int>(math.max(1, taskCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var summarizing = new JacobianSummaries
+            {
+                Headers = islandHeaders,
+                HeaderRows = headerRows,
+                Count = headerCount,
+                Rows = rows,
+                MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafeReadOnlyPtr(),
+                MotionCount = motionVelocities.Length,
+                Summaries = (JacobianSummary*)summaries.GetUnsafePtr(),
+                TaskBlocks = (int*)taskBlocks.GetUnsafePtr(),
+                TaskCouplings = (int*)taskCouplings.GetUnsafePtr(),
+                CompactBodies = (int*)setup.CompactBodies.GetUnsafePtr(),
+            };
+
+            SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.SummarizeJacobiansKind, taskCount, null);
+
+            for (int h = 0; h < headerCount; h++)
+            {
+                if (summaries[h].Rows > 0)
+                {
+                    setup.HoldsPositions |= summaries[h].HoldsPosition;
+                    setup.Number(summaries[h].BodyA);
+                    setup.Number(summaries[h].BodyB);
+                }
+            }
+
+            // From each task's counts to where its blocks and couplings start.
+            int blockCount = 0;
+            int couplingCount = 0;
+            for (int task = 0; task < taskCount; task++)
+            {
+                int ownBlocks = taskBlocks[task];
+                int ownCouplings = taskCouplings[task];
+                taskBlocks[task] = blockCount;
+                taskCouplings[task] = couplingCount;
+                blockCount += ownBlocks;
+                couplingCount += ownCouplings;
+            }
+
+            setup.Blocks.ResizeUninitialized(blockCount);
+            setup.Headers.ResizeUninitialized(blockCount);
+            setup.Couplings.ResizeUninitialized(couplingCount);
+            summarizing.Blocks = setup.Blocks.GetUnsafePtr();
+            summarizing.HeaderPointers = setup.Headers.GetUnsafePtr();
+            summarizing.Couplings = setup.Couplings.GetUnsafePtr();
+            SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.FillBlocksKind, taskCount, null);
+
+            summaries.Dispose();
+            taskBlocks.Dispose();
+            taskCouplings.Dispose();
         }
 
         /// <summary>The blocks of a sparse solve, gathered from an island's Jacobians in their order.</summary>

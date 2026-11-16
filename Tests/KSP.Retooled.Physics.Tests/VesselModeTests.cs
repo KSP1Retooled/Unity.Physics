@@ -474,6 +474,58 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// A column dropped onto the ground at a slant, once with the island's jobs of each substep and once with the
+        /// fused vessel job, which takes the ground contacts into its boundary block. The two land the column in the
+        /// same place with the same loads.
+        /// </summary>
+        [Test]
+        public void TheFusedJobLandsAColumnAsTheIslandPathDoes()
+        {
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            var positions = new Vector3[2][];
+            var loads = new float[2];
+            try
+            {
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : 2;
+                    Ground();
+                    List<Rigidbody> bodies = Column(4, 0.6f);
+                    foreach (Rigidbody body in bodies)
+                    {
+                        body.angularVelocity = new Vector3(0.0f, 0.0f, 0.3f);
+                    }
+
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.FusedIslandSolves;
+                    vessels.Step(80);
+                    long fused = Unity.Physics.Solver.FusedIslandSolves - before;
+                    Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.GreaterThanOrEqualTo(80), "the column goes to the fused job only in the second pass");
+                    positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                    loads[pass] = (float)math.length(vessels.Load(3).Force);
+                }
+            }
+            finally
+            {
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                Debug.Log($"[VesselModeTests] fused landing: part {i} at {positions[0][i]:F5} by the island's jobs, {positions[1][i]:F5} by the fused job");
+                Assert.That((positions[1][i] - positions[0][i]).magnitude, Is.LessThan(1e-3f), $"part {i} lands in the same place");
+            }
+
+            Debug.Log($"[VesselModeTests] fused landing: bottom edge force {loads[0]:F3} by the island's jobs, {loads[1]:F3} by the fused job");
+            Assert.That(loads[1], Is.EqualTo(loads[0]).Within(0.01f * loads[0] + 0.01f), "the bottom edge carries the same load");
+        }
+
         [Test]
         public void AFloatingVesselKeepsItsMomentum()
         {
