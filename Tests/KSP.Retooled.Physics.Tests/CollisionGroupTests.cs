@@ -337,8 +337,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A table made by code older than the groups is 64 bytes long and has no layout field. After a domain reload into
-        /// this code, the backend grows the table before it reads the field, and the table keeps its ignored pairs.
+        /// A table made by code older than the groups is 64 bytes long. The bytes after it on the heap can hold anything,
+        /// here the layout mark that the code before this one used and a pointer that leads nowhere, as a freed table
+        /// would leave them. After a domain reload into this code, the backend must not take those bytes for the
+        /// table's groups. It grows the table, and the table keeps its ignored pairs.
         /// </summary>
         [Test]
         public unsafe void AnIgnoreTableFromBeforeTheGroupsGrowsAndKeepsItsPairs()
@@ -348,16 +350,21 @@ namespace KSP.Retooled.Physics.Tests
             NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
             IgnoreTable* current = globals->ignoreTable;
 
-            // The old table holds the first 64 bytes of the current one, so it shares the current table's arrays.
-            const int oldSize = 64;
-            Assert.That(sizeof(IgnoreTable), Is.GreaterThan(oldSize));
-            var old = (IgnoreTable*)StoreOps.Reallocate(globals, null, oldSize);
-            Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCpy(old, current, oldSize);
+            // The old table holds the first 64 bytes of the current one, so it shares the current table's arrays. Fill a
+            // larger block first and then shrink it, so that the bytes after the old table are likely to hold the stale
+            // mark and pointer.
+            const int oldSize = IgnoreTable.OldSize;
+            var block = (byte*)StoreOps.Reallocate(globals, null, oldSize + 16);
+            Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCpy(block, current, oldSize);
+            *(ulong*)(block + oldSize) = 0x3250554F52474954; // "TIGROUP2"
+            *(ulong*)(block + oldSize + 8) = 0xDEADBEEF0;
+            var old = (IgnoreTable*)StoreOps.Reallocate(globals, block, oldSize);
+            IgnoreTable.ClearLayoutMark(old);
             globals->ignoreTable = old;
             try
             {
                 IgnoreTable.Upgrade(globals);
-                Assert.That(globals->ignoreTable != null && IgnoreTable.GroupsOf(globals) == null, "the grown table has no groups yet");
+                Assert.That(IgnoreTable.GroupsOf(globals) == null, Is.True, "the grown table has no groups yet");
                 Assert.That(UnityEngine.Physics.GetIgnoreCollision(First, Second), Is.True, "the grown table keeps its pairs");
             }
             finally
