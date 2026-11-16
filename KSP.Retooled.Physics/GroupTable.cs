@@ -105,7 +105,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static uint RecordOfCollider(NativeStore.StoreGlobals* globals, ulong engineId)
         {
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null || engineId == EmptyKey || !table->FindEntry(engineId, out uint slot))
             {
                 return 0;
@@ -148,7 +148,7 @@ namespace KSP.Retooled.Physics
         internal static void RemoveShape(NativeStore.StoreGlobals* globals, NativeStore.Shape* shape)
         {
             ulong key = EngineIdOf(globals, shape);
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (key == EmptyKey || table == null || !table->FindEntry(key, out uint slot))
             {
                 return;
@@ -235,14 +235,14 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            record = globals->ignoreTable->Groups->records[index - 1];
+            record = IgnoreTable.GroupsOf(globals)->records[index - 1];
             return true;
         }
 
         /// <summary>Returns the shape of a collider, or null if the collider has no shape.</summary>
         internal static NativeStore.Shape* ShapeOf(NativeStore.StoreGlobals* globals, ulong engineId)
         {
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null || engineId == EmptyKey || !table->FindEntry(engineId, out uint slot))
             {
                 return null;
@@ -256,7 +256,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static ulong Bytes(NativeStore.StoreGlobals* globals)
         {
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null)
             {
                 return 0;
@@ -269,7 +269,7 @@ namespace KSP.Retooled.Physics
         /// <summary>Lists the engine ids of colliders that have a group record but no shape.</summary>
         internal static int ListOrphans(NativeStore.StoreGlobals* globals, ulong* ids, int capacity)
         {
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             int count = 0;
             for (uint i = 0; table != null && i < table->entryCount && count < capacity; i++)
             {
@@ -324,7 +324,7 @@ namespace KSP.Retooled.Physics
 
         internal static bool HasPair(NativeStore.StoreGlobals* globals, uint first, uint second)
         {
-            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
             return table != null && table->pairsLive != 0 && table->FindPair(PairKey(first, second), out _);
         }
 

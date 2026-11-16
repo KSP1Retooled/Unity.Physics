@@ -291,7 +291,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             TwoBoxes();
             CollisionGroups.Set(First, 7, 1, false);
-            GroupTable* table = NativeStore.RetooledPhysics_Globals()->ignoreTable->Groups;
+            GroupTable* table = IgnoreTable.GroupsOf(NativeStore.RetooledPhysics_Globals());
             uint before = table->Orphans;
 
             Object.DestroyImmediate(First);

@@ -44,9 +44,25 @@ namespace KSP.Retooled.Physics
         private uint lastId;
 
         /// <summary>
-        /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>.
+        /// Marks a table that has the fields below. A table made by older code ends before them, and it can survive a
+        /// domain reload into this code. <see cref="TableOf"/> then grows the table before it writes these fields.
+        /// </summary>
+        private ulong layout;
+
+        /// <summary>
+        /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>. Read
+        /// it through <see cref="GroupsOf"/> unless a shape's group record shows that the groups exist.
         /// </summary>
         internal GroupTable* Groups;
+
+        private const ulong CurrentLayout = 0x3250554F52474954; // "TIGROUP2"
+
+        /// <summary>Returns the collision groups, or null if there are none yet.</summary>
+        internal static GroupTable* GroupsOf(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            return table != null && table->layout == CurrentLayout ? table->Groups : null;
+        }
 
         /// <summary>
         /// Returns whether two shapes must not collide, either because Physics.IgnoreCollision ignored their pair or
@@ -161,9 +177,10 @@ namespace KSP.Retooled.Physics
                 table->Rehash(globals);
             }
 
-            if (table != null && table->Groups != null)
+            GroupTable* groups = GroupsOf(globals);
+            if (groups != null)
             {
-                table->Groups->Reslot(globals);
+                groups->Reslot(globals);
             }
         }
 
@@ -181,6 +198,15 @@ namespace KSP.Retooled.Physics
                 }
 
                 globals->ignoreTable = table;
+            }
+
+            if (globals->ignoreTable->layout != CurrentLayout)
+            {
+                // Copy a table made by older code into a block that is large enough for the new fields.
+                IgnoreTable* grown = (IgnoreTable*)StoreOps.Reallocate(globals, globals->ignoreTable, (ulong)sizeof(IgnoreTable));
+                grown->layout = CurrentLayout;
+                grown->Groups = null;
+                globals->ignoreTable = grown;
             }
 
             return globals->ignoreTable;

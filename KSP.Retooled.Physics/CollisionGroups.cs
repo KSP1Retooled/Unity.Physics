@@ -54,10 +54,10 @@ namespace KSP.Retooled.Physics
             ulong engineId = EntityId.ToULong(collider.GetEntityId());
             NativeStore.Shape* shape = GroupTable.Set(globals, engineId, group, member, selfCollides ? GroupTable.SelfCollides : 0u);
             Wake(shape);
-            if (globals->ignoreTable->Groups->Orphans >= nextOrphanCheck)
+            if (IgnoreTable.GroupsOf(globals)->Orphans >= nextOrphanCheck)
             {
                 ForgetDestroyedColliders(globals);
-                nextOrphanCheck = System.Math.Max(OrphanCheckThreshold, globals->ignoreTable->Groups->Orphans * 2);
+                nextOrphanCheck = System.Math.Max(OrphanCheckThreshold, IgnoreTable.GroupsOf(globals)->Orphans * 2);
             }
 
             return true;
@@ -151,7 +151,7 @@ namespace KSP.Retooled.Physics
 
         internal static void ForgetDestroyedColliders(NativeStore.StoreGlobals* globals)
         {
-            int capacity = (int)globals->ignoreTable->Groups->Orphans;
+            int capacity = (int)IgnoreTable.GroupsOf(globals)->Orphans;
             using var ids = new NativeArray<ulong>(capacity, Allocator.Temp);
             int count = GroupTable.ListOrphans(globals, (ulong*)ids.GetUnsafePtr(), capacity);
             var entities = new NativeArray<EntityId>(count, Allocator.Temp);
