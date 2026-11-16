@@ -204,6 +204,85 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A craft of 8 parts lies on the ground, and next to each part a loose box sits 3 cm deep in the ground, touching
+        /// the part, so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most
+        /// boxes are held out of the boundary. The scene runs twice: once with held rows that take no impulse of their
+        /// own, as before, and once with held rows that are too deep getting a push-out of their own. The boxes come
+        /// further out of the ground in the second run.
+        /// </summary>
+        [Test]
+        public void HeldContactsThatAreTooDeepArePushedOut()
+        {
+            const float depth = 0.03f;
+            var deepest = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { OutsideContactPoints = 4, IdleHeldRows = pass == 0 });
+                LyingCraft(8);
+                var boxes = new List<Rigidbody>();
+                for (int i = 0; i < 8; i++)
+                {
+                    Rigidbody box = Box(new Vector3(i - 4.0f, 0.25f - depth, 0.6f), new Vector3(0.8f, 0.5f, 0.6f)).AddComponent<Rigidbody>();
+                    box.mass = PartMass;
+                    box.sleepThreshold = 0.0f;
+                    boxes.Add(box);
+                }
+
+                BoundaryCounters.Reset();
+                Simulate(3);
+                foreach (Rigidbody box in boxes)
+                {
+                    deepest[pass] = Mathf.Max(deepest[pass], 0.25f - box.position.y);
+                }
+
+                BoundaryCounters counts = BoundaryCounters.Current;
+                Debug.Log($"[BoundaryCapTests] deep held contacts, {(pass == 0 ? "idle" : "pushed")}: {counts.Solves} solves, " +
+                    $"held points {counts.HeldPoints}, manifolds left with no point {counts.EmptiedOutsideManifolds}, held rows " +
+                    $"pushed {counts.HeldPushes}; deepest box after 3 steps {deepest[pass] * 1e3f:F2} mm");
+                Assert.That(counts.EmptiedOutsideManifolds, Is.GreaterThan(0), "the cap held whole manifolds out");
+            }
+
+            Assert.That(deepest[1], Is.LessThan(deepest[0] - 0.005f), "the push-out of the held rows lifts the boxes");
+        }
+
+        /// <summary>
+        /// A long craft rests on the ground, with more contact points than the cap. Then gravity goes away. Each contact
+        /// starts the next step with most of its last impulse, which pushes the craft up. The solve takes that impulse
+        /// back from the points that it keeps, and it has to take it back from the held points too, or the held points
+        /// throw the craft into the air. The scene runs twice: once with held rows that keep their warm start, as before,
+        /// and once with held rows that give it back.
+        /// </summary>
+        [Test]
+        public void HeldContactsGiveBackTheirWarmStartWhenTheyAreNotNeeded()
+        {
+            var fastest = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { IdleHeldRows = pass == 0 });
+                List<Rigidbody> bodies = LyingCraft(100);
+                Simulate(100);
+                UnityEngine.Physics.gravity = Vector3.zero;
+                BoundaryCounters.Reset();
+                for (int step = 0; step < 10; step++)
+                {
+                    Simulate();
+                    foreach (Rigidbody body in bodies)
+                    {
+                        fastest[pass] = Mathf.Max(fastest[pass], body.linearVelocity.y);
+                    }
+                }
+
+                BoundaryCounters counts = BoundaryCounters.Current;
+                Debug.Log($"[BoundaryCapTests] gravity gone, {(pass == 0 ? "idle" : "given back")}: held points {counts.HeldPoints}, " +
+                    $"held rows that gave back their warm start {counts.HeldReleases}; fastest upward speed {fastest[pass]:F4} m/s");
+                Assert.That(counts.HeldPoints, Is.GreaterThan(0), "the cap held points out");
+            }
+
+            Assert.That(fastest[1], Is.LessThan(0.5f * fastest[0]), "giving back the warm start keeps the craft lower");
+            Assert.That(fastest[1], Is.LessThan(0.03f), "the craft stays on the ground, apart from the push out of its resting depth");
+        }
+
+        /// <summary>
         /// The limit on self-contact manifolds takes its default of 8 for a setting of zero, and it never goes above 25,
         /// not even for a negative setting, which turns the other limits off.
         /// </summary>

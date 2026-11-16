@@ -25,8 +25,10 @@ namespace Unity.Physics
 
         /// <summary>
         /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
-        /// own. The contact impulse that the row had before the solve stays applied, because a sparse solve's contact
-        /// rows solve for the change from their warm-start impulse.
+        /// own, so the contact impulse that the row had before the solve, its warm start, stays applied: a sparse solve's
+        /// contact rows solve for the change from their warm-start impulse. There are two exceptions, see
+        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, and in a
+        /// push-out, a held normal row whose contact is too deep gets a push of its own.
         /// </summary>
         const byte HeldRowClass = 4;
 
@@ -1558,6 +1560,14 @@ namespace Unity.Physics
                 SolveAgainstFactor(ref run, v);
             }
 
+            // In a vessel island's velocity solve, the held rows whose contacts separate give back their warm start before
+            // the boundary is solved, so that the boundary sees the velocities without it.
+            bool heldSolved = run.VesselMode && run.Bounded;
+            if (heldSolved && vesselStart)
+            {
+                SolveHeldRows(ref run, rhs, impulses, v, false);
+            }
+
             // The boundary: (J_b A^-1 J_b^T + E_b) z = r_b - J_b v0, bounded.
             int nb = run.BoundaryCount;
             bool solved = true;
@@ -1599,9 +1609,10 @@ namespace Unity.Physics
                 }
 
                 // A cap can keep some of a coupling's source rows out of the boundary. The rows that stay are next to each
-                // other in the boundary, because the boundary keeps the rows' order. A held row adds nothing to the source
-                // impulse, so the coupling only needs its range of source rows moved. A coupling whose own rows are held
-                // is left out.
+                // other in the boundary, because the boundary keeps the rows' order. A held row's impulse is known before
+                // the boundary is solved, so the coupling counts it with the impulse that was applied before the solve,
+                // and the coupling only needs its range of source rows moved. A coupling whose own rows are held is left
+                // out.
                 var couplings = new NativeList<BoundCoupling>(problem.CouplingCount, Allocator.Temp);
                 for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
                 {
@@ -1619,6 +1630,10 @@ namespace Unity.Physics
                         {
                             firstSource = firstSource < 0 ? run.BoundaryOf[row] : firstSource;
                             sourceCount++;
+                        }
+                        else if (heldSolved && run.RowClass[row] == HeldRowClass)
+                        {
+                            coupling.HeldSourceImpulse += impulses[row];
                         }
                     }
 
@@ -1669,6 +1684,13 @@ namespace Unity.Physics
                 couplings.Dispose();
             }
 
+            // In a push-out, the held rows whose contacts are still too deep after the boundary's push get a push of
+            // their own.
+            if (heldSolved && !vesselStart)
+            {
+                SolveHeldRows(ref run, rhs, impulses, v, true);
+            }
+
             // Every forest row's impulse from the velocities: z = E^-1 (r - J v).
             for (int row = 0; row < rows; row++)
             {
@@ -1682,13 +1704,167 @@ namespace Unity.Physics
                 {
                     impulses[row] = problem.Lower[row];
                 }
-                else if (rowClass == SectionRowClass || rowClass == HeldRowClass || rowClass == DormantRowClass)
+                else if (rowClass == SectionRowClass || rowClass == DormantRowClass || (rowClass == HeldRowClass && !heldSolved))
                 {
                     impulses[row] = 0.0f;
                 }
             }
 
             return solved;
+        }
+
+        /// <summary>
+        /// Gives some of a vessel island's held normal rows an impulse, see <see cref="HeldRowClass"/>. Every other held
+        /// row gets no impulse. There are two cases:
+        /// <list type="bullet">
+        /// <item>
+        /// In a velocity solve (<paramref name="pushOut"/> false), a held row whose contact separates gives back its warm
+        /// start. The row's target is the change of its velocity that its right-hand side asks for, when that change is
+        /// negative, and the row gives back at most its warm start, which is minus its lower bound.
+        /// </item>
+        /// <item>
+        /// In a push-out (<paramref name="pushOut"/> true), a held row whose contact is still too deep after the
+        /// boundary's push gets a push of its own. The row's target is the rest of the push that its right-hand side
+        /// asks for.
+        /// </item>
+        /// </list>
+        /// Each row takes the impulse that would meet its target if the row were alone: the target divided by the row's
+        /// diagonal entry of W. That entry costs one walk along the row's path to the root of the factor, as in
+        /// <see cref="BuildBoundary"/>, but no other entry of W is needed. Several held rows can move the same bodies,
+        /// for example the four points of one box, so the routine then scales all of their impulses by one factor. The
+        /// factor is the one that meets the targets best in the least-squares sense, between 0 and 1. It costs one more
+        /// solve against the factor. The routine adds the change of the sections' velocities to <paramref name="v"/>,
+        /// writes each held row's impulse, and returns how many rows got one. With
+        /// <see cref="BoundaryCaps.IdleHeldRows"/>, every held row gets no impulse.
+        /// </summary>
+        static unsafe int SolveHeldRows(ref ForestRun run, float* rhs, float* impulses, double* v, bool pushOut)
+        {
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            float* jacobian = run.Jacobian;
+            var held = new NativeList<int>(16, Allocator.Temp);
+            var target = new NativeList<double>(16, Allocator.Temp);
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (run.RowClass[row] != HeldRowClass)
+                {
+                    continue;
+                }
+
+                impulses[row] = 0.0f;
+
+                // A normal row may push without limit, and a friction row has a finite upper bound.
+                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue
+                    && (pushOut ? rhs[row] > 0.0f : problem.Lower[row] < 0.0f);
+                if (!candidate)
+                {
+                    continue;
+                }
+
+                double change = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]],
+                    jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                if (pushOut ? change > 0.0 : change < 0.0)
+                {
+                    held.Add(row);
+                    target.Add(change);
+                }
+            }
+
+            int given = held.Length;
+            if (given > 0)
+            {
+                ForestIsland* forest = run.Forest;
+                ref VesselContext context = ref forest->Context;
+                int sections = forest->SectionCount;
+                var y = new NativeArray<double>(6 * sections, Allocator.Temp);
+                var mark = new NativeArray<int>(sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var path = new NativeArray<int>(sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var z = new NativeArray<double>(given, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int s = 0; s < sections; s++)
+                {
+                    mark[s] = -1;
+                }
+
+                int* seeds = stackalloc int[2];
+                double* yPtr = (double*)y.GetUnsafePtr();
+                double* work = (double*)run.Work.GetUnsafePtr();
+                UnsafeUtility.MemClear(work, run.Work.Length * (long)sizeof(double));
+                for (int k = 0; k < given; k++)
+                {
+                    int row = held[k];
+                    int2 sides = run.BlockSections[run.RowBlock[row]];
+                    float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                    int seedCount = 0;
+                    if (sides.x >= 0)
+                    {
+                        seeds[seedCount++] = sides.x;
+                        (double6.Load(yPtr + 6 * sides.x) + BlockRows.Load(columns)).Store(yPtr + 6 * sides.x);
+                    }
+
+                    if (sides.y >= 0)
+                    {
+                        if (sides.y != sides.x)
+                        {
+                            seeds[seedCount++] = sides.y;
+                        }
+
+                        (double6.Load(yPtr + 6 * sides.y) + BlockRows.Load(columns + 6)).Store(yPtr + 6 * sides.y);
+                    }
+
+                    int count = context.CollectPath(seeds, seedCount, (int*)path.GetUnsafePtr(), (int*)mark.GetUnsafePtr(), k);
+                    context.ForwardPath(yPtr, (int*)path.GetUnsafePtr(), count);
+                    double diagonal = problem.Epsilon[row];
+                    for (int p = 0; p < count; p++)
+                    {
+                        int s = path[p];
+                        double6 ys = double6.Load(yPtr + 6 * s);
+                        diagonal += double6.Dot(ys, context.InverseDiagonal(s, ys));
+                        default(double6).Store(yPtr + 6 * s);
+                    }
+
+                    double impulse = target[k] / math.max(diagonal, 1e-300);
+                    if (!pushOut)
+                    {
+                        impulse = math.max(impulse, problem.Lower[row]);
+                    }
+
+                    z[k] = impulse;
+                    BlockRows.Add(work, sides, columns, impulse);
+                }
+
+                SolveAgainstFactor(ref run, work);
+                // The scale is the one that best meets the targets in the least-squares sense, kept between 0 and 1.
+                double along = 0.0, squared = 0.0;
+                for (int k = 0; k < given; k++)
+                {
+                    int row = held[k];
+                    double moved = BlockRows.Dot(work, run.BlockSections[run.RowBlock[row]],
+                        jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    along += moved * target[k];
+                    squared += moved * moved;
+                }
+
+                double scale = squared > 0.0 ? math.clamp(along / squared, 0.0, 1.0) : 0.0;
+
+                for (int i = 0; i < run.Velocity.Length; i++)
+                {
+                    v[i] += scale * work[i];
+                }
+
+                for (int k = 0; k < given; k++)
+                {
+                    impulses[held[k]] = (float)(scale * z[k]);
+                }
+
+                y.Dispose();
+                mark.Dispose();
+                path.Dispose();
+                z.Dispose();
+                BoundaryCounters.AddHeld(pushOut ? 0 : given, pushOut ? given : 0);
+            }
+
+            held.Dispose();
+            target.Dispose();
+            return given;
         }
 
         /// <summary>
@@ -2198,6 +2374,13 @@ namespace Unity.Physics
         public bool KeepDormantRows;
 
         /// <summary>
+        /// If true, a held row never takes an impulse of its own: a held normal row keeps its warm start even while its
+        /// contact separates, and it gets no push-out. If false, see <see cref="Solver"/>'s SolveHeldRows. For measuring
+        /// what the held rows' own impulses do.
+        /// </summary>
+        public bool IdleHeldRows;
+
+        /// <summary>
         /// How far, in metres or radians, a one-sided joint row must stay from its stop over the step for the solve to
         /// leave it out of the boundary.
         /// </summary>
@@ -2378,6 +2561,12 @@ namespace Unity.Physics
         internal static void AddDormant(int dormantRows)
         {
             Interlocked.Add(ref Shared.Data.DormantRows, dormantRows);
+        }
+
+        internal static void AddHeld(int releases, int pushes)
+        {
+            Interlocked.Add(ref Shared.Data.HeldReleases, releases);
+            Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
         }
 
         static void Most(ref long most, long value)

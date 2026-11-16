@@ -415,7 +415,9 @@ namespace KSP.Retooled.Physics.Tests
                 lastTimes += $"; vessel boundary: {boundary.Rows / (double)boundary.Solves:F0} rows and " +
                     $"{boundary.Rounds / (double)boundary.Solves:F2} pivoting rounds a solve ({boundary.CappedSolves} solves at the cap, " +
                     $"{boundary.UnsettledSolves} of them without an answer), " +
-                    $"{boundary.HeldPoints / (double)boundary.Solves:F0} points held a solve, " +
+                    $"{boundary.HeldPoints / (double)boundary.Solves:F0} points held a solve " +
+                    $"({boundary.EmptiedOutsideManifolds} manifolds left with no point, {boundary.HeldReleases} held rows gave back " +
+                    $"their warm start, {boundary.HeldPushes} held rows pushed out), " +
                     $"{boundary.DormantRows / (double)boundary.Solves:F1} dormant rows a solve, " +
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
             }
