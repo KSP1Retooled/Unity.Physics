@@ -270,6 +270,9 @@ namespace Unity.Physics
             var bodyAngular = new NativeArray<float3>(math.max(1, forest->FusedWorldBodies.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
+
+            // Whether the last substep's stage that moved the bodies also filled the parts' poses for this substep.
+            bool posesFilled = false;
             for (int substep = 0; substep < stepInput.NumSubsteps; substep++)
             {
                 StepInput substepInput = stepInput;
@@ -377,7 +380,7 @@ namespace Unity.Physics
 
                 int builds = forest->StructureBuilds;
                 long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                PrepareVesselParts(ref run, substep);
+                PrepareVesselParts(ref run, substep, posesFilled);
                 StartVesselRun(ref run);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - started);
@@ -386,10 +389,15 @@ namespace Unity.Physics
                 stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestSolves);
                 stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
 
+                // The lanes move or integrate the bodies and write the loads in one stage: its items are the parts and
+                // then the closures, as in WriteVesselLoads.
                 var bodyTasks = new VesselTasks
                 {
                     Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
-                    Count = forest->Parts.Length,
+                    Count = forest->Parts.Length + forest->Closures.Length,
+                    VesselParts = forest->Parts.Length,
+                    Substep = substep,
+                    Substeps = stepInput.NumSubsteps,
                     Linear = linear,
                     Angular = angular,
                     MotionVelocities = motionVelocities,
@@ -405,10 +413,11 @@ namespace Unity.Physics
                         setup.WorldBodies, compactBodies, setup.HoldsPositions, motionVelocities, motionDatas, substepInput,
                         new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team, true,
                         (float*)impulses.GetUnsafePtr(), linear, angular);
-                    bodyTasks.Phase = VesselTasks.IntegrateBodies;
+                    bodyTasks.Phase = VesselTasks.IntegrateBodiesAndWriteLoads;
                     SparseSolveTeam.RunAll(team, &bodyTasks, SparseSolveTeam.ForestVesselKind,
                         (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                     impulses.Dispose();
+                    posesFilled = false;
                 }
                 else
                 {
@@ -422,14 +431,18 @@ namespace Unity.Physics
                     UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
                     RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
                     FinishVesselSections(ref run);
-                    bodyTasks.Phase = VesselTasks.MoveBodies;
+                    // Each part's body moves only in its own task, so the same task can fill the part's pose and
+                    // velocity for the next substep right after it integrates the body. The next substep then skips
+                    // the stage that fills the poses.
+                    bodyTasks.Phase = VesselTasks.MoveBodiesAndWriteLoads;
+                    bodyTasks.FillNext = substep < stepInput.NumSubsteps - 1;
                     SparseSolveTeam.RunAll(team, &bodyTasks, SparseSolveTeam.ForestVesselKind,
                         (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    posesFilled = bodyTasks.FillNext;
                     stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime,
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 }
 
-                WriteVesselLoads(ref run, substep, stepInput.NumSubsteps);
                 stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
                     Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 run.Dispose();
@@ -517,9 +530,10 @@ namespace Unity.Physics
         /// Arranges the island's parts in order: first the parts of each vessel, then a separate part for each moving
         /// body that is not in a vessel. If the vessels or extra bodies have changed, preserves the lock states for
         /// vessels with the same ID and structure version, then rebuilds the structure. On the first substep of each
-        /// step, tests each edge's lock state against its load from the previous step.
+        /// step, tests each edge's lock state against its load from the previous step. With a known layout after the
+        /// first substep, <paramref name="posesFilled"/> says that the last substep already filled the parts' poses.
         /// </summary>
-        static unsafe void PrepareVesselParts(ref ForestRun run, int substep)
+        static unsafe void PrepareVesselParts(ref ForestRun run, int substep, bool posesFilled = false)
         {
             ForestIsland* forest = run.Forest;
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
@@ -527,7 +541,7 @@ namespace Unity.Physics
             int bodies = problem.BodyCount;
             if (run.KnownLayout)
             {
-                PrepareKnownVesselParts(ref run, substep);
+                PrepareKnownVesselParts(ref run, substep, posesFilled);
                 return;
             }
 
@@ -683,9 +697,10 @@ namespace Unity.Physics
         /// outside the vessels. The part numbering, the closures and the mapping from bodies to sections stay as they
         /// are. On the first substep of each step, the team's lanes copy the edges again and test the locks, because
         /// the edges' drive and break values can change between steps. In every substep, the lanes fill the parts'
-        /// poses and velocities from the bodies.
+        /// poses and velocities from the bodies, unless <paramref name="posesFilled"/> says that the last substep's
+        /// stage that moved the bodies already filled them.
         /// </summary>
-        static unsafe void PrepareKnownVesselParts(ref ForestRun run, int substep)
+        static unsafe void PrepareKnownVesselParts(ref ForestRun run, int substep, bool posesFilled)
         {
             ForestIsland* forest = run.Forest;
             int partCount = forest->Parts.Length;
@@ -708,7 +723,11 @@ namespace Unity.Physics
 
             // The parts' masses and inertias do not change within a step, so after the first substep the lanes fill
             // only the poses and velocities.
-            RunVesselStage(ref run, substep <= 0 ? VesselTasks.FillParts : VesselTasks.FillPoses, partCount);
+            if (substep <= 0 || !posesFilled)
+            {
+                RunVesselStage(ref run, substep <= 0 ? VesselTasks.FillParts : VesselTasks.FillPoses, partCount);
+            }
+
             if (rebuild)
             {
                 BuildVesselStructure(forest);
@@ -1717,6 +1736,13 @@ namespace Unity.Physics
             public const int BuildRows = 17;
             public const int IntegrateBodies = 18;
 
+            // The stages of the fused vessel solve that move or integrate the bodies and also write the loads. Their
+            // items are the parts and then the closures. With FillNext, the stage that moves the bodies also fills
+            // each part's pose and velocity for the next substep.
+            public const int MoveBodiesAndWriteLoads = 19;
+            public const int IntegrateBodiesAndWriteLoads = 20;
+            public bool FillNext;
+
             public ForestRun* Run;
             public int Phase;
             public int Count;
@@ -1729,8 +1755,9 @@ namespace Unity.Physics
             public int Substeps;
 
             /// <summary>
-            /// For <see cref="FillEdges"/>: the number of vessel parts, which come before the closures in the stage's
-            /// items, and a flag that a task sets when a lock state changes.
+            /// For <see cref="FillEdges"/>, <see cref="MoveBodiesAndWriteLoads"/> and
+            /// <see cref="IntegrateBodiesAndWriteLoads"/>: the number of parts, which come before the closures in the
+            /// stage's items. For <see cref="FillEdges"/>, also a flag that a task sets when a lock state changes.
             /// </summary>
             public int VesselParts;
             public int Rebuild;
@@ -1833,6 +1860,26 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.IntegrateBodies:
                         IntegrateVesselBody(ref run, tasks, item);
+                        break;
+                    case VesselTasks.MoveBodiesAndWriteLoads:
+                        if (item < tasks->VesselParts)
+                        {
+                            MoveVesselBody(ref run, tasks, item);
+                            if (tasks->FillNext)
+                            {
+                                FillPartPose(run, item);
+                            }
+                        }
+
+                        WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
+                        break;
+                    case VesselTasks.IntegrateBodiesAndWriteLoads:
+                        if (item < tasks->VesselParts)
+                        {
+                            IntegrateVesselBody(ref run, tasks, item);
+                        }
+
+                        WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
                         break;
                     case VesselTasks.FillEdges:
                         if (item >= tasks->VesselParts)
