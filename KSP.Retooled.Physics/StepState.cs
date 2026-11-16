@@ -108,6 +108,9 @@ namespace KSP.Retooled.Physics
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
         private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
+
+        // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
+        private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
         private uint stepCount;
         private uint builtStaticsVersion;
@@ -172,6 +175,7 @@ namespace KSP.Retooled.Physics
         {
             store->queryWorld = null;
 
+            forcesApplied.Complete();
             collidersBuilt.Complete();
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
@@ -262,9 +266,17 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        /// <summary>The first stage of a step, which integrates forces into the store's velocities.</summary>
+        /// <summary>
+        /// The first stage of a step, which integrates forces into the store's velocities. The job that does this is
+        /// left running: <see cref="BuildWorld"/> makes every job that it schedules wait for it, so the main thread can
+        /// schedule the build while the workers apply the forces. Between the two stages, the main thread reads only
+        /// the bodies' flags, which the job doesn't write. Waking bodies through joints writes the flags, so it runs here
+        /// on the main thread before the job starts.
+        /// </summary>
         internal void ApplyForces(float deltaTime)
         {
+            // A step that threw after this stage last time can have left the job running.
+            forcesApplied.Complete();
             store->queryWorld = null;
             store->queryDirty = StoreOps.QueryStale;
             BodyEntities.PrepareForJobs(store);
@@ -274,12 +286,13 @@ namespace KSP.Retooled.Physics
             {
                 new WakeJointedBodiesJob { World = store }.Run();
 
-                new ApplyForcesJob
+                forcesApplied = new ApplyForcesJob
                 {
                     Bodies = store->bodies,
                     Gravity = store->gravity,
                     DeltaTime = deltaTime,
-                }.Schedule((int)store->bodyCount, ParallelBatchSize).Complete();
+                }.Schedule((int)store->bodyCount, ParallelBatchSize);
+                JobHandle.ScheduleBatchedJobs();
             }
         }
 
@@ -288,6 +301,9 @@ namespace KSP.Retooled.Physics
         {
             using var span = BackendMarkers.StepSchedule.Auto();
 
+            // Every job below waits for the forces, including the collider jobs, which write the flags that the forces
+            // job reads.
+            dependency = JobHandle.CombineDependencies(dependency, forcesApplied);
             JobHandle colliders = RefreshColliders(dependency);
             JobHandle broadphase = Build(deltaTime, colliders, out JobHandle joints);
 
@@ -770,6 +786,9 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // A step that threw between ApplyForces and BuildWorld can have left the forces job running, and the collider
+            // jobs write the flags that it reads.
+            forcesApplied.Complete();
             JobHandle colliders = RefreshColliders(default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
