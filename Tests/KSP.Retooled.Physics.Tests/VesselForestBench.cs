@@ -515,6 +515,7 @@ namespace KSP.Retooled.Physics.Tests
             double settle0 = VesselForest.SettleMilliseconds;
             double[] serial0 = VesselForest.SerialMilliseconds();
             BoundaryCounters.Reset();
+            HandOffCounters.Reset();
             var samples = new List<double>(Measured);
             for (int i = 0; i < Measured; i++)
             {
@@ -539,6 +540,17 @@ namespace KSP.Retooled.Physics.Tests
                 lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / Measured:F2}, decide {(serial1[1] - serial0[1]) / Measured:F2}, " +
                     $"section sums {(serial1[2] - serial0[2]) / Measured:F2}, body impulses {(serial1[3] - serial0[3]) / Measured:F2}, " +
                     $"subtree {(serial1[4] - serial0[4]) / Measured:F2}";
+            }
+
+            // How fast the teams' helpers reached the stages that the leaders published.
+            HandOffCounters handOff = HandOffCounters.Current;
+            if (handOff.Stages > 0)
+            {
+                double tickUs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                    / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-3;
+                lastTimes += $"; teams: {handOff.Stages / (double)Measured:F1} stages published a step, " +
+                    $"{100.0 * handOff.HelpedStages / handOff.Stages:F0}% of them helped, first helper after " +
+                    $"{handOff.ArrivalTicks * tickUs / System.Math.Max(1, handOff.HelpedStages):F1} us on average";
             }
 
             BoundaryCounters boundary = BoundaryCounters.Current;
