@@ -10,16 +10,15 @@ namespace Unity.Physics
     /// passes it in <see cref="SimulationStepInput"/>. Without a cache, each solve starts without results from a
     /// previous solve.
     ///
-    /// Slots are matched by each island's first body, which has its lowest body index, rather than by
-    /// the island's index. Adding an island can change later island indices without changing their body indices. The
-    /// first body is a useful key while those body indices remain stable, including when a craft drops a stage or lands
-    /// near another craft. A solver can also be assigned to a different island: it validates cached analysis against
-    /// the new problem and repeats analysis when necessary.
+    /// Slots are matched by the identity of each island's first body (see <see cref="BodyIdentity"/>), rather than by
+    /// the island's index. Adding an island can change later island indices without changing their first bodies, for
+    /// example when a craft drops a stage or lands near another craft. A solver can also be assigned to a different
+    /// island: it validates cached analysis against the new problem and repeats analysis when necessary.
     ///
-    /// A body index alone does not tell two bodies apart: when a body is destroyed, the next body that is made can take
-    /// its index. So the cache also keeps each slot's first body by its identity (see <see cref="BodyIdentity"/>), and a
-    /// slot matches an island only when both the index and the identity match. A forest's pairs keep their lock states
-    /// by the identities of their bodies too, so a new craft never takes over the lock states of a destroyed craft.
+    /// The identity is not the body's index in the world. When a body is destroyed, the next body that is made can take
+    /// its index, and a living body can move to another index when other bodies go. So a slot follows the body itself:
+    /// a craft keeps its slot when its bodies move, and a new craft never takes over a destroyed craft's slot as its
+    /// own. A forest's pairs keep their lock states by the identities of their bodies too.
     /// </summary>
     public unsafe struct DirectSolverCache : IDisposable
     {
@@ -40,7 +39,11 @@ namespace Unity.Physics
             /// </summary>
             public int Key;
 
-            /// <summary>The identity of the body at <see cref="Key"/> when the slot was assigned, see <see cref="BodyIdentity"/>.</summary>
+            /// <summary>
+            /// The identity of the island's first body when the slot was assigned (see <see cref="BodyIdentity"/>), or
+            /// <see cref="ulong.MaxValue"/>, which no body has, if the slot has never been assigned. Slots are matched
+            /// by this.
+            /// </summary>
             public ulong Identity;
 
             public bool Created;
@@ -200,6 +203,7 @@ namespace Unity.Physics
             for (int slot = 0; slot < Capacity; slot++)
             {
                 cache.slots[slot].Key = -1;
+                cache.slots[slot].Identity = ulong.MaxValue;
                 cache.slots[slot].LastUsed = -1;
             }
 
@@ -627,11 +631,13 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns a number that tells this body apart from every other body that the world has had, as long as the
-        /// world's bodies have entities: the entity's version in the high half and its index in the low half. The
-        /// backend sets each body's entity version to the body's serial number, which it never reuses. A body without
-        /// an entity is known by its index in the world alone, with zero in the high half, which no entity has as its
-        /// version. When the caller has no bodies to give, every body is known by its index.
+        /// Returns a number that tells this body apart from every other body that the world has had: the entity's
+        /// version in the high half. The backend, which is the only creator of this cache, sets each body's entity
+        /// version to the body's serial number, which it never gives to a second body. The entity's index is the body's
+        /// row in the store, which changes when other bodies go, so the identity leaves it out. (In an ECS world the
+        /// version alone would not tell entities apart; such a world doesn't use this cache.) A body without an entity
+        /// is known by its index in the world, with zero in the high half, which no entity has as its version. When the
+        /// caller has no bodies to give, every body is known by its index.
         /// </summary>
         internal static ulong BodyIdentity(RigidBody* bodies, int bodyCount, int worldBody)
         {
@@ -640,18 +646,18 @@ namespace Unity.Physics
                 return (uint)worldBody;
             }
 
-            Unity.Entities.Entity entity = bodies[worldBody].Entity;
-            return entity.Version != 0 ? ((ulong)(uint)entity.Version << 32) | (uint)entity.Index : (uint)worldBody;
+            int version = bodies[worldBody].Entity.Version;
+            return version != 0 ? (ulong)(uint)version << 32 : (uint)worldBody;
         }
 
         /// <summary>
-        /// Assigns cache slots for the step using each island's first body as its key. Runs on one thread before any
-        /// island is solved. First reuses slots whose key and first body's identity both match, then assigns the
-        /// remaining islands the least recently used slots that are still available. Islands beyond the cache capacity
-        /// receive no slot. A slot whose key matches but whose identity doesn't belongs to a body that was destroyed,
-        /// so no island takes it as its own. The slot can still go to another island as a least recently used slot. Its
-        /// forest then gives the island no lock states, because a forest finds lock states by the identities of the
-        /// bodies, see <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's identity, see
+        /// Assigns cache slots for the step by the identity of each island's first body. Runs on one thread before any
+        /// island is solved. First reuses the slot whose identity matches, then assigns the remaining islands the least
+        /// recently used slots that are still available. No slot goes to two islands in one step, even if two first
+        /// bodies had the same identity. Islands beyond the cache capacity receive no slot. A destroyed body's slot is
+        /// never found again; it can still go to another island as a least recently used slot. Its forest then gives the
+        /// island no lock states, because a forest finds lock states by the identities of the bodies, see
+        /// <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's index and identity, see
         /// <see cref="BodyIdentity"/>.
         /// </summary>
         internal void Assign(NativeArray<int> firstBodies, NativeArray<ulong> firstIdentities)
@@ -670,7 +676,7 @@ namespace Unity.Physics
                 int found = -1;
                 for (int slot = 0; slot < Capacity; slot++)
                 {
-                    if (slots[slot].Key == firstBodies[island] && slots[slot].Identity == firstIdentities[island])
+                    if (slots[slot].Identity == firstIdentities[island] && slots[slot].LastUsed != now)
                     {
                         found = slot;
                         break;

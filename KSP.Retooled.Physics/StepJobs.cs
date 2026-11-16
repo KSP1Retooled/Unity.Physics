@@ -135,27 +135,33 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>Builds the Unity Physics body for a store row. See <see cref="EntityVersion"/> for its entity.</summary>
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
             return new RigidBody
             {
                 Collider = body.collider->Value,
                 WorldFromBody = WorldFromBody(ref body),
-                Entity = new Entity { Index = index, Version = EntityVersion(ref body) },
+                Entity = new Entity { Index = index, Version = EntityVersion(ref body, index) },
                 Scale = 1.0f,
             };
         }
 
         /// <summary>
-        /// The version of a built body's entity. The entity's index is the body's row in the store, which can change
-        /// while the body lives and can pass to another body, so the version is the body's serial number, which no
-        /// other body receives. The solver keys the boundary rows of bodies outside a vessel by this version. The
-        /// version is never zero, because a version of zero marks the world's anchor, which is no body.
+        /// The version of a built body's entity. The entity's index is the body's row in the store. That row can change
+        /// while the body lives, and the store gives a destroyed body's row to the next body that it makes. So the
+        /// version is the body's serial number, which the store never gives to a second body, and Unity Physics can
+        /// tell bodies apart by it alone (see DirectSolverCache.BodyIdentity). The island cache uses it to keep a craft's
+        /// slot and lock states when its bodies move to other rows, and to drop the lock states of a destroyed body. The
+        /// solver keys the boundary rows of bodies outside a vessel by it. The version is never zero, because the code
+        /// that reads these bodies treats a version of zero as a body that is not in the store, such as the world's
+        /// anchor. A row that a test builds by hand has no owner and no serial number. Its version is made from its row
+        /// and is negative, so that two such rows, or such a row and a body, never share a version.
         /// </summary>
-        private static int EntityVersion(ref NativeStore.BodyData body)
+        private static int EntityVersion(ref NativeStore.BodyData body, int index)
         {
             uint serial = body.owner != null ? body.owner->serial : 0u;
-            return serial != 0 ? (int)serial : 1;
+            return serial != 0 ? (int)serial : -(index + 1);
         }
 
         internal static RigidTransform WorldFromBody(ref NativeStore.BodyData body)
