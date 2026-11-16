@@ -146,8 +146,10 @@ namespace Unity.Physics
 
         /// <summary>
         /// Solves an island that holds only vessels, with no contacts and no joint rows, for every substep of the
-        /// step. The island's moving parts are numbered once for the step. In each substep, the team's lanes fill the
-        /// parts from the bodies, the kernel factors and solves the vessels' own rows, and the lanes compute the loads.
+        /// step. The island's state is kept by the ID of its first vessel, and the island keeps the numbering of its
+        /// moving parts from step to step while its vessels and bodies stay the same. In the first substep, the team's
+        /// lanes copy the edges and test the locks. In each substep, the lanes fill the parts' poses and velocities
+        /// from the bodies, the kernel factors and solves the vessels' own rows, and the lanes compute the loads.
         /// Then the lanes give each body the motion of its section and integrate the body in the same pass, so the
         /// island needs no sparse setup, no separate impulse pass and no separate integration job.
         /// </summary>
@@ -227,7 +229,8 @@ namespace Unity.Physics
                     Forest = forest,
                     Problem = problem,
                     Bounded = false,
-                    KnownLayout = known,
+                    // After the first substep, the layout is the one that the first substep built or kept.
+                    KnownLayout = known || substep > 0,
                     VesselMode = true,
                     Vessels = set,
                     IslandVessels = islandVessels,
@@ -503,7 +506,9 @@ namespace Unity.Physics
                 rebuild = tasks.Rebuild != 0;
             }
 
-            RunVesselStage(ref run, VesselTasks.FillParts, partCount);
+            // The parts' masses and inertias do not change within a step, so after the first substep the lanes fill
+            // only the poses and velocities.
+            RunVesselStage(ref run, substep <= 0 ? VesselTasks.FillParts : VesselTasks.FillPoses, partCount);
             if (rebuild)
             {
                 BuildVesselStructure(forest);
@@ -594,6 +599,31 @@ namespace Unity.Physics
                 LinearVelocity = motion.LinearVelocity,
                 AngularVelocity = math.rotate(pose.rot, motion.AngularVelocity),
             };
+        }
+
+        /// <summary>
+        /// Fills one part's pose and velocity from its body and clears its outside impulses, like
+        /// <see cref="PartOf"/>, but keeps the part's mass and inertia from the first substep of the step.
+        /// </summary>
+        static unsafe void FillPartPose(in ForestRun run, int part)
+        {
+            int compact = run.Forest->PartBody[part];
+            if (compact < 0)
+            {
+                run.Forest->Parts[part] = PartOf(run, compact);
+                return;
+            }
+
+            VesselPart* p = run.Forest->Parts.Ptr + part;
+            int body = run.WorldBodies[compact];
+            MotionVelocity motion = run.MotionVelocities[body];
+            RigidTransform pose = run.MotionDatas[body].WorldFromMotion;
+            p->Position = pose.pos;
+            p->Orientation = pose.rot.value;
+            p->LinearVelocity = motion.LinearVelocity;
+            p->AngularVelocity = math.rotate(pose.rot, motion.AngularVelocity);
+            p->LinearImpulse = 0.0;
+            p->AngularImpulse = 0.0;
         }
 
         /// <summary>
@@ -1334,6 +1364,7 @@ namespace Unity.Physics
             public const int SharedEdgeLoads = 12;
             public const int FillEdges = 13;
             public const int MoveBodies = 14;
+            public const int FillPoses = 15;
 
             public ForestRun* Run;
             public int Phase;
@@ -1413,6 +1444,9 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.FillParts:
                         run.Forest->Parts[item] = PartOf(run, run.Forest->PartBody[item]);
+                        break;
+                    case VesselTasks.FillPoses:
+                        FillPartPose(run, item);
                         break;
                     case VesselTasks.WriteLoads:
                         WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
