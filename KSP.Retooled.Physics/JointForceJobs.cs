@@ -18,6 +18,214 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// The values that the jobs for joint loads read and write for one joint in every step. While a world has a
+    /// <see cref="StepState"/>, these values sit in a dense array that <see cref="JointLoadStates"/> keeps beside the
+    /// world's list of joints, at the joint's index in that list. The jobs then don't need to reach the joint records,
+    /// which are large and spread through memory. The array holds the only current copy of the loads and of the
+    /// smoothed magnitudes. The records get them back when the world's step state is disposed. The break limits and
+    /// whether the joint is inactive are copies of the record's values, which the joint commands keep up to date.
+    /// </summary>
+    internal struct JointLoadState
+    {
+        // The force and torque that the joint applied during the last step, as in NativeStore.JointData.
+        public float3 Force;
+
+        // The smoothed magnitude of the force, used to decide whether the joint breaks.
+        public float BreakingForce;
+        public float3 Torque;
+        public float BreakingTorque;
+        public float BreakForce;
+        public float BreakTorque;
+
+        // The joint's serial number. A command that reads the array checks that the slot belongs to its joint.
+        public uint Serial;
+
+        // 1 when the joint is broken or has lost a body (JointConstraints.Inactive), otherwise 0.
+        public uint Inactive;
+
+        internal static unsafe JointLoadState Of(NativeStore.JointData* joint)
+        {
+            return new JointLoadState
+            {
+                Force = joint->force,
+                BreakingForce = joint->breakingForce,
+                Torque = joint->torque,
+                BreakingTorque = joint->breakingTorque,
+                BreakForce = joint->breakForce,
+                BreakTorque = joint->breakTorque,
+                Serial = joint->serial,
+                Inactive = (joint->state & JointConstraints.Inactive) != 0 ? 1u : 0u,
+            };
+        }
+    }
+
+    /// <summary>
+    /// Finds the dense array of <see cref="JointLoadState"/> for each world that has a <see cref="StepState"/>. The
+    /// step state registers its array when it is made and removes it when it is disposed. The joint commands use this
+    /// table to keep each world's array in the same order as the world's list of joints: a new joint gets a slot at
+    /// the end, and a destroyed joint's slot takes the last slot, as in the list. The commands that change a break
+    /// limit or a joint's bodies copy the new values into the joint's slot, and GetForces reads the loads from it.
+    /// Commands and registrations arrive on the main thread, outside a step.
+    /// </summary>
+    internal static unsafe class JointLoadStates
+    {
+        private const int Capacity = 32;
+
+        private readonly struct Key { }
+
+        private struct Table
+        {
+            public int Count;
+            public fixed long Worlds[Capacity];
+            public fixed long States[Capacity];
+        }
+
+        private static readonly SharedStatic<Table> Shared = SharedStatic<Table>.GetOrCreate<Key>();
+
+        /// <summary>
+        /// Fills a world's array from its joint records and adds it to the table. Until now, the records held the
+        /// loads.
+        /// </summary>
+        internal static void Register(NativeStore.WorldData* world, UnsafeList<JointLoadState>* states)
+        {
+            ref Table table = ref Shared.Data;
+            if (table.Count == Capacity)
+            {
+                throw new System.InvalidOperationException($"more than {Capacity} physics worlds have joint loads");
+            }
+
+            states->Resize((int)world->jointCount);
+            for (uint i = 0; i < world->jointCount; i++)
+            {
+                (*states)[(int)i] = JointLoadState.Of(world->joints[i]);
+            }
+
+            table.Worlds[table.Count] = (long)world;
+            table.States[table.Count] = (long)states;
+            table.Count++;
+        }
+
+        /// <summary>
+        /// Writes the loads in a world's array back to its joint records, and takes the array out of the table. From
+        /// now on, the records hold the loads again.
+        /// </summary>
+        internal static void Unregister(NativeStore.WorldData* world)
+        {
+            ref Table table = ref Shared.Data;
+            for (int e = 0; e < table.Count; e++)
+            {
+                if (table.Worlds[e] != (long)world)
+                {
+                    continue;
+                }
+
+                var states = (UnsafeList<JointLoadState>*)table.States[e];
+                for (uint i = 0; i < world->jointCount && i < (uint)states->Length; i++)
+                {
+                    NativeStore.JointData* joint = world->joints[i];
+                    JointLoadState state = (*states)[(int)i];
+                    if (state.Serial == joint->serial)
+                    {
+                        joint->force = state.Force;
+                        joint->torque = state.Torque;
+                        joint->breakingForce = state.BreakingForce;
+                        joint->breakingTorque = state.BreakingTorque;
+                    }
+                }
+
+                table.Count--;
+                table.Worlds[e] = table.Worlds[table.Count];
+                table.States[e] = table.States[table.Count];
+                return;
+            }
+        }
+
+        /// <summary>Returns the array of a world, or null if the world has no step state.</summary>
+        internal static UnsafeList<JointLoadState>* Of(NativeStore.WorldData* world)
+        {
+            ref Table table = ref Shared.Data;
+            for (int e = 0; e < table.Count; e++)
+            {
+                if (table.Worlds[e] == (long)world)
+                {
+                    return (UnsafeList<JointLoadState>*)table.States[e];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Returns the slot of a joint, or null if the joint's world has no step state. The command doesn't know the
+        /// joint's world, so the method looks for the world whose list holds the joint at the joint's index.
+        /// </summary>
+        internal static JointLoadState* Find(NativeStore.JointData* joint)
+        {
+            ref Table table = ref Shared.Data;
+            for (int e = 0; e < table.Count; e++)
+            {
+                var world = (NativeStore.WorldData*)table.Worlds[e];
+                var states = (UnsafeList<JointLoadState>*)table.States[e];
+                uint index = joint->index;
+                if (index < world->jointCount && world->joints[index] == joint && index < (uint)states->Length
+                    && (*states)[(int)index].Serial == joint->serial)
+                {
+                    return states->Ptr + index;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>Gives a joint that was just added to the end of its world's list a slot at the end of the array.</summary>
+        internal static void Created(NativeStore.WorldData* world, NativeStore.JointData* joint)
+        {
+            UnsafeList<JointLoadState>* states = Of(world);
+            if (states == null)
+            {
+                return;
+            }
+
+            states->Resize((int)world->jointCount);
+            (*states)[(int)joint->index] = JointLoadState.Of(joint);
+        }
+
+        /// <summary>
+        /// Moves the last slot into the slot of a joint that is about to be destroyed, as
+        /// <see cref="JointKernel.Destroy"/> does with the world's list. Call this before the list changes.
+        /// </summary>
+        internal static void Destroying(NativeStore.WorldData* world, NativeStore.JointData* joint)
+        {
+            UnsafeList<JointLoadState>* states = Of(world);
+            if (states == null)
+            {
+                return;
+            }
+
+            int last = (int)world->jointCount - 1;
+            (*states)[(int)joint->index] = (*states)[last];
+            states->Resize(last);
+        }
+
+        /// <summary>Copies a joint's break limits and whether it is inactive from its record into its slot.</summary>
+        internal static void Refresh(NativeStore.JointData* joint)
+        {
+            JointLoadState* state = Find(joint);
+            if (state != null)
+            {
+                Refresh(state, joint);
+            }
+        }
+
+        internal static void Refresh(JointLoadState* state, NativeStore.JointData* joint)
+        {
+            state->BreakForce = joint->breakForce;
+            state->BreakTorque = joint->breakTorque;
+            state->Inactive = (joint->state & JointConstraints.Inactive) != 0 ? 1u : 0u;
+        }
+    }
+
+    /// <summary>
     /// Jobs that calculate joint loads from the impulse events for this step, then break joints whose loads exceed
     /// their limits. Each constraint produces one event containing its impulse for the whole step. That impulse acts on
     /// body A, the connected body. Unity reports the load on the joint's owner instead. As in PhysX, drives contribute
@@ -54,6 +262,10 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        public JointLoadState* States;
+
         [NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> Loads;
 
@@ -65,12 +277,11 @@ namespace KSP.Retooled.Physics
         public void Execute(int item)
         {
             int index = Listed ? Joints[item] : item;
-            NativeStore.JointData* joint = World->joints[index];
-            bool asleep = JointForceJobs.IsAsleep(joint);
+            bool asleep = JointForceJobs.IsAsleep(World->joints[index]);
             Loads[index] = new JointLoad
             {
-                Force = asleep ? joint->force : float3.zero,
-                Torque = asleep ? joint->torque : float3.zero,
+                Force = asleep ? States[index].Force : float3.zero,
+                Torque = asleep ? States[index].Torque : float3.zero,
             };
         }
     }
@@ -213,7 +424,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Writes each joint's load to the store, then smooths the force and torque magnitudes used for breaking. Marks
+    /// Writes each joint's load to its load state, then smooths the force and torque magnitudes used for breaking. Marks
     /// active joints whose smoothed loads exceed their break limits in <see cref="Overloaded"/> .
     /// </summary>
     [BurstCompile]
@@ -230,6 +441,10 @@ namespace KSP.Retooled.Physics
 
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
+
+        /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        public JointLoadState* States;
 
         [ReadOnly, NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> Loads;
@@ -249,39 +464,39 @@ namespace KSP.Retooled.Physics
         public void Execute(int item)
         {
             int index = Listed ? Joints[item] : item;
-            Overloaded[index] = Settle(World->joints[index], Loads[index], DeltaTime) ? (byte)1 : (byte)0;
+            Overloaded[index] = Settle(World->joints[index], States + index, Loads[index], DeltaTime) ? (byte)1 : (byte)0;
         }
 
         /// <summary>
-        /// Writes one joint's load to the store and smooths it, as described for this job. Returns whether the joint is
-        /// active and its smoothed load exceeds its break limits.
+        /// Writes one joint's load to its load state and smooths it, as described for this job. Returns whether the
+        /// joint is active and its smoothed load exceeds its break limits.
         /// </summary>
-        internal static bool Settle(NativeStore.JointData* joint, in JointLoad load, float deltaTime)
+        internal static bool Settle(NativeStore.JointData* joint, JointLoadState* state, in JointLoad load, float deltaTime)
         {
             if (JointForceJobs.IsAsleep(joint))
             {
-                joint->force = load.Force;
-                joint->torque = load.Torque;
+                state->Force = load.Force;
+                state->Torque = load.Torque;
                 return false;
             }
 
-            return SettleAwake(joint, load, deltaTime);
+            return SettleAwake(state, load, deltaTime);
         }
 
         /// <summary>
         /// Settles the load of a joint that the caller knows has at least one moving body that is awake, as
-        /// <see cref="Settle"/> does, and returns the same result. The caller saves the reads of the joint's two
-        /// bodies, which are often not in the cache.
+        /// <see cref="Settle"/> does, and returns the same result. The caller saves the reads of the joint's record
+        /// and of its two bodies, which are often not in the cache.
         /// </summary>
-        internal static bool SettleAwake(NativeStore.JointData* joint, in JointLoad load, float deltaTime)
+        internal static bool SettleAwake(JointLoadState* state, in JointLoad load, float deltaTime)
         {
-            joint->force = load.Force;
-            joint->torque = load.Torque;
+            state->Force = load.Force;
+            state->Torque = load.Torque;
             float follow = deltaTime / (BreakingTimeConstant + deltaTime);
-            joint->breakingForce += (math.length(joint->force) - joint->breakingForce) * follow;
-            joint->breakingTorque += (math.length(joint->torque) - joint->breakingTorque) * follow;
-            bool overloaded = joint->breakingForce > joint->breakForce || joint->breakingTorque > joint->breakTorque;
-            return (joint->state & JointConstraints.Inactive) == 0 && overloaded;
+            state->BreakingForce += (math.length(state->Force) - state->BreakingForce) * follow;
+            state->BreakingTorque += (math.length(state->Torque) - state->BreakingTorque) * follow;
+            bool overloaded = state->BreakingForce > state->BreakForce || state->BreakingTorque > state->BreakTorque;
+            return state->Inactive == 0 && overloaded;
         }
     }
 
@@ -297,6 +512,10 @@ namespace KSP.Retooled.Physics
 
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.StoreGlobals* Globals;
+
+        /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        public JointLoadState* States;
 
         /// <summary>For each joint, 1 if the joint breaks in this step, or 0.</summary>
         [ReadOnly]
@@ -333,13 +552,14 @@ namespace KSP.Retooled.Physics
         {
             if (flags[joint] != 0)
             {
-                Break(World->joints[joint]);
+                Break(World->joints[joint], States + joint);
             }
         }
 
-        private void Break(NativeStore.JointData* joint)
+        private void Break(NativeStore.JointData* joint, JointLoadState* state)
         {
             joint->state |= NativeStore.JointState.Broken;
+            state->Inactive = 1;
             JointTopology.Changed();
             if (World->jointBreakCount == World->jointBreakCapacity)
             {
@@ -350,8 +570,8 @@ namespace KSP.Retooled.Physics
             World->jointBreaks[World->jointBreakCount++] = new NativeStore.JointBreak
             {
                 engineObjectId = joint->userData != null ? *(ulong*)((byte*)joint->userData + EngineObjectIdOffset) : 0,
-                linearMagnitude = joint->breakingForce,
-                angularMagnitude = joint->breakingTorque,
+                linearMagnitude = state->BreakingForce,
+                angularMagnitude = state->BreakingTorque,
             };
         }
     }

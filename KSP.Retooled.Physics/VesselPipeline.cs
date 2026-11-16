@@ -1855,6 +1855,13 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        /// <summary>
+        /// The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.
+        /// The jobs for the other joints write the states of their own joints at the same time.
+        /// </summary>
+        [NativeDisableUnsafePtrRestriction]
+        public JointLoadState* States;
+
         [ReadOnly]
         public NativeArray<JointUnit> Units;
 
@@ -1947,10 +1954,6 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            // The joint records are spread over memory and are rarely in the cache at this point of the step, so ask
-            // for the record of a later item while this item waits for its own.
-            Prefetch(index + PrefetchDistance);
-
             // Every body of an active vessel was awake and moving when the step began, and nothing puts a body to sleep
             // before the step's sleep jobs, which run after this job. So skip the test for sleeping bodies, which would
             // read both bodies of each joint.
@@ -1958,7 +1961,7 @@ namespace KSP.Retooled.Physics
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
-                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], jointLoad, DeltaTime);
+                bool overloaded = SettleJointLoadsJob.SettleAwake(States + jointUnit.Joint, jointLoad, DeltaTime);
                 Overloaded[jointUnit.Joint] = overloaded ? (byte)1 : (byte)0;
                 return;
             }
@@ -1974,7 +1977,7 @@ namespace KSP.Retooled.Physics
             for (int i = 0; i < group.MemberCount; i++)
             {
                 int joint = Members[group.FirstMember + i].Joint;
-                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[joint], JointLoads[joint], DeltaTime);
+                bool overloaded = SettleJointLoadsJob.SettleAwake(States + joint, JointLoads[joint], DeltaTime);
                 Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
             }
         }
@@ -1993,36 +1996,6 @@ namespace KSP.Retooled.Physics
 
             WriteBackJob.SolvedPose(motionDatas[builtIndices[(int)leader->body0->index]], out _, out quaternion rotation);
             return math.mul(rotation, leader->rotation0);
-        }
-
-        /// <summary>How many items ahead this job asks for a joint record.</summary>
-        private const int PrefetchDistance = 8;
-
-        /// <summary>
-        /// Asks the processor to load the part of an item's leading joint record that
-        /// <see cref="SettleJointLoadsJob.SettleAwake"/> reads and writes. That part runs from the state to the end of
-        /// the torque, which is 44 bytes. The record need not start on a cache line, so those bytes can touch two cache
-        /// lines. Asking for the first byte and the last byte covers both.
-        /// </summary>
-        private void Prefetch(int index)
-        {
-            int parts = PartUnits.Length;
-            if (index >= parts + ClosureUnits.Length)
-            {
-                return;
-            }
-
-            int unit = index < parts ? PartUnits[index] : ClosureUnits[index - parts];
-            if (unit < 0)
-            {
-                return;
-            }
-
-            NativeStore.JointData* joint = World->joints[Units[unit].Joint];
-            byte* first = (byte*)&joint->state;
-            byte* last = (byte*)&joint->torque + sizeof(float3) - 1;
-            Common.Prefetch(first, Common.ReadWrite.Write);
-            Common.Prefetch(last, Common.ReadWrite.Write);
         }
     }
 

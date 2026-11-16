@@ -206,13 +206,16 @@ namespace KSP.Retooled.Physics
                 case JointCommand.SetBreakForce:
                     joint->breakForce = a->scalar;
                     joint->breakTorque = a->scalar2;
+                    JointLoadStates.Refresh(joint);
                     break;
                 case JointCommand.GetIsConstraintValid:
                     a->enabled = (joint->state & (NativeStore.JointState.Broken | NativeStore.JointState.BodyDestroyed)) == 0 ? 1u : 0u;
                     break;
                 case JointCommand.GetForces:
-                    a->vector = joint->force;
-                    a->vector2 = joint->torque;
+                    // While the joint's world has a step state, the loads are in its dense array, not in the record.
+                    JointLoadState* state = JointLoadStates.Find(joint);
+                    a->vector = state != null ? state->Force : joint->force;
+                    a->vector2 = state != null ? state->Torque : joint->torque;
                     break;
                 case JointCommand.SetInvMassAndInertiaScale:
                     if (a->value == 0)
@@ -233,6 +236,7 @@ namespace KSP.Retooled.Physics
                     CountEnd(joint->body0, 1);
                     CountEnd(joint->body1, 1);
                     joint->state &= ~NativeStore.JointState.BodyDestroyed;
+                    JointLoadStates.Refresh(joint);
                     break;
                 case JointCommand.GetActors:
                     Describe(joint->body0, (NativeStore.ActorDescriptor*)a->pointer);
@@ -431,6 +435,7 @@ namespace KSP.Retooled.Physics
 
             // Every new joint moves the topology version, so the new value is a number that no other joint received.
             joint->serial = JointTopology.Changed();
+            JointLoadStates.Created(world, joint);
             return joint;
         }
 
@@ -446,6 +451,7 @@ namespace KSP.Retooled.Physics
             JointTopology.Changed();
             CountEnd(joint->body0, -1);
             CountEnd(joint->body1, -1);
+            JointLoadStates.Destroying(world, joint);
             uint last = --world->jointCount;
             if (joint->index != last)
             {
@@ -469,6 +475,7 @@ namespace KSP.Retooled.Physics
                 JointTopology.Changed();
             }
 
+            UnsafeList<JointLoadState>* states = JointLoadStates.Of(world);
             for (uint i = 0; i < world->jointCount && hot->jointEnds > 0; i++)
             {
                 NativeStore.JointData* joint = world->joints[i];
@@ -484,6 +491,11 @@ namespace KSP.Retooled.Physics
                     joint->body1 = null;
                     joint->state |= NativeStore.JointState.BodyDestroyed;
                     hot->jointEnds--;
+                }
+
+                if (states != null && (joint->state & NativeStore.JointState.BodyDestroyed) != 0)
+                {
+                    JointLoadStates.Refresh(states->Ptr + i, joint);
                 }
             }
         }
