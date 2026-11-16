@@ -1,7 +1,7 @@
 // Ported from gemm-f32 0.18.0 src/microkernel.rs (https://github.com/sarah-ek/gemm, MIT license): the FMA f32 micro-kernel
 //   shape, 16 rows in two vectors of eight by 6 columns.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The code is written for raw float pointers in column-major order, with float8 in place of the SIMD types. It is the
+// The code is written for raw float pointers, with float8 in place of the SIMD types. It is the
 // float version of Gemm.cs, written on its own for the wider vectors: a 256-bit register holds 8 floats against 4
 // doubles, so the tile has twice the rows.
 
@@ -11,34 +11,89 @@ namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>C += alpha A B, where A is m by k, B is k by n and C is m by n, all of floats.</summary>
+        /// <summary>C += alpha A B, where A is m by k, B is k by n and C is m by n, all of floats stored column by column.</summary>
         public static void GemmNN(int m, int n, int k, float alpha, float* a, int lda, float* b, int ldb, float* c, int ldc)
         {
-            Gemm(m, n, k, alpha, a, lda, b, 1, ldb, c, ldc);
+            Gemm(alpha, MatrixView<float>.ColumnMajor(a, m, k, lda), MatrixView<float>.ColumnMajor(b, k, n, ldb),
+                MatrixView<float>.ColumnMajor(c, m, n, ldc));
         }
 
-        /// <summary>C += alpha A B^T, where A is m by k, B is n by k and C is m by n, all of floats.</summary>
+        /// <summary>C += alpha A B^T, where A is m by k, B is n by k and C is m by n, all of floats stored column by column.</summary>
         public static void GemmNT(int m, int n, int k, float alpha, float* a, int lda, float* b, int ldb, float* c, int ldc)
         {
-            Gemm(m, n, k, alpha, a, lda, b, ldb, 1, c, ldc);
+            Gemm(alpha, MatrixView<float>.ColumnMajor(a, m, k, lda), MatrixView<float>.ColumnMajor(b, n, k, ldb).Transpose,
+                MatrixView<float>.ColumnMajor(c, m, n, ldc));
+        }
+
+        /// <summary>C += alpha A B for floats, where A is m by k, B is k by n and C is m by n, in any layout.</summary>
+        public static void Gemm(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c)
+        {
+            Gemm(alpha, a, b, c, Triangle.All);
         }
 
         /// <summary>
-        /// C += alpha A op(B), where entry (p, j) of op(B) is b[p * bRow + j * bColumn]. A tile of C of 16 rows by 6
-        /// columns stays in twelve vector registers of eight floats while the loop runs over the inner dimension. The
-        /// edges use one column at a time with vectors of eight and four floats, and the last rows one at a time.
+        /// The lower triangle of C += alpha A A^T for floats, where A is n by k and C is n by n. As for doubles, the
+        /// routine also writes the entries above the diagonal in the tiles that the diagonal crosses.
         /// </summary>
-        static void Gemm(int m, int n, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn, float* c, int ldc)
+        public static void SyrkLower(float alpha, MatrixView<float> a, MatrixView<float> c)
         {
+            Gemm(alpha, a, a.Transpose, c, Triangle.Lower);
+        }
+
+        /// <summary>
+        /// C += alpha A B for any layout, with the same dispatch as for doubles: a C whose rows are contiguous is
+        /// computed as its transpose, an A whose columns are not contiguous is copied into panels of 16 rows, and a C
+        /// with neither rows nor columns contiguous takes a plain loop.
+        /// </summary>
+        static void Gemm(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c, Triangle triangle)
+        {
+            int m = c.Rows;
+            int n = c.Columns;
+            int k = a.Columns;
             if (m <= 0 || n <= 0 || k <= 0)
             {
                 return;
             }
 
+            if (!c.ColumnsAreContiguous)
+            {
+                if (c.RowsAreContiguous)
+                {
+                    Gemm(alpha, b.Transpose, a.Transpose, c.Transpose, Flip(triangle));
+                }
+                else
+                {
+                    GemmPlain(alpha, a, b, c, triangle);
+                }
+
+                return;
+            }
+
+            int ldc = c.LeadingDimension;
+            if (a.ColumnsAreContiguous)
+            {
+                GemmTiles(m, n, k, alpha, a.Data, a.LeadingDimension, b.Data, b.RowStride, b.ColumnStride, c.Data, ldc, triangle);
+            }
+            else
+            {
+                GemmPacked(alpha, a, b, c.Data, ldc, triangle);
+            }
+        }
+
+        /// <summary>
+        /// Runs the tiles of C over A as it is stored. A tile of C of 16 rows by 6 columns stays in twelve vector
+        /// registers of eight floats while the loop runs over the inner dimension. The edges use one column at a time
+        /// with vectors of eight and four floats, and the last rows one at a time.
+        /// </summary>
+        static void GemmTiles(int m, int n, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
+            float* c, int ldc, Triangle triangle)
+        {
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
-                for (int i = 0; i < m; i += 16)
+                int firstRow = triangle == Triangle.Lower ? j & ~15 : 0;
+                int endRow = triangle == Triangle.Upper ? math.min(m, j + columns) : m;
+                for (int i = firstRow; i < endRow; i += 16)
                 {
                     int rows = math.min(16, m - i);
                     float* ai = a + i;
@@ -52,6 +107,74 @@ namespace Unity.Numerics.Kernels
                     {
                         KernelEdge(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc);
                     }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Runs the tiles of C over a copy of A, for an A whose columns are not contiguous. It copies 16 rows of A at
+        /// a time, for up to <see cref="PanelDepth"/> steps of the inner dimension (16 KiB of floats), into a buffer
+        /// where the panel's columns are contiguous, and runs every tile of those rows of C over it.
+        /// </summary>
+        static void GemmPacked(float alpha, MatrixView<float> a, MatrixView<float> b, float* c, int ldc, Triangle triangle)
+        {
+            int m = a.Rows;
+            int k = a.Columns;
+            int n = b.Columns;
+            float* panel = stackalloc float[16 * PanelDepth];
+            for (int p0 = 0; p0 < k; p0 += PanelDepth)
+            {
+                int depth = math.min(PanelDepth, k - p0);
+                float* bp = b.At(p0, 0);
+                for (int i = 0; i < m; i += 16)
+                {
+                    int rows = math.min(16, m - i);
+                    for (int r = 0; r < rows; r++)
+                    {
+                        float* source = a.At(i + r, p0);
+                        for (int p = 0; p < depth; p++)
+                        {
+                            panel[p * 16 + r] = source[(long)p * a.ColumnStride];
+                        }
+                    }
+
+                    int firstColumn = triangle == Triangle.Upper ? i / 6 * 6 : 0;
+                    int endColumn = triangle == Triangle.Lower ? math.min(n, i + rows) : n;
+                    for (int j = firstColumn; j < endColumn; j += 6)
+                    {
+                        int columns = math.min(6, n - j);
+                        float* bj = bp + (long)j * b.ColumnStride;
+                        float* cij = c + i + (long)j * ldc;
+                        if (rows == 16 && columns == 6)
+                        {
+                            Kernel16x6(depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc);
+                        }
+                        else
+                        {
+                            KernelEdge(rows, columns, depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>The plain path, for a C whose rows and columns are both not contiguous.</summary>
+        static void GemmPlain(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c, Triangle triangle)
+        {
+            int k = a.Columns;
+            for (int j = 0; j < c.Columns; j++)
+            {
+                int firstRow = triangle == Triangle.Lower ? j : 0;
+                int endRow = triangle == Triangle.Upper ? math.min(c.Rows, j + 1) : c.Rows;
+                for (int i = firstRow; i < endRow; i++)
+                {
+                    float sum = 0f;
+                    for (int p = 0; p < k; p++)
+                    {
+                        sum = FusedMath.Fma(a[i, p], b[p, j], sum);
+                    }
+
+                    c[i, j] = FusedMath.Fma(alpha, sum, c[i, j]);
                 }
             }
         }

@@ -1,4 +1,4 @@
-// Ported from faer 0.19.4 has no routine of its own for this; it is the column update that the solves use.
+// faer 0.19.4 has no routine of its own for this; it is the column update that the solves use, written in faer's style.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
 // The code is written for raw double pointers in column-major order, with double4 in place of the SIMD types.
 
