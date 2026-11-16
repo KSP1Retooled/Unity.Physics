@@ -383,7 +383,9 @@ namespace KSP.Retooled.Physics.Tests
             {
                 double cpu = pair.Value.Cpu.Sum() / Math.Max(1, steps.Count);
                 double span = Median(pair.Value.Last) - Median(pair.Value.First);
-                if (cpu < 0.02 && span < 0.05)
+                // Keep the short jobs that find and index the islands, so that their cost shows even when it is small.
+                bool islandStage = pair.Key.Contains("Island") || pair.Key.Contains("DispatchPair");
+                if (cpu < 0.02 && span < 0.05 && !islandStage)
                 {
                     continue;
                 }
