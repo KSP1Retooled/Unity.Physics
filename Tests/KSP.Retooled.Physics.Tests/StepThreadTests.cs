@@ -23,19 +23,21 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Runs a command from each kernel and waits for Burst compilation. If Burst cannot compile a kernel, that
-        /// kernel keeps running in Mono without an obvious failure. The same compilation error would fail a player
-        /// build.
+        /// Waits for the background compile of the kernels, then runs a command from each kernel until none of them
+        /// runs in Mono. If Burst cannot compile a kernel, that kernel keeps running in Mono without an obvious failure.
+        /// The same compilation error would fail a player build.
         /// </summary>
         [UnityTest]
         public IEnumerator EveryKernelLeavesMonoOnceItsCompileLands()
         {
             Assume.That(BurstCompiler.IsEnabled, "this run has Burst off");
 
+            Stopwatch wait = Stopwatch.StartNew();
+            Assert.That(BackendHost.WaitForCompiledKernels(KernelCompileSeconds), Is.True, "the kernel compile did not finish");
+
             Rigidbody body = WeightlessBox(Vector3.zero);
             Collider collider = body.GetComponent<Collider>();
             ConfigurableJoint joint = body.gameObject.AddComponent<ConfigurableJoint>();
-            Stopwatch wait = Stopwatch.StartNew();
             while (true)
             {
                 long before = BackendHost.ManagedCommands;

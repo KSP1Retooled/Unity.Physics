@@ -534,6 +534,7 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
             }
 
+            Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             bool wasEnabled = VesselForest.Enabled, wasLocking = VesselForest.Locking;
             float wasLock = VesselForest.LockAngle, wasYield = VesselForest.YieldAngle;
             int wasHold = VesselForest.MinimumHoldSteps, wasSmoothing = VesselForest.DeflectionSmoothingSteps;
@@ -626,6 +627,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
+            Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             bool wasEnabled = VesselForest.Enabled;
             bool wasLocking = VesselForest.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
