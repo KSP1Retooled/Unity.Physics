@@ -26,12 +26,16 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             wasEnabled = VesselForest.Enabled;
+
+            // The columns here have six parts. Let them compile into vessels when vessels are on.
+            VesselPipeline.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
             VesselForest.Enabled = wasEnabled;
+            VesselPipeline.MinimumParts = 0;
         }
 
         /// <summary>A stock part joint: three joints over a stack node, which the step builds as one group.</summary>

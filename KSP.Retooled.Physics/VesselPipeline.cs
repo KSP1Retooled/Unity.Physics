@@ -23,7 +23,32 @@ namespace KSP.Retooled.Physics
 
         private readonly struct IdKey { }
 
+        private readonly struct MinimumPartsKey { }
+
         private static readonly SharedStatic<bool> Shared = SharedStatic<bool>.GetOrCreate<Key>();
+
+        private static readonly SharedStatic<int> MinimumPartsShared = SharedStatic<int>.GetOrCreate<MinimumPartsKey>();
+
+        /// <summary>The value of <see cref="MinimumParts"/> until something sets it.</summary>
+        public const int DefaultMinimumParts = 8;
+
+        /// <summary>
+        /// The number of steps for which an edge or closure whose joint went away stays in its vessel as a tombstone.
+        /// See <see cref="CompileVesselsJob"/>.
+        /// </summary>
+        public const int TombstoneSteps = 10;
+
+        /// <summary>
+        /// The smallest number of parts for which the backend compiles a vessel. The joints of a smaller craft stay Unity
+        /// Physics joints, as the joints of loose bodies and debris do. A value below 1 restores the default. When the
+        /// first world attaches, the backend reads RETOOLED_VESSEL_MIN_PARTS. A change to this value affects a vessel
+        /// only when the vessels are compiled again.
+        /// </summary>
+        public static int MinimumParts
+        {
+            get => MinimumPartsShared.Data > 0 ? MinimumPartsShared.Data : DefaultMinimumParts;
+            set => MinimumPartsShared.Data = value;
+        }
 
         // The last vessel Id allocated. The counter is shared across the process, so vessels in different worlds also
         // receive distinct Ids.
@@ -52,6 +77,13 @@ namespace KSP.Retooled.Physics
             }
 
             initialized = true;
+            string minimum = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_MIN_PARTS");
+            if (int.TryParse(minimum, out int parts))
+            {
+                MinimumParts = parts;
+                UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL_MIN_PARTS={minimum}: vessels have at least {MinimumParts} parts");
+            }
+
             string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
             if (string.IsNullOrEmpty(value))
             {
@@ -107,8 +139,28 @@ namespace KSP.Retooled.Physics
         public NativeList<int> ClosurePartA;
         public NativeList<int> ClosurePartB;
 
+        /// <summary>
+        /// For each part and for each closure, -1 when its joint exists, or the step at which its joint went away and it
+        /// became a tombstone. A tombstone's unit is -1. See <see cref="CompileVesselsJob"/>.
+        /// </summary>
+        public NativeList<int> PartTombstones;
+
+        public NativeList<int> ClosureTombstones;
+
         /// <summary>For each joint unit, the vessel that it belongs to, or -1.</summary>
         public NativeList<int> UnitVessels;
+
+        /// <summary>
+        /// For each store body, the vessel that it is a part of, or -1. A body added after the last compilation has no
+        /// entry.
+        /// </summary>
+        public NativeList<int> BodyVessels;
+
+        /// <summary>
+        /// The edge and closure units of all vessels, keyed by the store indices of their two bodies (see
+        /// <see cref="PairKey"/>). Two bodies can share more than one unit.
+        /// </summary>
+        public NativeParallelMultiHashMap<ulong, int> PairUnits;
 
         // Stable addresses of the body and joint records from the previous compilation. Compare them during the next
         // compilation to identify unchanged vessels and retain their Ids.
@@ -144,7 +196,11 @@ namespace KSP.Retooled.Physics
                 ClosureUnits = new NativeList<int>(Allocator.Persistent),
                 ClosurePartA = new NativeList<int>(Allocator.Persistent),
                 ClosurePartB = new NativeList<int>(Allocator.Persistent),
+                PartTombstones = new NativeList<int>(Allocator.Persistent),
+                ClosureTombstones = new NativeList<int>(Allocator.Persistent),
                 UnitVessels = new NativeList<int>(Allocator.Persistent),
+                BodyVessels = new NativeList<int>(Allocator.Persistent),
+                PairUnits = new NativeParallelMultiHashMap<ulong, int>(64, Allocator.Persistent),
                 PartBodyRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 PartJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 ClosureJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
@@ -170,7 +226,11 @@ namespace KSP.Retooled.Physics
             ClosureUnits.Dispose();
             ClosurePartA.Dispose();
             ClosurePartB.Dispose();
+            PartTombstones.Dispose();
+            ClosureTombstones.Dispose();
             UnitVessels.Dispose();
+            BodyVessels.Dispose();
+            PairUnits.Dispose();
             PartBodyRecords.Dispose();
             PartJointRecords.Dispose();
             ClosureJointRecords.Dispose();
@@ -196,16 +256,46 @@ namespace KSP.Retooled.Physics
             ClosureUnits.Clear();
             ClosurePartA.Clear();
             ClosurePartB.Clear();
+            PartTombstones.Clear();
+            ClosureTombstones.Clear();
             PartBodyRecords.Clear();
             PartJointRecords.Clear();
             ClosureJointRecords.Clear();
             Active.Clear();
             StepVessels.Clear();
+            BodyVessels.Clear();
+            PairUnits.Clear();
             UnitVessels.ResizeUninitialized(unitCount);
             for (int i = 0; i < unitCount; i++)
             {
                 UnitVessels[i] = -1;
             }
+        }
+
+        /// <summary>
+        /// Returns the first step at which a tombstone expires, so that the vessels must be compiled again, or -1 if
+        /// there are no tombstones.
+        /// </summary>
+        public int TombstoneExpiry(int tombstoneSteps)
+        {
+            int oldest = int.MaxValue;
+            for (int i = 0; i < PartTombstones.Length; i++)
+            {
+                oldest = PartTombstones[i] >= 0 ? math.min(oldest, PartTombstones[i]) : oldest;
+            }
+
+            for (int i = 0; i < ClosureTombstones.Length; i++)
+            {
+                oldest = ClosureTombstones[i] >= 0 ? math.min(oldest, ClosureTombstones[i]) : oldest;
+            }
+
+            return oldest == int.MaxValue ? -1 : oldest + tombstoneSteps;
+        }
+
+        /// <summary>The key for two store bodies in <see cref="PairUnits"/>. The order of the bodies doesn't matter.</summary>
+        public static ulong PairKey(int bodyA, int bodyB)
+        {
+            return ((ulong)(uint)math.min(bodyA, bodyB) << 32) | (uint)math.max(bodyA, bodyB);
         }
 
         /// <summary>Returns the vessel set for this step, with pointers to the lists in this build.</summary>
@@ -261,6 +351,14 @@ namespace KSP.Retooled.Physics
 
             int parts = PartStoreBodies.Length;
             PartBodies.ResizeUninitialized(parts);
+
+            // The job that finds islands reads the parts' bodies, so fill them here. Only the solve waits for the jobs
+            // that fill the edges and closures.
+            for (int part = 0; part < parts; part++)
+            {
+                PartBodies[part] = builtIndices[PartStoreBodies[part]];
+            }
+
             Edges.ResizeUninitialized(parts);
             EdgeLoads.ResizeUninitialized(parts);
             EdgeLocked.ResizeUninitialized(parts);
@@ -281,9 +379,23 @@ namespace KSP.Retooled.Physics
     /// Units connected to the world, a static body or a kinematic body remain Unity Physics joints. Joints that cannot
     /// be merged also remain Unity Physics joints; examples include hinges, servos with targets and wheels.
     /// <para>
-    /// The root of a vessel is the body with the lowest store index. Parts are listed in breadth-first order from the
-    /// root, so every parent precedes its children. A vessel retains its Id if compilation finds the same root, parts,
-    /// connecting joints and closures in the same order as before. Otherwise, it receives a new Id.
+    /// Before it compiles new vessels, the job tries to keep each vessel of the previous compilation as it was. A vessel
+    /// is kept when all of its bodies still exist and move, and every forest unit that touches one of its bodies joins
+    /// the two bodies of one of its edges or closures. When no unit joins the two bodies of an edge or closure any more,
+    /// because the game removed the joint or the joint broke, the edge or closure becomes a tombstone. A tombstone stays
+    /// in its place in the vessel but has no constraints: an edge is marked broken, and a closure has no stiffness.
+    /// When a joint between the same two bodies appears within <see cref="TombstoneSteps"/> steps, it takes the
+    /// tombstone's place again. A kept vessel keeps its Id, so a strut that the game destroys and creates again doesn't
+    /// make the solver start the vessel over. The vessel's structure version changes when one of its edges or closures
+    /// becomes a tombstone or comes back. After <see cref="TombstoneSteps"/> steps, the vessel is compiled anew without
+    /// the tombstone.
+    /// </para>
+    /// <para>
+    /// A new vessel has as its root the body with the lowest store index. Parts are listed in breadth-first order from
+    /// the root, so every parent precedes its children. A new vessel with fewer than <see cref="MinimumParts"/> parts is
+    /// not emitted: its joints stay Unity Physics joints, as the joints of loose bodies and debris do. A new vessel
+    /// retains the Id of a vessel from the previous compilation if it has the same root, parts, connecting joints and
+    /// closures in the same order. Otherwise, it receives a new Id.
     /// </para>
     /// </summary>
     [BurstCompile]
@@ -300,292 +412,694 @@ namespace KSP.Retooled.Physics
 
         public VesselBuild Build;
 
+        /// <summary>The number of the step that is being built. A new tombstone records it.</summary>
+        public int Step;
+
+        /// <summary>See <see cref="VesselPipeline.TombstoneSteps"/>.</summary>
+        public int TombstoneSteps;
+
+        /// <summary>See <see cref="VesselPipeline.MinimumParts"/>.</summary>
+        public int MinimumParts;
+
         public void Execute()
         {
-            int bodyCount = (int)World->bodyCount;
-            int unitCount = Units.Length;
-
-            // Keep the results of the previous compilation until they have been compared with the newly compiled
-            // vessels.
-            var oldVessels = new NativeArray<VesselRecord>(Build.Vessels.AsArray(), Allocator.Temp);
-            var oldBodies = new NativeArray<IntPtr>(Build.PartBodyRecords.AsArray(), Allocator.Temp);
-            var oldJoints = new NativeArray<IntPtr>(Build.PartJointRecords.AsArray(), Allocator.Temp);
-            var oldClosures = new NativeArray<IntPtr>(Build.ClosureJointRecords.AsArray(), Allocator.Temp);
-            Build.Clear(unitCount);
-
-            // Use Kruskal's algorithm on forest units between two moving bodies, processing them in store order as in
-            // the forest. A unit connecting two trees becomes an edge; one between bodies already in the same tree
-            // becomes a closure. The forest classifies bodies as moving even when they are not simulated. Reclassify
-            // the units here to exclude those bodies.
-            var kindList = new NativeArray<JointForestRole>(unitCount, Allocator.Temp);
-            kinds = (JointForestRole*)kindList.GetUnsafePtr();
-            var root = new NativeArray<int>(bodyCount, Allocator.Temp);
-            var degree = new NativeArray<int>(bodyCount + 1, Allocator.Temp);
-            for (int i = 0; i < bodyCount; i++)
+            new Compiler
             {
-                root[i] = i;
-            }
+                World = World,
+                Units = Units,
+                Roles = Roles,
+                Build = Build,
+                Step = Step,
+                TombstoneSteps = TombstoneSteps,
+                MinimumParts = MinimumParts,
+            }.Run();
+        }
 
-            for (int u = 0; u < unitCount; u++)
+        /// <summary>The work of the job, with the temporary lists that it shares between its stages.</summary>
+        private struct Compiler
+        {
+            public NativeStore.WorldData* World;
+            public NativeArray<JointUnit> Units;
+            public NativeArray<JointForestRole> Roles;
+            public VesselBuild Build;
+            public int Step;
+            public int TombstoneSteps;
+            public int MinimumParts;
+
+            // The results of the previous compilation, copied before the build is cleared.
+            private NativeArray<VesselRecord> oldVessels;
+            private NativeArray<IntPtr> oldBodies;
+            private NativeArray<IntPtr> oldJoints;
+            private NativeArray<IntPtr> oldClosures;
+            private NativeArray<int> oldParents;
+            private NativeArray<byte> oldIsBody0;
+            private NativeArray<int> oldPartTombstones;
+            private NativeArray<int> oldClosurePartA;
+            private NativeArray<int> oldClosurePartB;
+            private NativeArray<int> oldClosureTombstones;
+
+            // For each unit: whether it can be part of a vessel, and whether a kept vessel uses it.
+            private NativeArray<bool> eligible;
+            private NativeArray<bool> claimed;
+
+            // For each store body, its part index in the new build, or -1.
+            private NativeArray<int> partOf;
+
+            public void Run()
             {
-                kinds[u] = JointForestRole.None;
-                if (Roles[u] == JointForestRole.None)
+                int bodyCount = (int)World->bodyCount;
+                int unitCount = Units.Length;
+
+                // Keep the results of the previous compilation until they have been compared with the new vessels.
+                oldVessels = new NativeArray<VesselRecord>(Build.Vessels.AsArray(), Allocator.Temp);
+                oldBodies = new NativeArray<IntPtr>(Build.PartBodyRecords.AsArray(), Allocator.Temp);
+                oldJoints = new NativeArray<IntPtr>(Build.PartJointRecords.AsArray(), Allocator.Temp);
+                oldClosures = new NativeArray<IntPtr>(Build.ClosureJointRecords.AsArray(), Allocator.Temp);
+                oldParents = new NativeArray<int>(Build.PartParents.AsArray(), Allocator.Temp);
+                oldIsBody0 = new NativeArray<byte>(Build.PartIsBody0.AsArray(), Allocator.Temp);
+                oldPartTombstones = new NativeArray<int>(Build.PartTombstones.AsArray(), Allocator.Temp);
+                oldClosurePartA = new NativeArray<int>(Build.ClosurePartA.AsArray(), Allocator.Temp);
+                oldClosurePartB = new NativeArray<int>(Build.ClosurePartB.AsArray(), Allocator.Temp);
+                oldClosureTombstones = new NativeArray<int>(Build.ClosureTombstones.AsArray(), Allocator.Temp);
+                Build.Clear(unitCount);
+
+                // A unit can be part of a vessel if it is in the forest and both of its bodies move.
+                eligible = new NativeArray<bool>(unitCount, Allocator.Temp);
+                claimed = new NativeArray<bool>(unitCount, Allocator.Temp);
+                var unitsByBodies = new NativeParallelMultiHashMap<ulong, int>(math.max(1, unitCount), Allocator.Temp);
+                for (int u = 0; u < unitCount; u++)
                 {
-                    continue;
-                }
-
-                NativeStore.JointData* joint = World->joints[Units[u].Joint];
-                if (!Moving(joint->body0) || !Moving(joint->body1))
-                {
-                    continue;
-                }
-
-                int a = Find(root, (int)joint->body0->index);
-                int b = Find(root, (int)joint->body1->index);
-                if (a == b)
-                {
-                    kinds[u] = JointForestRole.Closure;
-                    continue;
-                }
-
-                root[a] = b;
-                kinds[u] = JointForestRole.Tree;
-                degree[(int)joint->body0->index]++;
-                degree[(int)joint->body1->index]++;
-            }
-
-            // Store the neighbours connected to each body by tree units in a single list. Record the start index for
-            // each body.
-            var firstNeighbour = new NativeArray<int>(bodyCount + 1, Allocator.Temp);
-            for (int i = 0; i < bodyCount; i++)
-            {
-                firstNeighbour[i + 1] = firstNeighbour[i] + degree[i];
-                degree[i] = firstNeighbour[i];
-            }
-
-            var neighbourUnit = new NativeArray<int>(firstNeighbour[bodyCount], Allocator.Temp);
-            var neighbourBody = new NativeArray<int>(firstNeighbour[bodyCount], Allocator.Temp);
-            for (int u = 0; u < unitCount; u++)
-            {
-                if (!IsVesselUnit(u, JointForestRole.Tree, out int a, out int b))
-                {
-                    continue;
-                }
-
-                neighbourUnit[degree[a]] = u;
-                neighbourBody[degree[a]++] = b;
-                neighbourUnit[degree[b]] = u;
-                neighbourBody[degree[b]++] = a;
-            }
-
-            // Traverse each connected component in breadth-first order, starting with the body that has the lowest
-            // store index. A body with no tree units does not form a vessel.
-            var partOf = new NativeArray<int>(bodyCount, Allocator.Temp);
-            var vesselOfRoot = new NativeArray<int>(bodyCount, Allocator.Temp);
-            for (int i = 0; i < bodyCount; i++)
-            {
-                partOf[i] = -1;
-                vesselOfRoot[i] = -1;
-            }
-
-            for (int body = 0; body < bodyCount; body++)
-            {
-                if (firstNeighbour[body + 1] == firstNeighbour[body] || partOf[body] >= 0)
-                {
-                    continue;
-                }
-
-                int vessel = Build.Vessels.Length;
-                int firstPart = Build.PartStoreBodies.Length;
-                vesselOfRoot[Find(root, body)] = vessel;
-                AddPart(body, -1, -1, 0, firstPart, partOf);
-                for (int next = firstPart; next < Build.PartStoreBodies.Length; next++)
-                {
-                    int parent = Build.PartStoreBodies[next];
-                    for (int n = firstNeighbour[parent]; n < firstNeighbour[parent + 1]; n++)
+                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    eligible[u] = Roles[u] != JointForestRole.None && Moving(joint->body0) && Moving(joint->body1);
+                    if (eligible[u])
                     {
-                        int child = neighbourBody[n];
-                        if (partOf[child] < 0)
-                        {
-                            NativeStore.JointData* joint = World->joints[Units[neighbourUnit[n]].Joint];
-                            byte isBody0 = joint->body0 != null && (int)joint->body0->index == child ? (byte)1 : (byte)0;
-                            AddPart(child, neighbourUnit[n], next - firstPart, isBody0, firstPart, partOf);
-                            Build.UnitVessels[neighbourUnit[n]] = vessel;
-                        }
+                        unitsByBodies.Add(VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index), u);
                     }
                 }
 
-                Build.Vessels.Add(new VesselRecord
+                partOf = new NativeArray<int>(bodyCount, Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
                 {
-                    FirstPart = firstPart,
-                    PartCount = Build.PartStoreBodies.Length - firstPart,
-                });
-            }
+                    partOf[i] = -1;
+                }
 
-            // Count the closures for each vessel, then place them in consecutive ranges grouped by vessel.
-            int vesselCount = Build.Vessels.Length;
-            var closureCount = new NativeArray<int>(vesselCount + 1, Allocator.Temp);
-            for (int u = 0; u < unitCount; u++)
-            {
-                if (IsVesselUnit(u, JointForestRole.Closure, out int a, out _) && partOf[a] >= 0)
+                KeepVessels(unitsByBodies);
+                int firstNew = Build.Vessels.Length;
+                int firstNewClosure = Build.ClosureUnits.Length;
+                CompileNewVessels(firstNew, firstNewClosure);
+                KeepOrRenewIds(firstNew);
+
+                Build.BodyVessels.ResizeUninitialized(bodyCount);
+                for (int body = 0; body < bodyCount; body++)
                 {
-                    closureCount[vesselOfRoot[Find(root, a)] + 1]++;
+                    Build.BodyVessels[body] = -1;
+                }
+
+                for (int v = 0; v < Build.Vessels.Length; v++)
+                {
+                    VesselRecord record = Build.Vessels[v];
+                    for (int part = record.FirstPart; part < record.FirstPart + record.PartCount; part++)
+                    {
+                        Build.BodyVessels[Build.PartStoreBodies[part]] = v;
+                    }
+                }
+
+                // List every edge and closure unit by its two bodies, so that DropIgnoredPairsJob can find them.
+                Build.PairUnits.Capacity = math.max(Build.PairUnits.Capacity, Build.PartStoreBodies.Length + Build.ClosureUnits.Length);
+                for (int u = 0; u < unitCount; u++)
+                {
+                    if (Build.UnitVessels[u] >= 0)
+                    {
+                        NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                        Build.PairUnits.Add(VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index), u);
+                    }
                 }
             }
 
-            for (int v = 0; v < vesselCount; v++)
+            /// <summary>
+            /// Keeps the vessels of the previous compilation that can be kept, in their previous order, and adds them to the
+            /// build. See the summary of this job.
+            /// </summary>
+            private void KeepVessels(NativeParallelMultiHashMap<ulong, int> unitsByBodies)
             {
-                closureCount[v + 1] += closureCount[v];
-                VesselRecord record = Build.Vessels[v];
-                record.FirstClosure = closureCount[v];
-                record.ClosureCount = closureCount[v + 1] - closureCount[v];
-                Build.Vessels[v] = record;
-            }
-
-            int closures = closureCount[vesselCount];
-            Build.ClosureUnits.ResizeUninitialized(closures);
-            Build.ClosurePartA.ResizeUninitialized(closures);
-            Build.ClosurePartB.ResizeUninitialized(closures);
-            Build.ClosureJointRecords.ResizeUninitialized(closures);
-            for (int u = 0; u < unitCount; u++)
-            {
-                if (!IsVesselUnit(u, JointForestRole.Closure, out int a, out int b) || partOf[a] < 0)
+                int bodyCount = (int)World->bodyCount;
+                var bodyOfRecord = new NativeHashMap<IntPtr, int>(math.max(1, bodyCount), Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
                 {
-                    continue;
+                    bodyOfRecord.TryAdd((IntPtr)World->bodies[i].owner, i);
                 }
 
-                int vessel = vesselOfRoot[Find(root, a)];
-                int slot = closureCount[vessel]++;
-                int firstPart = Build.Vessels[vessel].FirstPart;
-                Build.ClosureUnits[slot] = u;
-                Build.ClosurePartA[slot] = partOf[a] - firstPart;
-                Build.ClosurePartB[slot] = partOf[b] - firstPart;
-                Build.ClosureJointRecords[slot] = (IntPtr)World->joints[Units[u].Joint];
-                Build.UnitVessels[u] = vessel;
-            }
-
-            KeepOrRenewIds(oldVessels, oldBodies, oldJoints, oldClosures);
-        }
-
-        // The role assigned to each unit during this compilation: a vessel edge, a vessel closure, or neither.
-        [NativeDisableUnsafePtrRestriction]
-        private JointForestRole* kinds;
-
-        /// <summary>
-        /// Returns whether this compilation assigned the requested kind to the unit. Also returns the store indices of
-        /// its bodies: a is the leading joint's body0, and b is its body1.
-        /// </summary>
-        private bool IsVesselUnit(int unit, JointForestRole kind, out int a, out int b)
-        {
-            a = b = -1;
-            if (kinds[unit] != kind)
-            {
-                return false;
-            }
-
-            NativeStore.JointData* joint = World->joints[Units[unit].Joint];
-            a = (int)joint->body0->index;
-            b = (int)joint->body1->index;
-            return true;
-        }
-
-        /// <summary>
-        /// Returns whether a body is simulated and is neither static nor kinematic, so it can be built as a moving
-        /// body.
-        /// </summary>
-        private static bool Moving(NativeStore.Body* body)
-        {
-            if (body == null)
-            {
-                return false;
-            }
-
-            NativeStore.BodyFlags flags = StoreOps.Hot(body)->flags;
-            return (flags & NativeStore.BodyFlags.Simulated) != 0
-                && (flags & (NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic)) == 0;
-        }
-
-        private void AddPart(int body, int unit, int parent, byte isBody0, int firstPart, NativeArray<int> partOf)
-        {
-            partOf[body] = Build.PartStoreBodies.Length;
-            Build.PartStoreBodies.Add(body);
-            Build.PartUnits.Add(unit);
-            Build.PartParents.Add(parent);
-            Build.PartIsBody0.Add(isBody0);
-            Build.PartVesselFirst.Add(firstPart);
-            Build.PartBodyRecords.Add((IntPtr)World->bodies[body].owner);
-            Build.PartJointRecords.Add(unit >= 0 ? (IntPtr)World->joints[Units[unit].Joint] : IntPtr.Zero);
-        }
-
-        private static int Find(NativeArray<int> root, int v)
-        {
-            while (root[v] != v)
-            {
-                root[v] = root[root[v]];
-                v = root[v];
-            }
-
-            return v;
-        }
-
-        /// <summary>
-        /// Reuses the Id of a previously compiled vessel when it has the same root body, the same parts in the same
-        /// order, the same connecting joints, and the same closures. Assigns a new Id to every other vessel.
-        /// </summary>
-        private void KeepOrRenewIds(NativeArray<VesselRecord> oldVessels, NativeArray<IntPtr> oldBodies, NativeArray<IntPtr> oldJoints,
-            NativeArray<IntPtr> oldClosures)
-        {
-            var oldByRoot = new NativeHashMap<IntPtr, int>(math.max(1, oldVessels.Length), Allocator.Temp);
-            for (int v = 0; v < oldVessels.Length; v++)
-            {
-                oldByRoot.TryAdd(oldBodies[oldVessels[v].FirstPart], v);
-            }
-
-            for (int v = 0; v < Build.Vessels.Length; v++)
-            {
-                VesselRecord vessel = Build.Vessels[v];
-                if (oldByRoot.TryGetValue(Build.PartBodyRecords[vessel.FirstPart], out int old)
-                    && Same(vessel, oldVessels[old], oldBodies, oldJoints, oldClosures))
+                // For each store body, the old vessel that would keep it, or -1.
+                var keptBy = new NativeArray<int>(bodyCount, Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
                 {
-                    vessel.Id = oldVessels[old].Id;
-                    vessel.StructureVersion = oldVessels[old].StructureVersion;
-                }
-                else
-                {
-                    vessel.Id = VesselPipeline.NewId();
-                    vessel.StructureVersion = (uint)vessel.Id;
+                    keptBy[i] = -1;
                 }
 
-                Build.Vessels[v] = vessel;
-            }
-        }
+                var kept = new NativeArray<bool>(oldVessels.Length, Allocator.Temp);
+                var partBody = new NativeArray<int>(oldBodies.Length, Allocator.Temp);
+                var partUnit = new NativeArray<int>(oldBodies.Length, Allocator.Temp);
+                var closureUnit = new NativeArray<int>(oldClosures.Length, Allocator.Temp);
+                for (int v = 0; v < oldVessels.Length; v++)
+                {
+                    kept[v] = TryKeep(v, unitsByBodies, bodyOfRecord, keptBy, partBody, partUnit, closureUnit);
+                    if (!kept[v])
+                    {
+                        Release(v, keptBy, partBody, partUnit, closureUnit);
+                    }
+                }
 
-        private bool Same(in VesselRecord vessel, in VesselRecord old, NativeArray<IntPtr> oldBodies, NativeArray<IntPtr> oldJoints,
-            NativeArray<IntPtr> oldClosures)
-        {
-            if (vessel.PartCount != old.PartCount || vessel.ClosureCount != old.ClosureCount)
-            {
-                return false;
+                // A unit that joins a kept vessel's bodies but takes no place in it, or that joins the vessel to another
+                // body, changes the vessel's structure. Such a vessel is compiled anew.
+                for (int u = 0; u < Units.Length; u++)
+                {
+                    if (!eligible[u] || claimed[u])
+                    {
+                        continue;
+                    }
+
+                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    int first = keptBy[(int)joint->body0->index];
+                    int second = keptBy[(int)joint->body1->index];
+                    if (first >= 0)
+                    {
+                        kept[first] = false;
+                        Release(first, keptBy, partBody, partUnit, closureUnit);
+                    }
+
+                    if (second >= 0)
+                    {
+                        kept[second] = false;
+                        Release(second, keptBy, partBody, partUnit, closureUnit);
+                    }
+                }
+
+                for (int v = 0; v < oldVessels.Length; v++)
+                {
+                    if (kept[v])
+                    {
+                        AddKeptVessel(oldVessels[v], partBody, partUnit, closureUnit);
+                    }
+                }
             }
 
-            for (int i = 0; i < vessel.PartCount; i++)
+            /// <summary>
+            /// Finds the current bodies and units of an old vessel and claims them. Returns false if the vessel can't be
+            /// kept.
+            /// </summary>
+            private bool TryKeep(int v, NativeParallelMultiHashMap<ulong, int> unitsByBodies, NativeHashMap<IntPtr, int> bodyOfRecord,
+                NativeArray<int> keptBy, NativeArray<int> partBody, NativeArray<int> partUnit, NativeArray<int> closureUnit)
             {
-                if (Build.PartBodyRecords[vessel.FirstPart + i] != oldBodies[old.FirstPart + i]
-                    || Build.PartJointRecords[vessel.FirstPart + i] != oldJoints[old.FirstPart + i])
+                VesselRecord vessel = oldVessels[v];
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    partBody[part] = -1;
+                    partUnit[part] = -1;
+                }
+
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    closureUnit[c] = -1;
+                }
+
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    if (!bodyOfRecord.TryGetValue(oldBodies[part], out int body) || keptBy[body] >= 0 || !Moving(World->bodies + body))
+                    {
+                        return false;
+                    }
+
+                    partBody[part] = body;
+                    keptBy[body] = v;
+                }
+
+                for (int part = vessel.FirstPart + 1; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    int parent = vessel.FirstPart + oldParents[part];
+                    partUnit[part] = Claim(unitsByBodies, partBody[part], partBody[parent]);
+                    if (partUnit[part] < 0 && Expired(oldPartTombstones[part]))
+                    {
+                        return false;
+                    }
+                }
+
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    int a = partBody[vessel.FirstPart + oldClosurePartA[c]];
+                    int b = partBody[vessel.FirstPart + oldClosurePartB[c]];
+                    closureUnit[c] = Claim(unitsByBodies, a, b);
+                    if (closureUnit[c] < 0 && Expired(oldClosureTombstones[c]))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            /// <summary>Returns whether a tombstone made at the given step (or one made now, for -1) has expired.</summary>
+            private bool Expired(int stamp)
+            {
+                return Step - (stamp >= 0 ? stamp : Step) >= TombstoneSteps;
+            }
+
+            /// <summary>Claims an unclaimed eligible unit between two bodies, or returns -1 if there is none.</summary>
+            private int Claim(NativeParallelMultiHashMap<ulong, int> unitsByBodies, int bodyA, int bodyB)
+            {
+                if (unitsByBodies.TryGetFirstValue(VesselBuild.PairKey(bodyA, bodyB), out int unit, out NativeParallelMultiHashMapIterator<ulong> iterator))
+                {
+                    do
+                    {
+                        if (!claimed[unit])
+                        {
+                            claimed[unit] = true;
+                            return unit;
+                        }
+                    }
+                    while (unitsByBodies.TryGetNextValue(out unit, ref iterator));
+                }
+
+                return -1;
+            }
+
+            /// <summary>Gives back the bodies and units that an old vessel claimed.</summary>
+            private void Release(int v, NativeArray<int> keptBy, NativeArray<int> partBody, NativeArray<int> partUnit, NativeArray<int> closureUnit)
+            {
+                VesselRecord vessel = oldVessels[v];
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    if (partBody[part] >= 0 && keptBy[partBody[part]] == v)
+                    {
+                        keptBy[partBody[part]] = -1;
+                    }
+
+                    if (partUnit[part] >= 0)
+                    {
+                        claimed[partUnit[part]] = false;
+                        partUnit[part] = -1;
+                    }
+                }
+
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    if (closureUnit[c] >= 0)
+                    {
+                        claimed[closureUnit[c]] = false;
+                        closureUnit[c] = -1;
+                    }
+                }
+            }
+
+            /// <summary>Adds a kept vessel to the build with its old layout and Id.</summary>
+            private void AddKeptVessel(VesselRecord vessel, NativeArray<int> partBody, NativeArray<int> partUnit, NativeArray<int> closureUnit)
+            {
+                int index = Build.Vessels.Length;
+                int firstPart = Build.PartStoreBodies.Length;
+                bool changed = false;
+                for (int k = 0; k < vessel.PartCount; k++)
+                {
+                    int old = vessel.FirstPart + k;
+                    int unit = partUnit[old];
+                    byte isBody0 = oldIsBody0[old];
+                    int tombstone = -1;
+                    if (unit >= 0)
+                    {
+                        NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                        isBody0 = (int)joint->body0->index == partBody[old] ? (byte)1 : (byte)0;
+                        Build.UnitVessels[unit] = index;
+                    }
+                    else if (k > 0)
+                    {
+                        tombstone = oldPartTombstones[old] >= 0 ? oldPartTombstones[old] : Step;
+                    }
+
+                    changed |= k > 0 && (tombstone >= 0) != (oldPartTombstones[old] >= 0);
+                    AddPart(partBody[old], unit, oldParents[old], isBody0, firstPart, tombstone);
+                }
+
+                int firstClosure = Build.ClosureUnits.Length;
+                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                {
+                    int unit = closureUnit[c];
+                    int a = oldClosurePartA[c];
+                    int b = oldClosurePartB[c];
+                    int tombstone = -1;
+                    IntPtr record = IntPtr.Zero;
+                    if (unit >= 0)
+                    {
+                        NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                        a = partOf[(int)joint->body0->index] - firstPart;
+                        b = partOf[(int)joint->body1->index] - firstPart;
+                        record = (IntPtr)joint;
+                        Build.UnitVessels[unit] = index;
+                    }
+                    else
+                    {
+                        tombstone = oldClosureTombstones[c] >= 0 ? oldClosureTombstones[c] : Step;
+                    }
+
+                    changed |= (tombstone >= 0) != (oldClosureTombstones[c] >= 0) || a != oldClosurePartA[c];
+                    AddClosure(unit, a, b, record, tombstone);
+                }
+
+                vessel.FirstPart = firstPart;
+                vessel.FirstClosure = firstClosure;
+                if (changed)
+                {
+                    vessel.StructureVersion++;
+                }
+
+                Build.Vessels.Add(vessel);
+            }
+
+            /// <summary>
+            /// Compiles new vessels from the units and bodies that no kept vessel uses. Uses Kruskal's algorithm on the
+            /// eligible units, processing them in store order as in the forest. A unit connecting two trees becomes an
+            /// edge; one between bodies already in the same tree becomes a closure.
+            /// </summary>
+            private void CompileNewVessels(int firstNew, int firstNewClosure)
+            {
+                int bodyCount = (int)World->bodyCount;
+                int unitCount = Units.Length;
+                var kindList = new NativeArray<JointForestRole>(unitCount, Allocator.Temp);
+                kinds = (JointForestRole*)kindList.GetUnsafePtr();
+                var root = new NativeArray<int>(bodyCount, Allocator.Temp);
+                var degree = new NativeArray<int>(bodyCount + 1, Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
+                {
+                    root[i] = i;
+                }
+
+                for (int u = 0; u < unitCount; u++)
+                {
+                    kinds[u] = JointForestRole.None;
+                    if (!eligible[u] || claimed[u])
+                    {
+                        continue;
+                    }
+
+                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    int a = (int)joint->body0->index;
+                    int b = (int)joint->body1->index;
+                    if (partOf[a] >= 0 || partOf[b] >= 0)
+                    {
+                        continue;
+                    }
+
+                    a = Find(root, a);
+                    b = Find(root, b);
+                    if (a == b)
+                    {
+                        kinds[u] = JointForestRole.Closure;
+                        continue;
+                    }
+
+                    root[a] = b;
+                    kinds[u] = JointForestRole.Tree;
+                    degree[(int)joint->body0->index]++;
+                    degree[(int)joint->body1->index]++;
+                }
+
+                // Store the neighbours connected to each body by tree units in a single list. Record the start index for
+                // each body.
+                var firstNeighbour = new NativeArray<int>(bodyCount + 1, Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
+                {
+                    firstNeighbour[i + 1] = firstNeighbour[i] + degree[i];
+                    degree[i] = firstNeighbour[i];
+                }
+
+                var neighbourUnit = new NativeArray<int>(firstNeighbour[bodyCount], Allocator.Temp);
+                var neighbourBody = new NativeArray<int>(firstNeighbour[bodyCount], Allocator.Temp);
+                for (int u = 0; u < unitCount; u++)
+                {
+                    if (!IsVesselUnit(u, JointForestRole.Tree, out int a, out int b))
+                    {
+                        continue;
+                    }
+
+                    neighbourUnit[degree[a]] = u;
+                    neighbourBody[degree[a]++] = b;
+                    neighbourUnit[degree[b]] = u;
+                    neighbourBody[degree[b]++] = a;
+                }
+
+                // Traverse each connected component in breadth-first order, starting with the body that has the lowest
+                // store index. A body with no tree units does not form a vessel, and neither does a component with fewer
+                // parts than the minimum.
+                var vesselOfRoot = new NativeArray<int>(bodyCount, Allocator.Temp);
+                var visited = new NativeArray<bool>(bodyCount, Allocator.Temp);
+                var order = new NativeList<int>(Allocator.Temp);
+                var orderUnit = new NativeList<int>(Allocator.Temp);
+                var orderParent = new NativeList<int>(Allocator.Temp);
+                for (int i = 0; i < bodyCount; i++)
+                {
+                    vesselOfRoot[i] = -1;
+                }
+
+                for (int body = 0; body < bodyCount; body++)
+                {
+                    if (firstNeighbour[body + 1] == firstNeighbour[body] || visited[body] || partOf[body] >= 0)
+                    {
+                        continue;
+                    }
+
+                    order.Clear();
+                    orderUnit.Clear();
+                    orderParent.Clear();
+                    order.Add(body);
+                    orderUnit.Add(-1);
+                    orderParent.Add(-1);
+                    visited[body] = true;
+                    for (int next = 0; next < order.Length; next++)
+                    {
+                        int parent = order[next];
+                        for (int n = firstNeighbour[parent]; n < firstNeighbour[parent + 1]; n++)
+                        {
+                            int child = neighbourBody[n];
+                            if (!visited[child])
+                            {
+                                visited[child] = true;
+                                order.Add(child);
+                                orderUnit.Add(neighbourUnit[n]);
+                                orderParent.Add(next);
+                            }
+                        }
+                    }
+
+                    if (order.Length < MinimumParts)
+                    {
+                        continue;
+                    }
+
+                    int vessel = Build.Vessels.Length;
+                    int firstPart = Build.PartStoreBodies.Length;
+                    vesselOfRoot[Find(root, body)] = vessel;
+                    for (int k = 0; k < order.Length; k++)
+                    {
+                        byte isBody0 = 0;
+                        if (orderUnit[k] >= 0)
+                        {
+                            NativeStore.JointData* joint = World->joints[Units[orderUnit[k]].Joint];
+                            isBody0 = joint->body0 != null && (int)joint->body0->index == order[k] ? (byte)1 : (byte)0;
+                            Build.UnitVessels[orderUnit[k]] = vessel;
+                        }
+
+                        AddPart(order[k], orderUnit[k], orderParent[k], isBody0, firstPart, -1);
+                    }
+
+                    Build.Vessels.Add(new VesselRecord
+                    {
+                        FirstPart = firstPart,
+                        PartCount = Build.PartStoreBodies.Length - firstPart,
+                    });
+                }
+
+                // Count the closures for each new vessel, then place them in consecutive ranges grouped by vessel, after the
+                // closures of the kept vessels.
+                int newCount = Build.Vessels.Length - firstNew;
+                var closureCount = new NativeArray<int>(newCount + 1, Allocator.Temp);
+                for (int u = 0; u < unitCount; u++)
+                {
+                    if (IsVesselUnit(u, JointForestRole.Closure, out int a, out _) && partOf[a] >= 0)
+                    {
+                        closureCount[vesselOfRoot[Find(root, a)] - firstNew + 1]++;
+                    }
+                }
+
+                for (int v = 0; v < newCount; v++)
+                {
+                    closureCount[v + 1] += closureCount[v];
+                    VesselRecord record = Build.Vessels[firstNew + v];
+                    record.FirstClosure = firstNewClosure + closureCount[v];
+                    record.ClosureCount = closureCount[v + 1] - closureCount[v];
+                    Build.Vessels[firstNew + v] = record;
+                }
+
+                int closures = firstNewClosure + closureCount[newCount];
+                Build.ClosureUnits.ResizeUninitialized(closures);
+                Build.ClosurePartA.ResizeUninitialized(closures);
+                Build.ClosurePartB.ResizeUninitialized(closures);
+                Build.ClosureJointRecords.ResizeUninitialized(closures);
+                Build.ClosureTombstones.ResizeUninitialized(closures);
+                for (int u = 0; u < unitCount; u++)
+                {
+                    if (!IsVesselUnit(u, JointForestRole.Closure, out int a, out int b) || partOf[a] < 0)
+                    {
+                        continue;
+                    }
+
+                    int vessel = vesselOfRoot[Find(root, a)];
+                    int slot = firstNewClosure + closureCount[vessel - firstNew]++;
+                    int firstPart = Build.Vessels[vessel].FirstPart;
+                    Build.ClosureUnits[slot] = u;
+                    Build.ClosurePartA[slot] = partOf[a] - firstPart;
+                    Build.ClosurePartB[slot] = partOf[b] - firstPart;
+                    Build.ClosureJointRecords[slot] = (IntPtr)World->joints[Units[u].Joint];
+                    Build.ClosureTombstones[slot] = -1;
+                    Build.UnitVessels[u] = vessel;
+                }
+            }
+
+            // The role assigned to each unit when the new vessels are compiled: a vessel edge, a vessel closure, or neither.
+            private JointForestRole* kinds;
+
+            /// <summary>
+            /// Returns whether the compilation of new vessels assigned the requested kind to the unit. Also returns the
+            /// store indices of its bodies: a is the leading joint's body0, and b is its body1.
+            /// </summary>
+            private bool IsVesselUnit(int unit, JointForestRole kind, out int a, out int b)
+            {
+                a = b = -1;
+                if (kinds[unit] != kind)
                 {
                     return false;
                 }
+
+                NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                a = (int)joint->body0->index;
+                b = (int)joint->body1->index;
+                return true;
             }
 
-            for (int i = 0; i < vessel.ClosureCount; i++)
+            /// <summary>
+            /// Returns whether a body is simulated and is neither static nor kinematic, so it can be built as a moving
+            /// body.
+            /// </summary>
+            private static bool Moving(NativeStore.Body* body)
             {
-                if (Build.ClosureJointRecords[vessel.FirstClosure + i] != oldClosures[old.FirstClosure + i])
+                return body != null && Moving(StoreOps.Hot(body));
+            }
+
+            private static bool Moving(NativeStore.BodyData* body)
+            {
+                NativeStore.BodyFlags flags = body->flags;
+                return (flags & NativeStore.BodyFlags.Simulated) != 0
+                    && (flags & (NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic)) == 0;
+            }
+
+            /// <summary>
+            /// Adds a part. The unit is -1 for a root and for an edge that is a tombstone; the tombstone is the step at
+            /// which the edge became one, or -1.
+            /// </summary>
+            private void AddPart(int body, int unit, int parent, byte isBody0, int firstPart, int tombstone)
+            {
+                partOf[body] = Build.PartStoreBodies.Length;
+                Build.PartStoreBodies.Add(body);
+                Build.PartUnits.Add(unit);
+                Build.PartParents.Add(parent);
+                Build.PartIsBody0.Add(isBody0);
+                Build.PartVesselFirst.Add(firstPart);
+                Build.PartTombstones.Add(tombstone);
+                Build.PartBodyRecords.Add((IntPtr)World->bodies[body].owner);
+                Build.PartJointRecords.Add(unit >= 0 ? (IntPtr)World->joints[Units[unit].Joint] : IntPtr.Zero);
+            }
+
+            private void AddClosure(int unit, int partA, int partB, IntPtr record, int tombstone)
+            {
+                Build.ClosureUnits.Add(unit);
+                Build.ClosurePartA.Add(partA);
+                Build.ClosurePartB.Add(partB);
+                Build.ClosureJointRecords.Add(record);
+                Build.ClosureTombstones.Add(tombstone);
+            }
+
+            private static int Find(NativeArray<int> root, int v)
+            {
+                while (root[v] != v)
                 {
-                    return false;
+                    root[v] = root[root[v]];
+                    v = root[v];
+                }
+
+                return v;
+            }
+
+            /// <summary>
+            /// Gives each new vessel the Id of a previously compiled vessel when it has the same root body, the same parts
+            /// in the same order, the same connecting joints, and the same closures. Assigns a new Id to every other new
+            /// vessel. A kept vessel already has its Id, so another vessel can't take that Id.
+            /// </summary>
+            private void KeepOrRenewIds(int firstNew)
+            {
+                var usedIds = new NativeHashSet<ulong>(math.max(1, firstNew), Allocator.Temp);
+                for (int v = 0; v < firstNew; v++)
+                {
+                    usedIds.Add(Build.Vessels[v].Id);
+                }
+
+                var oldByRoot = new NativeHashMap<IntPtr, int>(math.max(1, oldVessels.Length), Allocator.Temp);
+                for (int v = 0; v < oldVessels.Length; v++)
+                {
+                    oldByRoot.TryAdd(oldBodies[oldVessels[v].FirstPart], v);
+                }
+
+                for (int v = firstNew; v < Build.Vessels.Length; v++)
+                {
+                    VesselRecord vessel = Build.Vessels[v];
+                    if (oldByRoot.TryGetValue(Build.PartBodyRecords[vessel.FirstPart], out int old)
+                        && !usedIds.Contains(oldVessels[old].Id) && Same(vessel, oldVessels[old]))
+                    {
+                        vessel.Id = oldVessels[old].Id;
+                        vessel.StructureVersion = oldVessels[old].StructureVersion;
+                    }
+                    else
+                    {
+                        vessel.Id = VesselPipeline.NewId();
+                        vessel.StructureVersion = (uint)vessel.Id;
+                    }
+
+                    usedIds.Add(vessel.Id);
+                    Build.Vessels[v] = vessel;
                 }
             }
 
-            return true;
+            private bool Same(in VesselRecord vessel, in VesselRecord old)
+            {
+                if (vessel.PartCount != old.PartCount || vessel.ClosureCount != old.ClosureCount)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < vessel.PartCount; i++)
+                {
+                    if (Build.PartBodyRecords[vessel.FirstPart + i] != oldBodies[old.FirstPart + i]
+                        || Build.PartJointRecords[vessel.FirstPart + i] != oldJoints[old.FirstPart + i])
+                    {
+                        return false;
+                    }
+                }
+
+                for (int i = 0; i < vessel.ClosureCount; i++)
+                {
+                    if (Build.ClosureJointRecords[vessel.FirstClosure + i] != oldClosures[old.FirstClosure + i])
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
         }
     }
 
@@ -732,16 +1246,24 @@ namespace KSP.Retooled.Physics
         public NativeStore.WorldData* World;
 
         [ReadOnly]
-        public NativeArray<int> BuiltIndices;
-
-        [ReadOnly]
         public NativeArray<JointUnit> Units;
 
-        [ReadOnly]
+        // This job runs at the same time as BuildJointsJob and FillVesselClosuresJob. All three jobs write groups, but
+        // never the same group: this job writes only the groups of the edges in active vessels, FillVesselClosuresJob
+        // writes only those of the closures, and BuildJointsJob writes only the groups outside active vessels.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroup> Groups;
 
-        [ReadOnly]
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
 
         [ReadOnly]
         public NativeArray<int> PartStoreBodies;
@@ -755,7 +1277,6 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<byte> PartIsBody0;
 
-        public NativeArray<int> PartBodies;
         public NativeArray<VesselEdge> Edges;
 
         /// <summary>
@@ -768,12 +1289,26 @@ namespace KSP.Retooled.Physics
         public void Execute(int part)
         {
             int storeBody = PartStoreBodies[part];
-            PartBodies[part] = BuiltIndices[storeBody];
             int unit = PartUnits[part];
             if (unit < 0)
             {
-                Edges[part] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding, MayLock = true };
+                // A root, or an edge whose joint went away. Such an edge is a tombstone: the solver treats it as broken
+                // and never locks it.
+                bool root = PartParents[part] < 0;
+                Edges[part] = new VesselEdge
+                {
+                    Parent = PartParents[part],
+                    State = root ? VesselEdgeState.Yielding : VesselEdgeState.Broken,
+                    MayLock = root,
+                    Frame = double3x3.identity,
+                    Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                };
                 return;
+            }
+
+            if (Active[UnitVessels[unit]] != 0)
+            {
+                BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
             }
 
             UnitParameters parameters = UnitParameters.Of(World, Units[unit], Groups, Members);
@@ -821,11 +1356,20 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<JointUnit> Units;
 
-        [ReadOnly]
+        // See the comment on FillVesselEdgesJob.Groups.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroup> Groups;
 
-        [ReadOnly]
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
 
         [ReadOnly]
         public NativeArray<int> ClosureUnits;
@@ -840,7 +1384,25 @@ namespace KSP.Retooled.Physics
 
         public void Execute(int closure)
         {
+            if (ClosureUnits[closure] < 0)
+            {
+                // A closure whose joint went away is a tombstone. With no stiffness and no damping, it has no effect.
+                Closures[closure] = new VesselClosure
+                {
+                    PartA = ClosurePartA[closure],
+                    PartB = ClosurePartB[closure],
+                    Frame = double3x3.identity,
+                    Rest = new double4(0.0, 0.0, 0.0, 1.0),
+                };
+                return;
+            }
+
             JointUnit unit = Units[ClosureUnits[closure]];
+            if (Active[UnitVessels[ClosureUnits[closure]]] != 0)
+            {
+                BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
+            }
+
             UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
             NativeStore.JointData* leader = World->joints[unit.Joint];
             NativeStore.BodyData* bodyA = StoreOps.Hot(leader->body0);
@@ -867,16 +1429,30 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Converts the vessel loads from the solver into loads for their joint units. As with Unity Physics impulse
-    /// events, the result is the force and torque acting on the leading joint's body0. Edge loads describe what the
-    /// parent applied to the child. Closure loads describe what part A applied to part B. Store loads for groups in the
-    /// group array; <see cref="ShareGroupLoadsJob"/> distributes them among the members afterwards.
+    /// Converts the vessel loads from the solver into loads for their joint units, then settles the loads of the
+    /// units' joints. As with Unity Physics impulse events, the load of a unit is the force and torque acting on the
+    /// leading joint's body0. Edge loads describe what the parent applied to the child. Closure loads describe what
+    /// part A applied to part B. The load of a group is shared among its members as <see cref="ShareGroupLoadsJob"/>
+    /// does. Each member's load starts at zero because the bodies of an active vessel are awake. Each joint's load is
+    /// then settled as <see cref="SettleJointLoadsJob"/> does. The joints of active vessels have no impulse events, so
+    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints.
     /// </summary>
     [BurstCompile]
     internal unsafe struct VesselLoadsJob : IJobParallelFor
     {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
         [ReadOnly]
         public NativeArray<JointUnit> Units;
+
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
+        public float DeltaTime;
 
         /// <summary>
         /// For each part, the joint unit for its edge, or -1 for a vessel root. Closure units are stored separately in
@@ -903,11 +1479,10 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<VesselEdgeLoad> ClosureLoads;
 
+        // The jobs for the other joints write their loads at the same time. No joint is in both sets.
         [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointLoad> JointLoads;
-
-        [NativeDisableParallelForRestriction]
-        public NativeArray<JointLoad> GroupLoads;
 
         /// <summary>Processes part indices first, followed by closure indices.</summary>
         public void Execute(int index)
@@ -931,6 +1506,10 @@ namespace KSP.Retooled.Physics
             else
             {
                 unit = ClosureUnits[index - parts];
+                if (unit < 0)
+                {
+                    return;
+                }
 
                 // The load acts on part B, which is body1. Reverse the sign to obtain the load on body0.
                 load = ClosureLoads[index - parts];
@@ -946,11 +1525,77 @@ namespace KSP.Retooled.Physics
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
+                SettleJointLoadsJob.Settle(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
                 JointLoads[jointUnit.Joint] = jointLoad;
+                return;
             }
-            else
+
+            JointGroup group = Groups[jointUnit.Group];
+            for (int i = 0; i < group.MemberCount; i++)
             {
-                GroupLoads[jointUnit.Group] = jointLoad;
+                JointLoads[Members[group.FirstMember + i].Joint] = default;
+            }
+
+            ShareGroupLoadsJob.Share(World, group, jointLoad, Members, JointLoads);
+            for (int i = 0; i < group.MemberCount; i++)
+            {
+                int joint = Members[group.FirstMember + i].Joint;
+                JointLoad memberLoad = JointLoads[joint];
+                SettleJointLoadsJob.Settle(World->joints[joint], ref memberLoad, DeltaTime);
+                JointLoads[joint] = memberLoad;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Lists the joints and groups that are not in an active vessel. The jobs that read the impulse events and settle
+    /// the loads handle only these joints and groups, and <see cref="VesselLoadsJob"/> handles the others.
+    /// </summary>
+    [BurstCompile]
+    internal struct ListOtherJointsJob : IJob
+    {
+        [ReadOnly]
+        public NativeArray<JointUnit> Units;
+
+        [ReadOnly]
+        public NativeArray<JointGroup> Groups;
+
+        [ReadOnly]
+        public NativeArray<JointGroupMember> Members;
+
+        [ReadOnly]
+        public NativeArray<int> UnitVessels;
+
+        [ReadOnly]
+        public NativeArray<byte> Active;
+
+        public NativeList<int> OtherJoints;
+        public NativeList<int> OtherGroups;
+
+        public void Execute()
+        {
+            OtherJoints.Clear();
+            OtherGroups.Clear();
+            for (int u = 0; u < Units.Length; u++)
+            {
+                if (UnitVessels[u] >= 0 && Active[UnitVessels[u]] != 0)
+                {
+                    continue;
+                }
+
+                JointUnit unit = Units[u];
+                if (unit.Group < 0)
+                {
+                    OtherJoints.Add(unit.Joint);
+                    continue;
+                }
+
+                OtherGroups.Add(unit.Group);
+                JointGroup group = Groups[unit.Group];
+                for (int i = 0; i < group.MemberCount; i++)
+                {
+                    OtherJoints.Add(Members[group.FirstMember + i].Joint);
+                }
             }
         }
     }

@@ -138,8 +138,7 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Whether vessels are enabled for this step. The vessel solver handles joints in active vessels, so no Unity
-        /// Physics constraints are built for those joints. A joint without constraints may still be needed to disable
-        /// collisions. See <see cref="AppendVesselUnit"/> .
+        /// Physics joints are built for those joints.
         /// </summary>
         public bool Vessels;
 
@@ -163,6 +162,16 @@ namespace KSP.Retooled.Physics
             Output.BeginForEachIndex(index);
             written = 0;
             JointUnit unit = Units[index];
+
+            // The vessel solver handles the joints of active vessels, and DropIgnoredPairsJob stops their bodies from
+            // colliding, so build nothing for them. FillVesselEdgesJob and FillVesselClosuresJob prepare their groups.
+            if (Vessels && UnitVessels[index] >= 0 && VesselActive[UnitVessels[index]] != 0)
+            {
+                Output.EndForEachIndex();
+                Written[index] = 0;
+                return;
+            }
+
             role = Roles[index];
             forestLock = JointForestLock.None;
             if (Locking && role != JointForestRole.None)
@@ -173,11 +182,7 @@ namespace KSP.Retooled.Physics
                     forestLock = UnitLock(unit);
                 }
             }
-            if (Vessels && UnitVessels[index] >= 0 && VesselActive[UnitVessels[index]] != 0)
-            {
-                AppendVesselUnit(unit);
-            }
-            else if (unit.Group < 0)
+            if (unit.Group < 0)
             {
                 Append(World->joints[unit.Joint]);
             }
@@ -369,41 +374,22 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Processes one unit of a vessel that participates in this step. The vessel solver handles its constraints, so
-        /// no Unity Physics joint is built unless collisions between its bodies must be disabled. In that case, build a
-        /// joint with no constraints, which Unity Physics uses to disable the collisions. For a group, calculate its
-        /// stiffness and the offsets of its members even when no joint is built. <see cref="ShareGroupLoadsJob"/> needs
-        /// those values to distribute the group's load after the step.
+        /// Prepares the group of a unit in an active vessel, if the unit is a group. The vessel solver handles the
+        /// unit's constraints, so no joint is built for it. <see cref="ShareGroupLoadsJob"/> still needs the group's
+        /// stiffness and the offsets of its members to distribute the group's load after the step.
         /// </summary>
-        private void AppendVesselUnit(JointUnit unit)
+        internal static void PrepareVesselGroup(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
+            NativeArray<JointGroupMember> members)
         {
-            NativeStore.JointData* leader = World->joints[unit.Joint];
-            float3 anchor0 = leader->position0;
-            float3 anchor1 = leader->position1;
-            Entity entity = new Entity { Index = (int)leader->index, Version = 1 };
             if (unit.Group >= 0)
             {
-                PrepareGroup(unit.Group, out anchor0, out anchor1);
-                entity = new Entity { Index = unit.Group, Version = JointGroup.EntityVersion };
+                PrepareGroup(world, groups, members, unit.Group, out _, out _);
             }
+        }
 
-            if ((leader->flags & NativeStore.JointFlagCollisionEnabled) != 0)
-            {
-                return;
-            }
-
-            int indexA = BuiltIndex(leader->body1);
-            int indexB = BuiltIndex(leader->body0);
-            pending = new PhysicsJoint
-            {
-                BodyPair = new BodyIndexPair { BodyIndexA = indexA, BodyIndexB = indexB },
-                AFromJoint = new MTransform(leader->rotation1, anchor1),
-                BFromJoint = new MTransform(leader->rotation0, anchor0),
-                Entity = entity,
-                EnableCollision = false,
-            };
-            pending.Constraints.Length = 0;
-            Write(pending);
+        private JointGroup PrepareGroup(int index, out float3 anchor0, out float3 anchor1)
+        {
+            return PrepareGroup(World, Groups, Members, index, out anchor0, out anchor1);
         }
 
         /// <summary>
@@ -411,15 +397,16 @@ namespace KSP.Retooled.Physics
         /// member. Angular stiffness is expressed as a multiple of the direct solver's cap. Stores the results in the
         /// group and member records.
         /// </summary>
-        private JointGroup PrepareGroup(int index, out float3 anchor0, out float3 anchor1)
+        private static JointGroup PrepareGroup(NativeStore.WorldData* world, NativeArray<JointGroup> groups, NativeArray<JointGroupMember> members,
+            int index, out float3 anchor0, out float3 anchor1)
         {
-            JointGroup group = Groups[index];
-            NativeStore.JointData* leader = World->joints[group.Leader];
+            JointGroup group = groups[index];
+            NativeStore.JointData* leader = world->joints[group.Leader];
             anchor0 = float3.zero;
             anchor1 = float3.zero;
             for (int i = 0; i < group.MemberCount; i++)
             {
-                NativeStore.JointData* member = World->joints[Members[group.FirstMember + i].Joint];
+                NativeStore.JointData* member = world->joints[members[group.FirstMember + i].Joint];
                 anchor0 += member->position0;
                 anchor1 += member->position1;
             }
@@ -435,15 +422,15 @@ namespace KSP.Retooled.Physics
             quaternion toJoint = math.conjugate(leader->rotation0);
             for (int i = 0; i < group.MemberCount; i++)
             {
-                JointGroupMember member = Members[group.FirstMember + i];
-                NativeStore.JointData* joint = World->joints[member.Joint];
+                JointGroupMember member = members[group.FirstMember + i];
+                NativeStore.JointData* joint = world->joints[member.Joint];
                 member.Offset = math.rotate(toJoint, joint->position0 - anchor0);
                 member.AngularStiffness = AngularStiffness(joint, angularCap);
                 group.Stiffness += member.AngularStiffness + group.LinearRatio * (math.lengthsq(member.Offset) - member.Offset * member.Offset);
-                Members[group.FirstMember + i] = member;
+                members[group.FirstMember + i] = member;
             }
 
-            Groups[index] = group;
+            groups[index] = group;
             return group;
         }
 

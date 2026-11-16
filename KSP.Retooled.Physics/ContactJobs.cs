@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
@@ -216,6 +217,25 @@ namespace KSP.Retooled.Physics
         /// </summary>
         public NativeQueue<KeyValue>.ParallelWriter Learned;
 
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        /// <summary>The joint units, to find the leading joint of a vessel's edge or closure.</summary>
+        [ReadOnly]
+        public NativeArray<JointUnit> Units;
+
+        /// <summary>See <see cref="VesselBuild.BodyVessels"/>. Empty when vessels are off.</summary>
+        [ReadOnly]
+        public NativeArray<int> BodyVessels;
+
+        /// <summary>For each vessel, 1 when it takes part in this step.</summary>
+        [ReadOnly]
+        public NativeArray<byte> VesselActive;
+
+        /// <summary>See <see cref="VesselBuild.PairUnits"/>.</summary>
+        [ReadOnly]
+        public NativeParallelMultiHashMap<ulong, int> VesselPairUnits;
+
         internal struct KeyValue
         {
             public ulong Key;
@@ -225,11 +245,63 @@ namespace KSP.Retooled.Physics
         public void Execute(int index)
         {
             DispatchPairSequencer.DispatchPair pair = Pairs[index];
-            if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && IsIgnored(pair))
+            if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && (IsVesselJointed(pair, index) || IsIgnored(pair)))
             {
                 pair.DisableCollision();
                 Pairs[index] = pair;
             }
+        }
+
+        /// <summary>
+        /// Returns whether the pair's bodies are joined by an edge or closure of an active vessel whose leading joint
+        /// doesn't let them collide. No Unity Physics joint is built for such a unit, so this job drops the contact
+        /// pair in its place. The result is the same as with a joint that has no constraints: a joint pair between the
+        /// same bodies that lets them collide keeps the contact pair. SetDisableCollisionFlagsJob has already disabled
+        /// this pair if the bodies have joint pairs and none of them lets the bodies collide. So if the pair is still
+        /// enabled and the pair before it is a joint pair between the same bodies, one of the joints lets them collide.
+        /// </summary>
+        private bool IsVesselJointed(DispatchPairSequencer.DispatchPair pair, int index)
+        {
+            if (BodyVessels.Length == 0)
+            {
+                return false;
+            }
+
+            Entity entityA = Bodies[pair.BodyIndexA].Entity;
+            Entity entityB = Bodies[pair.BodyIndexB].Entity;
+            int rowA = entityA.Index;
+            int rowB = entityB.Index;
+            if (entityA.Version == 0 || entityB.Version == 0 || rowA >= BodyVessels.Length || rowB >= BodyVessels.Length)
+            {
+                return false;
+            }
+
+            int vessel = BodyVessels[rowA];
+            if (vessel < 0 || vessel != BodyVessels[rowB] || VesselActive[vessel] == 0)
+            {
+                return false;
+            }
+
+            if (!VesselPairUnits.TryGetFirstValue(VesselBuild.PairKey(rowA, rowB), out int unit, out NativeParallelMultiHashMapIterator<ulong> iterator))
+            {
+                return false;
+            }
+
+            bool disabled = false;
+            do
+            {
+                disabled |= (World->joints[Units[unit].Joint]->flags & NativeStore.JointFlagCollisionEnabled) == 0;
+            }
+            while (!disabled && VesselPairUnits.TryGetNextValue(out unit, ref iterator));
+
+            if (!disabled || index == 0)
+            {
+                return disabled;
+            }
+
+            DispatchPairSequencer.DispatchPair previous = Pairs[index - 1];
+            bool permittedByJoint = previous.IsJoint && previous.BodyIndexA == pair.BodyIndexA && previous.BodyIndexB == pair.BodyIndexB;
+            return !permittedByJoint;
         }
 
         private bool IsIgnored(DispatchPairSequencer.DispatchPair pair)
@@ -964,7 +1036,10 @@ namespace KSP.Retooled.Physics
 
         public CollisionEvents Events;
 
+        // The job reads only the motions. The safety system would otherwise stop it while the dynamic tree is rebuilt,
+        // which writes the built bodies.
         [ReadOnly]
+        [NativeDisableContainerSafetyRestriction]
         public PhysicsWorld Built;
 
         public void Execute()
