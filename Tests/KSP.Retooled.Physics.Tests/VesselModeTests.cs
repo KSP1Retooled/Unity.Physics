@@ -438,6 +438,7 @@ namespace KSP.Retooled.Physics.Tests
             bool wasFused = Unity.Physics.Solver.VesselFused;
             int fusedParts = Unity.Physics.Solver.FusedVesselParts;
             Unity.Physics.Solver.FusedVesselParts = 2;
+            Unity.Physics.Solver.VesselFused = true;
             try
             {
                 Begin(vessels);
@@ -482,6 +483,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheFusedJobLandsAColumnAsTheIslandPathDoes()
         {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            Unity.Physics.Solver.VesselFused = true;
             int fusedParts = Unity.Physics.Solver.FusedVesselParts;
             var positions = new Vector3[2][];
             var loads = new float[2];
@@ -513,6 +516,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
+                Unity.Physics.Solver.VesselFused = wasFused;
                 Unity.Physics.Solver.FusedVesselParts = fusedParts;
             }
 
@@ -533,6 +537,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void OneMidSizedVesselGoesToTheFusedJobButTwoDoNot()
         {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            Unity.Physics.Solver.VesselFused = true;
             int fusedParts = Unity.Physics.Solver.FusedVesselParts;
             Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
             try
@@ -561,6 +567,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
+                Unity.Physics.Solver.VesselFused = wasFused;
                 Unity.Physics.Solver.FusedVesselParts = fusedParts;
             }
         }
