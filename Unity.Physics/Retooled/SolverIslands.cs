@@ -32,6 +32,7 @@ namespace Unity.Physics
             var islands = new NativeList<SolverIsland>(Allocator.TempJob);
             var islandPairs = new NativeList<DispatchPair>(Allocator.TempJob);
             var islandBodies = new NativeList<int>(Allocator.TempJob);
+            var islandVessels = new NativeList<int>(Allocator.TempJob);
             var phasesUsed = new NativeList<byte>(Allocator.TempJob);
             var linksInPhases = new NativeList<int>(Allocator.TempJob);
             var bucketCounts = new NativeArray<int>(NumIslandBuckets, Allocator.TempJob);
@@ -44,6 +45,7 @@ namespace Unity.Physics
                 Islands = islands,
                 IslandPairs = islandPairs,
                 IslandBodies = islandBodies,
+                IslandVessels = islandVessels,
                 PhasedDispatchPairs = phasedPairs,
                 PhasesUsed = phasesUsed,
                 LinksInPhases = linksInPhases,
@@ -66,6 +68,7 @@ namespace Unity.Physics
             {
                 Islands = islands.AsDeferredJobArray(),
                 IslandBodies = islandBodies.AsDeferredJobArray(),
+                IslandVessels = islandVessels.AsDeferredJobArray(),
                 BucketCounts = bucketCounts,
                 SolverSchedulerInfo = solverSchedulerInfo,
                 PhasedDispatchPairs = phasedPairs.AsDeferredJobArray(),
@@ -74,7 +77,7 @@ namespace Unity.Physics
 
             return JobHandle.CombineDependencies(
                 JobHandle.CombineDependencies(islands.Dispose(handle), islandPairs.Dispose(handle), islandBodies.Dispose(handle)),
-                JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle)),
+                JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle), islandVessels.Dispose(handle)),
                 bucketCounts.Dispose(handle));
         }
 
@@ -100,20 +103,41 @@ namespace Unity.Physics
             public int NumDirectJoints;
 
             /// <summary>
-            /// Whether the island holds a vessel. Its bodies are joined by the vessel's edges, which are not pairs, so
-            /// the
+            /// The range of the island's vessels in <see cref="FindSolverIslandsJob.IslandVessels"/>. The island's body
+            /// list starts with the parts of these vessels, in the order of the vessels and of their parts.
+            /// </summary>
+            public int FirstVessel;
+            public int VesselCount;
+
+            /// <summary>The number of parts in the island's vessels.</summary>
+            public int VesselParts;
+
+            /// <summary>
+            /// The number of the island's bodies that are not vessel parts. They follow the vessel parts in the body
+            /// list, in ascending order.
+            /// </summary>
+            public int OtherBodies;
+
+            /// <summary>
+            /// Whether the island holds a vessel. Its bodies are joined through the vessel, not through pairs, so the
             /// island exists even with no pairs at all, and it always goes to the direct solver.
             /// </summary>
-            public bool HasVessel;
+            public bool HasVessel => VesselCount > 0;
         }
 
         /// <summary>
-        /// Groups pairs into islands connected by joints, contacts or vessel parts. Only dynamic bodies connect
-        /// islands. The solver does not modify static bodies, so islands that share only a static body can be solved
-        /// independently.
+        /// Groups pairs into islands connected by joints, contacts or vessels. Only dynamic bodies connect islands. The
+        /// solver does not modify static bodies, so islands that share only a static body can be solved independently.
+        /// <para>
+        /// When the step has vessels, each vessel is one node of the search. The job never visits the vessel's own
+        /// edges, and it doesn't join the vessel's parts one by one. A pair that touches a part joins that part's
+        /// vessel, and the island's body list takes the vessel's parts straight from the vessel's part list. The map
+        /// from bodies to vessels is kept in the <see cref="SolverIslandCache"/> and is built again only when the
+        /// vessels or their bodies change.
+        /// </para>
         /// </summary>
         [BurstCompile]
-        unsafe struct FindSolverIslandsJob : IJob
+        internal unsafe struct FindSolverIslandsJob : IJob
         {
             [ReadOnly]
             public NativeArray<DispatchPair> DispatchPairs;
@@ -132,6 +156,12 @@ namespace Unity.Physics
 
             public NativeList<int> IslandBodies;
 
+            /// <summary>
+            /// The indices of each island's vessels in <see cref="Vessels"/>, grouped by island, in ascending order
+            /// within each island.
+            /// </summary>
+            public NativeList<int> IslandVessels;
+
             /// <summary> Sized here for the buckets, once it is known how many pairs each must be able to hold.
             /// </summary>
             public NativeList<DispatchPair> PhasedDispatchPairs;
@@ -147,7 +177,7 @@ namespace Unity.Physics
             public NativeList<int> LinksInPhases;
 
             /// <summary>
-            /// The previous step's islands, reusable if the solved pairs, dynamic body count and vessel key are
+            /// The previous step's islands, reusable if the solved pairs, the dynamic body count and the vessels are
             /// unchanged.
             /// </summary>
             public SolverIslandCache Cache;
@@ -155,40 +185,15 @@ namespace Unity.Physics
             /// <summary> The step's vessels. All the bodies of one vessel are in one island. </summary>
             public VesselSet Vessels;
 
-            /// <summary>
-            /// Computes a key from the vessel count, vessel IDs, structure versions and body indices of their parts.
-            /// These values determine whether cached islands can be reused when vessels are present.
-            /// </summary>
-            ulong VesselKey()
+            static int FindRoot(NativeArray<int> parents, int node)
             {
-                ulong key = (ulong)Vessels.VesselCount;
-                for (int v = 0; v < Vessels.VesselCount; v++)
+                while (parents[node] != node)
                 {
-                    VesselRecord vessel = Vessels.Vessels[v];
-                    key = Mix(key, vessel.Id);
-                    key = Mix(key, vessel.StructureVersion);
-                    for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
-                    {
-                        key = Mix(key, (ulong)Vessels.PartBodies[part]);
-                    }
+                    parents[node] = parents[parents[node]];
+                    node = parents[node];
                 }
 
-                return key;
-            }
-
-            bool InDynamics(int body) => body >= 0 && body < NumDynamicBodies;
-
-            static ulong Mix(ulong key, ulong value) => (key ^ value) * 0x100000001B3UL + (key >> 29);
-
-            static int FindRoot(NativeArray<int> parents, int body)
-            {
-                while (parents[body] != body)
-                {
-                    parents[body] = parents[parents[body]];
-                    body = parents[body];
-                }
-
-                return body;
+                return node;
             }
 
             // A joint with no constraints has already affected whether its bodies can collide, but produces no
@@ -200,12 +205,6 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                var parents = new NativeArray<int>(NumDynamicBodies, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int i = 0; i < parents.Length; i++)
-                {
-                    parents[i] = i;
-                }
-
                 // Most overlaps in a craft involve parts with collisions disabled between them. Filter those pairs here
                 // so later passes process only pairs that need to be solved.
                 var solved = new NativeArray<DispatchPair>(DispatchPairs.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -220,14 +219,56 @@ namespace Unity.Physics
                     }
                 }
 
-                // Reuse the islands only if the solved pairs, dynamic body count and vessel key match the cached
-                // values.
                 NativeArray<DispatchPair> solvedPairs = solved.GetSubArray(0, numPairs);
-                ulong vesselKey = Vessels.IsCreated ? VesselKey() : 0;
-                if (Cache.IsCreated && Cache.TryReuse(solvedPairs, NumDynamicBodies, vesselKey, Islands, IslandPairs, IslandBodies))
+                VesselSet vessels = Vessels.IsCreated ? Vessels : default;
+
+                // Reuse the islands only if the solved pairs, the dynamic body count and the vessels match the cached
+                // values. The cache compares the vessels first, and builds its map from bodies to vessels again if they
+                // changed.
+                var map = default(VesselBodyMap);
+                bool sameVessels = false;
+                if (Cache.IsCreated)
                 {
-                    SizeBuckets(numPairs);
-                    return;
+                    sameVessels = Cache.KeepVessels(vessels, NumDynamicBodies, out map);
+                    if (sameVessels && Cache.TryReuse(solvedPairs, NumDynamicBodies, Islands, IslandPairs, IslandBodies, IslandVessels))
+                    {
+                        SizeBuckets(numPairs);
+                        return;
+                    }
+                }
+                else if (vessels.IsCreated)
+                {
+                    map = VesselBodyMap.Build(vessels, NumDynamicBodies, Allocator.Temp);
+                }
+
+                if (vessels.IsCreated)
+                {
+                    FindVesselIslands(solvedPairs, vessels, map);
+                }
+                else
+                {
+                    FindBodyIslands(solvedPairs);
+                }
+
+                if (Cache.IsCreated)
+                {
+                    Cache.Keep(solvedPairs, NumDynamicBodies, Islands, IslandPairs, IslandBodies, IslandVessels);
+                }
+
+                SizeBuckets(numPairs);
+            }
+
+            /// <summary>
+            /// Finds the islands of a step without vessels. Every node is a body, and the islands are numbered in the
+            /// order of their roots.
+            /// </summary>
+            void FindBodyIslands(NativeArray<DispatchPair> solved)
+            {
+                int numPairs = solved.Length;
+                var parents = new NativeArray<int>(NumDynamicBodies, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < parents.Length; i++)
+                {
+                    parents[i] = i;
                 }
 
                 for (int i = 0; i < numPairs; i++)
@@ -239,40 +280,14 @@ namespace Unity.Physics
                     }
                 }
 
-                // A vessel's parts are joined by its edges, which are not pairs.
-                var vesselRoot = new NativeArray<bool>(Vessels.IsCreated ? NumDynamicBodies : 0, Allocator.Temp);
-                for (int v = 0; v < Vessels.VesselCount && Vessels.IsCreated; v++)
-                {
-                    VesselRecord vessel = Vessels.Vessels[v];
-                    int first = Vessels.PartBodies[vessel.FirstPart];
-                    for (int part = vessel.FirstPart + 1; part < vessel.FirstPart + vessel.PartCount; part++)
-                    {
-                        int body = Vessels.PartBodies[part];
-                        if (InDynamics(first) && InDynamics(body))
-                        {
-                            parents[FindRoot(parents, body)] = FindRoot(parents, first);
-                        }
-                    }
-                }
-
                 // Store each body's root directly so later passes do not need to follow parent chains.
                 for (int body = 0; body < NumDynamicBodies; body++)
                 {
                     parents[body] = FindRoot(parents, body);
                 }
 
-                for (int v = 0; v < Vessels.VesselCount && Vessels.IsCreated; v++)
-                {
-                    VesselRecord vessel = Vessels.Vessels[v];
-                    if (vessel.PartCount > 0 && InDynamics(Vessels.PartBodies[vessel.FirstPart]))
-                    {
-                        vesselRoot[parents[Vessels.PartBodies[vessel.FirstPart]]] = true;
-                    }
-                }
-
-                // Roots with pairs or a vessel become islands, numbered in body order so that the numbers don't depend
-                // on the
-                // pairs' order.
+                // Roots with pairs become islands, numbered in body order so that the numbers don't depend on the pairs'
+                // order.
                 var islandOfRoot = new NativeArray<int>(NumDynamicBodies, Allocator.Temp);
                 for (int i = 0; i < numPairs; i++)
                 {
@@ -280,19 +295,19 @@ namespace Unity.Physics
                 }
 
                 Islands.Clear();
+                IslandVessels.Clear();
                 int firstPair = 0;
                 for (int root = 0; root < NumDynamicBodies; root++)
                 {
                     int pairCount = islandOfRoot[root];
-                    bool hasVessel = vesselRoot.Length > 0 && vesselRoot[root];
-                    if (pairCount == 0 && !hasVessel)
+                    if (pairCount == 0)
                     {
                         islandOfRoot[root] = -1;
                         continue;
                     }
 
                     islandOfRoot[root] = Islands.Length;
-                    Islands.Add(new SolverIsland { FirstPair = firstPair, PairCount = pairCount, FirstDirectPair = -1, HasVessel = hasVessel });
+                    Islands.Add(new SolverIsland { FirstPair = firstPair, PairCount = pairCount, FirstDirectPair = -1 });
                     firstPair += pairCount;
                 }
 
@@ -310,6 +325,7 @@ namespace Unity.Physics
                 {
                     ref SolverIsland island = ref Islands.ElementAt(i);
                     island.FirstBody = firstBody;
+                    island.OtherBodies = island.BodyCount;
                     firstBody += island.BodyCount;
                 }
 
@@ -338,13 +354,206 @@ namespace Unity.Physics
                         IslandBodies[nextBody[island]++] = body;
                     }
                 }
+            }
 
-                if (Cache.IsCreated)
+            /// <summary>
+            /// Finds the islands of a step with vessels. Node v, for v below the vessel count, is vessel v. The other
+            /// nodes are the bodies outside vessels that the pairs touch, numbered in the order in which the pairs first
+            /// touch them. The work grows with the number of pairs, vessels and islands, plus one copy of each vessel's
+            /// part list, and not with the number of vessel edges.
+            /// <para>
+            /// The islands are numbered in the order of their lowest key body. A vessel's key body is its lowest
+            /// dynamic body, and any other body is its own key. Within an island, the body list holds the parts of its
+            /// vessels first, vessel by vessel in ascending vessel index and each in part order, then the other bodies
+            /// in ascending order.
+            /// </para>
+            /// </summary>
+            void FindVesselIslands(NativeArray<DispatchPair> solved, in VesselSet vessels, in VesselBodyMap map)
+            {
+                int numPairs = solved.Length;
+                int vesselCount = vessels.VesselCount;
+                int* bodyVessel = map.BodyVessel;
+                int* dynamicParts = map.DynamicParts;
+                int* keyBody = map.KeyBody;
+
+                // The node of each body outside the vessels that a pair touches, or -1.
+                var nodeOfBody = new NativeArray<int>(NumDynamicBodies, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                UnsafeUtility.MemSet(nodeOfBody.GetUnsafePtr(), 0xFF, (long)NumDynamicBodies * sizeof(int));
+                int maxNodes = vesselCount + 2 * numPairs;
+                var parents = new NativeArray<int>(maxNodes, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var nodeBodies = new NativeArray<int>(2 * numPairs, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var pairNodes = new NativeArray<int>(numPairs, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int v = 0; v < vesselCount; v++)
                 {
-                    Cache.Keep(solvedPairs, NumDynamicBodies, vesselKey, Islands, IslandPairs, IslandBodies);
+                    parents[v] = v;
                 }
 
-                SizeBuckets(numPairs);
+                int nodes = vesselCount;
+                for (int i = 0; i < numPairs; i++)
+                {
+                    DispatchPair pair = solved[i];
+                    int a = NodeOf(pair.BodyIndexA, bodyVessel, nodeOfBody, parents, nodeBodies, vesselCount, ref nodes);
+                    if (pair.BodyIndexB < NumDynamicBodies)
+                    {
+                        int b = NodeOf(pair.BodyIndexB, bodyVessel, nodeOfBody, parents, nodeBodies, vesselCount, ref nodes);
+                        parents[FindRoot(parents, a)] = FindRoot(parents, b);
+                    }
+
+                    pairNodes[i] = a;
+                }
+
+                // Store each node's root directly, and find each root's lowest key body. A vessel without a dynamic
+                // body has no key, and it is not in any island.
+                var rootKeys = new NativeArray<int>(nodes, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int node = 0; node < nodes; node++)
+                {
+                    parents[node] = FindRoot(parents, node);
+                    rootKeys[node] = int.MaxValue;
+                }
+
+                for (int node = 0; node < nodes; node++)
+                {
+                    int key = node < vesselCount ? keyBody[node] : nodeBodies[node - vesselCount];
+                    int root = parents[node];
+                    rootKeys[root] = math.min(rootKeys[root], key);
+                }
+
+                // Number the islands in the order of their keys. A body is in one island only, so no two keys are
+                // equal.
+                var order = new NativeList<ulong>(math.max(1, nodes), Allocator.Temp);
+                for (int node = 0; node < nodes; node++)
+                {
+                    if (parents[node] == node && rootKeys[node] != int.MaxValue)
+                    {
+                        order.Add(((ulong)(uint)rootKeys[node] << 32) | (uint)node);
+                    }
+                }
+
+                order.Sort();
+                var islandOfRoot = rootKeys;
+                Islands.Clear();
+                for (int i = 0; i < order.Length; i++)
+                {
+                    islandOfRoot[(int)(uint)order[i]] = i;
+                    Islands.Add(new SolverIsland { FirstDirectPair = -1 });
+                }
+
+                for (int i = 0; i < numPairs; i++)
+                {
+                    Islands.ElementAt(islandOfRoot[parents[pairNodes[i]]]).PairCount++;
+                }
+
+                for (int v = 0; v < vesselCount; v++)
+                {
+                    if (dynamicParts[v] > 0)
+                    {
+                        ref SolverIsland island = ref Islands.ElementAt(islandOfRoot[parents[v]]);
+                        island.VesselCount++;
+                        island.VesselParts += vessels.Vessels[v].PartCount;
+                        island.BodyCount += dynamicParts[v];
+                    }
+                }
+
+                for (int node = vesselCount; node < nodes; node++)
+                {
+                    ref SolverIsland island = ref Islands.ElementAt(islandOfRoot[parents[node]]);
+                    island.OtherBodies++;
+                    island.BodyCount++;
+                }
+
+                int firstPair = 0, firstBody = 0, firstVessel = 0;
+                var nextPair = new NativeArray<int>(Islands.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var nextBody = new NativeArray<int>(Islands.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var nextVessel = new NativeArray<int>(Islands.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    ref SolverIsland island = ref Islands.ElementAt(i);
+                    island.FirstPair = nextPair[i] = firstPair;
+                    island.FirstBody = nextBody[i] = firstBody;
+                    island.FirstVessel = nextVessel[i] = firstVessel;
+                    firstPair += island.PairCount;
+                    firstBody += island.BodyCount;
+                    firstVessel += island.VesselCount;
+                }
+
+                IslandPairs.ResizeUninitialized(numPairs);
+                IslandBodies.ResizeUninitialized(firstBody);
+                IslandVessels.ResizeUninitialized(firstVessel);
+                for (int i = 0; i < numPairs; i++)
+                {
+                    int island = islandOfRoot[parents[pairNodes[i]]];
+                    IslandPairs[nextPair[island]++] = solved[i];
+                }
+
+                // Copy each vessel's part list into its island's body list. A vessel whose bodies are all dynamic is
+                // copied as one block.
+                var bodies = (int*)IslandBodies.GetUnsafePtr();
+                for (int v = 0; v < vesselCount; v++)
+                {
+                    if (dynamicParts[v] == 0)
+                    {
+                        continue;
+                    }
+
+                    int island = islandOfRoot[parents[v]];
+                    IslandVessels[nextVessel[island]++] = v;
+                    VesselRecord vessel = vessels.Vessels[v];
+                    int* parts = vessels.PartBodies + vessel.FirstPart;
+                    if (dynamicParts[v] == vessel.PartCount)
+                    {
+                        UnsafeUtility.MemCpy(bodies + nextBody[island], parts, (long)vessel.PartCount * sizeof(int));
+                        nextBody[island] += vessel.PartCount;
+                        continue;
+                    }
+
+                    for (int part = 0; part < vessel.PartCount; part++)
+                    {
+                        if (parts[part] >= 0 && parts[part] < NumDynamicBodies)
+                        {
+                            bodies[nextBody[island]++] = parts[part];
+                        }
+                    }
+                }
+
+                for (int node = vesselCount; node < nodes; node++)
+                {
+                    int island = islandOfRoot[parents[node]];
+                    bodies[nextBody[island]++] = nodeBodies[node - vesselCount];
+                }
+
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    SolverIsland island = Islands[i];
+                    if (island.OtherBodies > 1)
+                    {
+                        IslandBodies.AsArray().GetSubArray(island.FirstBody + island.BodyCount - island.OtherBodies, island.OtherBodies).Sort();
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Returns the node of a dynamic body: its vessel, or a node of its own, which is made the first time that a
+            /// pair touches the body.
+            /// </summary>
+            static int NodeOf(int body, int* bodyVessel, NativeArray<int> nodeOfBody, NativeArray<int> parents,
+                NativeArray<int> nodeBodies, int vesselCount, ref int nodes)
+            {
+                int vessel = bodyVessel[body];
+                if (vessel >= 0)
+                {
+                    return vessel;
+                }
+
+                int node = nodeOfBody[body];
+                if (node < 0)
+                {
+                    node = nodes++;
+                    nodeOfBody[body] = node;
+                    parents[node] = node;
+                    nodeBodies[node - vesselCount] = body;
+                }
+
+                return node;
             }
 
             void SizeBuckets(int numPairs)
@@ -354,7 +563,6 @@ namespace Unity.Physics
                 LinksInPhases.ResizeUninitialized(NumDynamicBodies * NumIslandPhases);
             }
         }
-
         /// <summary>
         /// Assigns phases to an island's links and puts its pairs in the corresponding buckets. An island uses
         /// iterative phases only if it has no joints or vessels and its links fit in <see cref="NumIslandPhases"/>
@@ -758,13 +966,16 @@ namespace Unity.Physics
         /// offset in the work items.
         /// </summary>
         [BurstCompile]
-        struct PublishIslandBucketsJob : IJob
+        unsafe struct PublishIslandBucketsJob : IJob
         {
             [ReadOnly]
             public NativeArray<SolverIsland> Islands;
 
             [ReadOnly]
             public NativeArray<int> IslandBodies;
+
+            [ReadOnly]
+            public NativeArray<int> IslandVessels;
 
             [ReadOnly]
             public NativeArray<int> BucketCounts;
@@ -828,6 +1039,7 @@ namespace Unity.Physics
                 }
 
                 islands.BodiesInIslands.Resize(anyDirect ? NumDynamicBodies : 0, NativeArrayOptions.ClearMemory);
+                var inIslands = (bool*)islands.BodiesInIslands.GetUnsafePtr();
                 for (int i = 0; i < numDirectPairs; i++)
                 {
                     islands.UnphasedToPhasedDispatchPairMap[i] = i;
@@ -854,13 +1066,23 @@ namespace Unity.Physics
                         });
                     }
 
+                    // The island's body list is contiguous, so copy it as one block.
                     islands.FirstIslandBodyIndices.Add(islands.IslandBodies.Length);
+                    int* bodies = (int*)IslandBodies.GetUnsafeReadOnlyPtr() + island.FirstBody;
+                    islands.IslandBodies.AddRange(bodies, island.BodyCount);
                     for (int body = 0; body < island.BodyCount; body++)
                     {
-                        int bodyIndex = IslandBodies[island.FirstBody + body];
-                        islands.IslandBodies.Add(bodyIndex);
-                        islands.BodiesInIslands[bodyIndex] = true;
+                        inIslands[bodies[body]] = true;
                     }
+
+                    islands.IslandVesselInfos.Add(new IslandVesselInfo
+                    {
+                        FirstVessel = islands.IslandVessels.Length,
+                        VesselCount = island.VesselCount,
+                        VesselParts = island.VesselParts,
+                        OtherBodies = island.OtherBodies,
+                    });
+                    islands.IslandVessels.AddRange((int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, island.VesselCount);
                 }
 
                 SolverSchedulerInfo.FinalizeIterativeWorkItemInfo();
@@ -869,10 +1091,66 @@ namespace Unity.Physics
     }
 
     /// <summary>
+    /// For each dynamic body, the vessel that it is a part of, and for each vessel, the number of its parts whose bodies
+    /// are dynamic and the lowest of those bodies. <see cref="DispatchPairSequencer.FindSolverIslandsJob"/> reads it to
+    /// treat each vessel as one node.
+    /// </summary>
+    internal unsafe struct VesselBodyMap
+    {
+        /// <summary>For each dynamic body, the index of its vessel in the step's vessel set, or -1.</summary>
+        public int* BodyVessel;
+
+        /// <summary>For each vessel, the number of its parts whose bodies are dynamic.</summary>
+        public int* DynamicParts;
+
+        /// <summary>For each vessel, its lowest dynamic body, or int.MaxValue if it has none.</summary>
+        public int* KeyBody;
+
+        /// <summary>Builds the map in temporary memory, for a step without a <see cref="SolverIslandCache"/>.</summary>
+        public static VesselBodyMap Build(in VesselSet vessels, int dynamicBodies, Allocator allocator)
+        {
+            var map = new VesselBodyMap
+            {
+                BodyVessel = (int*)UnsafeUtility.Malloc((long)math.max(1, dynamicBodies) * sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
+                DynamicParts = (int*)UnsafeUtility.Malloc((long)math.max(1, vessels.VesselCount) * sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
+                KeyBody = (int*)UnsafeUtility.Malloc((long)math.max(1, vessels.VesselCount) * sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
+            };
+            map.Fill(vessels, dynamicBodies);
+            return map;
+        }
+
+        public void Fill(in VesselSet vessels, int dynamicBodies)
+        {
+            UnsafeUtility.MemSet(BodyVessel, 0xFF, (long)dynamicBodies * sizeof(int));
+            for (int v = 0; v < vessels.VesselCount; v++)
+            {
+                VesselRecord vessel = vessels.Vessels[v];
+                int count = 0;
+                int key = int.MaxValue;
+                for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                {
+                    int body = vessels.PartBodies[part];
+                    if (body >= 0 && body < dynamicBodies)
+                    {
+                        BodyVessel[body] = v;
+                        count++;
+                        key = math.min(key, body);
+                    }
+                }
+
+                DynamicParts[v] = count;
+                KeyBody[v] = key;
+            }
+        }
+    }
+
+    /// <summary>
     /// Caches the previous step's islands and the pairs used to find them. A craft often has the same joints across
     /// steps, and a floating craft may have no other constraints, so the islands can often be reused. Reuse requires
-    /// matching pairs, dynamic body count and vessel key. The caller owns this cache and passes it in
-    /// <see cref="SimulationStepInput"/>. Without a cache, islands are found again every step.
+    /// matching pairs, dynamic body count and vessels. The cache also keeps the vessels' records and part bodies, and the
+    /// <see cref="VesselBodyMap"/> built from them, so that the map is built again only when they change. The caller
+    /// owns this cache and passes it in <see cref="SimulationStepInput"/>. Without a cache, islands are found again
+    /// every step.
     /// </summary>
     public unsafe struct SolverIslandCache : IDisposable
     {
@@ -888,17 +1166,37 @@ namespace Unity.Physics
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<int>* islandBodies;
 
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* islandVessels;
+
         /// <summary>
         /// The number of dynamic bodies used to find the cached islands, or -1 if no islands have been cached.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         int* numDynamicBodies;
 
+        /// <summary>The vessel records of the last step, as the step's vessel set gave them.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<VesselRecord>* vessels;
+
+        /// <summary>The part bodies of the last step's vessels, one vessel after another.</summary>
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* partBodies;
+
         /// <summary>
-        /// The key computed from the vessels used to find the cached islands.
+        /// The number of dynamic bodies for which the map was built, or -1 if it has not been built.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
-        ulong* vesselKey;
+        int* mapDynamicBodies;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* bodyVessel;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* dynamicParts;
+
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeList<int>* keyBody;
 
         public bool IsCreated => pairs != null;
 
@@ -910,11 +1208,17 @@ namespace Unity.Physics
                 islands = UnsafeList<DispatchPairSequencer.SolverIsland>.Create(0, Allocator.Persistent),
                 islandPairs = UnsafeList<DispatchPairSequencer.DispatchPair>.Create(0, Allocator.Persistent),
                 islandBodies = UnsafeList<int>.Create(0, Allocator.Persistent),
+                islandVessels = UnsafeList<int>.Create(0, Allocator.Persistent),
                 numDynamicBodies = (int*)UnsafeUtility.MallocTracked(sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Persistent, 0),
-                vesselKey = (ulong*)UnsafeUtility.MallocTracked(sizeof(ulong), UnsafeUtility.AlignOf<ulong>(), Allocator.Persistent, 0),
+                vessels = UnsafeList<VesselRecord>.Create(0, Allocator.Persistent),
+                partBodies = UnsafeList<int>.Create(0, Allocator.Persistent),
+                mapDynamicBodies = (int*)UnsafeUtility.MallocTracked(sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Persistent, 0),
+                bodyVessel = UnsafeList<int>.Create(0, Allocator.Persistent),
+                dynamicParts = UnsafeList<int>.Create(0, Allocator.Persistent),
+                keyBody = UnsafeList<int>.Create(0, Allocator.Persistent),
             };
             *cache.numDynamicBodies = -1;
-            *cache.vesselKey = 0;
+            *cache.mapDynamicBodies = -1;
             return cache;
         }
 
@@ -929,16 +1233,79 @@ namespace Unity.Physics
             UnsafeList<DispatchPairSequencer.SolverIsland>.Destroy(islands);
             UnsafeList<DispatchPairSequencer.DispatchPair>.Destroy(islandPairs);
             UnsafeList<int>.Destroy(islandBodies);
+            UnsafeList<int>.Destroy(islandVessels);
             UnsafeUtility.FreeTracked(numDynamicBodies, Allocator.Persistent);
-            UnsafeUtility.FreeTracked(vesselKey, Allocator.Persistent);
+            UnsafeList<VesselRecord>.Destroy(vessels);
+            UnsafeList<int>.Destroy(partBodies);
+            UnsafeUtility.FreeTracked(mapDynamicBodies, Allocator.Persistent);
+            UnsafeList<int>.Destroy(bodyVessel);
+            UnsafeList<int>.Destroy(dynamicParts);
+            UnsafeList<int>.Destroy(keyBody);
             this = default;
         }
 
-        internal bool TryReuse(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies, ulong vessels,
-            NativeList<DispatchPairSequencer.SolverIsland> outIslands, NativeList<DispatchPairSequencer.DispatchPair> outPairs,
-            NativeList<int> outBodies)
+        /// <summary>
+        /// Compares the step's vessels and their part bodies with the ones of the last step. If they differ, keeps the
+        /// new ones and builds the map again. Returns true if they are the same, so that the cached islands can still
+        /// be valid. The comparison reads each part once, as one block of memory per vessel.
+        /// </summary>
+        internal bool KeepVessels(in VesselSet set, int dynamicBodies, out VesselBodyMap map)
         {
-            if (*numDynamicBodies != dynamicBodies || *vesselKey != vessels || pairs->Length != solved.Length
+            int vesselCount = set.IsCreated ? set.VesselCount : 0;
+            bool same = *mapDynamicBodies == dynamicBodies && vessels->Length == vesselCount;
+            int offset = 0;
+            for (int v = 0; v < vesselCount && same; v++)
+            {
+                // Compare the fields one by one, because the padding bytes of a record can differ.
+                VesselRecord vessel = set.Vessels[v];
+                VesselRecord kept = (*vessels)[v];
+                same = vessel.Id == kept.Id && vessel.StructureVersion == kept.StructureVersion && vessel.FirstPart == kept.FirstPart
+                    && vessel.PartCount == kept.PartCount && vessel.FirstClosure == kept.FirstClosure && vessel.ClosureCount == kept.ClosureCount
+                    && offset + vessel.PartCount <= partBodies->Length
+                    && UnsafeUtility.MemCmp(partBodies->Ptr + offset, set.PartBodies + vessel.FirstPart, (long)vessel.PartCount * sizeof(int)) == 0;
+                offset += vessel.PartCount;
+            }
+
+            same &= offset == partBodies->Length;
+            if (!same)
+            {
+                *mapDynamicBodies = dynamicBodies;
+                vessels->Resize(vesselCount);
+                if (vesselCount > 0)
+                {
+                    UnsafeUtility.MemCpy(vessels->Ptr, set.Vessels, (long)vesselCount * sizeof(VesselRecord));
+                }
+
+                partBodies->Clear();
+                for (int v = 0; v < vesselCount; v++)
+                {
+                    VesselRecord vessel = set.Vessels[v];
+                    partBodies->AddRange(set.PartBodies + vessel.FirstPart, vessel.PartCount);
+                }
+
+                bodyVessel->Resize(math.max(1, dynamicBodies));
+                dynamicParts->Resize(math.max(1, vesselCount));
+                keyBody->Resize(math.max(1, vesselCount));
+            }
+
+            map = new VesselBodyMap { BodyVessel = bodyVessel->Ptr, DynamicParts = dynamicParts->Ptr, KeyBody = keyBody->Ptr };
+            if (!same && vesselCount > 0)
+            {
+                map.Fill(set, dynamicBodies);
+            }
+
+            return same;
+        }
+
+        /// <summary>
+        /// Copies the cached islands into the outputs if the solved pairs and dynamic body count match. The caller has
+        /// already checked with <see cref="KeepVessels"/> that the vessels match.
+        /// </summary>
+        internal bool TryReuse(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies,
+            NativeList<DispatchPairSequencer.SolverIsland> outIslands, NativeList<DispatchPairSequencer.DispatchPair> outPairs,
+            NativeList<int> outBodies, NativeList<int> outVessels)
+        {
+            if (*numDynamicBodies != dynamicBodies || pairs->Length != solved.Length
                 || UnsafeUtility.MemCmp(pairs->Ptr, solved.GetUnsafeReadOnlyPtr(), (long)solved.Length * sizeof(DispatchPairSequencer.DispatchPair)) != 0)
             {
                 return false;
@@ -947,19 +1314,20 @@ namespace Unity.Physics
             Copy(islands, outIslands);
             Copy(islandPairs, outPairs);
             Copy(islandBodies, outBodies);
+            Copy(islandVessels, outVessels);
             return true;
         }
 
-        internal void Keep(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies, ulong vessels,
+        internal void Keep(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies,
             NativeList<DispatchPairSequencer.SolverIsland> found, NativeList<DispatchPairSequencer.DispatchPair> foundPairs,
-            NativeList<int> foundBodies)
+            NativeList<int> foundBodies, NativeList<int> foundVessels)
         {
             *numDynamicBodies = dynamicBodies;
-            *vesselKey = vessels;
             Store(pairs, solved);
             Store(islands, found.AsArray());
             Store(islandPairs, foundPairs.AsArray());
             Store(islandBodies, foundBodies.AsArray());
+            Store(islandVessels, foundVessels.AsArray());
         }
 
         static void Copy<T>(UnsafeList<T>* from, NativeList<T> to)
