@@ -202,6 +202,15 @@ namespace Unity.Physics
         public UnsafeList<int> PartHeld;
         public UnsafeList<float> PartRatio;
 
+        /// <summary>
+        /// Each part's index in the vessel set, or -1 for a body that is not in a vessel, and each closure's index in the
+        /// vessel set. The island fills these with the edges, so that the team's lanes can fill the parts and write the
+        /// loads by ranges of parts.
+        /// </summary>
+        public UnsafeList<int> PartSetPart;
+
+        public UnsafeList<int> ClosureSetIndex;
+
         /// <summary>Whether the structure was last built for vessels, rather than from handed-in rows.</summary>
         public bool VesselMode;
 
@@ -264,6 +273,8 @@ namespace Unity.Physics
                 PartLocked = new UnsafeList<byte>(16, Allocator.Persistent),
                 PartHeld = new UnsafeList<int>(16, Allocator.Persistent),
                 PartRatio = new UnsafeList<float>(16, Allocator.Persistent),
+                PartSetPart = new UnsafeList<int>(16, Allocator.Persistent),
+                ClosureSetIndex = new UnsafeList<int>(16, Allocator.Persistent),
             };
             forest->Counters.Resize(VesselContext.CounterCount, NativeArrayOptions.ClearMemory);
             forest->Signature.Add(ulong.MaxValue);
@@ -326,6 +337,8 @@ namespace Unity.Physics
             forest->PartLocked.Dispose();
             forest->PartHeld.Dispose();
             forest->PartRatio.Dispose();
+            forest->PartSetPart.Dispose();
+            forest->ClosureSetIndex.Dispose();
             UnsafeUtility.Free(forest, Allocator.Persistent);
         }
 

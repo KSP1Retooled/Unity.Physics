@@ -137,6 +137,13 @@ namespace Unity.Physics
         /// </summary>
         public bool FactorOnly;
 
+        /// <summary>
+        /// When this is set, <see cref="FinishSection"/> computes only the loads. It skips the state test and does not
+        /// move the parts. The vessel island sets it, because it tests the lock states itself and fills the parts from
+        /// the bodies in every substep.
+        /// </summary>
+        public bool LoadsOnly;
+
         /// <summary>Counter slots: whether any edge changes state, and how many pivots had to be clamped.</summary>
         public const int StateChanged = 0;
 
@@ -838,6 +845,11 @@ namespace Unity.Physics
                         Torque = inverseStep * math.mul(rows->Axes, rows->AngularImpulse),
                     };
                 }
+            }
+
+            if (LoadsOnly)
+            {
+                return;
             }
 
             for (int k = start; k < end; k++)

@@ -203,89 +203,102 @@ namespace Unity.Physics
                 CarryVesselStates(forest, signature, run, partCount, closureCount);
             }
 
-            // Fill this substep's parts, edges and closures.
-            forest->Parts.Resize(partCount);
-            forest->Edges.Resize(partCount);
-            forest->Closures.Resize(closureCount);
-            forest->PartBody.Resize(partCount);
-            forest->BodyPart.Resize(math.max(1, bodies));
-            for (int body = 0; body < bodies; body++)
-            {
-                forest->BodyPart[body] = -1;
-            }
-
-            int next = 0, nextClosure = 0;
+            // The edges, the closures and the mapping between parts and bodies stay the same for every substep of a step,
+            // so fill them only on the first substep, or when the island's layout has changed.
             bool firstSubstep = substep <= 0;
-            for (int i = 0; i < run.IslandVesselCount; i++)
+            bool refill = !same || firstSubstep;
+            if (refill)
             {
-                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
-                int start = next;
-                for (int k = 0; k < vessel.PartCount; k++)
+                forest->Parts.Resize(partCount);
+                forest->Edges.Resize(partCount);
+                forest->Closures.Resize(closureCount);
+                forest->PartBody.Resize(partCount);
+                forest->PartSetPart.Resize(partCount);
+                forest->ClosureSetIndex.Resize(math.max(1, closureCount));
+                forest->BodyPart.Resize(math.max(1, bodies));
+                for (int body = 0; body < bodies; body++)
                 {
-                    int setPart = vessel.FirstPart + k;
-                    int part = next++;
-                    int body = CompactOf(run, set.PartBodies[setPart]);
-                    forest->PartBody[part] = body;
-                    if (body >= 0)
+                    forest->BodyPart[body] = -1;
+                }
+
+                int next = 0, nextClosure = 0;
+                for (int i = 0; i < run.IslandVesselCount; i++)
+                {
+                    VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
+                    int start = next;
+                    for (int k = 0; k < vessel.PartCount; k++)
                     {
+                        int setPart = vessel.FirstPart + k;
+                        int part = next++;
+                        int body = CompactOf(run, set.PartBodies[setPart]);
+                        forest->PartBody[part] = body;
+                        forest->PartSetPart[part] = setPart;
+                        if (body >= 0)
+                        {
+                            forest->BodyPart[body] = part;
+                        }
+
+                        VesselEdge edge = set.Edges[setPart];
+                        edge.Parent = edge.Parent >= 0 ? start + edge.Parent : -1;
+                        if (edge.Parent >= 0 && firstSubstep && TestLock(forest, part, edge))
+                        {
+                            rebuild = true;
+                        }
+
+                        if (edge.Parent >= 0 && forest->PartLocked[part] != 0)
+                        {
+                            edge.State = VesselEdgeState.Locked;
+                        }
+                        else if (edge.State == VesselEdgeState.Locked)
+                        {
+                            edge.State = VesselEdgeState.Yielding;
+                        }
+
+                        forest->Edges[part] = edge;
+                    }
+
+                    for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
+                    {
+                        VesselClosure closure = set.Closures[c];
+                        closure.PartA += start;
+                        closure.PartB += start;
+                        forest->ClosureSetIndex[nextClosure] = c;
+                        forest->Closures[nextClosure++] = closure;
+                    }
+                }
+
+                for (int body = 0; body < bodies; body++)
+                {
+                    if (bodyIsPart[body] == 0)
+                    {
+                        int part = next++;
+                        forest->PartBody[part] = body;
+                        forest->PartSetPart[part] = -1;
                         forest->BodyPart[body] = part;
+                        forest->Edges[part] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding };
                     }
-
-                    VesselEdge edge = set.Edges[setPart];
-                    edge.Parent = edge.Parent >= 0 ? start + edge.Parent : -1;
-                    if (edge.Parent >= 0 && firstSubstep && TestLock(forest, part, edge))
-                    {
-                        rebuild = true;
-                    }
-
-                    if (edge.Parent >= 0 && forest->PartLocked[part] != 0)
-                    {
-                        edge.State = VesselEdgeState.Locked;
-                    }
-                    else if (edge.State == VesselEdgeState.Locked)
-                    {
-                        edge.State = VesselEdgeState.Yielding;
-                    }
-
-                    forest->Edges[part] = edge;
-                }
-
-                for (int c = vessel.FirstClosure; c < vessel.FirstClosure + vessel.ClosureCount; c++)
-                {
-                    VesselClosure closure = set.Closures[c];
-                    closure.PartA += start;
-                    closure.PartB += start;
-                    forest->Closures[nextClosure++] = closure;
                 }
             }
 
-            for (int body = 0; body < bodies; body++)
-            {
-                if (bodyIsPart[body] == 0)
-                {
-                    int part = next++;
-                    forest->PartBody[part] = body;
-                    forest->BodyPart[body] = part;
-                    forest->Edges[part] = new VesselEdge { Parent = -1, State = VesselEdgeState.Yielding };
-                }
-            }
-
-            for (int part = 0; part < partCount; part++)
-            {
-                forest->Parts[part] = PartOf(run, forest->PartBody[part]);
-            }
+            // The parts' poses and velocities change every substep. The team's lanes fill them from the bodies by
+            // ranges of parts.
+            RunVesselStage(ref run, VesselTasks.FillParts, partCount);
 
             if (rebuild)
             {
                 BuildVesselStructure(forest);
             }
 
-            // The compact body indices can change between solves, so rebuild the mapping from bodies to sections.
-            forest->BodySection.Resize(math.max(1, bodies));
-            for (int body = 0; body < bodies; body++)
+            // The compact body indices can change between steps, so rebuild the mapping from bodies to sections
+            // whenever the parts were filled again.
+            if (refill)
             {
-                int part = forest->BodyPart[body];
-                forest->BodySection[body] = part >= 0 ? forest->Structure.PartSection[part] : -1;
+                forest->BodySection.Resize(math.max(1, bodies));
+                for (int body = 0; body < bodies; body++)
+                {
+                    int part = forest->BodyPart[body];
+                    forest->BodySection[body] = part >= 0 ? forest->Structure.PartSection[part] : -1;
+                }
             }
 
             bodyIsPart.Dispose();
@@ -527,6 +540,7 @@ namespace Unity.Physics
                 HardFrequency = 2.0 * math.PI_DBL / settings.HardPeriod,
                 HardDampingRatio = settings.HardDampingRatio,
                 Centripetal = settings.CentripetalLoads,
+                LoadsOnly = true,
             };
 
             int locked = 0;
@@ -717,15 +731,9 @@ namespace Unity.Physics
                 UnsafeUtility.MemClear(forest->KernelClosureLoads.Ptr, forest->KernelClosureLoads.Length * (long)sizeof(VesselEdgeLoad));
                 RunVesselStage(ref run, VesselTasks.LinkImpulses, forest->LinkCount);
 
-                // FinishSections changes the kernel's copies of the parts. Save and restore those copies here so later
-                // calculations in this substep use the original poses. The next substep fills them from the bodies
-                // again.
-                var poses = new NativeArray<VesselPart>(forest->Parts.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                UnsafeUtility.MemCpy(poses.GetUnsafePtr(), forest->Parts.Ptr, forest->Parts.Length * (long)sizeof(VesselPart));
+                // The context has LoadsOnly set, so FinishSections leaves the parts where they are. Later calculations
+                // in this substep use the poses from the start of the substep.
                 RunVesselStage(ref run, VesselTasks.FinishSections, sections);
-
-                UnsafeUtility.MemCpy(forest->Parts.Ptr, poses.GetUnsafeReadOnlyPtr(), forest->Parts.Length * (long)sizeof(VesselPart));
-                poses.Dispose();
             }
 
             var tasks = new VesselTasks
@@ -755,6 +763,8 @@ namespace Unity.Physics
             public const int LinkImpulses = 1;
             public const int FinishSections = 2;
             public const int BodyImpulses = 3;
+            public const int FillParts = 4;
+            public const int WriteLoads = 5;
 
             public ForestRun* Run;
             public int Phase;
@@ -762,6 +772,10 @@ namespace Unity.Physics
             public float3* Linear;
             public float3* Angular;
             public bool PushOut;
+
+            /// <summary>For <see cref="WriteLoads"/>: the substep and the number of substeps in the step.</summary>
+            public int Substep;
+            public int Substeps;
         }
 
         /// <summary>Runs one of the kernel's stages over sections or links on the run's team.</summary>
@@ -797,6 +811,12 @@ namespace Unity.Physics
                         break;
                     case VesselTasks.FinishSections:
                         kernel.FinishSection(item);
+                        break;
+                    case VesselTasks.FillParts:
+                        run.Forest->Parts[item] = PartOf(run, run.Forest->PartBody[item]);
+                        break;
+                    case VesselTasks.WriteLoads:
+                        WriteVesselLoad(ref run, item, tasks->Substep, tasks->Substeps);
                         break;
                     default:
                         PartImpulse(ref run, item, tasks->Linear, tasks->Angular, tasks->PushOut);
@@ -861,52 +881,68 @@ namespace Unity.Physics
         /// <summary>
         /// Writes the loads on the island's edges and closures to the vessel set, averaging the force and torque over
         /// the step's substeps. Also records each edge's load ratio relative to its break strengths and whether it was
-        /// locked. On the last substep, saves each edge's ratio for the next step's lock test.
+        /// locked. On the last substep, saves each edge's ratio for the next step's lock test. The team's lanes share
+        /// this work by ranges of parts and closures.
         /// </summary>
         static unsafe void WriteVesselLoads(ref ForestRun run, int substep, int substeps)
+        {
+            ForestIsland* forest = run.Forest;
+            int count = forest->Parts.Length + forest->Closures.Length;
+            var tasks = new VesselTasks
+            {
+                Run = (ForestRun*)UnsafeUtility.AddressOf(ref run),
+                Phase = VesselTasks.WriteLoads,
+                Count = count,
+                Substep = substep,
+                Substeps = substeps,
+            };
+            SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+        }
+
+        /// <summary>
+        /// Writes the load on one item to the vessel set. Items below the part count are parts, and the items after
+        /// them are closures.
+        /// </summary>
+        static unsafe void WriteVesselLoad(ref ForestRun run, int item, int substep, int substeps)
         {
             ForestIsland* forest = run.Forest;
             VesselSet set = run.Vessels;
             int count = substep < 0 ? 1 : math.max(1, substeps);
             bool first = substep <= 0;
             bool last = substep < 0 || substep >= substeps - 1;
-            for (int i = 0; i < run.IslandVesselCount; i++)
+            int parts = forest->Parts.Length;
+            if (item < parts)
             {
-                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
-                int start = forest->VesselPartStart[i];
-                for (int k = 0; k < vessel.PartCount; k++)
+                int setPart = forest->PartSetPart[item];
+                if (setPart < 0)
                 {
-                    int part = start + k;
-                    int setPart = vessel.FirstPart + k;
-                    VesselEdge edge = set.Edges[setPart];
-                    VesselEdgeLoad load = edge.Parent >= 0 ? forest->KernelEdgeLoads[part] : default;
-                    VesselEdgeLoad sum = first ? default : set.EdgeLoads[setPart];
-                    sum.Force += load.Force / count;
-                    sum.Torque += load.Torque / count;
-                    sum.Ratio = Ratio(sum, edge.BreakForce, edge.BreakTorque);
-                    set.EdgeLoads[setPart] = sum;
-                    set.EdgeLocked[setPart] = forest->Edges[part].State == VesselEdgeState.Locked;
-                    if (last)
-                    {
-                        forest->PartRatio[part] = (float)sum.Ratio;
-                    }
+                    return;
                 }
+
+                // The island's copy of the edge has the same parent sign and break strengths as the set's edge.
+                VesselEdge* edge = forest->Edges.Ptr + item;
+                VesselEdgeLoad load = edge->Parent >= 0 ? forest->KernelEdgeLoads[item] : default;
+                VesselEdgeLoad sum = first ? default : set.EdgeLoads[setPart];
+                sum.Force += load.Force / count;
+                sum.Torque += load.Torque / count;
+                sum.Ratio = Ratio(sum, edge->BreakForce, edge->BreakTorque);
+                set.EdgeLoads[setPart] = sum;
+                set.EdgeLocked[setPart] = edge->State == VesselEdgeState.Locked;
+                if (last)
+                {
+                    forest->PartRatio[item] = (float)sum.Ratio;
+                }
+
+                return;
             }
 
-            int nextClosure = 0;
-            for (int i = 0; i < run.IslandVesselCount; i++)
-            {
-                VesselRecord vessel = set.Vessels[run.IslandVessels[i]];
-                for (int c = 0; c < vessel.ClosureCount; c++)
-                {
-                    int setClosure = vessel.FirstClosure + c;
-                    VesselEdgeLoad load = forest->KernelClosureLoads[nextClosure++];
-                    VesselEdgeLoad sum = first ? default : set.ClosureLoads[setClosure];
-                    sum.Force += load.Force / count;
-                    sum.Torque += load.Torque / count;
-                    set.ClosureLoads[setClosure] = sum;
-                }
-            }
+            int closure = item - parts;
+            int setClosure = forest->ClosureSetIndex[closure];
+            VesselEdgeLoad closureLoad = forest->KernelClosureLoads[closure];
+            VesselEdgeLoad closureSum = first ? default : set.ClosureLoads[setClosure];
+            closureSum.Force += closureLoad.Force / count;
+            closureSum.Torque += closureLoad.Torque / count;
+            set.ClosureLoads[setClosure] = closureSum;
         }
 
         static double Ratio(in VesselEdgeLoad load, double breakForce, double breakTorque)
