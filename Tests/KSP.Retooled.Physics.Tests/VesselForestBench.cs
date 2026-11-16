@@ -56,7 +56,6 @@ namespace KSP.Retooled.Physics.Tests
         // The fused job's settings before the bench changes them for a path.
         private static int fusedParts = Unity.Physics.Solver.DefaultFusedVesselParts;
         private static bool fusedOn = true;
-        private static int aloneParts;
 
         /// <summary>
         /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x4", names a scene of
@@ -518,20 +517,13 @@ namespace KSP.Retooled.Physics.Tests
             SetUpScene();
             // A compiled path can name settings of the fused vessel job after a colon: "compiled:parts=64" sends vessel
             // islands of 64 parts or more to the fused job, "compiled:nocontacts" keeps the islands with contacts or
-            // joints out of it, and "compiled:off" turns it off. "compiled:alone=256" has the fused job solve each
-            // island of fewer than 256 parts on one lane, without stages that other lanes help with.
+            // joints out of it, and "compiled:off" turns it off.
             string[] options = path.Split(':');
             Unity.Physics.Solver.FusedVesselParts = fusedParts;
             Unity.Physics.Solver.FusedContacts = true;
             Unity.Physics.Solver.VesselFused = fusedOn;
-            Unity.Physics.Solver.FusedAloneParts = aloneParts;
             for (int i = 1; i < options.Length; i++)
             {
-                if (options[i].StartsWith("alone="))
-                {
-                    Unity.Physics.Solver.FusedAloneParts = int.Parse(options[i].Substring("alone=".Length), CultureInfo.InvariantCulture);
-                }
-
                 if (options[i].StartsWith("parts="))
                 {
                     Unity.Physics.Solver.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
@@ -665,7 +657,6 @@ namespace KSP.Retooled.Physics.Tests
             Unity.Physics.Solver.FusedVesselParts = fusedParts;
             Unity.Physics.Solver.FusedContacts = true;
             Unity.Physics.Solver.VesselFused = fusedOn;
-            Unity.Physics.Solver.FusedAloneParts = aloneParts;
             samples.Sort();
             return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
         }
@@ -934,7 +925,6 @@ namespace KSP.Retooled.Physics.Tests
             VesselPipeline.Initialize();
             fusedParts = Unity.Physics.Solver.FusedVesselParts;
             fusedOn = Unity.Physics.Solver.VesselFused;
-            aloneParts = Unity.Physics.Solver.FusedAloneParts;
             double load = SampleLoad();
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +
                 $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default\n");

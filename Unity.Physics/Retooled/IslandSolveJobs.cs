@@ -237,7 +237,6 @@ namespace Unity.Physics
                 MinimumParts = FusedVesselParts,
                 Contacts = FusedContacts,
                 Buffers = work.Buffers,
-                AloneParts = FusedAloneParts,
             }.Schedule(handle);
 
             if (fusedVessels)
@@ -471,21 +470,6 @@ namespace Unity.Physics
         /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
         const int SharedSolveParts = 256;
 
-        /// <summary>
-        /// The fused vessel job solves an island with fewer vessel parts than this on the one lane that leads it, for
-        /// all the substeps, without publishing its stages to other lanes. The bench changes it to compare the two
-        /// ways. The value is stored in a SharedStatic, because the jobs are scheduled from Burst code.
-        /// </summary>
-        internal static int FusedAloneParts
-        {
-            get => FusedAlonePartsValue.Data;
-            set => FusedAlonePartsValue.Data = value;
-        }
-
-        struct FusedAlonePartsKey { }
-
-        static readonly SharedStatic<int> FusedAlonePartsValue = SharedStatic<int>.GetOrCreate<FusedAlonePartsKey>();
-
         const int SharedSolveRows = 512;
 
         /// <summary>
@@ -636,12 +620,6 @@ namespace Unity.Physics
             public int Island;
             public int Parts;
             public int Helpers;
-
-            /// <summary>
-            /// Whether the lane that leads the island solves it by itself, without publishing stages. No other lane
-            /// helps such an island.
-            /// </summary>
-            public bool Alone;
 
             // Keep the next team's flags out of the cache line that holds this team's count of helpers, which the lanes
             // change while they pick a team.
@@ -1289,9 +1267,6 @@ namespace Unity.Physics
             /// <summary>The buffers that hold a team for each fused island and the configured team that they copy.</summary>
             public DirectIslandBuffers Buffers;
 
-            /// <summary>The value of <see cref="FusedAloneParts"/> when the job was scheduled.</summary>
-            public int AloneParts;
-
             public void Execute()
             {
                 // An island smaller than MinimumParts goes to the fused job only if it is the one island of the step
@@ -1337,13 +1312,7 @@ namespace Unity.Physics
                         continue;
                     }
 
-                    var team = new FusedTeam
-                    {
-                        Team = configured,
-                        Island = i,
-                        Parts = Islands[i].VesselParts,
-                        Alone = Islands[i].VesselParts < AloneParts,
-                    };
+                    var team = new FusedTeam { Team = configured, Island = i, Parts = Islands[i].VesselParts };
                     int at = teams->Length;
                     teams->Add(team);
 
@@ -1429,7 +1398,7 @@ namespace Unity.Physics
                     System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
                     SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
                         (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
-                        StepInput, teams[t].Alone ? null : &teams[t].Team);
+                        StepInput, &teams[t].Team);
                     teams[t].Team.Finish();
                 }
 
@@ -1451,8 +1420,7 @@ namespace Unity.Physics
                         long bestParts = 0, bestLanes = 1;
                         for (int t = 0; t < count; t++)
                         {
-                            // An island that its leader solves alone has no stages to help with.
-                            if (teams[t].Alone || teams[t].Team.Finished)
+                            if (teams[t].Team.Finished)
                             {
                                 continue;
                             }
@@ -1500,7 +1468,7 @@ namespace Unity.Physics
                     bool unsolved = false, worked = false;
                     for (int t = 0; t < count; t++)
                     {
-                        if (!teams[t].Alone && !teams[t].Team.Finished)
+                        if (!teams[t].Team.Finished)
                         {
                             unsolved = true;
                             worked |= teams[t].Team.TryWork();
