@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
+using Unity.Numerics.Kernels;
 
 namespace Unity.Physics.Numerics.Retooled
 {
@@ -38,13 +39,13 @@ namespace Unity.Physics.Numerics.Retooled
         {
             // Add the high pair as a whole vector, rather than adding into two individual lanes, to prevent the
             // compiler from splitting the sum.
-            return MathUtil.Fma(row.Low, x.Low, new double4(row.High * x.High, 0.0, 0.0));
+            return FusedMath.Fma(row.Low, x.Low, new double4(row.High * x.High, 0.0, 0.0));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static double6 Fma(double scale, double6 row, double6 sum) => new double6(
-            MathUtil.Fma(row.Low, scale, sum.Low),
-            MathUtil.Fma(row.High, scale, sum.High));
+            FusedMath.Fma(row.Low, scale, sum.Low),
+            FusedMath.Fma(row.High, scale, sum.High));
 
         /// <summary>Returns the sum of the four lanes in each input vector.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

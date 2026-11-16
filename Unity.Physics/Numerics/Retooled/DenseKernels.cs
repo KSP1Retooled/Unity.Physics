@@ -1,5 +1,6 @@
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Numerics.Kernels;
 
 namespace Unity.Physics.Numerics.Retooled
 {
@@ -29,11 +30,11 @@ namespace Unity.Physics.Numerics.Retooled
                 double* r = a + row * size;
                 for (int column = 0; column < row; column++)
                 {
-                    double sum = sign * r[column] - MathUtil.ArrayProductSum(r, a + column * size, column);
+                    double sum = sign * r[column] - FusedMath.ArrayProductSum(r, a + column * size, column);
                     r[column] = sum * inverse[column];
                 }
 
-                double pivot = sign * r[row] - MathUtil.ArrayProductSum(r, r, row);
+                double pivot = sign * r[row] - FusedMath.ArrayProductSum(r, r, row);
                 r[row] = math.sqrt(math.max(pivot, SmallestPivot));
                 inverse[row] = 1.0 / r[row];
             }
@@ -52,7 +53,7 @@ namespace Unity.Physics.Numerics.Retooled
                 double* x = block + row * size;
                 for (int column = 0; column < size; column++)
                 {
-                    double sum = x[column] - MathUtil.ArrayProductSum(x, c + column * size, column);
+                    double sum = x[column] - FusedMath.ArrayProductSum(x, c + column * size, column);
 
                     x[column] = sum * inverse[column];
                 }
@@ -81,7 +82,7 @@ namespace Unity.Physics.Numerics.Retooled
                     double sum = row == column ? 1.0 : 0.0;
                     for (int j = column; j < row; j++)
                     {
-                        sum = MathUtil.Fma(-c[row * size + j], result[j * size + column], sum);
+                        sum = FusedMath.Fma(-c[row * size + j], result[j * size + column], sum);
                     }
 
                     result[row * size + column] = sum * inverse[row];
@@ -120,7 +121,7 @@ namespace Unity.Physics.Numerics.Retooled
 
                 for (; column < last; column++)
                 {
-                    into[column] -= sign * MathUtil.ArrayProductSum(l, right + column * inner, inner);
+                    into[column] -= sign * FusedMath.ArrayProductSum(l, right + column * inner, inner);
                 }
             }
         }
@@ -141,7 +142,7 @@ namespace Unity.Physics.Numerics.Retooled
 
             for (; row < rows; row++)
             {
-                target[row] -= sign * MathUtil.ArrayProductSum(block + row * inner, x, inner);
+                target[row] -= sign * FusedMath.ArrayProductSum(block + row * inner, x, inner);
             }
         }
 
@@ -178,20 +179,20 @@ namespace Unity.Physics.Numerics.Retooled
             for (; k + 4 <= count; k += 4)
             {
                 double4 a = *(double4*)(shared + k);
-                s0 = MathUtil.Fma(*(double4*)(b0 + k), a, s0);
-                s1 = MathUtil.Fma(*(double4*)(b1 + k), a, s1);
-                s2 = MathUtil.Fma(*(double4*)(b2 + k), a, s2);
-                s3 = MathUtil.Fma(*(double4*)(b3 + k), a, s3);
+                s0 = FusedMath.Fma(*(double4*)(b0 + k), a, s0);
+                s1 = FusedMath.Fma(*(double4*)(b1 + k), a, s1);
+                s2 = FusedMath.Fma(*(double4*)(b2 + k), a, s2);
+                s3 = FusedMath.Fma(*(double4*)(b3 + k), a, s3);
             }
 
             // Use a two-lane vector when two entries remain. This case is common, because a body has six columns.
             if (k + 2 <= count)
             {
                 double2 a = *(double2*)(shared + k);
-                s0.xy = MathUtil.Fma(*(double2*)(b0 + k), a, s0.xy);
-                s1.xy = MathUtil.Fma(*(double2*)(b1 + k), a, s1.xy);
-                s2.xy = MathUtil.Fma(*(double2*)(b2 + k), a, s2.xy);
-                s3.xy = MathUtil.Fma(*(double2*)(b3 + k), a, s3.xy);
+                s0.xy = FusedMath.Fma(*(double2*)(b0 + k), a, s0.xy);
+                s1.xy = FusedMath.Fma(*(double2*)(b1 + k), a, s1.xy);
+                s2.xy = FusedMath.Fma(*(double2*)(b2 + k), a, s2.xy);
+                s3.xy = FusedMath.Fma(*(double2*)(b3 + k), a, s3.xy);
                 k += 2;
             }
 
@@ -202,7 +203,7 @@ namespace Unity.Physics.Numerics.Retooled
 
             if (k < count)
             {
-                sum = MathUtil.Fma(new double4(b0[k], b1[k], b2[k], b3[k]), shared[k], sum);
+                sum = FusedMath.Fma(new double4(b0[k], b1[k], b2[k], b3[k]), shared[k], sum);
             }
 
             return sum;
@@ -216,12 +217,12 @@ namespace Unity.Physics.Numerics.Retooled
             int k = 0;
             for (; k + 4 <= count; k += 4)
             {
-                *(double4*)(into + k) = MathUtil.Fma(scale, *(double4*)(from + k), *(double4*)(into + k));
+                *(double4*)(into + k) = FusedMath.Fma(scale, *(double4*)(from + k), *(double4*)(into + k));
             }
 
             for (; k < count; k++)
             {
-                into[k] = MathUtil.Fma(scale, from[k], into[k]);
+                into[k] = FusedMath.Fma(scale, from[k], into[k]);
             }
         }
 
@@ -236,7 +237,7 @@ namespace Unity.Physics.Numerics.Retooled
                 double sum = own[row];
                 for (int j = 0; j < row; j++)
                 {
-                    sum = MathUtil.Fma(-c[row * size + j], own[j], sum);
+                    sum = FusedMath.Fma(-c[row * size + j], own[j], sum);
                 }
 
                 own[row] = sum * inverse[row];
@@ -255,7 +256,7 @@ namespace Unity.Physics.Numerics.Retooled
                 own[row] = answer;
                 for (int j = 0; j < row; j++)
                 {
-                    own[j] = MathUtil.Fma(-c[row * size + j], answer, own[j]);
+                    own[j] = FusedMath.Fma(-c[row * size + j], answer, own[j]);
                 }
             }
         }
