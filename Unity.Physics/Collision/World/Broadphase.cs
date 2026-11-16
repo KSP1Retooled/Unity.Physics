@@ -324,7 +324,21 @@ namespace Unity.Physics
         public JobHandle ScheduleDynamicTreeBuildJobs(
             ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint, JobHandle inputDeps, bool incremental = false)
         {
+            return ScheduleDynamicTreeBuildJobs(ref world, timeStep, gravity, numThreadsHint, inputDeps, out _, incremental);
+        }
+
+        /// <summary>
+        /// Schedules the jobs that build the dynamic tree, as the method above does, and also returns the handle of the
+        /// job that reads the bodies' bounds, in <paramref name="prepared"/>. A caller can make jobs that compete with
+        /// the build for the workers wait for that handle, so that the workers read the bounds first. The tree build
+        /// waits for the bounds, and the steps that follow it wait for the tree.
+        /// </summary>
+        internal JobHandle ScheduleDynamicTreeBuildJobs(
+            ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint, JobHandle inputDeps, out JobHandle prepared,
+            bool incremental = false)
+        {
             using var scope = ScheduleDynamicBuildJobsMarker.Auto();
+            prepared = inputDeps;
 
             Assert.AreEqual(world.NumDynamicBodies, DynamicTree.NumBodies);
 
@@ -362,6 +376,7 @@ namespace Unity.Physics
                 Gravity = gravity,
                 Incremental = DynamicTree.IncrementalRef
             }.Schedule(world.NumDynamicBodies, 32, inputDeps);
+            prepared = handle;
 
             var shouldDoWork = new NativeReference<int>(1, Allocator.TempJob);
 

@@ -425,12 +425,38 @@ namespace KSP.Retooled.Physics
             EdgeLocked.ResizeUninitialized(parts);
             Closures.ResizeUninitialized(ClosureUnits.Length);
             ClosureLoads.ResizeUninitialized(ClosureUnits.Length);
+        }
 
-            // The solver writes loads for the vessels that it solves. Clear the arrays so that loads for all other
-            // vessels are zero.
-            UnsafeUtility.MemClear(EdgeLoads.GetUnsafePtr(), (long)parts * sizeof(VesselEdgeLoad));
+        /// <summary>
+        /// Schedules a job that clears the loads and lock flags of every part and closure. The solver writes them only
+        /// for the vessels that it solves, so the loads of all other vessels stay zero. Only the solve and the jobs
+        /// after it read these arrays, so the solve must wait for the returned handle. Clearing them on the main thread
+        /// took 0.28 ms with four Tu-160s, because other cores had written the arrays in the last step.
+        /// </summary>
+        public JobHandle ScheduleClearLoads(JobHandle dependency)
+        {
+            return new ClearVesselLoadsJob
+            {
+                EdgeLoads = EdgeLoads.AsArray(),
+                ClosureLoads = ClosureLoads.AsArray(),
+                EdgeLocked = EdgeLocked.AsArray(),
+            }.Schedule(dependency);
+        }
+    }
+
+    /// <summary>See <see cref="VesselBuild.ScheduleClearLoads"/>.</summary>
+    [BurstCompile]
+    internal unsafe struct ClearVesselLoadsJob : IJob
+    {
+        public NativeArray<VesselEdgeLoad> EdgeLoads;
+        public NativeArray<VesselEdgeLoad> ClosureLoads;
+        public NativeArray<bool> EdgeLocked;
+
+        public void Execute()
+        {
+            UnsafeUtility.MemClear(EdgeLoads.GetUnsafePtr(), (long)EdgeLoads.Length * sizeof(VesselEdgeLoad));
             UnsafeUtility.MemClear(ClosureLoads.GetUnsafePtr(), (long)ClosureLoads.Length * sizeof(VesselEdgeLoad));
-            UnsafeUtility.MemClear(EdgeLocked.GetUnsafePtr(), parts);
+            UnsafeUtility.MemClear(EdgeLocked.GetUnsafePtr(), EdgeLocked.Length);
         }
     }
 
