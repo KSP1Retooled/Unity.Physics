@@ -48,7 +48,12 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             // carry into the result.
             if (beta == 0.0f)
             {
-                Clear();
+                // The same entries as the loops below and Scale take, for either sign of the stride.
+                float* first = KernelStart;
+                for (int i = 0; i < Dimension; i++)
+                {
+                    first[(long)i * Stride] = 0f;
+                }
             }
             else
             {
