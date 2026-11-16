@@ -103,8 +103,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 100 parts that lies on the ground has 400 contact points, more than the cap of 256. The boundary
-        /// keeps 256 of them, and the craft rests on the ground without sinking or shaking.
+        /// A craft of 100 parts that lies on the ground has 400 contact points, more than the cap of 256. The cap takes
+        /// every part's deepest point before any part's second point, so every part keeps some of its points, and the
+        /// boundary keeps no more than the 448 rows that 256 points in manifolds of 4 would bring. The craft rests on the
+        /// ground without sinking or shaking.
         /// </summary>
         [Test]
         public void ALongCraftOnTheGroundKeepsItsContactPointsUnderTheCap()
@@ -125,13 +127,17 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             BoundaryCounters counts = BoundaryCounters.Current;
-            Debug.Log($"[BoundaryCapTests] lying craft: {counts.Solves} solves, {counts.Rows / (double)System.Math.Max(1, counts.Solves):F0} " +
-                $"rows a solve, most outside points {counts.MostOutsidePoints}, held points {counts.HeldPoints}, " +
-                $"rounds a solve {counts.Rounds / (double)System.Math.Max(1, counts.Solves):F2} (most {counts.MostRounds}, " +
-                $"{counts.CappedSolves} at the cap, {counts.UnsettledSolves} without an answer); centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
+            double rows = counts.Rows / (double)System.Math.Max(1, counts.Solves);
+            Debug.Log($"[BoundaryCapTests] lying craft: {counts.Solves} solves, {rows:F0} rows a solve, most outside points " +
+                $"{counts.MostOutsidePoints}, held points {counts.HeldPoints}, manifolds left with no point " +
+                $"{counts.EmptiedOutsideManifolds}, rounds a solve {counts.Rounds / (double)System.Math.Max(1, counts.Solves):F2} " +
+                $"(most {counts.MostRounds}, {counts.CappedSolves} at the cap, {counts.UnsettledSolves} without an answer); " +
+                $"centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
             Assert.That(counts.Solves, Is.GreaterThan(0), "the craft's island solves a boundary");
-            Assert.That(counts.MostOutsidePoints, Is.EqualTo(BoundaryCaps.DefaultOutsideContactPoints), "the cap holds");
+            Assert.That(counts.MostOutsidePoints, Is.LessThanOrEqualTo(BoundaryCaps.DefaultOutsideContactPoints), "the cap holds");
+            Assert.That(rows, Is.LessThanOrEqualTo(448.0), "the limit on rows holds");
             Assert.That(counts.HeldPoints, Is.GreaterThan(0), "the cap held points out");
+            Assert.That(counts.EmptiedOutsideManifolds, Is.EqualTo(0), "every part keeps some of its points");
             Assert.That(lowest, Is.GreaterThan(0.29f), "no part sinks");
             Assert.That(highest, Is.LessThan(0.31f), "no part lifts");
             Assert.That(fastest, Is.LessThan(0.02f), "no part shakes");

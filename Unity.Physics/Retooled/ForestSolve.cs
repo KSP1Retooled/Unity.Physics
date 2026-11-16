@@ -756,35 +756,59 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>A contact point or a contact manifold, with its depth, for sorting the deepest first.</summary>
+        /// <summary>
+        /// A contact point or a contact manifold, with its depth, for sorting. Items sort by their rank first, lowest
+        /// first, then by depth, deepest first. Items of the same rank and the same depth sort by <see cref="Tie"/>, which
+        /// changes from one solve to the next, so that a tie does not always go against the same rows.
+        /// </summary>
         struct DepthItem : IComparable<DepthItem>
         {
+            public int Rank;
             public float Depth;
+            public uint Tie;
             public int Index;
+
+            /// <summary>For a point that the cap on outside points sorts, the index of its manifold in the cap's list.</summary>
+            public int Group;
 
             public int CompareTo(DepthItem other)
             {
-                int order = other.Depth.CompareTo(Depth);
+                int order = Rank.CompareTo(other.Rank);
+                if (order == 0)
+                {
+                    order = other.Depth.CompareTo(Depth);
+                }
+
+                if (order == 0)
+                {
+                    order = Tie.CompareTo(other.Tie);
+                }
+
                 return order != 0 ? order : Index.CompareTo(other.Index);
             }
         }
 
         /// <summary>
         /// Applies the run's caps to a vessel island's boundary. The rows that a cap drops become held rows, see
-        /// <see cref="HeldRowClass"/>. The caps are these, deepest first in each case:
+        /// <see cref="HeldRowClass"/>. The caps are these:
         /// <list type="bullet">
-        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points.</item>
+        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points, the deepest.</item>
         /// <item>
         /// Contacts between two parts of the same vessel keep at most <see cref="BoundaryCaps.SelfContactManifolds"/>
-        /// manifolds. A dropped manifold's friction rows are held too.
+        /// manifolds, the deepest by their deepest point. A dropped manifold's friction rows are held too.
         /// </item>
         /// <item>
         /// Other contacts, for example against the ground or against another body, keep at most
-        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. If a manifold loses every
-        /// point, its friction rows are held too.
+        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. The cap takes every manifold's
+        /// deepest point first, deepest first, then every manifold's second deepest point, and so on, so that the loss
+        /// is spread over the manifolds. A manifold that keeps a point keeps its friction rows too, and those count
+        /// against a limit on rows: the cap on points plus the friction rows of the manifolds that the cap would allow
+        /// at <see cref="BoundaryCaps.DefaultPointsPerManifold"/> points each, so 448 rows for 256 points. If a manifold
+        /// loses every point, its friction rows are held too.
         /// </item>
         /// </list>
-        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance.
+        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance. When two points or
+        /// two manifolds tie, the cap breaks the tie by a hash that changes with every solve of the island.
         /// </summary>
         static unsafe void CapBoundary(ref ForestRun run)
         {
@@ -804,11 +828,13 @@ namespace Unity.Physics
                 vesselParts += run.Vessels.Vessels[run.IslandVessels[v]].PartCount;
             }
 
+            ulong turn = (ulong)forest->BoundaryMemory.CapCount++ << 32;
             var points = new NativeList<DepthItem>(8, Allocator.Temp);
             var outsidePoints = new NativeList<DepthItem>(64, Allocator.Temp);
             var outsideBlocks = new NativeList<int2>(16, Allocator.Temp);
             var selfManifolds = new NativeList<DepthItem>(16, Allocator.Temp);
             int heldPoints = 0;
+            long outsideRows = 0;
             for (int b = 0; b < problem.BlockCount; b++)
             {
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
@@ -829,7 +855,8 @@ namespace Unity.Physics
                     float distance = contact.AccessAngularJacobian(i).ContactDistance;
                     if (distance <= ContactRowReach)
                     {
-                        points.Add(new DepthItem { Depth = -distance, Index = block.FirstRow + points.Length });
+                        int row = block.FirstRow + points.Length;
+                        points.Add(new DepthItem { Depth = -distance, Tie = (uint)Mix((ulong)row | turn), Index = row });
                     }
                 }
 
@@ -848,15 +875,21 @@ namespace Unity.Physics
 
                 if (IsSelfContact(run, forest, block, vesselParts))
                 {
-                    selfManifolds.Add(new DepthItem { Depth = points[0].Depth, Index = b });
+                    selfManifolds.Add(new DepthItem { Depth = points[0].Depth, Tie = (uint)Mix((ulong)b | turn), Index = b });
                 }
                 else
                 {
-                    outsideBlocks.Add(new int2(b, points.Length));
-                    for (int k = 0; k < math.min(perManifold, points.Length); k++)
+                    int kept = math.min(perManifold, points.Length);
+                    outsideRows += kept + frictionRows;
+                    for (int k = 0; k < kept; k++)
                     {
-                        outsidePoints.Add(points[k]);
+                        DepthItem point = points[k];
+                        point.Rank = k;
+                        point.Group = outsideBlocks.Length;
+                        outsidePoints.Add(point);
                     }
+
+                    outsideBlocks.Add(new int2(b, points.Length));
                 }
             }
 
@@ -876,17 +909,39 @@ namespace Unity.Physics
                 }
             }
 
+            // The cap on outside points also limits the rows that the kept points bring with them: each manifold that keeps
+            // a point brings its friction rows too. The limit on rows is what the cap on points allows when every kept
+            // manifold keeps all of its points, for example 256 points and the friction rows of 64 manifolds.
+            long rowLimit = outsideLimit >= int.MaxValue
+                ? long.MaxValue
+                : outsideLimit + 3L * (outsideLimit / math.min(perManifold, BoundaryCaps.DefaultPointsPerManifold));
             int keptOutside = outsidePoints.Length;
-            if (outsidePoints.Length > outsideLimit)
+            int emptied = 0;
+            if (outsidePoints.Length > outsideLimit || outsideRows > rowLimit)
             {
                 outsidePoints.Sort();
-                for (int k = outsideLimit; k < outsidePoints.Length; k++)
+                var touched = new NativeArray<bool>(outsideBlocks.Length, Allocator.Temp);
+                long used = 0;
+                keptOutside = 0;
+                for (int k = 0; k < outsidePoints.Length; k++)
                 {
-                    run.RowClass[outsidePoints[k].Index] = HeldRowClass;
-                    heldPoints++;
+                    DepthItem point = outsidePoints[k];
+                    int2 owner = outsideBlocks[point.Group];
+                    int cost = 1 + (touched[point.Group] ? 0 : problem.Blocks[owner.x].RowCount - owner.y);
+                    if (keptOutside < outsideLimit && used + cost <= rowLimit)
+                    {
+                        touched[point.Group] = true;
+                        used += cost;
+                        keptOutside++;
+                    }
+                    else
+                    {
+                        run.RowClass[point.Index] = HeldRowClass;
+                        heldPoints++;
+                    }
                 }
 
-                keptOutside = outsideLimit;
+                touched.Dispose();
                 for (int k = 0; k < outsideBlocks.Length; k++)
                 {
                     SparseConstraintSolver.ConstraintBlock block = problem.Blocks[outsideBlocks[k].x];
@@ -897,6 +952,7 @@ namespace Unity.Physics
                         anyKept |= run.RowClass[row] == BoundaryRowClass;
                     }
 
+                    emptied += anyKept ? 0 : 1;
                     for (int row = block.FirstRow + normalRows; !anyKept && row < block.FirstRow + block.RowCount; row++)
                     {
                         run.RowClass[row] = HeldRowClass;
@@ -904,7 +960,7 @@ namespace Unity.Physics
                 }
             }
 
-            BoundaryCounters.AddCaps(heldPoints, heldManifolds, keptOutside, math.min(selfManifolds.Length, selfLimit));
+            BoundaryCounters.AddCaps(heldPoints, heldManifolds, keptOutside, math.min(selfManifolds.Length, selfLimit), emptied);
             points.Dispose();
             outsidePoints.Dispose();
             outsideBlocks.Dispose();
@@ -2183,6 +2239,9 @@ namespace Unity.Physics
 
         public UnsafeList<ulong> States;
 
+        /// <summary>How many times the caps have chosen this island's boundary rows. It seeds the hash that breaks ties.</summary>
+        public uint CapCount;
+
         public void Dispose()
         {
             if (States.IsCreated)
@@ -2259,6 +2318,16 @@ namespace Unity.Physics
         public long HeldPoints;
         public long HeldSelfManifolds;
 
+        /// <summary>Contact manifolds against bodies outside the vessel that the cap on outside points left with no point.</summary>
+        public long EmptiedOutsideManifolds;
+
+        /// <summary>
+        /// Held normal rows that gave back some of their warm start because their contact was separating, and held
+        /// normal rows that got a push-out of their own because their contact was too deep.
+        /// </summary>
+        public long HeldReleases;
+        public long HeldPushes;
+
         /// <summary>The most outside contact points and the most self-contact manifolds that one boundary kept.</summary>
         public long MostOutsidePoints;
         public long MostSelfManifolds;
@@ -2296,11 +2365,12 @@ namespace Unity.Physics
             Most(ref data.MostRounds, rounds);
         }
 
-        internal static void AddCaps(int heldPoints, int heldManifolds, int outsidePoints, int selfManifolds)
+        internal static void AddCaps(int heldPoints, int heldManifolds, int outsidePoints, int selfManifolds, int emptiedManifolds)
         {
             ref BoundaryCounters data = ref Shared.Data;
             Interlocked.Add(ref data.HeldPoints, heldPoints);
             Interlocked.Add(ref data.HeldSelfManifolds, heldManifolds);
+            Interlocked.Add(ref data.EmptiedOutsideManifolds, emptiedManifolds);
             Most(ref data.MostOutsidePoints, outsidePoints);
             Most(ref data.MostSelfManifolds, selfManifolds);
         }
