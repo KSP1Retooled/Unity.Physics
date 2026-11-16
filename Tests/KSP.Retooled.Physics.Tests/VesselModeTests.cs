@@ -771,6 +771,155 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// A hundred floating vessels of two parts each, which the fused job doesn't take, so that the substeps solve
+        /// them: more islands than the 64 slots that the substeps' cache held before. The cache's table grows, and no
+        /// island builds its structure again. With 64 slots, the 36 islands past them built their structures again in
+        /// every substep. The test runs with the substeps' chain of jobs and with one thread doing the substeps.
+        /// </summary>
+        [Test]
+        public void MoreUnfusedIslandsThanTheOldCacheHeldKeepTheirStructures([Values] bool folded)
+        {
+            const int columns = 100;
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            Unity.Physics.Solver.SubstepFolding folding = Unity.Physics.Solver.UnfusedFolding;
+            try
+            {
+                Unity.Physics.Solver.VesselFused = true;
+                Unity.Physics.Solver.FusedVesselParts = int.MaxValue;
+                Unity.Physics.Solver.UnfusedFolding = folded ? Unity.Physics.Solver.SubstepFolding.Fold : Unity.Physics.Solver.SubstepFolding.Chain;
+                for (int c = 0; c < columns; c++)
+                {
+                    foreach (Rigidbody body in Column(2, 5.0f, double.PositiveInfinity, 3.0f * c))
+                    {
+                        body.useGravity = false;
+                    }
+                }
+
+                Begin(vessels);
+                vessels.Step(3);
+                VesselForest.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
+                long fusedBefore = Unity.Physics.Solver.FusedIslandSolves;
+                long foldedBefore = Unity.Physics.Solver.UnfusedFoldedSteps;
+                vessels.Step(5);
+                VesselForest.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
+                Assert.That(Unity.Physics.Solver.FusedIslandSolves - fusedBefore, Is.EqualTo(0), "the substeps solve every vessel");
+                Assert.That(Unity.Physics.Solver.UnfusedFoldedSteps - foldedBefore, Is.EqualTo(folded ? 5 : 0),
+                    "one thread does the substeps' work in every step only when the test asks for it");
+                Assert.That(builds1 - builds0, Is.EqualTo(0), "no island builds its structure again");
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+                Unity.Physics.Solver.UnfusedFolding = folding;
+            }
+        }
+
+        /// <summary>
+        /// Columns of 2 to 9 parts fall onto the ground at a slant. A loose box falls onto two of them, and two plain
+        /// bodies swing on a hinge, so that some islands can't be fused. The scene runs with the substeps' work done
+        /// by the chain of jobs, and with that work done on one thread: in a lane of the fused job when the fused job
+        /// takes the columns of 5 parts or more, and in a job of its own when the fused job is off. Both ways end with
+        /// the same poses and loads, to the last bit, because each island's work is the same and in the same order.
+        /// </summary>
+        [Test]
+        public void TheSubstepsEndTheSameOnOneThreadAsInTheirChainOfJobs([Values] bool fusedJob)
+        {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            Unity.Physics.Solver.SubstepFolding folding = Unity.Physics.Solver.UnfusedFolding;
+            const int columns = 8;
+            const int steps = 60;
+            var positions = new Vector3[2][];
+            var rotations = new Quaternion[2][];
+            var loads = new double3[2][];
+            var folded = new long[2];
+            int partCount = 0;
+            try
+            {
+                Unity.Physics.Solver.VesselFused = fusedJob;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    VesselForest.ForgetIslands();
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    Unity.Physics.Solver.FusedVesselParts = 5;
+                    Unity.Physics.Solver.UnfusedFolding = pass == 0 ? Unity.Physics.Solver.SubstepFolding.Chain : Unity.Physics.Solver.SubstepFolding.Fold;
+                    Ground();
+                    var bodies = new List<Rigidbody>();
+                    for (int c = 0; c < columns; c++)
+                    {
+                        foreach (Rigidbody body in Column(2 + c, 0.6f, double.PositiveInfinity, 3.0f * c))
+                        {
+                            body.angularVelocity = new Vector3(0.05f * c, 0.0f, 0.3f);
+                            bodies.Add(body);
+                        }
+                    }
+
+                    partCount = bodies.Count;
+                    foreach (int c in new[] { 1, 6 })
+                    {
+                        Rigidbody box = Box(new Vector3(3.0f * c, 0.6f + (2 + c) + 1.0f, 0.0f), new Vector3(0.5f, 0.5f, 0.5f)).AddComponent<Rigidbody>();
+                        box.mass = 1.0f;
+                        box.sleepThreshold = 0.0f;
+                        bodies.Add(box);
+                    }
+
+                    Rigidbody hung = Box(new Vector3(-6.0f, 4.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+                    Rigidbody swung = Box(new Vector3(-4.5f, 4.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
+                    hung.sleepThreshold = swung.sleepThreshold = 0.0f;
+                    UnityEngine.Physics.IgnoreCollision(hung.GetComponent<UnityEngine.Collider>(), swung.GetComponent<UnityEngine.Collider>());
+                    ConfigurableJoint hook = hung.gameObject.AddComponent<ConfigurableJoint>();
+                    hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
+                    hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
+                    HingeJoint hinge = swung.gameObject.AddComponent<HingeJoint>();
+                    hinge.connectedBody = hung;
+                    hinge.anchor = new Vector3(-0.75f, 0.0f, 0.0f);
+                    hinge.axis = new Vector3(0.0f, 0.0f, 1.0f);
+                    bodies.Add(hung);
+                    bodies.Add(swung);
+
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.UnfusedFoldedSteps;
+                    vessels.Step(steps);
+                    folded[pass] = Unity.Physics.Solver.UnfusedFoldedSteps - before;
+                    positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                    rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
+                    loads[pass] = new double3[partCount];
+                    for (int i = 0; i < partCount; i++)
+                    {
+                        loads[pass][i] = vessels.Load(i).Force;
+                    }
+                }
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+                Unity.Physics.Solver.UnfusedFolding = folding;
+            }
+
+            Assert.That(folded[0], Is.EqualTo(0), "the first pass runs the chain of jobs");
+            Assert.That(folded[1], Is.EqualTo(steps), "the second pass does the substeps on one thread in every step");
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                Assert.That(positions[1][i], Is.EqualTo(positions[0][i]), $"body {i} ends in the same place");
+                Assert.That(rotations[1][i], Is.EqualTo(rotations[0][i]), $"body {i} ends in the same orientation");
+            }
+
+            for (int i = 0; i < loads[0].Length; i++)
+            {
+                Assert.That(loads[1][i], Is.EqualTo(loads[0][i]), $"part {i}'s edge carries the same load");
+            }
+
+            Debug.Log($"[VesselModeTests] substeps on one thread and in a chain of jobs, fused job {fusedJob}: the tallest column's top at {positions[0][partCount - (columns + 1)]:F5}");
+        }
+
         [Test]
         public void AFloatingVesselKeepsItsMomentum()
         {

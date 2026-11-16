@@ -135,6 +135,124 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// A step has 200 islands, more than the 64 slots that the substeps' table starts with. The table grows, and in
+        /// the next step every island finds its slot again, even when the islands come in the other order. When the
+        /// table had a fixed size of 64, the islands past the 64th solved without a slot in every step.
+        /// </summary>
+        [Test]
+        public void EveryIslandKeepsItsSlotWhenThereAreMoreThanTheTableStartsWith()
+        {
+            const int islands = 200;
+            DirectSolverCache cache = DirectSolverCache.Create();
+            try
+            {
+                var bodies = new int[islands];
+                var identities = new ulong[islands];
+                for (int i = 0; i < islands; i++)
+                {
+                    bodies[i] = 3 * i;
+                    identities[i] = Identity((uint)(10 + i));
+                }
+
+                Assign(ref cache, bodies, identities);
+                var forests = new ulong[islands];
+                for (int i = 0; i < islands; i++)
+                {
+                    forests[i] = (ulong)cache.ForestOf(i);
+                    Assert.That(forests[i], Is.Not.EqualTo(0ul), $"island {i} has a slot");
+                }
+
+                Assert.That(cache.SlotCount, Is.EqualTo(islands), "the table grows to one slot for each island");
+                System.Array.Reverse(bodies);
+                System.Array.Reverse(identities);
+                Assign(ref cache, bodies, identities);
+                for (int i = 0; i < islands; i++)
+                {
+                    Assert.That((ulong)cache.ForestOf(i), Is.EqualTo(forests[islands - 1 - i]), $"island {islands - 1 - i} keeps its slot");
+                }
+
+                Assert.That(cache.SlotCount, Is.EqualTo(islands), "the table doesn't grow for islands that it holds");
+            }
+            finally
+            {
+                cache.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// The fused job keeps the state of its islands in slots of its own, so the job that marks the fused islands
+        /// gives them the identity <see cref="DirectSolverCache.NoSlot"/>. Such an island gets no slot, and it takes
+        /// no slot from the other islands.
+        /// </summary>
+        [Test]
+        public void AnIslandThatNeedsNoSlotGetsNone()
+        {
+            DirectSolverCache cache = DirectSolverCache.Create();
+            try
+            {
+                Assign(ref cache, new[] { 1, 4 }, new[] { Identity(11), Identity(12) });
+                ulong second = (ulong)cache.ForestOf(1);
+                Assign(ref cache, new[] { 1, 4 }, new[] { DirectSolverCache.NoSlot, Identity(12) });
+                Assert.That((ulong)cache.ForestOf(0), Is.EqualTo(0ul), "the fused island has no forest here");
+                Assert.That((ulong)cache.Solver(0), Is.EqualTo(0ul), "the fused island has no solver here");
+                Assert.That((ulong)cache.ForestOf(1), Is.EqualTo(second), "the other island keeps its slot");
+            }
+            finally
+            {
+                cache.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Once every slot of the substeps' table has been used, a new island takes the slot of an island that no step
+        /// has used for <see cref="DirectSolverCache.SlotKeepSteps"/> steps. Before that, the new island gets a new
+        /// slot, so that an island that sat out a few steps finds its slot again.
+        /// </summary>
+        [Test]
+        public void ANewIslandTakesOnlyTheSlotOfAnIslandThatStayedAwayLong()
+        {
+            const int first = 64;
+            DirectSolverCache cache = DirectSolverCache.Create();
+            try
+            {
+                var bodies = new int[first];
+                var identities = new ulong[first];
+                for (int i = 0; i < first; i++)
+                {
+                    bodies[i] = i;
+                    identities[i] = Identity((uint)(100 + i));
+                }
+
+                Assign(ref cache, bodies, identities);
+                ulong last = (ulong)cache.ForestOf(first - 1);
+                Assert.That(cache.SlotCount, Is.EqualTo(first), "the first islands fill the slots that the table starts with");
+                for (int i = 0; i < 10; i++)
+                {
+                    Assign(ref cache, new[] { 0 }, new[] { identities[0] });
+                }
+
+                Assign(ref cache, new[] { 0, 500 }, new[] { identities[0], Identity(500) });
+                Assert.That(cache.SlotCount, Is.EqualTo(first + 1), "the other islands were solved 11 steps ago and keep their slots");
+                for (int i = 0; i < DirectSolverCache.SlotKeepSteps; i++)
+                {
+                    Assign(ref cache, new[] { 0, 500 }, new[] { identities[0], Identity(500) });
+                }
+
+                Assign(ref cache, new[] { 0, 500, 600 }, new[] { identities[0], Identity(500), Identity(600) });
+                Assert.That(cache.SlotCount, Is.EqualTo(first + 1), "the new island takes a slot that no step used for a long time");
+
+                // The new island took the slot that was used least recently, the second island's. The last island's slot
+                // is still its own.
+                Assign(ref cache, new[] { first - 1 }, new[] { identities[first - 1] });
+                Assert.That((ulong)cache.ForestOf(0), Is.EqualTo(last), "the last island finds its slot again");
+            }
+            finally
+            {
+                cache.Dispose();
+            }
+        }
+
         [Test]
         public void TwoIslandsNeverShareASlot()
         {
