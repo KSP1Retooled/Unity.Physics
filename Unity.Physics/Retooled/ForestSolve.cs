@@ -1,3 +1,6 @@
+using System;
+using System.Threading;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -19,6 +22,13 @@ namespace Unity.Physics
 
         /// <summary>A forest row between two bodies of one section: a locked pair's, whose load comes from inverse dynamics, or an inert closure's.</summary>
         const byte SectionRowClass = 3;
+
+        /// <summary>
+        /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
+        /// own. The contact impulse that the row had before the solve stays applied, because a sparse solve's contact
+        /// rows solve for the change from their warm-start impulse.
+        /// </summary>
+        const byte HeldRowClass = 4;
 
         /// <summary>
         /// One island's solve as a forest plus a boundary, see <see cref="ForestSettings"/>. Holds what a second solve with
@@ -56,6 +66,13 @@ namespace Unity.Physics
             public NativeArray<int> BoundaryOf;
             public NativeArray<double> W;
             public int BoundaryCount;
+
+            /// <summary>
+            /// For a vessel island: the limits on its boundary, and a key for each boundary row that stays the same from one
+            /// solve to the next. The keys let a solve start from the states that the rows had in the last solve.
+            /// </summary>
+            public BoundaryCaps Caps;
+            public NativeArray<ulong> BoundaryKey;
 
             /// <summary>The change of velocity of every section, and a vector of the same size to work in.</summary>
             public NativeArray<double> Velocity;
@@ -148,6 +165,10 @@ namespace Unity.Physics
                 Boundary.Dispose();
                 BoundaryOf.Dispose();
                 W.Dispose();
+                if (BoundaryKey.IsCreated)
+                {
+                    BoundaryKey.Dispose();
+                }
                 Velocity.Dispose();
                 Work.Dispose();
                 if (SectionJacobian.IsCreated)
@@ -543,6 +564,11 @@ namespace Unity.Physics
             NativeArray<byte> rowClass = run.RowClass;
             NativeArray<int> rowBlock = run.RowBlock;
             NativeArray<int2> blockSections = run.BlockSections;
+            if (run.VesselMode && run.Bounded)
+            {
+                CapBoundary(ref run);
+            }
+
             var boundary = new NativeArray<int>(math.max(1, boundaryRows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var boundaryOf = new NativeArray<int>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             int nb = 0;
@@ -640,6 +666,10 @@ namespace Unity.Physics
             run.BoundaryOf = boundaryOf;
             run.W = w;
             run.BoundaryCount = nb;
+            if (run.VesselMode && run.Bounded)
+            {
+                run.BoundaryKey = BoundaryKeys(ref run, (int*)boundary.GetUnsafeReadOnlyPtr(), nb);
+            }
             run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
         }
 
@@ -705,6 +735,242 @@ namespace Unity.Physics
 
                 w[i * nb + i] += tasks->Epsilon[tasks->Boundary[i]];
             }
+        }
+
+        /// <summary>A contact point or a contact manifold, with its depth, for sorting the deepest first.</summary>
+        struct DepthItem : IComparable<DepthItem>
+        {
+            public float Depth;
+            public int Index;
+
+            public int CompareTo(DepthItem other)
+            {
+                int order = other.Depth.CompareTo(Depth);
+                return order != 0 ? order : Index.CompareTo(other.Index);
+            }
+        }
+
+        /// <summary>
+        /// Applies the run's caps to a vessel island's boundary. The rows that a cap drops become held rows, see
+        /// <see cref="HeldRowClass"/>. The caps are these, deepest first in each case:
+        /// <list type="bullet">
+        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points.</item>
+        /// <item>
+        /// Contacts between two parts of the same vessel keep at most <see cref="BoundaryCaps.SelfContactManifolds"/>
+        /// manifolds. A dropped manifold's friction rows are held too.
+        /// </item>
+        /// <item>
+        /// Other contacts, for example against the ground or against another body, keep at most
+        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. If a manifold loses every
+        /// point, its friction rows are held too.
+        /// </item>
+        /// </list>
+        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance.
+        /// </summary>
+        static unsafe void CapBoundary(ref ForestRun run)
+        {
+            if (run.Headers == null)
+            {
+                return;
+            }
+
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            ForestIsland* forest = run.Forest;
+            int perManifold = run.Caps.PointLimit;
+            int selfLimit = run.Caps.SelfManifoldLimit;
+            int outsideLimit = run.Caps.OutsidePointLimit;
+            int vesselParts = 0;
+            for (int v = 0; v < run.IslandVesselCount; v++)
+            {
+                vesselParts += run.Vessels.Vessels[run.IslandVessels[v]].PartCount;
+            }
+
+            var points = new NativeList<DepthItem>(8, Allocator.Temp);
+            var outsidePoints = new NativeList<DepthItem>(64, Allocator.Temp);
+            var outsideBlocks = new NativeList<int2>(16, Allocator.Temp);
+            var selfManifolds = new NativeList<DepthItem>(16, Allocator.Temp);
+            int heldPoints = 0;
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                JacobianHeader* header = run.Headers[b];
+                if (block.RowCount == 0 || header == null || header->Type != JacobianType.Contact ||
+                    run.RowClass[block.FirstRow] != BoundaryRowClass)
+                {
+                    continue;
+                }
+
+                // The block's first rows are the normal rows of the points that are within reach, in the manifold's order.
+                // The friction rows follow, if there are any.
+                ref JacobianHeader contact = ref *header;
+                int count = contact.AccessBaseJacobian<ContactJacobian>().BaseJacobian.NumContacts;
+                points.Clear();
+                for (int i = 0; i < count; i++)
+                {
+                    float distance = contact.AccessAngularJacobian(i).ContactDistance;
+                    if (distance <= ContactRowReach)
+                    {
+                        points.Add(new DepthItem { Depth = -distance, Index = block.FirstRow + points.Length });
+                    }
+                }
+
+                int frictionRows = block.RowCount - points.Length;
+                if (points.Length == 0 || (frictionRows != 0 && frictionRows != 3))
+                {
+                    continue;
+                }
+
+                points.Sort();
+                for (int k = perManifold; k < points.Length; k++)
+                {
+                    run.RowClass[points[k].Index] = HeldRowClass;
+                    heldPoints++;
+                }
+
+                if (IsSelfContact(run, forest, block, vesselParts))
+                {
+                    selfManifolds.Add(new DepthItem { Depth = points[0].Depth, Index = b });
+                }
+                else
+                {
+                    outsideBlocks.Add(new int2(b, points.Length));
+                    for (int k = 0; k < math.min(perManifold, points.Length); k++)
+                    {
+                        outsidePoints.Add(points[k]);
+                    }
+                }
+            }
+
+            int heldManifolds = 0;
+            if (selfManifolds.Length > selfLimit)
+            {
+                selfManifolds.Sort();
+                for (int k = selfLimit; k < selfManifolds.Length; k++)
+                {
+                    SparseConstraintSolver.ConstraintBlock block = problem.Blocks[selfManifolds[k].Index];
+                    for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
+                    {
+                        run.RowClass[row] = HeldRowClass;
+                    }
+
+                    heldManifolds++;
+                }
+            }
+
+            int keptOutside = outsidePoints.Length;
+            if (outsidePoints.Length > outsideLimit)
+            {
+                outsidePoints.Sort();
+                for (int k = outsideLimit; k < outsidePoints.Length; k++)
+                {
+                    run.RowClass[outsidePoints[k].Index] = HeldRowClass;
+                    heldPoints++;
+                }
+
+                keptOutside = outsideLimit;
+                for (int k = 0; k < outsideBlocks.Length; k++)
+                {
+                    SparseConstraintSolver.ConstraintBlock block = problem.Blocks[outsideBlocks[k].x];
+                    int normalRows = outsideBlocks[k].y;
+                    bool anyKept = false;
+                    for (int row = block.FirstRow; row < block.FirstRow + normalRows; row++)
+                    {
+                        anyKept |= run.RowClass[row] == BoundaryRowClass;
+                    }
+
+                    for (int row = block.FirstRow + normalRows; !anyKept && row < block.FirstRow + block.RowCount; row++)
+                    {
+                        run.RowClass[row] = HeldRowClass;
+                    }
+                }
+            }
+
+            BoundaryCounters.AddCaps(heldPoints, heldManifolds, keptOutside, math.min(selfManifolds.Length, selfLimit));
+            points.Dispose();
+            outsidePoints.Dispose();
+            outsideBlocks.Dispose();
+            selfManifolds.Dispose();
+        }
+
+        /// <summary>Whether a block joins two parts of the same vessel.</summary>
+        static unsafe bool IsSelfContact(in ForestRun run, ForestIsland* forest, in SparseConstraintSolver.ConstraintBlock block,
+            int vesselParts)
+        {
+            if (block.BodyA < 0 || block.BodyB < 0)
+            {
+                return false;
+            }
+
+            int partA = forest->BodyPart[block.BodyA];
+            int partB = forest->BodyPart[block.BodyB];
+            return partA >= 0 && partB >= 0 && partA < vesselParts && partB < vesselParts &&
+                forest->PartVesselStart[partA] == forest->PartVesselStart[partB];
+        }
+
+        /// <summary>
+        /// Makes a key for each boundary row that stays the same from one solve to the next while the row's constraint
+        /// lasts. The key comes from the two world bodies of the row's block, the block's type, how many blocks of the same
+        /// bodies and type come before it in the island, and the row's place in its block. The two lowest bits of each key
+        /// are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// </summary>
+        static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
+        {
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            var keys = new NativeArray<ulong>(math.max(1, nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var seen = new NativeHashMap<ulong, int>(16, Allocator.Temp);
+            int lastBlock = -1;
+            ulong blockKey = 0;
+            for (int i = 0; i < nb; i++)
+            {
+                int row = boundary[i];
+                int b = run.RowBlock[row];
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                if (b != lastBlock)
+                {
+                    lastBlock = b;
+                    JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
+                    int bodyA, bodyB;
+                    ulong type;
+                    if (header != null)
+                    {
+                        bodyA = header->BodyPair.BodyIndexA;
+                        bodyB = header->BodyPair.BodyIndexB;
+                        type = (ulong)header->Type;
+                    }
+                    else
+                    {
+                        bodyA = block.BodyA >= 0 ? run.WorldBodies[block.BodyA] : -1;
+                        bodyB = block.BodyB >= 0 ? run.WorldBodies[block.BodyB] : -1;
+                        type = 0xFF;
+                    }
+
+                    ulong pairKey = Mix(((ulong)(uint)bodyA << 32) | (uint)bodyB) ^ type;
+                    int occurrence = 0;
+                    if (seen.TryGetValue(pairKey, out int before))
+                    {
+                        occurrence = before + 1;
+                    }
+
+                    seen[pairKey] = occurrence;
+                    blockKey = Mix(pairKey + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
+                }
+
+                keys[i] = Mix(blockKey + (ulong)(row - block.FirstRow)) & ~(ulong)BoundaryMemory.StateMask;
+            }
+
+            seen.Dispose();
+            return keys;
+        }
+
+        /// <summary>Mixes the bits of a 64-bit value, as the last step of MurmurHash3 does.</summary>
+        static ulong Mix(ulong x)
+        {
+            x ^= x >> 33;
+            x *= 0xFF51AFD7ED558CCDUL;
+            x ^= x >> 33;
+            x *= 0xC4CEB9FE1A85EC53UL;
+            x ^= x >> 33;
+            return x;
         }
 
         static ulong BlockKey(in SparseConstraintSolver.ConstraintBlock block, bool tree)
@@ -1058,6 +1324,14 @@ namespace Unity.Physics
                 var upper = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 var states = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.ClearMemory);
                 var z = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+
+                // A vessel island's velocity solve has a key for each boundary row. It starts each row in the state that
+                // the row had at the end of the last solve, if the island remembers one, and it takes a limited number of
+                // pivoting rounds. A push-out solve has no base velocity, and it keeps the plain solve.
+                bool vesselSolve = vesselStart && run.Bounded && run.BoundaryKey.IsCreated;
+                bool warm = vesselSolve && !run.Caps.ColdStart;
+                ref UnsafeList<ulong> memory = ref run.Forest->BoundaryMemory.States;
+                int warmRows = 0;
                 for (int i = 0; i < nb; i++)
                 {
                     int row = run.Boundary[i];
@@ -1068,20 +1342,65 @@ namespace Unity.Physics
                     {
                         states[i] = problem.InitialStates[row];
                     }
+
+                    if (warm && memory.IsCreated)
+                    {
+                        int found = BoundaryMemory.Find(memory, run.BoundaryKey[i]);
+                        if (found >= 0)
+                        {
+                            states[i] = (byte)(memory[found] & BoundaryMemory.StateMask);
+                            warmRows++;
+                        }
+                    }
                 }
 
+                // A cap can keep some of a coupling's source rows out of the boundary. The rows that stay are next to each
+                // other in the boundary, because the boundary keeps the rows' order. A held row adds nothing to the source
+                // impulse, so the coupling only needs its range of source rows moved. A coupling whose own rows are held
+                // is left out.
                 var couplings = new NativeList<BoundCoupling>(problem.CouplingCount, Allocator.Temp);
                 for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
                 {
                     BoundCoupling coupling = problem.Couplings[c];
+                    if (run.BoundaryOf[coupling.FirstRow] < 0)
+                    {
+                        continue;
+                    }
+
+                    int firstSource = -1;
+                    int sourceCount = 0;
+                    for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                    {
+                        if (run.BoundaryOf[row] >= 0)
+                        {
+                            firstSource = firstSource < 0 ? run.BoundaryOf[row] : firstSource;
+                            sourceCount++;
+                        }
+                    }
+
                     coupling.FirstRow = run.BoundaryOf[coupling.FirstRow];
-                    coupling.FirstSourceRow = run.BoundaryOf[coupling.FirstSourceRow];
+                    coupling.FirstSourceRow = math.max(firstSource, 0);
+                    coupling.SourceRowCount = sourceCount;
                     couplings.Add(coupling);
                 }
 
-                solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
-                    (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
-                    couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr());
+                if (vesselSolve)
+                {
+                    int maxRounds = run.Caps.PivotRoundLimit;
+                    solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
+                        (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
+                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
+                        out int rounds);
+                    BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
+                        (byte*)states.GetUnsafeReadOnlyPtr(), nb);
+                    BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, warmRows);
+                }
+                else
+                {
+                    solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
+                        (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
+                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr());
+                }
 
                 // v += A^-1 J_b^T z.
                 UnsafeUtility.MemClear(work, run.Work.Length * (long)sizeof(double));
@@ -1119,7 +1438,7 @@ namespace Unity.Physics
                 {
                     impulses[row] = problem.Lower[row];
                 }
-                else if (rowClass == SectionRowClass)
+                else if (rowClass == SectionRowClass || rowClass == HeldRowClass)
                 {
                     impulses[row] = 0.0f;
                 }
@@ -1588,6 +1907,199 @@ namespace Unity.Physics
                         angular[block.BodyB] += impulse * new float3(columns[9], columns[10], columns[11]);
                     }
                 }
+            }
+        }
+    }
+}
+
+namespace Unity.Physics
+{
+    /// <summary>
+    /// Limits on the boundary block of a vessel island, so that the dense solve of the boundary stays small. The
+    /// defaults come from the vessel solver study. A field that is zero takes its default, and a field that is negative
+    /// turns its limit off. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
+    /// </summary>
+    public struct BoundaryCaps
+    {
+        /// <summary>
+        /// The most contact points against the world or against bodies outside the vessel, over the whole island. The
+        /// solve keeps the deepest points.
+        /// </summary>
+        public int OutsideContactPoints;
+
+        /// <summary>The most points that the solve keeps from one contact manifold. It keeps the deepest.</summary>
+        public int PointsPerManifold;
+
+        /// <summary>
+        /// The most contact manifolds between two parts of the same vessel. The solve keeps the deepest manifolds, up to
+        /// <see cref="MaxSelfContactManifolds"/>. A manifold that the cap drops keeps the impulse that it had before the
+        /// solve.
+        /// </summary>
+        public int SelfContactManifolds;
+
+        /// <summary>The most rounds of block pivoting in one solve of the boundary.</summary>
+        public int PivotRounds;
+
+        /// <summary>
+        /// If true, every solve of the boundary starts from the guess that the rows' builder makes, instead of from the
+        /// states that the rows had at the end of the last solve. For measuring what the warm start saves.
+        /// </summary>
+        public bool ColdStart;
+
+        public const int DefaultOutsideContactPoints = 256;
+        public const int DefaultPointsPerManifold = 4;
+        public const int DefaultSelfContactManifolds = 8;
+        public const int MaxSelfContactManifolds = 25;
+        public const int DefaultPivotRounds = 8;
+
+        /// <summary>The limit on outside contact points that applies, after defaults.</summary>
+        public int OutsidePointLimit => Limit(OutsideContactPoints, DefaultOutsideContactPoints);
+
+        /// <summary>The limit on points per manifold that applies, after defaults.</summary>
+        public int PointLimit => Limit(PointsPerManifold, DefaultPointsPerManifold);
+
+        /// <summary>The limit on self-contact manifolds that applies, after defaults. It is never more than 25.</summary>
+        public int SelfManifoldLimit => SelfContactManifolds < 0
+            ? int.MaxValue
+            : Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
+
+        /// <summary>The limit on pivoting rounds that applies, after defaults.</summary>
+        public int PivotRoundLimit => Limit(PivotRounds, DefaultPivotRounds);
+
+        static int Limit(int value, int fallback) => value == 0 ? fallback : value < 0 ? int.MaxValue : value;
+    }
+
+    /// <summary>
+    /// What one island remembers of its boundary rows between solves: for each row's key, the row's state at the end of
+    /// the last solve. Each entry is the key with the state in its two lowest bits, and the entries are sorted, so that a
+    /// lookup is a binary search.
+    /// </summary>
+    internal unsafe struct BoundaryMemory
+    {
+        public const int StateMask = 3;
+
+        public UnsafeList<ulong> States;
+
+        public void Dispose()
+        {
+            if (States.IsCreated)
+            {
+                States.Dispose();
+            }
+        }
+
+        /// <summary>Returns the index of the entry for <paramref name="key"/>, or -1 if there is none.</summary>
+        public static int Find(in UnsafeList<ulong> states, ulong key)
+        {
+            int low = 0, high = states.Length;
+            while (low < high)
+            {
+                int middle = (low + high) >> 1;
+                if ((states[middle] & ~(ulong)StateMask) < key)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle;
+                }
+            }
+
+            return low < states.Length && (states[low] & ~(ulong)StateMask) == key ? low : -1;
+        }
+
+        /// <summary>Replaces what <paramref name="states"/> holds with the keys and states of this solve's rows.</summary>
+        public static void Remember(ref UnsafeList<ulong> states, ulong* keys, byte* rowStates, int count)
+        {
+            if (!states.IsCreated)
+            {
+                states = new UnsafeList<ulong>(math.max(16, count), Allocator.Persistent);
+            }
+
+            states.Clear();
+            for (int i = 0; i < count; i++)
+            {
+                states.Add(keys[i] | (ulong)(rowStates[i] & StateMask));
+            }
+
+            NativeSortExtension.Sort(states.Ptr, states.Length);
+        }
+    }
+
+    /// <summary>
+    /// Counts of what the vessel islands' boundary solves did, summed over every solve since the last
+    /// <see cref="Reset"/>. Tests and benches read them between steps.
+    /// </summary>
+    public struct BoundaryCounters
+    {
+        /// <summary>Velocity solves of a vessel island's boundary, and the rows and pivoting rounds that they took.</summary>
+        public long Solves;
+        public long Rows;
+        public long Rounds;
+
+        /// <summary>The most rounds that one solve took.</summary>
+        public long MostRounds;
+
+        /// <summary>Solves that used every round that the cap allows.</summary>
+        public long CappedSolves;
+
+        /// <summary>Rows that started from the state that the island remembered for them.</summary>
+        public long WarmRows;
+
+        /// <summary>Contact points held out of the boundary, and self-contact manifolds held out of it.</summary>
+        public long HeldPoints;
+        public long HeldSelfManifolds;
+
+        /// <summary>The most outside contact points and the most self-contact manifolds that one boundary kept.</summary>
+        public long MostOutsidePoints;
+        public long MostSelfManifolds;
+
+        static readonly SharedStatic<BoundaryCounters> Shared = SharedStatic<BoundaryCounters>.GetOrCreate<BoundaryCounters>();
+
+        /// <summary>The counts so far. Read them on the main thread between steps.</summary>
+        public static BoundaryCounters Current => Shared.Data;
+
+        public static void Reset()
+        {
+            Shared.Data = default;
+        }
+
+        internal static void AddSolve(int rows, int rounds, bool capped, int warmRows)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Increment(ref data.Solves);
+            Interlocked.Add(ref data.Rows, rows);
+            Interlocked.Add(ref data.Rounds, rounds);
+            Interlocked.Add(ref data.WarmRows, warmRows);
+            if (capped)
+            {
+                Interlocked.Increment(ref data.CappedSolves);
+            }
+
+            Most(ref data.MostRounds, rounds);
+        }
+
+        internal static void AddCaps(int heldPoints, int heldManifolds, int outsidePoints, int selfManifolds)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.HeldPoints, heldPoints);
+            Interlocked.Add(ref data.HeldSelfManifolds, heldManifolds);
+            Most(ref data.MostOutsidePoints, outsidePoints);
+            Most(ref data.MostSelfManifolds, selfManifolds);
+        }
+
+        static void Most(ref long most, long value)
+        {
+            long seen = Interlocked.Read(ref most);
+            while (value > seen)
+            {
+                long previous = Interlocked.CompareExchange(ref most, value, seen);
+                if (previous == seen)
+                {
+                    break;
+                }
+
+                seen = previous;
             }
         }
     }

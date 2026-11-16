@@ -74,6 +74,9 @@ namespace Unity.Physics
         /// </summary>
         public int DeflectionSmoothingSteps;
 
+        /// <summary>The limits on a vessel island's boundary block, see <see cref="BoundaryCaps"/>.</summary>
+        public BoundaryCaps Caps;
+
         public const float DefaultLockAngle = 0.5e-3f;
         public const float DefaultYieldAngle = 2e-3f;
         public const int DefaultMinimumHoldSteps = 10;
@@ -108,6 +111,12 @@ namespace Unity.Physics
 
         public UnsafeList<VesselPart> Parts;
         public UnsafeList<VesselEdge> Edges;
+
+        /// <summary>
+        /// The state that each boundary row had at the end of the last solve, so that the next solve can start from it.
+        /// The boundary solve fills it, see <see cref="BoundaryMemory"/>.
+        /// </summary>
+        public BoundaryMemory BoundaryMemory;
         public UnsafeList<VesselClosure> Closures;
 
         /// <summary>Each forest block's link as link * 2 + 1 when its body A is the link's parent side, or one of the kinds below.</summary>
@@ -341,6 +350,7 @@ namespace Unity.Physics
             forest->PairContact.Dispose();
             forest->PairHeld.Dispose();
             forest->PairBlockStart.Dispose();
+            forest->BoundaryMemory.Dispose();
             forest->PairInverse.Dispose();
             forest->PairInverseKey.Dispose();
             forest->PairInverseRows.Dispose();

@@ -72,6 +72,7 @@ namespace Unity.Physics
                 MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
                 Timestep = stepInput.Timestep,
                 Team = team,
+                Caps = stepInput.DirectSolverCache.Forest.Caps,
             };
 
             int builds = forest->StructureBuilds;

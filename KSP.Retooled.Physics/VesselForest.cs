@@ -75,6 +75,16 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
+        /// The limits on a vessel island's boundary block: contact points, self-contact manifolds and pivoting rounds. A
+        /// field that is zero takes its default. See <see cref="BoundaryCaps"/>.
+        /// </summary>
+        public static BoundaryCaps Caps
+        {
+            get => Shared.Data.Caps;
+            set => Shared.Data.Caps = value;
+        }
+
+        /// <summary>
         /// Whether the forest solver locks tree edges under low loads. See <see cref="ForestSettings.Locking"/>.
         /// </summary>
         public static bool Locking
