@@ -38,6 +38,9 @@ namespace Unity.Physics.Numerics.Retooled
         /// </summary>
         public long SolveTicks;
         public long PivotTicks;
+
+        /// <summary>The part of <see cref="FactorTicks"/> spent on factors from the start, with the copy of W_FF into them.</summary>
+        public long FullFactorTicks;
     }
 
     /// <summary>How a round of the boundary solve changes the factor of its free rows when they differ from the last round's.</summary>
@@ -127,21 +130,27 @@ namespace Unity.Physics.Numerics.Retooled
             BoundarySolveStats* stats, out int rounds)
         {
             return Solve(n, w, q, problemLower, problemUpper, states, couplings, couplingCount, bounded, z, maxRounds, warm,
-                update ? DefaultUpdate : FactorUpdate.Refactor, stats, out rounds);
+                update ? DefaultUpdate : FactorUpdate.Refactor, null, stats, out rounds);
         }
 
         /// <summary>The way that a round changes the factor of the free rows when the caller doesn't pick one.</summary>
         public const FactorUpdate DefaultUpdate = FactorUpdate.Edit;
 
-        /// <summary>Solves as the overload above does, with the factor changed from round to round in the given way.</summary>
+        /// <summary>
+        /// Solves as the overload above does, with the factor changed from round to round in the given way. If
+        /// <paramref name="priority"/> is not null, the first factor takes its free rows in order of falling priority,
+        /// and rows of equal priority in their own order. A caller gives the rows that are likely to stay free a high
+        /// priority, so that the rows that leave the free set later sit near the end of the factor, where a deletion
+        /// costs little. The order changes the answer only by rounding.
+        /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, FactorUpdate update,
-            BoundarySolveStats* stats, out int rounds)
+            byte* priority, BoundarySolveStats* stats, out int rounds)
         {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var coupledArray = new NativeArray<bool>(n, Allocator.Temp);
-            var factor = new FreeFactor(n, update, stats);
+            var factor = new FreeFactor(n, update, priority, stats);
             var bestArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var guessArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bestStatesArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -309,6 +318,7 @@ namespace Unity.Physics.Numerics.Retooled
         {
             readonly int n;
             readonly FactorUpdate mode;
+            readonly byte* priority;
             readonly BoundarySolveStats* stats;
 
             /// <summary>The lower triangle L, in column-major order with a column stride of n.</summary>
@@ -331,10 +341,11 @@ namespace Unity.Physics.Numerics.Retooled
             int m;
             bool valid;
 
-            public FreeFactor(int n, FactorUpdate mode, BoundarySolveStats* stats)
+            public FreeFactor(int n, FactorUpdate mode, byte* priority, BoundarySolveStats* stats)
             {
                 this.n = n;
                 this.mode = mode;
+                this.priority = priority;
                 this.stats = stats;
                 int size = math.max(1, n);
                 factorArray = new NativeArray<double>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -452,6 +463,11 @@ namespace Unity.Physics.Numerics.Retooled
                         place[order[a]] = a;
                     }
 
+                    if (!valid && priority != null)
+                    {
+                        next = OrderByPriority(states, next);
+                    }
+
                     for (int i = 0; i < n; i++)
                     {
                         if (states[i] == Free && place[i] < 0)
@@ -536,9 +552,58 @@ namespace Unity.Physics.Numerics.Retooled
                 }
             }
 
+            /// <summary>
+            /// Puts the free rows into the order from place <paramref name="next"/> on, highest priority first, and rows
+            /// of equal priority in their own order. Returns the place after the last one.
+            /// </summary>
+            int OrderByPriority(byte* states, int next)
+            {
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                int* counts = stackalloc int[257];
+                for (int k = 0; k < 257; k++)
+                {
+                    counts[k] = 0;
+                }
+
+                // A counting sort by falling priority: count each priority, turn the counts into starting places, and
+                // put each row at its priority's next place.
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free && place[i] < 0)
+                    {
+                        counts[255 - priority[i] + 1]++;
+                    }
+                }
+
+                counts[0] = next;
+                for (int k = 1; k < 257; k++)
+                {
+                    counts[k] += counts[k - 1];
+                }
+
+                int end = counts[256];
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free && place[i] < 0)
+                    {
+                        int at = counts[255 - priority[i]]++;
+                        order[at] = i;
+                    }
+                }
+
+                for (int a = next; a < end; a++)
+                {
+                    place[order[a]] = a;
+                }
+
+                return end;
+            }
+
             /// <summary>Factors W_FF in the factor's order from the start.</summary>
             void FactorAll(double* w)
             {
+                long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 double* l = (double*)factorArray.GetUnsafePtr();
                 int* order = (int*)orderArray.GetUnsafePtr();
                 for (int j = 0; j < m; j++)
@@ -552,6 +617,10 @@ namespace Unity.Physics.Numerics.Retooled
                 }
 
                 CholeskyLLT.Factor(m, l, n);
+                if (stats != null)
+                {
+                    stats->FullFactorTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+                }
             }
 
             /// <summary>

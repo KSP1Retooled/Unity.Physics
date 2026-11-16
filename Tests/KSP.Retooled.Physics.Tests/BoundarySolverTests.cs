@@ -184,6 +184,68 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(reuses, Is.GreaterThan(0), "some rounds reused the factor");
         }
 
+        /// <summary>
+        /// The order in which the first factor takes its free rows, and the way in which the rounds change the factor,
+        /// change the answer only by rounding: a solve whose first factor takes the rows by a random priority, and a
+        /// solve that keeps the factor up to the first row that left instead of deleting the rows that left, take the
+        /// same rounds to the same states and impulses as the plain solve. Each problem is solved from the states of
+        /// the answer to a nearby problem.
+        /// </summary>
+        [Test]
+        public void TheFactorsOrderAndItsUpdatesDoNotChangeTheAnswer()
+        {
+            for (uint seed = 1; seed <= 40; seed++)
+            {
+                Problem problem = Make(seed);
+                Solve(problem, null, false, out _, out byte[] nearby, out _, out _);
+                Problem next = problem;
+                next.Q = (double[])problem.Q.Clone();
+                var random = new Random(seed + 2000);
+                var priority = new byte[Rows];
+                for (int i = 0; i < Rows; i++)
+                {
+                    next.Q[i] += random.NextDouble(-0.3, 0.3);
+                    priority[i] = (byte)random.NextInt(0, 64);
+                }
+
+                Solve(next, nearby, FactorUpdate.Edit, null, out double[] plain, out byte[] plainStates, out int plainRounds);
+                Solve(next, nearby, FactorUpdate.Edit, priority, out double[] ordered, out byte[] orderedStates, out int orderedRounds);
+                Solve(next, nearby, FactorUpdate.KeepPrefix, null, out double[] prefix, out byte[] prefixStates, out int prefixRounds);
+                double scale = 1.0;
+                for (int i = 0; i < Rows; i++)
+                {
+                    scale = math.max(scale, math.abs(plain[i]));
+                }
+
+                Assert.That(orderedRounds, Is.EqualTo(plainRounds), $"seed {seed}: rounds with the priority");
+                Assert.That(prefixRounds, Is.EqualTo(plainRounds), $"seed {seed}: rounds when the factor keeps its prefix");
+                Assert.That(orderedStates, Is.EqualTo(plainStates), $"seed {seed}: states with the priority");
+                Assert.That(prefixStates, Is.EqualTo(plainStates), $"seed {seed}: states when the factor keeps its prefix");
+                for (int i = 0; i < Rows; i++)
+                {
+                    Assert.That(ordered[i], Is.EqualTo(plain[i]).Within(1e-9 * scale), $"seed {seed}: row {i} with the priority");
+                    Assert.That(prefix[i], Is.EqualTo(plain[i]).Within(1e-9 * scale), $"seed {seed}: row {i} when the factor keeps its prefix");
+                }
+            }
+        }
+
+        private static void Solve(in Problem problem, byte[] start, FactorUpdate update, byte[] priority, out double[] z,
+            out byte[] states, out int rounds)
+        {
+            z = new double[Rows];
+            states = (byte[])start.Clone();
+            var q = (double[])problem.Q.Clone();
+            var lower = (double[])problem.Lower.Clone();
+            var upper = (double[])problem.Upper.Clone();
+            priority ??= new byte[Rows];
+            fixed (double* w = problem.W, qp = q, lp = lower, up = upper, zp = z)
+            fixed (byte* sp = states, pp = priority)
+            fixed (BoundCoupling* cp = problem.Couplings)
+            {
+                BoundarySolver.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, true, update, pp, null, out rounds);
+            }
+        }
+
         /// <summary>The friction bound of contact c for the normal impulses in z.</summary>
         private static double Bound(double[] z, int c)
         {

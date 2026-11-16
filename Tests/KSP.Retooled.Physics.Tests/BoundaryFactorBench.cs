@@ -184,7 +184,7 @@ namespace KSP.Retooled.Physics.Tests
                     }
 
                     BoundarySolver.Solve(Rows, W, Q, Lower, Upper, States, Couplings, CouplingCount, true, Z, 200, true, Update,
-                        Stats, out _);
+                        null, Stats, out _);
                 }
 
                 Ticks[0] = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
@@ -302,6 +302,124 @@ namespace KSP.Retooled.Physics.Tests
             z.Dispose();
             couplings.Dispose();
             stats.Dispose();
+            ticks.Dispose();
+        }
+
+        [BurstCompile(CompileSynchronously = true)]
+        private struct EditJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction] public double* Saved;
+            [NativeDisableUnsafePtrRestriction] public double* Factor;
+            [NativeDisableUnsafePtrRestriction] public double* Columns;
+            [NativeDisableUnsafePtrRestriction] public double* Scratch;
+            [NativeDisableUnsafePtrRestriction] public int* Deleted;
+            [NativeDisableUnsafePtrRestriction] public long* Ticks;
+            public int M;
+            public int Count;
+            public int Repeats;
+
+            public void Execute()
+            {
+                Ticks[0] = Ticks[1] = Ticks[2] = 0;
+                for (int r = 0; r < Repeats; r++)
+                {
+                    long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    UnsafeUtility.MemCpy(Factor, Saved, (long)Stride * Stride * sizeof(double));
+                    long copied = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    CholeskyLLT.DeleteRowsAndColumns(M, Factor, Stride, Deleted, Count, Scratch);
+                    long deleted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    int kept = M - Count;
+                    for (int i = 0; i < (kept + Count) * Count; i++)
+                    {
+                        Columns[i] = i % (kept + Count + 1) == 0 ? 50.0 : 0.01;
+                    }
+
+                    CholeskyLLT.InsertRowsAndColumns(kept, Factor, Stride, kept, Count, Columns, kept + Count, Scratch);
+                    long inserted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    Ticks[0] += copied - started;
+                    Ticks[1] += deleted - copied;
+                    Ticks[2] += inserted - deleted;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Times faer's deletion of a few rows and columns from a factor of 68 rows, the free set's average size in the
+        /// grounded Tu-160 scene, and the insertion of as many at the end.
+        /// </summary>
+        [Test]
+        public void MeasureEdits()
+        {
+            const int m = 68;
+            var a = new NativeArray<double>(Stride * Stride, Allocator.Persistent);
+            var random = new Random(99);
+            const int dofs = 90;
+            var jacobian = new double[m * dofs];
+            for (int k = 0; k < jacobian.Length; k++)
+            {
+                jacobian[k] = random.NextDouble(-1.0, 1.0);
+            }
+
+            for (int j = 0; j < m; j++)
+            {
+                for (int i = j; i < m; i++)
+                {
+                    double sum = i == j ? 1e-2 : 0.0;
+                    for (int k = 0; k < dofs; k++)
+                    {
+                        sum += jacobian[i * dofs + k] * jacobian[j * dofs + k];
+                    }
+
+                    a[i + j * Stride] = sum;
+                }
+            }
+
+            CholeskyLLT.Factor(m, (double*)a.GetUnsafePtr(), Stride);
+            var factor = new NativeArray<double>(Stride * Stride, Allocator.Persistent);
+            var columns = new NativeArray<double>(Stride * Stride, Allocator.Persistent);
+            var scratch = new NativeArray<double>(Stride * Stride + 2 * Stride + 8, Allocator.Persistent);
+            var deleted = new NativeArray<int>(Stride, Allocator.Persistent);
+            var ticks = new NativeArray<long>(3, Allocator.Persistent);
+            var ratio = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio;
+            double toMicroseconds = ratio.Numerator / (double)ratio.Denominator * 1e-3;
+            string report = "[BoundaryFactorBench] edits of a factor of 68 rows: microseconds to copy / delete / insert at the end";
+            foreach (int count in new[] { 1, 3, 6 })
+            {
+                foreach (int where in new[] { 0, m / 2, m - count })
+                {
+                    for (int k = 0; k < count; k++)
+                    {
+                        deleted[k] = where + k;
+                    }
+
+                    const int repeats = 2000;
+                    var job = new EditJob
+                    {
+                        Saved = (double*)a.GetUnsafePtr(),
+                        Factor = (double*)factor.GetUnsafePtr(),
+                        Columns = (double*)columns.GetUnsafePtr(),
+                        Scratch = (double*)scratch.GetUnsafePtr(),
+                        Deleted = (int*)deleted.GetUnsafePtr(),
+                        Ticks = (long*)ticks.GetUnsafePtr(),
+                        M = m,
+                        Count = count,
+                        Repeats = 20,
+                    };
+                    job.Run();
+                    job.Repeats = repeats;
+                    job.Run();
+                    report += $"\n  {count} rows from place {where}: {ticks[0] * toMicroseconds / repeats:F2} / {ticks[1] * toMicroseconds / repeats:F2} / " +
+                        $"{ticks[2] * toMicroseconds / repeats:F2}";
+                }
+            }
+
+            UnityEngine.Debug.Log(report);
+            System.IO.File.AppendAllText(System.IO.Path.Combine(UnityEngine.Application.dataPath, "..", "Logs", "BoundaryFactorBench.txt"), "\n" + report + "\n");
+            a.Dispose();
+            factor.Dispose();
+            columns.Dispose();
+            scratch.Dispose();
+            deleted.Dispose();
             ticks.Dispose();
         }
 
