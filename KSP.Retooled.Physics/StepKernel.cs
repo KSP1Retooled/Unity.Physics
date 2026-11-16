@@ -74,6 +74,7 @@ namespace KSP.Retooled.Physics
             }
 
             Current->preparedSimulation = null;
+            Current->preparedInputs.Complete();
             Current->FinishStep(*simulation, deltaTime);
             return 1;
         }

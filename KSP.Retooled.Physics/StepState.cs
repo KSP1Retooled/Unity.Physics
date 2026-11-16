@@ -73,6 +73,11 @@ namespace KSP.Retooled.Physics
         // buffers, before FinishStep could schedule the write-back.
         internal Simulation* preparedSimulation;
 
+        // The jobs that the solve waits for: every job of the step before the solve. FinishStepSystem completes them
+        // before FinishStep, because FinishStep reads lists that those jobs write, such as the joint groups, when it
+        // schedules the jobs after the solve.
+        internal JobHandle preparedInputs;
+
         // The vessels compiled from the joints, and whether compilation has been completed for the current groups.
         private VesselBuild vesselBuild;
         private VesselSet vesselSet;
@@ -516,6 +521,7 @@ namespace KSP.Retooled.Physics
             input.DirectSolverCache = directSolverCache;
             input.VesselSet = vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
+            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled);
             return new WarmStartJob
             {
                 WarmStarts = warmStarts,
