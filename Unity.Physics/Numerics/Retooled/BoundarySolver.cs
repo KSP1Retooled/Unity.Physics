@@ -182,11 +182,7 @@ namespace Unity.Physics.Numerics.Retooled
                 for (int b = 0; b <= a; b++)
                 {
                     double* rb = factor + b * m;
-                    double sum = ra[b];
-                    for (int k = 0; k < b; k++)
-                    {
-                        sum -= ra[k] * rb[k];
-                    }
+                    double sum = ra[b] - Dot(ra, rb, b);
 
                     if (a == b)
                     {
@@ -201,12 +197,7 @@ namespace Unity.Physics.Numerics.Retooled
 
             for (int a = 0; a < m; a++)
             {
-                double sum = rhs[a];
-                for (int k = 0; k < a; k++)
-                {
-                    sum -= factor[a * m + k] * rhs[k];
-                }
-
+                double sum = rhs[a] - Dot(factor + a * m, rhs, a);
                 rhs[a] = sum / factor[a * m + a];
             }
 
@@ -225,6 +216,28 @@ namespace Unity.Physics.Numerics.Retooled
             {
                 z[free[a]] = rhs[a];
             }
+        }
+
+        /// <summary>
+        /// Returns the dot product of the first <paramref name="count"/> entries of two arrays. It keeps four separate
+        /// sums so that the compiler can use vector instructions, which it does not do for a single running sum.
+        /// </summary>
+        static double Dot(double* a, double* b, int count)
+        {
+            double4 sums = 0.0;
+            int k = 0;
+            for (; k + 4 <= count; k += 4)
+            {
+                sums += *(double4*)(a + k) * *(double4*)(b + k);
+            }
+
+            double sum = (sums.x + sums.y) + (sums.z + sums.w);
+            for (; k < count; k++)
+            {
+                sum += a[k] * b[k];
+            }
+
+            return sum;
         }
 
         /// <summary>
@@ -261,12 +274,7 @@ namespace Unity.Physics.Numerics.Retooled
                 }
                 else
                 {
-                    double slack = -q[i];
-                    double* wi = w + (long)i * n;
-                    for (int j = 0; j < n; j++)
-                    {
-                        slack += wi[j] * z[j];
-                    }
+                    double slack = Dot(w + (long)i * n, z, n) - q[i];
 
                     if ((current == LowerTight && slack < -Tolerance) || (current == UpperTight && slack > Tolerance))
                     {
