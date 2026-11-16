@@ -128,7 +128,7 @@ namespace KSP.Retooled.Physics.Tests
             Debug.Log($"[BoundaryCapTests] lying craft: {counts.Solves} solves, {counts.Rows / (double)System.Math.Max(1, counts.Solves):F0} " +
                 $"rows a solve, most outside points {counts.MostOutsidePoints}, held points {counts.HeldPoints}, " +
                 $"rounds a solve {counts.Rounds / (double)System.Math.Max(1, counts.Solves):F2} (most {counts.MostRounds}, " +
-                $"{counts.CappedSolves} at the cap); centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
+                $"{counts.CappedSolves} at the cap, {counts.UnsettledSolves} without an answer); centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
             Assert.That(counts.Solves, Is.GreaterThan(0), "the craft's island solves a boundary");
             Assert.That(counts.MostOutsidePoints, Is.EqualTo(BoundaryCaps.DefaultOutsideContactPoints), "the cap holds");
             Assert.That(counts.HeldPoints, Is.GreaterThan(0), "the cap held points out");

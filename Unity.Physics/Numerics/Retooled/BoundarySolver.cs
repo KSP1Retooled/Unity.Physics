@@ -31,7 +31,7 @@ namespace Unity.Physics.Numerics.Retooled
         /// which rows are at a bound: 0 for a free row, 1 for a row at its lower bound, and 2 for a row at its upper
         /// bound. On output, it holds the states of the answer. If <paramref name="bounded"/> is false, the solver
         /// ignores the bounds and treats every row as free. The function returns false if pivoting ran out of
-        /// iterations. In that case, z is clamped to its bounds.
+        /// iterations. In that case, a few sweeps of projected Gauss-Seidel finish the solve, and z is inside its bounds.
         /// </summary>
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z)
@@ -43,9 +43,10 @@ namespace Unity.Physics.Numerics.Retooled
         /// <summary>
         /// Solves as the overload above does, with two differences. First, the solve takes at most
         /// <paramref name="maxRounds"/> rounds, where one round is one solve for the free rows. If the solve runs out of
-        /// rounds after it has found at least one answer that meets every condition, it returns the last such answer
-        /// and true. That answer holds for the coupled bounds of its own round, so those bounds lag behind the answer.
-        /// Second, if <paramref name="warm"/> is true, the caller's guess at the states also counts for coupled rows.
+        /// rounds after it has found at least one answer that meets every condition, it returns the last such answer,
+        /// with that answer's states, and true. If it runs out of rounds before it finds any such answer, it finishes
+        /// with a few sweeps of projected Gauss-Seidel and returns false. Either way, every impulse is inside its bounds,
+        /// and the bounds of the coupled rows come from the returned answer's own source impulses. Second, if <paramref name="warm"/> is true, the caller's guess at the states also counts for coupled rows.
         /// Before the first round, the solver sets the coupled bounds from the source impulses that were applied before
         /// this solve, as if this solve added nothing to them. Then a coupled row whose bounds have room starts in the
         /// state that the caller guessed for it, instead of starting free. <paramref name="rounds"/> returns the number
@@ -62,11 +63,13 @@ namespace Unity.Physics.Numerics.Retooled
             var free = new NativeArray<int>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bestArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var guessArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bestStatesArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             double* lower = (double*)lowerArray.GetUnsafePtr();
             double* upper = (double*)upperArray.GetUnsafePtr();
             bool* coupled = (bool*)coupledArray.GetUnsafePtr();
             double* best = (double*)bestArray.GetUnsafePtr();
             byte* guess = (byte*)guessArray.GetUnsafePtr();
+            byte* bestStates = (byte*)bestStatesArray.GetUnsafePtr();
             for (int i = 0; i < n; i++)
             {
                 lower[i] = problemLower[i];
@@ -134,6 +137,7 @@ namespace Unity.Physics.Numerics.Retooled
                     for (int i = 0; i < n; i++)
                     {
                         best[i] = z[i];
+                        bestStates[i] = states[i];
                     }
 
                     if (couplingRounds == MaxCouplingIterations || !Couple(couplings, couplingCount, problemLower, problemUpper,
@@ -162,21 +166,32 @@ namespace Unity.Physics.Numerics.Retooled
                 }
             }
 
-            if (!result && found)
+            if (bounded && (result || found))
             {
-                for (int i = 0; i < n; i++)
+                // If the solve ran out of rounds, it returns the last answer that met every condition, with that
+                // answer's states. Either way, the friction bounds of the answer lag behind its normal impulses by up
+                // to one round of coupling, so the solver moves the coupled bounds to the answer's own normal impulses
+                // and brings the coupled rows inside them.
+                if (!result)
                 {
-                    z[i] = best[i];
+                    for (int i = 0; i < n; i++)
+                    {
+                        z[i] = best[i];
+                        states[i] = bestStates[i];
+                    }
+
+                    result = true;
                 }
 
-                result = true;
+                FitCoupledRows(couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
             }
             else if (!result)
             {
-                for (int i = 0; i < n; i++)
-                {
-                    z[i] = math.clamp(z[i], lower[i], upper[i]);
-                }
+                // The solve ran out of rounds before it found any answer that met every condition. The impulses of
+                // the last round can be far from the answer, so a few sweeps of projected Gauss-Seidel finish the
+                // solve instead. The sweeps keep every impulse inside its bounds, and the function still returns
+                // false so that the caller can count the solve.
+                FinishBySweeps(n, w, q, couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
             }
 
             lowerArray.Dispose();
@@ -187,6 +202,7 @@ namespace Unity.Physics.Numerics.Retooled
             free.Dispose();
             bestArray.Dispose();
             guessArray.Dispose();
+            bestStatesArray.Dispose();
             return result;
         }
 
@@ -403,6 +419,136 @@ namespace Unity.Physics.Numerics.Retooled
             }
 
             return moved;
+        }
+
+        /// <summary>
+        /// Sets the bounds of every coupled row from the source impulses in <paramref name="z"/>, with no tolerance and
+        /// without changing any state.
+        /// </summary>
+        static void SetCoupledBounds(BoundCoupling* couplings, int couplingCount, double* problemLower, double* problemUpper,
+            double* lower, double* upper, double* z)
+        {
+            for (int c = 0; c < couplingCount; c++)
+            {
+                BoundCoupling coupling = couplings[c];
+                double sum = coupling.HeldSourceImpulse;
+                for (int row = coupling.FirstSourceRow; row < coupling.FirstSourceRow + coupling.SourceRowCount; row++)
+                {
+                    sum += z[row];
+                }
+
+                double bound = math.max(sum, 0.0) * coupling.Factor;
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    lower[row] = problemLower[row] - bound;
+                    upper[row] = problemUpper[row] + bound;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Moves the coupled bounds to the source impulses of the answer in <paramref name="z"/>, and brings each coupled
+        /// row inside its new bounds. A coupled row that has to move to a bound takes the state of that bound, so that
+        /// the states still describe the answer.
+        /// </summary>
+        static void FitCoupledRows(BoundCoupling* couplings, int couplingCount, double* problemLower, double* problemUpper,
+            double* lower, double* upper, byte* states, double* z)
+        {
+            SetCoupledBounds(couplings, couplingCount, problemLower, problemUpper, lower, upper, z);
+            for (int c = 0; c < couplingCount; c++)
+            {
+                BoundCoupling coupling = couplings[c];
+                for (int row = coupling.FirstRow; row < coupling.FirstRow + coupling.RowCount; row++)
+                {
+                    if (lower[row] == upper[row] || z[row] <= lower[row])
+                    {
+                        z[row] = lower[row];
+                        states[row] = LowerTight;
+                    }
+                    else if (z[row] >= upper[row])
+                    {
+                        z[row] = upper[row];
+                        states[row] = UpperTight;
+                    }
+                    else if (states[row] != Free)
+                    {
+                        // A row that sat at a bound which has moved away from it stays at that bound.
+                        z[row] = states[row] == LowerTight ? lower[row] : upper[row];
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// The number of projected Gauss-Seidel sweeps that finish a solve that ran out of rounds before it found an
+        /// answer that meets every condition. One sweep costs about as much as one check of the conditions, which is far
+        /// less than one round of pivoting.
+        /// </summary>
+        const int FinishingSweeps = 10;
+
+        /// <summary>
+        /// Finishes a solve that ran out of rounds without an answer. The routine starts from the impulses of the last
+        /// round, clamped to their bounds, or from zero clamped to the bounds if that has the lower value of
+        /// 1/2 z^T W z - q^T z. Then it makes <see cref="FinishingSweeps"/> sweeps of projected Gauss-Seidel over the
+        /// rows. Each sweep first moves the coupled bounds to the current source impulses. No sweep can raise that value
+        /// for fixed bounds. At the end, the routine brings the coupled rows inside the bounds of the final source
+        /// impulses, and it sets each row's state from where the row's impulse sits in its bounds.
+        /// </summary>
+        static void FinishBySweeps(int n, double* w, double* q, BoundCoupling* couplings, int couplingCount,
+            double* problemLower, double* problemUpper, double* lower, double* upper, byte* states, double* z)
+        {
+            var startArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            double* start = (double*)startArray.GetUnsafePtr();
+            for (int i = 0; i < n; i++)
+            {
+                z[i] = math.clamp(z[i], lower[i], upper[i]);
+                start[i] = math.clamp(0.0, lower[i], upper[i]);
+            }
+
+            if (Energy(n, w, q, start) < Energy(n, w, q, z))
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    z[i] = start[i];
+                }
+            }
+
+            startArray.Dispose();
+            for (int sweep = 0; sweep < FinishingSweeps; sweep++)
+            {
+                SetCoupledBounds(couplings, couplingCount, problemLower, problemUpper, lower, upper, z);
+                for (int i = 0; i < n; i++)
+                {
+                    double* wi = w + (long)i * n;
+                    if (lower[i] == upper[i] || wi[i] <= 0.0)
+                    {
+                        z[i] = math.clamp(z[i], lower[i], upper[i]);
+                        continue;
+                    }
+
+                    double residual = q[i] - Dot(wi, z, n);
+                    z[i] = math.clamp(z[i] + residual / wi[i], lower[i], upper[i]);
+                }
+            }
+
+            SetCoupledBounds(couplings, couplingCount, problemLower, problemUpper, lower, upper, z);
+            for (int i = 0; i < n; i++)
+            {
+                z[i] = math.clamp(z[i], lower[i], upper[i]);
+                states[i] = lower[i] == upper[i] || z[i] <= lower[i] ? LowerTight : z[i] >= upper[i] ? UpperTight : Free;
+            }
+        }
+
+        /// <summary>Returns 1/2 z^T W z - q^T z.</summary>
+        static double Energy(int n, double* w, double* q, double* z)
+        {
+            double energy = 0.0;
+            for (int i = 0; i < n; i++)
+            {
+                energy += z[i] * (0.5 * Dot(w + (long)i * n, z, n) - q[i]);
+            }
+
+            return energy;
         }
     }
 }

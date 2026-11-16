@@ -1363,7 +1363,10 @@ namespace Unity.Physics
         /// <summary>
         /// Solves the run's island for the right-hand side <paramref name="rhs"/> against the factor and boundary block it
         /// holds, and writes every row's impulse; a row inside a section gets none here. Returns false if the boundary's
-        /// pivoting ran out of iterations, leaving its impulses clamped to their bounds.
+        /// pivoting ran out of iterations before it found an answer. The boundary's impulses are then the result of a
+        /// few sweeps of projected Gauss-Seidel: they are inside their bounds and near the answer, so a velocity solve
+        /// can apply them. A vessel island's velocity solve counts such a solve in
+        /// <see cref="BoundaryCounters.UnsettledSolves"/>. A push-out does not apply them, see <see cref="SolvePushOut"/>.
         /// </summary>
         static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
         {
@@ -1488,7 +1491,7 @@ namespace Unity.Physics
                         out int rounds);
                     BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
                         (byte*)states.GetUnsafeReadOnlyPtr(), nb);
-                    BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, warmRows);
+                    BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, !solved, warmRows);
                 }
                 else
                 {
@@ -2150,6 +2153,12 @@ namespace Unity.Physics
         /// <summary>Solves that used every round that the cap allows.</summary>
         public long CappedSolves;
 
+        /// <summary>
+        /// Solves that ran out of rounds before they found any answer that met every condition. Sweeps of projected
+        /// Gauss-Seidel finished these solves, see <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>.
+        /// </summary>
+        public long UnsettledSolves;
+
         /// <summary>Rows that started from the state that the island remembered for them.</summary>
         public long WarmRows;
 
@@ -2174,7 +2183,7 @@ namespace Unity.Physics
             Shared.Data = default;
         }
 
-        internal static void AddSolve(int rows, int rounds, bool capped, int warmRows)
+        internal static void AddSolve(int rows, int rounds, bool capped, bool unsettled, int warmRows)
         {
             ref BoundaryCounters data = ref Shared.Data;
             Interlocked.Increment(ref data.Solves);
@@ -2184,6 +2193,11 @@ namespace Unity.Physics
             if (capped)
             {
                 Interlocked.Increment(ref data.CappedSolves);
+            }
+
+            if (unsettled)
+            {
+                Interlocked.Increment(ref data.UnsettledSolves);
             }
 
             Most(ref data.MostRounds, rounds);

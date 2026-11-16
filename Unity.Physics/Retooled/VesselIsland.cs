@@ -90,6 +90,9 @@ namespace Unity.Physics
             var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
+
+            // If the boundary ran out of pivoting rounds, SolveForest returns false, but its impulses are still inside
+            // their bounds and near the answer, so the vessel applies them. BoundaryCounters counts such solves.
             SolveForest(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solved - lap);
