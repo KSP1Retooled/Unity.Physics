@@ -279,6 +279,16 @@ namespace KSP.Retooled.Physics
                 Locking = locking == "1" || locking.Equals("true", StringComparison.OrdinalIgnoreCase);
                 UnityEngine.Debug.Log($"[VesselForest] RETOOLED_LOCK={locking}: locking {(Locking ? "on" : "off")}");
             }
+
+            // Dormant joint rows stay out of a vessel island's boundary unless RETOOLED_DORMANT_ROWS=0.
+            string dormant = Environment.GetEnvironmentVariable("RETOOLED_DORMANT_ROWS");
+            if (!string.IsNullOrEmpty(dormant))
+            {
+                BoundaryCaps caps = Caps;
+                caps.KeepDormantRows = dormant == "0" || dormant.Equals("false", StringComparison.OrdinalIgnoreCase);
+                Caps = caps;
+                UnityEngine.Debug.Log($"[VesselForest] RETOOLED_DORMANT_ROWS={dormant}: dormant rows {(caps.KeepDormantRows ? "kept in the boundary" : "left out")}");
+            }
         }
     }
 }
