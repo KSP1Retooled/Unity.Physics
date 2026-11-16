@@ -171,6 +171,25 @@ namespace KSP.Retooled.Physics.Tests
             return Poses(bodies);
         }
 
+        /// <summary>
+        /// A column that moves at 2,000 m/s onto a 5 cm plate. When vessels are on, the column is a vessel, so this
+        /// checks that the vessel's contact rows reach one step ahead.
+        /// </summary>
+        [Test]
+        public void AFastColumnDoesNotPassThroughAThinPlate()
+        {
+            Box(new Vector3(0.0f, -0.025f, 0.0f), new Vector3(20.0f, 0.05f, 20.0f));
+            List<Rigidbody> bodies = Column(5.0f, false);
+            foreach (Rigidbody body in bodies)
+            {
+                body.linearVelocity = new Vector3(0.0f, -2000.0f, 0.0f);
+            }
+
+            Simulate(20);
+
+            Assert.That(bodies[0].position.y, Is.GreaterThan(0.0f));
+        }
+
         /// <summary>A column dropped onto the ground, where contacts appear on an island whose joints were kept.</summary>
         private (Vector3[], Quaternion[]) RunLanding(bool forest, bool everyStepAfresh)
         {
