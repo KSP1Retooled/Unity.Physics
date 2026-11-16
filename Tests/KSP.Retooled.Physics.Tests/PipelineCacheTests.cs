@@ -320,6 +320,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheBoundsCacheChangesNoPoseAndNoHit()
         {
+            // RETOOLED_BOUNDS_CACHE=0 turns the cache off for a whole run, so give the later tests the switch as it was.
+            bool wasEnabled = StepState.BoundsCacheEnabled;
             try
             {
                 // As above: the first scene of this shape can land a few ulps from every later one.
@@ -334,7 +336,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
-                StepState.BoundsCacheEnabled = true;
+                StepState.BoundsCacheEnabled = wasEnabled;
             }
         }
 
