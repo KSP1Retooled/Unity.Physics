@@ -242,9 +242,10 @@ namespace Unity.Physics
                 Buffers = work.Buffers,
             }.Schedule(handle);
 
-            // The work of the substeps for the islands that the fused job doesn't take. When the last step had little or
-            // none of that work, one lane of the fused job does it all, or one job when the fused job is off. Otherwise
-            // each substep runs the chain of jobs below. MarkFusedVesselIslandsJob decides which islands are fused when
+            // The work of the substeps for the islands that the fused job doesn't take. When the last step had none of
+            // that work, or little of it beside much more work in the fused job, one lane of the fused job does it all,
+            // or one job when the fused job is off (see FoldsUnfusedSubsteps). Otherwise each substep runs the chain of
+            // jobs below. MarkFusedVesselIslandsJob decides which islands are fused when
             // it runs, so the main thread goes by what the last step had.
             bool fold = FoldsUnfusedSubsteps(stepInput.DirectSolverCache);
             var unfused = new UnfusedSubsteps
@@ -1479,11 +1480,22 @@ namespace Unity.Physics
         const int FoldedBodies = 64;
 
         /// <summary>
+        /// The fewest vessel parts that the fused islands must have for each body of the islands that are not fused,
+        /// for the same. The lane that does the substeps' work is then busy for less time than the fused job, which
+        /// the step waits for anyway.
+        /// </summary>
+        const int FoldedPartsPerBody = 8;
+
+        /// <summary>
         /// Whether this step runs the substeps' work of the islands that are not fused on one thread, either in a lane
         /// of the fused job or in one job of its own, instead of in a chain of jobs for every substep. Each job of the
         /// chain costs a hop between threads, even when it has nothing to do, and the chain's jobs often wait for the
-        /// fused job to free its threads. One thread is faster while the work is small: no island large enough to share
-        /// its solve, at most <see cref="FoldedRows"/> rows and at most <see cref="FoldedBodies"/> bodies. The step
+        /// fused job to free its threads. One thread is faster while the work is small and the fused job takes longer:
+        /// no island large enough to share its solve, at most <see cref="FoldedRows"/> rows and at most
+        /// <see cref="FoldedBodies"/> bodies, and <see cref="FoldedPartsPerBody"/> fused parts for each of those bodies.
+        /// On the bench with eight threads, a Tu-160 beside eight craft of 4 parts on Unity joints took 1.73-2.51 ms a
+        /// step this way and 2.00-2.81 ms with the chain. Sixteen such craft alone took 0.73-0.84 ms this way and
+        /// 0.39-0.52 ms with the chain, and a Tu-160 beside 32 of them 2.78-3.57 ms instead of 1.91-2.76 ms. The step
         /// goes by what the last step had, because the job that decides which islands are fused runs after the main
         /// thread has scheduled the step. Both ways give the same results.
         /// </summary>
@@ -1500,7 +1512,8 @@ namespace Unity.Physics
                 return false;
             }
 
-            return work.Islands == 0 || (work.TeamIslands == 0 && work.Rows <= FoldedRows && work.Bodies <= FoldedBodies);
+            return work.Islands == 0 || (work.TeamIslands == 0 && work.Rows <= FoldedRows && work.Bodies <= FoldedBodies
+                && work.FusedParts >= FoldedPartsPerBody * work.Bodies);
         }
 
         /// <summary>
@@ -1601,6 +1614,7 @@ namespace Unity.Physics
                     DirectIsland island = Islands[i];
                     if (island.Fused)
                     {
+                        work.FusedParts += island.VesselParts;
                         continue;
                     }
 

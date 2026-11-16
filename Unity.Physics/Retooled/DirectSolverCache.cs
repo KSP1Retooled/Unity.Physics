@@ -190,7 +190,7 @@ namespace Unity.Physics
         /// <summary>
         /// How much work the islands that the fused job didn't take gave the substeps in one step: the islands, their
         /// rows at the first substep, their bodies, and the islands that are large enough to share their solve among
-        /// lanes.
+        /// lanes. Also the number of vessel parts in the islands that the fused job took.
         /// </summary>
         internal struct UnfusedWork
         {
@@ -198,6 +198,7 @@ namespace Unity.Physics
             public int Rows;
             public int Bodies;
             public int TeamIslands;
+            public int FusedParts;
 
             /// <summary>The step that the counts are from, or 0 if no step has recorded them.</summary>
             public long Step;
