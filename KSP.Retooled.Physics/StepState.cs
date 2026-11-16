@@ -148,6 +148,23 @@ namespace KSP.Retooled.Physics
         }
 
         private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, BoundsCacheOffKey>();
+
+        /// <summary>
+        /// Reads the switches of the bounds cache from the environment: RETOOLED_BOUNDS_CACHE=0 turns the cache off, and
+        /// RETOOLED_BOUNDS_CHECK=1 turns on the check of every body that takes its bounds from the cache
+        /// (DynamicBoundsCache.CheckEnabled), whose mismatches the step logs.
+        /// </summary>
+        internal static void ReadBoundsCacheSwitches()
+        {
+            string cache = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CACHE");
+            BoundsCacheEnabled = cache != "0";
+            string check = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
+            DynamicBoundsCache.CheckEnabled = check == "1";
+            if (cache == "0" || check == "1")
+            {
+                UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}");
+            }
+        }
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
         private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
@@ -744,6 +761,11 @@ namespace KSP.Retooled.Physics
                 boundsCache.MarkCurrent();
             }
 
+            if (DynamicBoundsCache.CheckEnabled)
+            {
+                LogBoundsCheck();
+            }
+
             // SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
             JobHandle contactsJoined = new SleepContactsJob
             {
@@ -874,6 +896,24 @@ namespace KSP.Retooled.Physics
             }
             FinishQuerySnapshot();
             PublishQueryWorld();
+        }
+
+        /// <summary>
+        /// Logs the check's mismatches of the bounds cache when there are new ones, and the counts every 1,000 steps.
+        /// </summary>
+        private static void LogBoundsCheck()
+        {
+            DynamicBoundsCache.CheckCounts* counts = DynamicBoundsCache.Counts;
+            if (++counts->Steps % 1000 == 0)
+            {
+                UnityEngine.Debug.Log($"[BoundsCheck] {counts->Steps} steps: {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache");
+            }
+
+            if (counts->Mismatches != counts->LoggedMismatches)
+            {
+                counts->LoggedMismatches = counts->Mismatches;
+                UnityEngine.Debug.LogError($"[BoundsCheck] {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache; last at index {counts->LastIndex}, entity {counts->LastEntity}, computed min {counts->LastComputedMin}, cached min {counts->LastCachedMin}");
+            }
         }
 
         /// <summary>

@@ -1444,6 +1444,11 @@ namespace Unity.Physics
                 bool responds;
                 if (Cache.Holds(index, body))
                 {
+                    if (Cache.Check != null)
+                    {
+                        Cache.CheckEntry(index, body);
+                    }
+
                     bounds = Cache.Bounds[index];
                     filter = Cache.Colliders[index].Filter;
                     responds = Cache.Colliders[index].RespondsToCollision != 0;
@@ -1974,7 +1979,33 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction]
             public uint* ColliderVersion;
 
+            /// <summary>The counts of the check, while the check is on (<see cref="CheckEnabled"/>), or null.</summary>
+            [NativeDisableUnsafePtrRestriction]
+            public CheckCounts* Check;
+
             public bool IsCreated => Bounds != null;
+
+            /// <summary>
+            /// Computes, from the collider, the bounds, filter and response of a body that took them from entry i,
+            /// and counts the body, and counts it again as a mismatch if any of them differs from the entry's.
+            /// </summary>
+            public void CheckEntry(int i, in RigidBody body)
+            {
+                Aabb computed = body.CalculateAabb();
+                Aabb cached = Bounds[i];
+                bool same = math.all(math.asuint(computed.Min) == math.asuint(cached.Min)) && math.all(math.asuint(computed.Max) == math.asuint(cached.Max))
+                    && body.Collider.Value.GetCollisionFilter().Equals(Colliders[i].Filter)
+                    && body.Collider.Value.RespondsToCollision == (Colliders[i].RespondsToCollision != 0);
+                System.Threading.Interlocked.Increment(ref Check->Hits);
+                if (!same)
+                {
+                    System.Threading.Interlocked.Increment(ref Check->Mismatches);
+                    Check->LastIndex = i;
+                    Check->LastEntity = body.Entity.Index;
+                    Check->LastComputedMin = computed.Min;
+                    Check->LastCachedMin = cached.Min;
+                }
+            }
 
             /// <summary>
             /// Whether entry i holds the bounds and filter of the body's collider at the body's pose: the body is the
@@ -2026,6 +2057,44 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>The counts of the check of the cache. Read them on the main thread between steps.</summary>
+        internal struct CheckCounts
+        {
+            public long Steps;
+            public long Hits;
+            public long Mismatches;
+            public long LoggedMismatches;
+            public int LastIndex;
+            public int LastEntity;
+            public float3 LastComputedMin;
+            public float3 LastCachedMin;
+        }
+
+        sealed class CheckCountsKey
+        {
+        }
+
+        sealed class CheckOnKey
+        {
+        }
+
+        static readonly Unity.Burst.SharedStatic<CheckCounts> SharedCheckCounts = Unity.Burst.SharedStatic<CheckCounts>.GetOrCreate<DynamicBoundsCache, CheckCountsKey>();
+        static readonly Unity.Burst.SharedStatic<int> SharedCheckOn = Unity.Burst.SharedStatic<int>.GetOrCreate<DynamicBoundsCache, CheckOnKey>();
+
+        /// <summary>
+        /// Whether the build computes the bounds, filter and response of every body that takes them from the cache
+        /// too, and counts the bodies whose cached values differ (<see cref="Counts"/>). For tests and for finding a
+        /// stale entry; the build still uses the cached values.
+        /// </summary>
+        public static bool CheckEnabled
+        {
+            get => SharedCheckOn.Data != 0;
+            set => SharedCheckOn.Data = value ? 1 : 0;
+        }
+
+        /// <summary>The counts of the check since the program started.</summary>
+        internal static CheckCounts* Counts => (CheckCounts*)UnsafeUtility.AddressOf(ref SharedCheckCounts.Data);
+
         NativeList<Aabb> bounds;
         NativeList<ColliderInfo> colliders;
         NativeList<byte> same;
@@ -2073,6 +2142,7 @@ namespace Unity.Physics
             Length = bounds.Length,
             HeldVersion = heldVersion.GetUnsafePtr(),
             ColliderVersion = colliderVersion,
+            Check = CheckEnabled ? Counts : null,
         };
 
         /// <summary>
