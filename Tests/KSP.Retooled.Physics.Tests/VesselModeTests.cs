@@ -531,6 +531,77 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// Four columns of different heights fall onto the ground at a slant, each one a fused island of its own. The
+        /// fused job solves the four islands at the same time on several threads. The scene runs once on one thread and
+        /// once on the default job workers, and the two runs end with the same poses and loads, to the last bit.
+        /// </summary>
+        [Test]
+        public void SeveralFusedIslandsEndTheSameOnOneThreadAndOnMany()
+        {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            int workers = Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount;
+            int[] heights = { 6, 12, 9, 16 };
+            var positions = new Vector3[2][];
+            var rotations = new Quaternion[2][];
+            var loads = new double3[2][];
+            try
+            {
+                Unity.Physics.Solver.VesselFused = true;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = pass == 0 ? 0 : System.Math.Max(workers, 3);
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    VesselForest.ForgetIslands();
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    Unity.Physics.Solver.FusedVesselParts = 2;
+                    Ground();
+                    var bodies = new List<Rigidbody>();
+                    for (int c = 0; c < heights.Length; c++)
+                    {
+                        foreach (Rigidbody body in Column(heights[c], 0.6f, double.PositiveInfinity, 3.0f * c))
+                        {
+                            body.angularVelocity = new Vector3(0.0f, 0.1f * c, 0.3f);
+                            bodies.Add(body);
+                        }
+                    }
+
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.FusedIslandSolves;
+                    const int steps = 60;
+                    vessels.Step(steps);
+                    Assert.That(Unity.Physics.Solver.FusedIslandSolves - before, Is.EqualTo(heights.Length * steps),
+                        "every column is a fused island in every step");
+                    positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                    rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
+                    loads[pass] = new double3[bodies.Count];
+                    for (int i = 0; i < bodies.Count; i++)
+                    {
+                        loads[pass][i] = vessels.Load(i).Force;
+                    }
+                }
+            }
+            finally
+            {
+                Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = workers;
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                Assert.That(positions[1][i], Is.EqualTo(positions[0][i]), $"part {i} ends in the same place");
+                Assert.That(rotations[1][i], Is.EqualTo(rotations[0][i]), $"part {i} ends in the same orientation");
+                Assert.That(loads[1][i], Is.EqualTo(loads[0][i]), $"part {i}'s edge carries the same load");
+            }
+
+            Debug.Log($"[VesselModeTests] fused islands on one thread and on many: top of the tallest column at {positions[0][positions[0].Length - 16]:F5}");
+        }
+
+        /// <summary>
         /// A floating column of 64 parts goes to the fused job when it is the only vessel of its size, and two such
         /// columns stay with the substeps' jobs, which solve them in parallel.
         /// </summary>

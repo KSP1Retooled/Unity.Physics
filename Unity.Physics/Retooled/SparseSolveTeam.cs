@@ -124,6 +124,9 @@ namespace Unity.Physics
             patienceTicks = AddressWait.TicksFromMicroseconds(PatienceMicroseconds);
         }
 
+        /// <summary>Whether the leader has called <see cref="Finish"/>, so that the team will publish no more stages.</summary>
+        public bool Finished => Volatile.Read(ref finished) != 0;
+
         /// <summary>Releases the helpers. The leader calls this when no more stages remain to be published.</summary>
         public void Finish()
         {
