@@ -457,7 +457,7 @@ namespace KSP.Retooled.Physics.Tests
             string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
             VesselForest.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
-                : new BoundaryCaps { ColdStart = boundaryMode == "cold" };
+                : new BoundaryCaps { ColdStart = boundaryMode == "cold", RefactorEveryRound = boundaryMode == "refactor" };
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             List<Rigidbody> built = Build(graph, ground, path != "vessel");
             BenchVesselSet vesselSet = null;
@@ -512,6 +512,20 @@ namespace KSP.Retooled.Physics.Tests
                     $"their warm start, {boundary.HeldPushes} held rows pushed out), " +
                     $"{boundary.DormantRows / (double)boundary.Solves:F1} dormant rows a solve, " +
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
+                double tickMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
+                    / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
+                Unity.Physics.Numerics.Retooled.BoundarySolveStats f = boundary.Factor;
+                long laterSolves = System.Math.Max(1, boundary.Solves - boundary.FirstSubstepSolves);
+                lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / Measured:F3} ms a step (factor {f.FactorTicks * tickMs / Measured:F3}); " +
+                    $"rounds a solve: {f.Factorizations / (double)boundary.Solves:F2} factored, {f.Updates / (double)boundary.Solves:F2} updated, " +
+                    $"{f.Reuses / (double)boundary.Solves:F2} reused, {f.CouplingRounds / (double)boundary.Solves:F2} coupling rounds; " +
+                    $"rows that joined / left the free set a solve {f.AddedRows / (double)boundary.Solves:F1} / {f.RemovedRows / (double)boundary.Solves:F1}; " +
+                    $"warm rows that changed state a solve: first substep {boundary.FirstSubstepChanges / (double)System.Math.Max(1, boundary.FirstSubstepSolves):F1}, " +
+                    $"later substeps {boundary.LaterSubstepChanges / (double)laterSolves:F1}; " +
+                    $"build ms a step: choose rows {boundary.ChooseTicks * tickMs / Measured:F3}, paths {boundary.PathTicks * tickMs / Measured:F3}, " +
+                    $"fill W {boundary.FillTicks * tickMs / Measured:F3}; apply {boundary.ApplyTicks * tickMs / Measured:F3}, " +
+                    $"push-out {boundary.PushOutTicks * tickMs / Measured:F3} ({boundary.PushSolves / (double)Measured:F1} solves a step, " +
+                    $"{boundary.PushRounds / (double)System.Math.Max(1, boundary.PushSolves):F1} rounds each, dense {boundary.PushTicks * tickMs / Measured:F3})";
             }
 
             if (path == "locked")

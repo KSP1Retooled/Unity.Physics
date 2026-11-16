@@ -103,6 +103,87 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// Solves a copy of the problem, cold or from the given states, either changing the factor of the free rows from
+        /// round to round or factoring them again in every round.
+        /// </summary>
+        private static bool Solve(in Problem problem, byte[] start, bool update, out double[] z, out byte[] states,
+            out int rounds, out BoundarySolveStats stats)
+        {
+            z = new double[Rows];
+            states = start != null ? (byte[])start.Clone() : new byte[Rows];
+            var q = (double[])problem.Q.Clone();
+            var lower = (double[])problem.Lower.Clone();
+            var upper = (double[])problem.Upper.Clone();
+            stats = default;
+            fixed (double* w = problem.W, qp = q, lp = lower, up = upper, zp = z)
+            fixed (byte* sp = states)
+            fixed (BoundCoupling* cp = problem.Couplings)
+            fixed (BoundarySolveStats* statsPointer = &stats)
+            {
+                return BoundarySolver.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, start != null, update,
+                    statsPointer, out rounds);
+            }
+        }
+
+        /// <summary>
+        /// The solve that changes the factor of its free rows from round to round gives the same answer as the solve
+        /// that factors them again in every round: the same rounds, the same states, and the same impulses up to
+        /// rounding. Each problem is solved cold, and again from the states of the answer to a nearby problem, as a
+        /// vessel island's solve starts from the last solve's states.
+        /// </summary>
+        [Test]
+        public void ChangingTheFactorGivesTheSameAnswerAsFactoringAgain()
+        {
+            long updates = 0, reuses = 0, factorizations = 0;
+            double largest = 0.0;
+            for (uint seed = 1; seed <= 60; seed++)
+            {
+                Problem problem = Make(seed);
+                Solve(problem, null, false, out _, out byte[] nearby, out _, out _);
+                Problem next = problem;
+                next.Q = (double[])problem.Q.Clone();
+                var random = new Random(seed + 1000);
+                for (int i = 0; i < Rows; i++)
+                {
+                    next.Q[i] += random.NextDouble(-0.3, 0.3);
+                }
+
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    byte[] start = pass == 0 ? null : nearby;
+                    bool solvedAgain = Solve(next, start, false, out double[] again, out byte[] againStates, out int againRounds, out _);
+                    bool solvedChanged = Solve(next, start, true, out double[] changed, out byte[] changedStates, out int changedRounds,
+                        out BoundarySolveStats stats);
+                    string what = $"seed {seed}, {(pass == 0 ? "cold" : "warm")}";
+                    Assert.That(solvedChanged, Is.EqualTo(solvedAgain), what);
+                    Assert.That(changedRounds, Is.EqualTo(againRounds), $"{what}: rounds");
+                    Assert.That(changedStates, Is.EqualTo(againStates), $"{what}: states");
+                    double scale = 1.0;
+                    for (int i = 0; i < Rows; i++)
+                    {
+                        scale = math.max(scale, math.abs(again[i]));
+                    }
+
+                    for (int i = 0; i < Rows; i++)
+                    {
+                        largest = math.max(largest, math.abs(changed[i] - again[i]) / scale);
+                        Assert.That(changed[i], Is.EqualTo(again[i]).Within(1e-9 * scale), $"{what}: row {i}");
+                    }
+
+                    updates += stats.Updates;
+                    reuses += stats.Reuses;
+                    factorizations += stats.Factorizations;
+                    Assert.That(stats.Factorizations + stats.Updates + stats.Reuses, Is.EqualTo(changedRounds), $"{what}: every round is counted");
+                }
+            }
+
+            UnityEngine.Debug.Log($"[BoundarySolverTests] factor changes: {factorizations} rounds factored, {updates} changed, " +
+                $"{reuses} reused; largest difference {largest:E2} of the largest impulse");
+            Assert.That(updates, Is.GreaterThan(0), "some rounds changed the factor");
+            Assert.That(reuses, Is.GreaterThan(0), "some rounds reused the factor");
+        }
+
         /// <summary>The friction bound of contact c for the normal impulses in z.</summary>
         private static double Bound(double[] z, int c)
         {

@@ -5,6 +5,26 @@ using Unity.Mathematics;
 namespace Unity.Physics.Numerics.Retooled
 {
     /// <summary>
+    /// What boundary solves did with the factor of their free rows, summed over the solves that were given the same
+    /// counts. A round of pivoting either factored W_FF from the start, changed the last round's factor, or used it as it
+    /// was. The rows that joined and left the free set are counted against the round before, so a solve's first round
+    /// adds none.
+    /// </summary>
+    public struct BoundarySolveStats
+    {
+        public long Rounds;
+        public long CouplingRounds;
+        public long Factorizations;
+        public long Updates;
+        public long Reuses;
+        public long AddedRows;
+        public long RemovedRows;
+
+        /// <summary>The time spent factoring or changing the factor, in profiler timestamp units.</summary>
+        public long FactorTicks;
+    }
+
+    /// <summary>
     /// Solves the boundary block of a forest solve. The block is a dense matrix W = J_b A^-1 J_b^T + E_b, which is
     /// symmetric and positive definite. Its unknowns have bounds, and some of those bounds depend on other unknowns,
     /// for example friction bounds that depend on a normal impulse. The solver uses the same method as the sparse
@@ -16,7 +36,8 @@ namespace Unity.Physics.Numerics.Retooled
     public static unsafe class BoundarySolver
     {
         const double Tolerance = 1e-4;
-        const int MaxPivotingIterations = 200;
+        /// <summary>The most rounds of pivoting that a solve without a cap of its own takes.</summary>
+        public const int MaxPivotingIterations = 200;
         const int MaxBlockIterationsWithoutProgress = 3;
         const int MaxCouplingIterations = 25;
         const double CouplingTolerance = 1e-3;
@@ -55,12 +76,25 @@ namespace Unity.Physics.Numerics.Retooled
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, out int rounds)
         {
+            return Solve(n, w, q, problemLower, problemUpper, states, couplings, couplingCount, bounded, z, maxRounds, warm, true,
+                null, out rounds);
+        }
+
+        /// <summary>
+        /// Solves as the overload above does. If <paramref name="update"/> is true, a round whose free rows differ from
+        /// the last round's by only a few rows changes the last round's factor instead of factoring W_FF again, and a
+        /// round with the same free rows uses the last round's factor as it is. If <paramref name="update"/> is false,
+        /// every round factors W_FF from the start, as the solver did before. Both ways give the same answer up to
+        /// rounding. If <paramref name="stats"/> is not null, the solve adds what it did to it.
+        /// </summary>
+        public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
+            BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, bool update,
+            BoundarySolveStats* stats, out int rounds)
+        {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var coupledArray = new NativeArray<bool>(n, Allocator.Temp);
-            var factor = new NativeArray<double>(n * n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var rhs = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var free = new NativeArray<int>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var factor = new FreeFactor(n, update, stats);
             var bestArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var guessArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bestStatesArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -122,8 +156,7 @@ namespace Unity.Physics.Numerics.Retooled
             for (int iteration = 1; iteration <= maxRounds; iteration++)
             {
                 rounds = iteration;
-                SolveFree(n, w, q, lower, upper, states, z, (double*)factor.GetUnsafePtr(), (double*)rhs.GetUnsafePtr(),
-                    (int*)free.GetUnsafePtr());
+                factor.SolveFree(w, q, lower, upper, states, z);
                 if (!bounded)
                 {
                     result = true;
@@ -194,12 +227,16 @@ namespace Unity.Physics.Numerics.Retooled
                 FinishBySweeps(n, w, q, couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
             }
 
+            if (stats != null)
+            {
+                stats->Rounds += rounds;
+                stats->CouplingRounds += couplingRounds;
+            }
+
             lowerArray.Dispose();
             upperArray.Dispose();
             coupledArray.Dispose();
             factor.Dispose();
-            rhs.Dispose();
-            free.Dispose();
             bestArray.Dispose();
             guessArray.Dispose();
             bestStatesArray.Dispose();
@@ -207,85 +244,314 @@ namespace Unity.Physics.Numerics.Retooled
         }
 
         /// <summary>
-        /// Sets each row that is at a bound to that bound. Then solves W_FF z_F = q_F - W_FT z_T for the free rows,
-        /// where F is the set of free rows and T is the set of rows at a bound.
+        /// The Cholesky factor L L^T of W_FF, where F is the set of free rows, kept from one round of pivoting to the
+        /// next. The factor's rows are the free rows in the order in which they joined the factor, so a row that joins
+        /// goes at the end. Each round asks the factor to solve W_FF z_F = q_F - W_FT z_T, where T is the set of rows at
+        /// a bound. If the round's free rows are the ones that the factor holds, the factor is used as it is. If only a
+        /// few rows differ, the rows that left the free set are taken out of the factor and the rows that joined it are
+        /// added at the end, which costs about n^2 for each row instead of the n^3 / 6 of a new factor. Otherwise, or if
+        /// updates are turned off, W_FF is factored again from the start.
         /// </summary>
-        static void SolveFree(int n, double* w, double* q, double* lower, double* upper, byte* states, double* z,
-            double* factor, double* rhs, int* free)
+        unsafe struct FreeFactor
         {
-            int m = 0;
-            for (int i = 0; i < n; i++)
+            readonly int n;
+            readonly bool update;
+            readonly BoundarySolveStats* stats;
+
+            /// <summary>The lower triangle L, with a row stride of n.</summary>
+            NativeArray<double> factorArray;
+
+            /// <summary>The rows of the factor in its order, and each row's place in the factor, or -1.</summary>
+            NativeArray<int> orderArray;
+            NativeArray<int> placeArray;
+            NativeArray<double> rhsArray;
+            NativeArray<double> workArray;
+            NativeArray<int> tightArray;
+            int m;
+            bool valid;
+
+            public FreeFactor(int n, bool update, BoundarySolveStats* stats)
             {
-                if (states[i] == Free)
+                this.n = n;
+                this.update = update;
+                this.stats = stats;
+                int size = math.max(1, n);
+                factorArray = new NativeArray<double>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                orderArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                placeArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                rhsArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                workArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                tightArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                int* place = (int*)placeArray.GetUnsafePtr();
+                for (int i = 0; i < n; i++)
                 {
-                    free[m++] = i;
+                    place[i] = -1;
                 }
-                else
-                {
-                    z[i] = states[i] == LowerTight ? lower[i] : upper[i];
-                }
+
+                m = 0;
+                valid = false;
             }
 
-            for (int a = 0; a < m; a++)
+            public void Dispose()
             {
-                int i = free[a];
-                double sum = q[i];
-                double* wi = w + (long)i * n;
-                for (int t = 0; t < n; t++)
-                {
-                    if (states[t] != Free)
-                    {
-                        sum -= wi[t] * z[t];
-                    }
-                }
-
-                rhs[a] = sum;
-                for (int b = 0; b <= a; b++)
-                {
-                    factor[a * m + b] = wi[free[b]];
-                }
+                factorArray.Dispose();
+                orderArray.Dispose();
+                placeArray.Dispose();
+                rhsArray.Dispose();
+                workArray.Dispose();
+                tightArray.Dispose();
             }
 
-            // Factor W_FF in place as L L^T, where L is lower triangular. Then solve with L and with L^T.
-            for (int a = 0; a < m; a++)
+            /// <summary>
+            /// Sets each row that is at a bound to that bound. Then solves W_FF z_F = q_F - W_FT z_T for the free rows.
+            /// </summary>
+            public void SolveFree(double* w, double* q, double* lower, double* upper, byte* states, double* z)
             {
-                double* ra = factor + a * m;
-                for (int b = 0; b <= a; b++)
-                {
-                    double* rb = factor + b * m;
-                    double sum = ra[b] - Dot(ra, rb, b);
+                double* l = (double*)factorArray.GetUnsafePtr();
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                double* rhs = (double*)rhsArray.GetUnsafePtr();
+                int* tight = (int*)tightArray.GetUnsafePtr();
 
-                    if (a == b)
+                // Find the rows at a bound, and how the free rows differ from the rows that the factor holds.
+                int tightCount = 0, freeCount = 0, added = 0, removed = 0;
+                long removeCost = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    if (states[i] == Free)
                     {
-                        ra[a] = math.sqrt(math.max(sum, 1e-300));
+                        freeCount++;
+                        added += place[i] < 0 ? 1 : 0;
                     }
                     else
                     {
-                        ra[b] = sum / rb[b];
+                        z[i] = states[i] == LowerTight ? lower[i] : upper[i];
+                        tight[tightCount++] = i;
+                        if (place[i] >= 0)
+                        {
+                            removed++;
+                            long after = m - place[i];
+                            removeCost += after * after;
+                        }
+                    }
+                }
+
+                long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                if (valid && stats != null)
+                {
+                    stats->AddedRows += added;
+                    stats->RemovedRows += removed;
+                }
+
+                // Taking a row out at place k costs about (m - k)^2, and adding a row costs about m^2 / 2. A new factor
+                // costs about m^3 / 6.
+                long size = freeCount;
+                bool keep = update && valid && added + removed == 0;
+                bool change = update && valid && !keep && removeCost + added * size * size / 2 < size * size * size / 6;
+                if (keep)
+                {
+                    if (stats != null)
+                    {
+                        stats->Reuses++;
+                    }
+                }
+                else if (change)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (states[i] != Free && place[i] >= 0)
+                        {
+                            Remove(place[i]);
+                        }
+                    }
+
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (states[i] == Free && place[i] < 0)
+                        {
+                            Append(w, i);
+                        }
+                    }
+
+                    if (stats != null)
+                    {
+                        stats->Updates++;
+                    }
+                }
+                else
+                {
+                    Factor(w, states);
+                    if (stats != null)
+                    {
+                        stats->Factorizations++;
+                    }
+                }
+
+                if (stats != null)
+                {
+                    stats->FactorTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+                }
+
+                // The right-hand side, in the factor's order.
+                for (int a = 0; a < m; a++)
+                {
+                    int i = order[a];
+                    double sum = q[i];
+                    double* wi = w + (long)i * n;
+                    for (int t = 0; t < tightCount; t++)
+                    {
+                        sum -= wi[tight[t]] * z[tight[t]];
+                    }
+
+                    rhs[a] = sum;
+                }
+
+                // Solve with L and then with L^T.
+                for (int a = 0; a < m; a++)
+                {
+                    double sum = rhs[a] - Dot(l + (long)a * n, rhs, a);
+                    rhs[a] = sum / l[(long)a * n + a];
+                }
+
+                for (int a = m - 1; a >= 0; a--)
+                {
+                    double sum = rhs[a];
+                    for (int k = a + 1; k < m; k++)
+                    {
+                        sum -= l[(long)k * n + a] * rhs[k];
+                    }
+
+                    rhs[a] = sum / l[(long)a * n + a];
+                }
+
+                for (int a = 0; a < m; a++)
+                {
+                    z[order[a]] = rhs[a];
+                }
+            }
+
+            /// <summary>Factors W_FF from the start, with the free rows in their own order.</summary>
+            void Factor(double* w, byte* states)
+            {
+                double* l = (double*)factorArray.GetUnsafePtr();
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                m = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    place[i] = -1;
+                    if (states[i] == Free)
+                    {
+                        place[i] = m;
+                        order[m++] = i;
+                    }
+                }
+
+                for (int a = 0; a < m; a++)
+                {
+                    double* wi = w + (long)order[a] * n;
+                    double* ra = l + (long)a * n;
+                    for (int b = 0; b <= a; b++)
+                    {
+                        ra[b] = wi[order[b]];
+                    }
+                }
+
+                // Factor W_FF in place as L L^T, where L is lower triangular.
+                for (int a = 0; a < m; a++)
+                {
+                    double* ra = l + (long)a * n;
+                    for (int b = 0; b <= a; b++)
+                    {
+                        double* rb = l + (long)b * n;
+                        double sum = ra[b] - Dot(ra, rb, b);
+
+                        if (a == b)
+                        {
+                            ra[a] = math.sqrt(math.max(sum, 1e-300));
+                        }
+                        else
+                        {
+                            ra[b] = sum / rb[b];
+                        }
+                    }
+                }
+
+                valid = true;
+            }
+
+            /// <summary>
+            /// Takes the row at place <paramref name="k"/> out of the factor. The rows after it move up by one place, and
+            /// each of them loses its entry in column k. What that column held, x, is added back to the rows below it as
+            /// the rank-one update L' L'^T = L_33 L_33^T + x x^T, done with one rotation for each column.
+            /// </summary>
+            void Remove(int k)
+            {
+                double* l = (double*)factorArray.GetUnsafePtr();
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                double* x = (double*)workArray.GetUnsafePtr();
+                place[order[k]] = -1;
+                for (int i = k + 1; i < m; i++)
+                {
+                    double* from = l + (long)i * n;
+                    double* to = l + (long)(i - 1) * n;
+                    for (int j = 0; j < k; j++)
+                    {
+                        to[j] = from[j];
+                    }
+
+                    x[i - k - 1] = from[k];
+                    for (int j = k + 1; j <= i; j++)
+                    {
+                        to[j - 1] = from[j];
+                    }
+
+                    order[i - 1] = order[i];
+                    place[order[i - 1]] = i - 1;
+                }
+
+                m--;
+                for (int a = k; a < m; a++)
+                {
+                    double* ra = l + (long)a * n;
+                    double d = ra[a];
+                    double xa = x[a - k];
+                    double r = math.sqrt(d * d + xa * xa);
+                    double c = r / d;
+                    double s = xa / d;
+                    ra[a] = r;
+                    for (int i = a + 1; i < m; i++)
+                    {
+                        double* entry = l + (long)i * n + a;
+                        double updated = (*entry + s * x[i - k]) / c;
+                        x[i - k] = c * x[i - k] - s * updated;
+                        *entry = updated;
                     }
                 }
             }
 
-            for (int a = 0; a < m; a++)
+            /// <summary>
+            /// Adds row <paramref name="row"/> at the end of the factor. Its row of L solves L y = W_F,row against the
+            /// rows already in the factor, and its diagonal entry is the square root of W_row,row - y . y.
+            /// </summary>
+            void Append(double* w, int row)
             {
-                double sum = rhs[a] - Dot(factor + a * m, rhs, a);
-                rhs[a] = sum / factor[a * m + a];
-            }
-
-            for (int a = m - 1; a >= 0; a--)
-            {
-                double sum = rhs[a];
-                for (int k = a + 1; k < m; k++)
+                double* l = (double*)factorArray.GetUnsafePtr();
+                int* order = (int*)orderArray.GetUnsafePtr();
+                int* place = (int*)placeArray.GetUnsafePtr();
+                double* wi = w + (long)row * n;
+                double* y = l + (long)m * n;
+                for (int b = 0; b < m; b++)
                 {
-                    sum -= factor[k * m + a] * rhs[k];
+                    double* rb = l + (long)b * n;
+                    y[b] = (wi[order[b]] - Dot(y, rb, b)) / rb[b];
                 }
 
-                rhs[a] = sum / factor[a * m + a];
-            }
-
-            for (int a = 0; a < m; a++)
-            {
-                z[free[a]] = rhs[a];
+                y[m] = math.sqrt(math.max(wi[row] - Dot(y, y, m), 1e-300));
+                order[m] = row;
+                place[row] = m;
+                m++;
             }
         }
 

@@ -74,6 +74,7 @@ namespace Unity.Physics
                 Timestep = stepInput.Timestep,
                 Team = team,
                 Caps = stepInput.DirectSolverCache.Forest.Caps,
+                Substep = stepInput.CurrentSubstep,
             };
 
             int builds = forest->StructureBuilds;
@@ -154,14 +155,18 @@ namespace Unity.Physics
 
             if (applyImpulses)
             {
+                long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 ApplySparseImpulses(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities, motionDatas,
                     sparseContacts, team);
+                long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (recovery != null)
                 {
                     SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
                         math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
                         (ForestRun*)UnsafeUtility.AddressOf(ref run));
                 }
+
+                BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
             }
 
             return solved;
@@ -373,6 +378,7 @@ namespace Unity.Physics
                     Timestep = stepInput.Timestep,
                     Team = team,
                     Caps = stepInput.DirectSolverCache.Forest.Caps,
+                    Substep = substep,
                 };
 
                 int builds = forest->StructureBuilds;

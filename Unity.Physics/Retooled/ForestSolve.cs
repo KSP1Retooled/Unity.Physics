@@ -91,6 +91,9 @@ namespace Unity.Physics
             public BoundaryCaps Caps;
             public NativeArray<ulong> BoundaryKey;
 
+            /// <summary>For a vessel island: the substep that the run solves, for the boundary's counters.</summary>
+            public int Substep;
+
             /// <summary>The change of velocity of every section, and a vector of the same size to work in.</summary>
             public NativeArray<double> Velocity;
             public NativeArray<double> Work;
@@ -581,6 +584,7 @@ namespace Unity.Physics
             NativeArray<byte> rowClass = run.RowClass;
             NativeArray<int> rowBlock = run.RowBlock;
             NativeArray<int2> blockSections = run.BlockSections;
+            long chooseStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             if (run.VesselMode && run.Bounded)
             {
                 CapBoundary(ref run);
@@ -604,6 +608,7 @@ namespace Unity.Physics
             }
 
             long boundaryStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            long pathsWalked = boundaryStarted;
             var w = new NativeArray<double>(math.max(1, nb * nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             using (ForestBoundaryMarker.Auto())
             {
@@ -658,6 +663,7 @@ namespace Unity.Physics
                 }
 
                 pathStart[nb] = pathSection.Length;
+                pathsWalked = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
                 // The team's lanes fill W by ranges of its rows.
                 var tasks = new BoundaryTasks
@@ -683,6 +689,7 @@ namespace Unity.Physics
                 pathZ.Dispose();
             }
 
+            long filled = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             run.Boundary = boundary;
             run.BoundaryOf = boundaryOf;
             run.W = w;
@@ -691,7 +698,13 @@ namespace Unity.Physics
             {
                 run.BoundaryKey = BoundaryKeys(ref run, (int*)boundary.GetUnsafeReadOnlyPtr(), nb);
             }
-            run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
+            long ended = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            run.BoundaryTicks = ended - boundaryStarted;
+            if (run.VesselMode)
+            {
+                BoundaryCounters.AddBuild(boundaryStarted - chooseStarted + ended - filled, pathsWalked - boundaryStarted,
+                    filled - pathsWalked);
+            }
         }
 
         /// <summary>The number of rows of the boundary block W that one task fills.</summary>
@@ -1586,8 +1599,10 @@ namespace Unity.Physics
                 bool warm = vesselSolve && !run.Caps.ColdStart;
                 ref UnsafeList<ulong> memory = ref run.Forest->BoundaryMemory.States;
                 int warmRows = 0;
+                var remembered = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 for (int i = 0; i < nb; i++)
                 {
+                    remembered[i] = 0xFF;
                     int row = run.Boundary[i];
                     q[i] = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     lower[i] = run.Bounded ? problem.Lower[row] : double.NegativeInfinity;
@@ -1603,6 +1618,7 @@ namespace Unity.Physics
                         if (found >= 0)
                         {
                             states[i] = (byte)(memory[found] & BoundaryMemory.StateMask);
+                            remembered[i] = states[i];
                             warmRows++;
                         }
                     }
@@ -1646,19 +1662,35 @@ namespace Unity.Physics
                 if (vesselSolve)
                 {
                     int maxRounds = run.Caps.PivotRoundLimit;
+                    var stats = new BoundarySolveStats();
+                    long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
-                        out int rounds);
+                        !run.Caps.RefactorEveryRound, &stats, out int rounds);
+                    long solveTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted;
+                    int changes = 0;
+                    for (int i = 0; i < nb; i++)
+                    {
+                        changes += remembered[i] != 0xFF && remembered[i] != states[i] ? 1 : 0;
+                    }
+
                     BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
                         (byte*)states.GetUnsafeReadOnlyPtr(), nb);
                     BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, !solved, warmRows);
+                    BoundaryCounters.AddFactor(stats, solveTicks, changes, run.Substep <= 0);
                 }
                 else
                 {
+                    long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
-                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr());
+                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(),
+                        BoundarySolver.MaxPivotingIterations, false, !run.Caps.RefactorEveryRound, null, out int rounds);
+                    if (run.VesselMode)
+                    {
+                        BoundaryCounters.AddPush(rounds, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
+                    }
                 }
 
                 // v += A^-1 J_b^T z.
@@ -1680,6 +1712,7 @@ namespace Unity.Physics
                 lower.Dispose();
                 upper.Dispose();
                 states.Dispose();
+                remembered.Dispose();
                 z.Dispose();
                 couplings.Dispose();
             }
@@ -2368,6 +2401,13 @@ namespace Unity.Physics
         public bool ColdStart;
 
         /// <summary>
+        /// If true, every round of pivoting factors its free rows from the start. If false, a round changes the last
+        /// round's factor when only a few rows joined or left the free set, see
+        /// <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>. For measuring what the updates save.
+        /// </summary>
+        public bool RefactorEveryRound;
+
+        /// <summary>
         /// If true, every one-sided joint row stays in the boundary, even when the row is far from its stop. If false, the
         /// solve leaves out a dormant row, see <see cref="Solver"/>'s MarkDormantRows. RETOOLED_DORMANT_ROWS=0 sets this.
         /// </summary>
@@ -2518,6 +2558,46 @@ namespace Unity.Physics
         /// <summary>Joint rows that the solves left out of the boundary because they were dormant.</summary>
         public long DormantRows;
 
+        /// <summary>
+        /// What the solves did with the factor of their free rows, see <see cref="BoundarySolveStats"/>. Ticks are in
+        /// profiler timestamp units.
+        /// </summary>
+        public BoundarySolveStats Factor;
+
+        /// <summary>The time spent in the dense solve of the boundary, in profiler timestamp units.</summary>
+        public long SolveTicks;
+
+        /// <summary>
+        /// Warm rows whose state at the end of the solve differs from the state that the island remembered for them, in
+        /// the first substep of a step (against the last solve of the step before) and in later substeps.
+        /// </summary>
+        public long FirstSubstepChanges;
+        public long LaterSubstepChanges;
+        public long FirstSubstepSolves;
+
+        /// <summary>
+        /// The dense solves of a vessel island's push-out, which reuse the boundary block with other bounds, and the
+        /// pivoting rounds and the time that they took.
+        /// </summary>
+        public long PushSolves;
+        public long PushRounds;
+        public long PushTicks;
+
+        /// <summary>
+        /// The time spent building vessel islands' boundary blocks: choosing the rows (the caps, the dormant rows and
+        /// the rows' keys), walking each row's path through the factor on one lane, and filling W on the team.
+        /// </summary>
+        public long ChooseTicks;
+        public long PathTicks;
+        public long FillTicks;
+
+        /// <summary>
+        /// The time spent giving a vessel island's bodies the impulses of its rows, and pushing its bodies out of deep
+        /// contacts, which includes checking whether any contact is deep.
+        /// </summary>
+        public long ApplyTicks;
+        public long PushOutTicks;
+
         static readonly SharedStatic<BoundaryCounters> Shared = SharedStatic<BoundaryCounters>.GetOrCreate<BoundaryCounters>();
 
         /// <summary>The counts so far. Read them on the main thread between steps.</summary>
@@ -2556,6 +2636,52 @@ namespace Unity.Physics
             Interlocked.Add(ref data.EmptiedOutsideManifolds, emptiedManifolds);
             Most(ref data.MostOutsidePoints, outsidePoints);
             Most(ref data.MostSelfManifolds, selfManifolds);
+        }
+
+        internal static void AddFactor(in BoundarySolveStats stats, long solveTicks, int changes, bool firstSubstep)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.Factor.Rounds, stats.Rounds);
+            Interlocked.Add(ref data.Factor.CouplingRounds, stats.CouplingRounds);
+            Interlocked.Add(ref data.Factor.Factorizations, stats.Factorizations);
+            Interlocked.Add(ref data.Factor.Updates, stats.Updates);
+            Interlocked.Add(ref data.Factor.Reuses, stats.Reuses);
+            Interlocked.Add(ref data.Factor.AddedRows, stats.AddedRows);
+            Interlocked.Add(ref data.Factor.RemovedRows, stats.RemovedRows);
+            Interlocked.Add(ref data.Factor.FactorTicks, stats.FactorTicks);
+            Interlocked.Add(ref data.SolveTicks, solveTicks);
+            if (firstSubstep)
+            {
+                Interlocked.Increment(ref data.FirstSubstepSolves);
+                Interlocked.Add(ref data.FirstSubstepChanges, changes);
+            }
+            else
+            {
+                Interlocked.Add(ref data.LaterSubstepChanges, changes);
+            }
+        }
+
+        internal static void AddPush(int rounds, long ticks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Increment(ref data.PushSolves);
+            Interlocked.Add(ref data.PushRounds, rounds);
+            Interlocked.Add(ref data.PushTicks, ticks);
+        }
+
+        internal static void AddFinish(long applyTicks, long pushOutTicks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.ApplyTicks, applyTicks);
+            Interlocked.Add(ref data.PushOutTicks, pushOutTicks);
+        }
+
+        internal static void AddBuild(long chooseTicks, long pathTicks, long fillTicks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.ChooseTicks, chooseTicks);
+            Interlocked.Add(ref data.PathTicks, pathTicks);
+            Interlocked.Add(ref data.FillTicks, fillTicks);
         }
 
         internal static void AddDormant(int dormantRows)
