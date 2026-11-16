@@ -21,7 +21,8 @@ namespace KSP.Retooled.Physics.Tests
     // profiler's raw frames for every thread. For each marker it reports the first start, the last end and the summed
     // CPU inside each Physics.Simulate call, as medians per step. Rows that start with "M" are the main thread, rows that
     // start with "A" merge all threads. PROFILE_ONLY picks configurations by name, PROFILE_PATHS picks the paths
-    // (compiled by default), and PROFILE_TAG names the output file Logs/Timeline-<tag>.txt.
+    // (compiled by default), and PROFILE_TAG names the output file Logs/Timeline-<tag>.txt. PROFILE_SAVE=1 also saves
+    // each configuration's profiler frames as Logs/Timeline-<tag>-<configuration>.data, which the Profiler window opens.
     [Explicit("profiling")]
     [Category("Slow")]
     public class ZzTimeline : PhysicsScene
@@ -249,6 +250,15 @@ namespace KSP.Retooled.Physics.Tests
                             UnityEngine.Profiling.Profiler.enabled = true;
                             yield return null;
                             yield return null;
+
+                            // On a busy machine the profiler can take many frames to start recording, and the first
+                            // configuration then had no profiled steps. Wait until it has recorded two frames.
+                            int started = ProfilerDriver.lastFrameIndex;
+                            for (int wait = 0; wait < 600 && ProfilerDriver.lastFrameIndex < started + 2; wait++)
+                            {
+                                yield return null;
+                            }
+
                             for (int s = 0; s < Profiled; s++)
                             {
                                 UnityEngine.Physics.Simulate(Step);
@@ -260,6 +270,14 @@ namespace KSP.Retooled.Physics.Tests
                             ProfilerDriver.enabled = false;
                             JobsUtility.JobWorkerCount = workers;
                             report.Append(Analyse(name, Median(unprofiled)));
+                            if (Environment.GetEnvironmentVariable("PROFILE_SAVE") == "1")
+                            {
+                                // The saved capture opens in the Profiler window (Load). Its name has the tag and the
+                                // configuration, for example Logs/Timeline-run-tu160-ground-8T-compiled.data.
+                                string capture = $"Timeline-{tag}-{name.Replace(' ', '-').Replace(':', '_')}.data";
+                                ProfilerDriver.SaveProfile(Path.Combine(Application.dataPath, "..", "Logs", capture));
+                            }
+
                             ProfilerDriver.ClearAllFrames();
                         }
                     }
