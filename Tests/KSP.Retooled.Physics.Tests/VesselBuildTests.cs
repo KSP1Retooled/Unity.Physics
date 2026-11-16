@@ -913,6 +913,75 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void OverloadedEdgesBreakTheirJointsAmongManyJoints()
+        {
+            // BreakJointsJob reads the joints' flags eight at a time, and the joints after the last group of eight one
+            // at a time. Five parts have twelve joints, so a load on the third part's edge breaks joints in the first
+            // group of eight, and a load on the fifth part's edge breaks the last joints, which are read one at a time.
+            List<Rigidbody> bodies = Column(5);
+            foreach (ConfigurableJoint joint in Object.FindObjectsByType<ConfigurableJoint>(FindObjectsSortMode.None))
+            {
+                joint.breakForce = 1e6f;
+            }
+
+            Simulate();
+            VesselRecord vessel = OnlyVessel();
+            Assert.That(State->Store->jointCount, Is.EqualTo(12), "the column's joints");
+            Assert.That(BrokenJoints(), Is.Zero, "nothing breaks before the loads");
+            VesselSet set = State->VesselSet;
+            List<Rigidbody> parts = VesselsOf(bodies)[0];
+            var tear = new VesselEdgeLoad { Force = new double3(0.0, 1e12, 0.0) };
+            set.EdgeLoads[vessel.FirstPart + parts.IndexOf(bodies[2])] = tear;
+            set.EdgeLoads[vessel.FirstPart + parts.IndexOf(bodies[4])] = tear;
+            State->ReadVesselLoads(Step);
+            Assert.That(BrokenJoints(), Is.EqualTo(6), "the two edges' joints broke");
+            Assert.That(State->Store->jointBreakCount, Is.EqualTo(6), "the breaks are reported");
+
+            // Each broken joint holds the third part or the fifth part to the part above it.
+            NativeStore.WorldData* store = State->Store;
+            for (uint i = 0; i < store->jointCount; i++)
+            {
+                NativeStore.JointData* joint = store->joints[i];
+                bool broken = (joint->state & NativeStore.JointState.Broken) != 0;
+                ulong lower = joint->body0->index == joint->body1->index ? 0 : math.max(joint->body0->index, joint->body1->index);
+                Assert.That(broken, Is.EqualTo(lower == 2 || lower == 4), $"joint {i} between store bodies {joint->body0->index} and {joint->body1->index}");
+            }
+        }
+
+        [Test]
+        public void AGroupsFrameFromTheSolvedMotionIsTheWrittenBackFrame()
+        {
+            // A tilted column that spins, so that every pose has a rotation that is not exact in floats.
+            List<Rigidbody> bodies = Column(3);
+            Quaternion tilt = Quaternion.Euler(23.0f, 41.0f, 7.0f);
+            foreach (Rigidbody body in bodies)
+            {
+                body.transform.SetPositionAndRotation(tilt * body.position, tilt);
+                body.angularVelocity = new Vector3(0.3f, 1.7f, -0.9f);
+            }
+
+            Simulate(5);
+            OnlyVessel();
+
+            // VesselLoadsJob shares a group's load in the frame that it finds from the solved motion of the leader's
+            // body0, before the poses are written back. That frame must be the one that the written-back pose gives,
+            // to the last bit, so that the loads don't change.
+            NativeStore.WorldData* store = State->Store;
+            PhysicsWorld world = State->World;
+            int checkedJoints = 0;
+            for (uint i = 0; i < store->jointCount; i++)
+            {
+                NativeStore.JointData* joint = store->joints[i];
+                quaternion fromMotion = VesselLoadsJob.LeaderFrame(joint, world.MotionDatas, State->BuiltIndices.AsArray());
+                quaternion writtenBack = JointConstraints.WorldRotation0(joint);
+                Assert.That(fromMotion.value.Equals(writtenBack.value), Is.True, $"joint {i}: {fromMotion} and {writtenBack}");
+                checkedJoints++;
+            }
+
+            Assert.That(checkedJoints, Is.EqualTo(6), "the column's joints");
+        }
+
+        [Test]
         public void AStrutsLoadActsOnPartB()
         {
             List<Rigidbody> bodies = Column(3);

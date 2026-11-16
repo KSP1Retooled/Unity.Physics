@@ -471,14 +471,21 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            MotionData motion = MotionDatas[index];
             MotionVelocity velocity = MotionVelocities[index];
-            RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
-
-            body.pose->Position = worldFromBody.pos;
-            body.pose->Rotation = math.normalize(worldFromBody.rot);
+            SolvedPose(MotionDatas[index], out body.pose->Position, out body.pose->Rotation);
             body.velocity->Linear = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.limits->MaxLinearVelocity);
             body.velocity->Angular = ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.limits->MaxAngularVelocity);
+        }
+
+        /// <summary>
+        /// Calculates the pose that this job writes back for a moving body that is awake. Jobs that run before or during
+        /// this job can call it to get the same pose, to the last bit, from the solved motion.
+        /// </summary>
+        internal static void SolvedPose(in MotionData motion, out float3 position, out quaternion rotation)
+        {
+            RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
+            position = worldFromBody.pos;
+            rotation = math.normalize(worldFromBody.rot);
         }
     }
 }

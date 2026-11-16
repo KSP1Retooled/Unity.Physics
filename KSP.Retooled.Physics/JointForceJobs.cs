@@ -15,11 +15,6 @@ namespace KSP.Retooled.Physics
     {
         public float3 Force;
         public float3 Torque;
-
-        /// <summary>
-        /// Whether the smoothed load exceeded the joint's break limits, for <see cref="BreakJointsJob"/> .
-        /// </summary>
-        public bool Overloaded;
     }
 
     /// <summary>
@@ -191,15 +186,19 @@ namespace KSP.Retooled.Physics
         public void Execute(int item)
         {
             int index = Listed ? ListedGroups[item] : item;
-            Share(World, Groups[index], GroupLoads[index], Members, JointLoads);
+            JointGroup group = Groups[index];
+            quaternion frame = JointConstraints.WorldRotation0(World->joints[group.Leader]);
+            Share(group, frame, GroupLoads[index], Members, JointLoads);
         }
 
-        /// <summary>Adds each member's share of the group's load to the member's load.</summary>
-        internal static void Share(NativeStore.WorldData* world, in JointGroup group, in JointLoad carried, NativeArray<JointGroupMember> members,
+        /// <summary>
+        /// Adds each member's share of the group's load to the member's load. The frame is the world rotation of the
+        /// leading joint's frame on body0, which <see cref="JointConstraints.WorldRotation0"/> gives once the poses
+        /// are written back.
+        /// </summary>
+        internal static void Share(in JointGroup group, quaternion frame, in JointLoad carried, NativeArray<JointGroupMember> members,
             NativeArray<JointLoad> jointLoads)
         {
-            NativeStore.JointData* leader = world->joints[group.Leader];
-            quaternion frame = JointConstraints.WorldRotation0(leader);
             float3 share = math.rotate(math.conjugate(frame), carried.Force) / group.MemberCount;
             float3 turn = math.select(math.rotate(math.conjugate(frame), carried.Torque) / group.Stiffness, float3.zero, group.Stiffness <= 0.0f);
             for (int i = 0; i < group.MemberCount; i++)
@@ -215,7 +214,7 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Writes each joint's load to the store, then smooths the force and torque magnitudes used for breaking. Marks
-    /// active joints whose smoothed loads exceed their break limits.
+    /// active joints whose smoothed loads exceed their break limits in <see cref="Overloaded"/> .
     /// </summary>
     [BurstCompile]
     internal unsafe struct SettleJointLoadsJob : IJobParallelFor
@@ -232,8 +231,12 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
-        [NativeDisableParallelForRestriction]
+        [ReadOnly, NativeDisableParallelForRestriction]
         public NativeArray<JointLoad> Loads;
+
+        /// <summary>For each joint, 1 if the joint is active and its smoothed load exceeds its break limits, or 0.</summary>
+        [NativeDisableParallelForRestriction]
+        public NativeArray<byte> Overloaded;
 
         /// <summary>When <see cref="Listed"/> is true, the job handles only the joints in this list.</summary>
         [ReadOnly]
@@ -246,30 +249,31 @@ namespace KSP.Retooled.Physics
         public void Execute(int item)
         {
             int index = Listed ? Joints[item] : item;
-            JointLoad load = Loads[index];
-            Settle(World->joints[index], ref load, DeltaTime);
-            Loads[index] = load;
+            Overloaded[index] = Settle(World->joints[index], Loads[index], DeltaTime) ? (byte)1 : (byte)0;
         }
 
-        /// <summary>Writes one joint's load to the store and smooths it, as described for this job.</summary>
-        internal static void Settle(NativeStore.JointData* joint, ref JointLoad load, float deltaTime)
+        /// <summary>
+        /// Writes one joint's load to the store and smooths it, as described for this job. Returns whether the joint is
+        /// active and its smoothed load exceeds its break limits.
+        /// </summary>
+        internal static bool Settle(NativeStore.JointData* joint, in JointLoad load, float deltaTime)
         {
             if (JointForceJobs.IsAsleep(joint))
             {
                 joint->force = load.Force;
                 joint->torque = load.Torque;
-                return;
+                return false;
             }
 
-            SettleAwake(joint, ref load, deltaTime);
+            return SettleAwake(joint, load, deltaTime);
         }
 
         /// <summary>
         /// Settles the load of a joint that the caller knows has at least one moving body that is awake, as
-        /// <see cref="Settle"/> does. The caller saves the reads of the joint's two bodies, which are often not in the
-        /// cache.
+        /// <see cref="Settle"/> does, and returns the same result. The caller saves the reads of the joint's two
+        /// bodies, which are often not in the cache.
         /// </summary>
-        internal static void SettleAwake(NativeStore.JointData* joint, ref JointLoad load, float deltaTime)
+        internal static bool SettleAwake(NativeStore.JointData* joint, in JointLoad load, float deltaTime)
         {
             joint->force = load.Force;
             joint->torque = load.Torque;
@@ -277,12 +281,13 @@ namespace KSP.Retooled.Physics
             joint->breakingForce += (math.length(joint->force) - joint->breakingForce) * follow;
             joint->breakingTorque += (math.length(joint->torque) - joint->breakingTorque) * follow;
             bool overloaded = joint->breakingForce > joint->breakForce || joint->breakingTorque > joint->breakTorque;
-            load.Overloaded = (joint->state & JointConstraints.Inactive) == 0 && overloaded;
+            return (joint->state & JointConstraints.Inactive) == 0 && overloaded;
         }
     }
 
     /// <summary>
-    /// Breaks overloaded joints and adds their break records to the world's break list in store order.
+    /// Breaks overloaded joints and adds their break records to the world's break list in store order. A joint rarely
+    /// breaks, so the job reads the flags eight at a time and skips each group of eight that is all zero.
     /// </summary>
     [BurstCompile]
     internal unsafe struct BreakJointsJob : IJob
@@ -293,20 +298,42 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.StoreGlobals* Globals;
 
+        /// <summary>For each joint, 1 if the joint breaks in this step, or 0.</summary>
         [ReadOnly]
-        public NativeArray<JointLoad> Loads;
+        public NativeArray<byte> Overloaded;
 
         public uint EngineObjectIdOffset;
 
         public void Execute()
         {
             World->jointBreakCount = 0;
-            for (int i = 0; i < Loads.Length; i++)
+            byte* flags = (byte*)Overloaded.GetUnsafeReadOnlyPtr();
+            int count = Overloaded.Length;
+            int i = 0;
+            for (; i + sizeof(ulong) <= count; i += sizeof(ulong))
             {
-                if (Loads[i].Overloaded)
+                if (UnsafeUtility.ReadArrayElement<ulong>(flags + i, 0) == 0)
                 {
-                    Break(World->joints[i]);
+                    continue;
                 }
+
+                for (int j = i; j < i + sizeof(ulong); j++)
+                {
+                    BreakIfOverloaded(flags, j);
+                }
+            }
+
+            for (; i < count; i++)
+            {
+                BreakIfOverloaded(flags, i);
+            }
+        }
+
+        private void BreakIfOverloaded(byte* flags, int joint)
+        {
+            if (flags[joint] != 0)
+            {
+                Break(World->joints[joint]);
             }
         }
 

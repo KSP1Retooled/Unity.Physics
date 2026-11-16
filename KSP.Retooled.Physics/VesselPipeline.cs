@@ -1828,8 +1828,11 @@ namespace KSP.Retooled.Physics
     /// leading joint's body0. Edge loads describe what the parent applied to the child. Closure loads describe what
     /// part A applied to part B. The load of a group is shared among its members as <see cref="ShareGroupLoadsJob"/>
     /// does. Each member's load starts at zero because the bodies of an active vessel are awake. Each joint's load is
-    /// then settled as <see cref="SettleJointLoadsJob"/> does. The joints of active vessels have no impulse events, so
-    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints.
+    /// then settled as <see cref="SettleJointLoadsJob"/> does, and the job writes the joint's flag for
+    /// <see cref="BreakJointsJob"/> . The joints of active vessels have no impulse events, so
+    /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints. A group shares
+    /// its load in the frame of its leader's body0. The job takes that body's pose from its solved motion, in the same
+    /// way as <see cref="WriteBackJob"/> , so the job doesn't need to wait for the poses to be written back.
     /// </summary>
     [BurstCompile]
     internal unsafe struct VesselLoadsJob : IJobParallelFor
@@ -1845,6 +1848,14 @@ namespace KSP.Retooled.Physics
 
         [ReadOnly]
         public NativeArray<JointGroupMember> Members;
+
+        /// <summary>The solved motions, which give the poses of the bodies before they are written back.</summary>
+        [ReadOnly]
+        public NativeArray<MotionData> MotionDatas;
+
+        /// <summary>The index of each store body in the built world, which is its motion's index for a moving body.</summary>
+        [ReadOnly]
+        public NativeArray<int> BuiltIndices;
 
         public float DeltaTime;
 
@@ -1873,10 +1884,16 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<VesselEdgeLoad> ClosureLoads;
 
-        // The jobs for the other joints write their loads at the same time. No joint is in both sets.
+        // The jobs for the other joints write their loads at the same time. No joint is in both sets. This job uses the
+        // loads only to share the load of a group among its members.
         [NativeDisableParallelForRestriction]
         [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointLoad> JointLoads;
+
+        // As with the loads, the jobs for the other joints write the flags of their own joints at the same time.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
+        public NativeArray<byte> Overloaded;
 
         /// <summary>Processes part indices first, followed by closure indices.</summary>
         public void Execute(int index)
@@ -1926,8 +1943,8 @@ namespace KSP.Retooled.Physics
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
-                SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
-                JointLoads[jointUnit.Joint] = jointLoad;
+                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], jointLoad, DeltaTime);
+                Overloaded[jointUnit.Joint] = overloaded ? (byte)1 : (byte)0;
                 return;
             }
 
@@ -1937,14 +1954,30 @@ namespace KSP.Retooled.Physics
                 JointLoads[Members[group.FirstMember + i].Joint] = default;
             }
 
-            ShareGroupLoadsJob.Share(World, group, jointLoad, Members, JointLoads);
+            quaternion frame = LeaderFrame(World->joints[group.Leader], MotionDatas, BuiltIndices);
+            ShareGroupLoadsJob.Share(group, frame, jointLoad, Members, JointLoads);
             for (int i = 0; i < group.MemberCount; i++)
             {
                 int joint = Members[group.FirstMember + i].Joint;
-                JointLoad memberLoad = JointLoads[joint];
-                SettleJointLoadsJob.SettleAwake(World->joints[joint], ref memberLoad, DeltaTime);
-                JointLoads[joint] = memberLoad;
+                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[joint], JointLoads[joint], DeltaTime);
+                Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
             }
+        }
+
+        /// <summary>
+        /// Returns what <see cref="JointConstraints.WorldRotation0"/> returns for the leading joint of a group once the
+        /// poses are written back. The bodies of an active vessel are moving and awake, so the write-back gives body0
+        /// the pose of its solved motion.
+        /// </summary>
+        internal static quaternion LeaderFrame(NativeStore.JointData* leader, NativeArray<MotionData> motionDatas, NativeArray<int> builtIndices)
+        {
+            if (leader->body0 == null)
+            {
+                return leader->rotation0;
+            }
+
+            WriteBackJob.SolvedPose(motionDatas[builtIndices[(int)leader->body0->index]], out _, out quaternion rotation);
+            return math.mul(rotation, leader->rotation0);
         }
 
         /// <summary>How many items ahead this job asks for a joint record.</summary>
@@ -1953,9 +1986,8 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Asks the processor to load the part of an item's leading joint record that
         /// <see cref="SettleJointLoadsJob.SettleAwake"/> reads and writes. That part runs from the state to the end of
-        /// the smoothed breaking torque, which is about 100 bytes. The record need not start on a cache line, so those
-        /// bytes can touch three cache lines. Asking for the first byte, the last byte and the byte 64 after the first
-        /// covers all three.
+        /// the torque, which is 44 bytes. The record need not start on a cache line, so those bytes can touch two cache
+        /// lines. Asking for the first byte and the last byte covers both.
         /// </summary>
         private void Prefetch(int index)
         {
@@ -1973,9 +2005,8 @@ namespace KSP.Retooled.Physics
 
             NativeStore.JointData* joint = World->joints[Units[unit].Joint];
             byte* first = (byte*)&joint->state;
-            byte* last = (byte*)&joint->breakingTorque + sizeof(float) - 1;
+            byte* last = (byte*)&joint->torque + sizeof(float3) - 1;
             Common.Prefetch(first, Common.ReadWrite.Write);
-            Common.Prefetch(first + 64 < last ? first + 64 : last, Common.ReadWrite.Write);
             Common.Prefetch(last, Common.ReadWrite.Write);
         }
     }

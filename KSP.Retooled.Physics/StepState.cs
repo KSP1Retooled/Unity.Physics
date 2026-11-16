@@ -57,6 +57,11 @@ namespace KSP.Retooled.Physics
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
 
+        // For each joint, 1 if its smoothed load exceeded its break limits in this step, for BreakJointsJob. The jobs
+        // that settle the loads write the flags. A byte for each joint is much less memory to write and to scan than
+        // a load.
+        private NativeList<byte> jointsOverloaded;
+
         // The joints and groups outside the active vessels of this step. See ListOtherJointsJob.
         private NativeList<int> otherJoints;
         private NativeList<int> otherGroups;
@@ -144,6 +149,7 @@ namespace KSP.Retooled.Physics
             jointsWritten = new NativeList<int>(Allocator.Persistent);
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
+            jointsOverloaded = new NativeList<byte>(Allocator.Persistent);
             otherJoints = new NativeList<int>(Allocator.Persistent);
             otherGroups = new NativeList<int>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -207,6 +213,7 @@ namespace KSP.Retooled.Physics
             jointsWritten.Dispose();
             jointLoads.Dispose();
             groupLoads.Dispose();
+            jointsOverloaded.Dispose();
             otherJoints.Dispose();
             otherGroups.Dispose();
             directSolverCache.Dispose();
@@ -246,6 +253,9 @@ namespace KSP.Retooled.Physics
 
         /// <summary>The world built for the simulation systems to advance.</summary>
         internal readonly PhysicsWorld World => world;
+
+        /// <summary>The index of each store body in the built world.</summary>
+        internal readonly NativeList<int> BuiltIndices => builtIndices;
 
         internal readonly int StaticsChanged => staticsChanged ? 1 : 0;
 
@@ -570,6 +580,7 @@ namespace KSP.Retooled.Physics
             {
                 World = store,
                 Loads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
                 Joints = otherJoints.AsArray(),
                 Listed = listed,
                 DeltaTime = deltaTime,
@@ -580,7 +591,7 @@ namespace KSP.Retooled.Physics
             {
                 World = store,
                 Globals = globals,
-                Loads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(settled);
         }
@@ -598,7 +609,8 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Sizes the joint loads for this step, and schedules <see cref="VesselLoadsJob"/> when the step has vessels.
         /// Vessel joints do not produce impulse events. The solver writes their loads into the vessel set instead. The
-        /// dependency must include writing the solved poses back to the store.
+        /// dependency must include the solve. The job reads the poses of the vessel bodies from their solved motions,
+        /// so it doesn't need to wait for the poses to be written back.
         /// </summary>
         private JobHandle ScheduleVesselLoads(float deltaTime, JobHandle dependency)
         {
@@ -607,6 +619,7 @@ namespace KSP.Retooled.Physics
             // The jobs write the joint loads through arrays that the safety system doesn't track, so the list must not
             // change size after this point in the step.
             jointLoads.ResizeUninitialized((int)store->jointCount);
+            jointsOverloaded.ResizeUninitialized((int)store->jointCount);
             if (!vesselSet.IsCreated)
             {
                 return default;
@@ -618,6 +631,8 @@ namespace KSP.Retooled.Physics
                 Units = jointUnits.AsArray(),
                 Groups = jointGroups.AsArray(),
                 Members = jointGroupMembers.AsArray(),
+                MotionDatas = world.MotionDatas,
+                BuiltIndices = builtIndices.AsArray(),
                 DeltaTime = deltaTime,
                 PartUnits = vesselBuild.PartUnits.AsArray(),
                 ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
@@ -627,6 +642,7 @@ namespace KSP.Retooled.Physics
                 EdgeLoads = vesselBuild.EdgeLoads.AsArray(),
                 ClosureLoads = vesselBuild.ClosureLoads.AsArray(),
                 JointLoads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
             }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 
@@ -662,9 +678,10 @@ namespace KSP.Retooled.Physics
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
-            // The loads of the vessel joints come from the solve, not from impulse events. Converting them needs the
-            // written-back poses, because a group shares its load in the frame of its leader's body.
-            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, writtenBack);
+            // The loads of the vessel joints come from the solve, not from impulse events. A group shares its load in
+            // the frame of its leader's body, but the job takes that body's pose from its solved motion, so it runs
+            // beside the write-back. Neither job writes what the other reads.
+            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
             using (BackendMarkers.StepWaitForSolve.Auto())

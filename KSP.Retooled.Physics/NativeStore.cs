@@ -348,32 +348,35 @@ namespace KSP.Retooled.Physics
 
             public quaternion targetRotation;
             public float3 targetPosition;
-            public JointState state;
+            public float inverseMassScale0;
 
             public float3 targetLinearVelocity;
-            public float breakForce;
-            public float3 targetAngularVelocity;
-            public float breakTorque;
-
-            // The force and torque applied by the joint's constraints during the last step. Both are in world space,
-            // with force in newtons and torque in newton metres.
-            public float3 force;
-            public float inverseMassScale0;
-            public float3 torque;
             public float inverseMassScale1;
-
-            public float projectionLinearTolerance;
-            public float projectionAngularTolerance;
-            public float distanceErrorTolerance;
-            public float hingeMotorMaxForce;
-
-            public float hingeMotorTargetVelocity;
+            public float3 targetAngularVelocity;
             public uint index; // In the world's list.
+
+            // The fields from here to the end of the torque are the ones that the jobs for joint loads read and write
+            // in every step (see SettleJointLoadsJob.SettleAwake). Together they take 44 bytes, so they touch at most
+            // two cache lines. When they were spread over 100 bytes, they touched two or three.
+            public JointState state;
+            public float breakForce;
+            public float breakTorque;
 
             // The magnitudes of force and torque used to decide whether the joint breaks. A low-pass filter smooths
             // them over a few steps.
             public float breakingForce;
+
+            // The force and torque applied by the joint's constraints during the last step. Both are in world space,
+            // with force in newtons and torque in newton metres.
+            public float3 force;
             public float breakingTorque;
+            public float3 torque;
+
+            public float hingeMotorTargetVelocity;
+            public float projectionLinearTolerance;
+            public float projectionAngularTolerance;
+            public float distanceErrorTolerance;
+            public float hingeMotorMaxForce;
 
             public Body* body0;
             public Body* body1;
