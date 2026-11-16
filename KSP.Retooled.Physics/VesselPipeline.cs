@@ -185,6 +185,14 @@ namespace KSP.Retooled.Physics
         public NativeList<VesselEdgeLoad> ClosureLoads;
         public NativeList<bool> EdgeLocked;
 
+        // The edges and closures that the fill jobs computed in an earlier step, with the motion frames of the two
+        // bodies that each one used (the child's or part A's first, then the parent's or part B's). The fill jobs reuse
+        // an entry while the joint settings, the units and both motion frames stay the same.
+        public NativeList<VesselEdge> EdgeCache;
+        public NativeList<VesselClosure> ClosureCache;
+        public NativeList<RigidTransform> EdgeCacheFrames;
+        public NativeList<RigidTransform> ClosureCacheFrames;
+
         public static VesselBuild Create()
         {
             return new VesselBuild
@@ -214,6 +222,10 @@ namespace KSP.Retooled.Physics
                 EdgeLoads = new NativeList<VesselEdgeLoad>(Allocator.Persistent),
                 ClosureLoads = new NativeList<VesselEdgeLoad>(Allocator.Persistent),
                 EdgeLocked = new NativeList<bool>(Allocator.Persistent),
+                EdgeCache = new NativeList<VesselEdge>(Allocator.Persistent),
+                ClosureCache = new NativeList<VesselClosure>(Allocator.Persistent),
+                EdgeCacheFrames = new NativeList<RigidTransform>(Allocator.Persistent),
+                ClosureCacheFrames = new NativeList<RigidTransform>(Allocator.Persistent),
             };
         }
 
@@ -244,6 +256,10 @@ namespace KSP.Retooled.Physics
             EdgeLoads.Dispose();
             ClosureLoads.Dispose();
             EdgeLocked.Dispose();
+            EdgeCache.Dispose();
+            ClosureCache.Dispose();
+            EdgeCacheFrames.Dispose();
+            ClosureCacheFrames.Dispose();
         }
 
         /// <summary>Clears all compiled vessels, as required when vessels are disabled.</summary>
@@ -267,6 +283,10 @@ namespace KSP.Retooled.Physics
             StepVessels.Clear();
             BodyVessels.Clear();
             PairUnits.Clear();
+            EdgeCache.Clear();
+            ClosureCache.Clear();
+            EdgeCacheFrames.Clear();
+            ClosureCacheFrames.Clear();
             UnitVessels.ResizeUninitialized(unitCount);
             for (int i = 0; i < unitCount; i++)
             {
@@ -292,6 +312,22 @@ namespace KSP.Retooled.Physics
             }
 
             return oldest == int.MaxValue ? -1 : oldest + tombstoneSteps;
+        }
+
+        /// <summary>
+        /// Sizes the cached edges and closures to match the compiled parts and closures. Returns true if any cache list
+        /// changed size, because then the fill jobs must compute every entry again.
+        /// </summary>
+        public bool SizeCaches()
+        {
+            int parts = PartStoreBodies.Length;
+            int closures = ClosureUnits.Length;
+            bool resized = EdgeCache.Length != parts || ClosureCache.Length != closures;
+            EdgeCache.ResizeUninitialized(parts);
+            EdgeCacheFrames.ResizeUninitialized(2 * parts);
+            ClosureCache.ResizeUninitialized(closures);
+            ClosureCacheFrames.ResizeUninitialized(2 * closures);
+            return resized;
         }
 
         /// <summary>The key for two store bodies in <see cref="PairUnits"/>. The order of the bodies doesn't matter.</summary>
@@ -1231,6 +1267,15 @@ namespace KSP.Retooled.Physics
             return math.normalize(rest).value;
         }
 
+        /// <summary>
+        /// Returns true if two motion frames are the same bit for bit, so that values computed from one hold for the
+        /// other.
+        /// </summary>
+        public static bool Same(RigidTransform a, RigidTransform b)
+        {
+            return UnsafeUtility.MemCmp(&a, &b, sizeof(RigidTransform)) == 0;
+        }
+
         public static double3x3 Frame(NativeStore.BodyData* body, quaternion frame)
         {
             return new double3x3(new float3x3(InMotionFrame(body, frame)));
@@ -1288,6 +1333,17 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<int> PartVesselFirst;
 
+        /// <summary>
+        /// True when the cached edges can't be reused, because the joint settings, the units or the compiled vessels
+        /// changed since the cache was filled.
+        /// </summary>
+        public bool RefillAll;
+
+        public NativeArray<VesselEdge> EdgeCache;
+
+        [NativeDisableParallelForRestriction]
+        public NativeArray<RigidTransform> EdgeCacheFrames;
+
         public void Execute(int part)
         {
             int storeBody = PartStoreBodies[part];
@@ -1313,9 +1369,18 @@ namespace KSP.Retooled.Physics
                 BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
             }
 
-            UnitParameters parameters = UnitParameters.Of(World, Units[unit], Groups, Members);
             NativeStore.BodyData* child = World->bodies + storeBody;
             NativeStore.BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
+            RigidTransform childMotion = child->mass->Transform;
+            RigidTransform parentMotion = parent->mass->Transform;
+            if (!RefillAll && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
+                && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))
+            {
+                Edges[part] = EdgeCache[part];
+                return;
+            }
+
+            UnitParameters parameters = UnitParameters.Of(World, Units[unit], Groups, Members);
             bool childIsBody0 = PartIsBody0[part] != 0;
             float3 childAnchor = childIsBody0 ? parameters.Anchor0 : parameters.Anchor1;
             float3 parentAnchor = childIsBody0 ? parameters.Anchor1 : parameters.Anchor0;
@@ -1325,7 +1390,7 @@ namespace KSP.Retooled.Physics
             // Use the softer swing axis because the edge uses one spring for both swing axes. Use the damping from that
             // same axis.
             int swing = parameters.Stiffness.y <= parameters.Stiffness.z ? 1 : 2;
-            Edges[part] = new VesselEdge
+            var edge = new VesselEdge
             {
                 Parent = PartParents[part],
                 State = VesselEdgeState.Yielding,
@@ -1341,6 +1406,10 @@ namespace KSP.Retooled.Physics
                 BreakForce = parameters.BreakForce,
                 BreakTorque = parameters.BreakTorque,
             };
+            Edges[part] = edge;
+            EdgeCache[part] = edge;
+            EdgeCacheFrames[2 * part] = childMotion;
+            EdgeCacheFrames[2 * part + 1] = parentMotion;
         }
     }
 
@@ -1384,6 +1453,14 @@ namespace KSP.Retooled.Physics
 
         public NativeArray<VesselClosure> Closures;
 
+        /// <summary>See <see cref="FillVesselEdgesJob.RefillAll"/>.</summary>
+        public bool RefillAll;
+
+        public NativeArray<VesselClosure> ClosureCache;
+
+        [NativeDisableParallelForRestriction]
+        public NativeArray<RigidTransform> ClosureCacheFrames;
+
         public void Execute(int closure)
         {
             if (ClosureUnits[closure] < 0)
@@ -1405,17 +1482,26 @@ namespace KSP.Retooled.Physics
                 BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
             }
 
-            UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
             NativeStore.JointData* leader = World->joints[unit.Joint];
             NativeStore.BodyData* bodyA = StoreOps.Hot(leader->body0);
             NativeStore.BodyData* bodyB = StoreOps.Hot(leader->body1);
+            RigidTransform motionA = bodyA->mass->Transform;
+            RigidTransform motionB = bodyB->mass->Transform;
+            if (!RefillAll && UnitParameters.Same(ClosureCacheFrames[2 * closure], motionA)
+                && UnitParameters.Same(ClosureCacheFrames[2 * closure + 1], motionB))
+            {
+                Closures[closure] = ClosureCache[closure];
+                return;
+            }
+
+            UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
             int softest = 0;
             for (int axis = 1; axis < 3; axis++)
             {
                 softest = parameters.Stiffness[axis] < parameters.Stiffness[softest] ? axis : softest;
             }
 
-            Closures[closure] = new VesselClosure
+            var filled = new VesselClosure
             {
                 PartA = ClosurePartA[closure],
                 PartB = ClosurePartB[closure],
@@ -1427,6 +1513,10 @@ namespace KSP.Retooled.Physics
                 AngularStiffness = parameters.Stiffness[softest],
                 AngularDamping = parameters.Damping[softest],
             };
+            Closures[closure] = filled;
+            ClosureCache[closure] = filled;
+            ClosureCacheFrames[2 * closure] = motionA;
+            ClosureCacheFrames[2 * closure + 1] = motionB;
         }
     }
 

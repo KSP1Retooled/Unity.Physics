@@ -66,6 +66,11 @@ namespace KSP.Retooled.Physics
         private VesselSet vesselSet;
         private bool compiled;
 
+        // Whether the vessel build holds cached edges and closures, and the joint settings version that they were
+        // computed from. See FillVesselEdgesJob.RefillAll.
+        private bool cacheFilled;
+        private uint cachedSettings;
+
         // The jobs that fill the vessels' edges and closures for this step. Only the solve waits for them.
         private JobHandle vesselsFilled;
 
@@ -971,8 +976,10 @@ namespace KSP.Retooled.Physics
                 // islands.
                 // A tombstone also needs a compilation when it expires.
                 bool tombstoneExpired = tombstoneExpiry >= 0 && (int)stepCount >= tombstoneExpiry;
+                bool compiledThisStep = false;
                 if (vessels && (!compiled || regrouped || tombstoneExpired))
                 {
+                    compiledThisStep = true;
                     groupsFound.Complete();
                     new CompileVesselsJob
                     {
@@ -1031,6 +1038,14 @@ namespace KSP.Retooled.Physics
                 vesselsFilled = default;
                 if (vesselSet.IsCreated)
                 {
+                    // Reuse the edges and closures from earlier steps unless the vessels were compiled again or a
+                    // joint's settings changed. The fill jobs also compute an entry again when a body's motion frame
+                    // changed.
+                    uint settings = JointSettings.Version;
+                    bool resized = vesselBuild.SizeCaches();
+                    bool refillAll = resized || compiledThisStep || !cacheFilled || settings != cachedSettings;
+                    cacheFilled = true;
+                    cachedSettings = settings;
                     JobHandle edgesFilled = new FillVesselEdgesJob
                     {
                         World = store,
@@ -1045,6 +1060,9 @@ namespace KSP.Retooled.Physics
                         PartIsBody0 = vesselBuild.PartIsBody0.AsArray(),
                         PartVesselFirst = vesselBuild.PartVesselFirst.AsArray(),
                         Edges = vesselBuild.Edges.AsArray(),
+                        RefillAll = refillAll,
+                        EdgeCache = vesselBuild.EdgeCache.AsArray(),
+                        EdgeCacheFrames = vesselBuild.EdgeCacheFrames.AsArray(),
                     }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, groupsFound);
 
                     JobHandle closuresFilled = new FillVesselClosuresJob
@@ -1059,6 +1077,9 @@ namespace KSP.Retooled.Physics
                         ClosurePartA = vesselBuild.ClosurePartA.AsArray(),
                         ClosurePartB = vesselBuild.ClosurePartB.AsArray(),
                         Closures = vesselBuild.Closures.AsArray(),
+                        RefillAll = refillAll,
+                        ClosureCache = vesselBuild.ClosureCache.AsArray(),
+                        ClosureCacheFrames = vesselBuild.ClosureCacheFrames.AsArray(),
                     }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, groupsFound);
                     // The joint loads at the end of the step need this list. Waiting for BuildJointsJob keeps the job
                     // from reading a group while BuildJointsJob writes it.
