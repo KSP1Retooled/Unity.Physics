@@ -1004,57 +1004,147 @@ namespace Unity.Physics
 
         /// <summary>
         /// Makes a key for each boundary row that stays the same from one solve to the next while the row's constraint
-        /// lasts. The key comes from the two world bodies of the row's block, the block's type, how many blocks of the same
-        /// bodies and type come before it in the island, and the row's place in its block. The two lowest bits of each key
-        /// are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// lasts. The key comes from the row's block and from the row's own place in its constraint. The two lowest bits
+        /// of each key are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// <list type="bullet">
+        /// <item>
+        /// A block is known by its two bodies, see <see cref="BodyKey"/>, its type and, for a contact that has them, its
+        /// two collider keys. If the island has several blocks with all of these the same, a block is also known by how
+        /// many of them come before it among all of the island's blocks. The count includes blocks that have no
+        /// boundary rows, so that a cap or a dormant row in an earlier block does not change it.
+        /// </item>
+        /// <item>
+        /// A contact's normal row is known by its point's index in the manifold, and a friction row by its place among
+        /// the three friction rows. So when a point drops out of the rows, the other rows keep their keys. A joint row
+        /// is known by its place in its block, because a joint always has the same rows.
+        /// </item>
+        /// </list>
         /// </summary>
         static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
         {
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             var keys = new NativeArray<ulong>(math.max(1, nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var blockKeys = new NativeArray<ulong>(math.max(1, problem.BlockCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var seen = new NativeHashMap<ulong, int>(16, Allocator.Temp);
-            int lastBlock = -1;
-            ulong blockKey = 0;
+            var vesselIds = new NativeHashMap<int, ulong>(math.max(1, run.IslandVesselCount), Allocator.Temp);
+            int vesselParts = 0;
+            for (int v = 0; v < run.IslandVesselCount; v++)
+            {
+                VesselRecord vessel = run.Vessels.Vessels[run.IslandVessels[v]];
+                vesselIds[vesselParts] = vessel.Id;
+                vesselParts += vessel.PartCount;
+            }
+
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
+                ulong identity;
+                if (header != null)
+                {
+                    identity = Mix(BodyKey(run, header->BodyPair.BodyIndexA, vesselParts, vesselIds) * 0x9E3779B97F4A7C15UL
+                        + BodyKey(run, header->BodyPair.BodyIndexB, vesselParts, vesselIds)) ^ (ulong)header->Type;
+                    if (header->Type == JacobianType.Contact && header->HasContactManifold)
+                    {
+                        ColliderKeyPair colliders = header->AccessColliderKeys();
+                        identity = Mix(identity + (((ulong)colliders.ColliderKeyA.Value << 32) | colliders.ColliderKeyB.Value));
+                    }
+                }
+                else
+                {
+                    int worldA = block.BodyA >= 0 ? run.WorldBodies[block.BodyA] : -1;
+                    int worldB = block.BodyB >= 0 ? run.WorldBodies[block.BodyB] : -1;
+                    identity = Mix(BodyKey(run, worldA, vesselParts, vesselIds) * 0x9E3779B97F4A7C15UL
+                        + BodyKey(run, worldB, vesselParts, vesselIds)) ^ 0xFFUL;
+                }
+
+                int occurrence = 0;
+                if (seen.TryGetValue(identity, out int before))
+                {
+                    occurrence = before + 1;
+                }
+
+                seen[identity] = occurrence;
+                blockKeys[b] = Mix(identity + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
+            }
+
             for (int i = 0; i < nb; i++)
             {
                 int row = boundary[i];
                 int b = run.RowBlock[row];
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
-                if (b != lastBlock)
+                JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
+                ulong place = (ulong)(row - block.FirstRow);
+                if (header != null && header->Type == JacobianType.Contact)
                 {
-                    lastBlock = b;
-                    JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
-                    int bodyA, bodyB;
-                    ulong type;
-                    if (header != null)
-                    {
-                        bodyA = header->BodyPair.BodyIndexA;
-                        bodyB = header->BodyPair.BodyIndexB;
-                        type = (ulong)header->Type;
-                    }
-                    else
-                    {
-                        bodyA = block.BodyA >= 0 ? run.WorldBodies[block.BodyA] : -1;
-                        bodyB = block.BodyB >= 0 ? run.WorldBodies[block.BodyB] : -1;
-                        type = 0xFF;
-                    }
-
-                    ulong pairKey = Mix(((ulong)(uint)bodyA << 32) | (uint)bodyB) ^ type;
-                    int occurrence = 0;
-                    if (seen.TryGetValue(pairKey, out int before))
-                    {
-                        occurrence = before + 1;
-                    }
-
-                    seen[pairKey] = occurrence;
-                    blockKey = Mix(pairKey + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
+                    place = ContactRowPlace(ref *header, row - block.FirstRow);
                 }
 
-                keys[i] = Mix(blockKey + (ulong)(row - block.FirstRow)) & ~(ulong)BoundaryMemory.StateMask;
+                keys[i] = Mix(blockKeys[b] + place) & ~(ulong)BoundaryMemory.StateMask;
             }
 
+            blockKeys.Dispose();
             seen.Dispose();
+            vesselIds.Dispose();
             return keys;
+        }
+
+        /// <summary>
+        /// A key for one side of a block that stays the same while the body stays in the island. A part of one of the
+        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other moving body is known by
+        /// its index in the dynamics world, and a body that does not move by its index among the bodies that do not
+        /// move. Returns 0 for no body.
+        /// </summary>
+        static unsafe ulong BodyKey(in ForestRun run, int world, int vesselParts, in NativeHashMap<int, ulong> vesselIds)
+        {
+            if (world < 0)
+            {
+                return 0;
+            }
+
+            if (world >= run.CompactOfWorldLength)
+            {
+                return Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2);
+            }
+
+            int compact = run.CompactOfWorld[world];
+            int part = compact >= 0 && compact < run.Forest->BodyPart.Length ? run.Forest->BodyPart[compact] : -1;
+            if (part >= 0 && part < vesselParts)
+            {
+                int start = run.Forest->PartVesselStart[part];
+                if (vesselIds.TryGetValue(start, out ulong id))
+                {
+                    return Mix(Mix(id) + (((ulong)(uint)(part - start) << 2) | 3));
+                }
+            }
+
+            return Mix(((ulong)(uint)world << 2) | 1);
+        }
+
+        /// <summary>
+        /// The place of a contact block's row in its contact: for a normal row, the index of the row's point in the
+        /// manifold, and for a friction row, 0x10000 plus its place among the three friction rows. The block's first
+        /// rows are the normal rows of the points within reach, in the manifold's order, and the friction rows follow.
+        /// </summary>
+        static unsafe ulong ContactRowPlace(ref JacobianHeader header, int offset)
+        {
+            int count = header.AccessBaseJacobian<ContactJacobian>().BaseJacobian.NumContacts;
+            int normals = 0;
+            int point = -1;
+            for (int k = 0; k < count; k++)
+            {
+                if (header.AccessAngularJacobian(k).ContactDistance <= ContactRowReach)
+                {
+                    if (normals == offset)
+                    {
+                        point = k;
+                    }
+
+                    normals++;
+                }
+            }
+
+            return offset < normals && point >= 0 ? (ulong)point : 0x10000UL + (ulong)(offset - normals);
         }
 
         /// <summary>Mixes the bits of a 64-bit value, as the last step of MurmurHash3 does.</summary>
