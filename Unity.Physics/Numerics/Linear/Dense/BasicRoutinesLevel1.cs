@@ -170,50 +170,9 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return;
             }
 
-            // fast path whenever both strides are 1
-            if (Stride == 1 && v.Stride == 1)
-            {
-                int start = 0;
-                if (Dimension >= 4)
-                {
-                    int dim4 = Dimension & ~0x3;
-
-                    var src = (float4*)v.data;
-                    var dst = (float4*)data;
-                    for (int i = 0; i < dim4; i += 4, src++, dst++)
-                    {
-                        *dst += *src * s;
-                    }
-                    start = dim4;
-                }
-
-                for (int i = start; i < Dimension; i++)
-                {
-                    data[i] = data[i] + s * v.data[i];
-                }
-            }
-            else
-            {
-                // general path.
-                //   TODO: add a fast path when only one of the strides is 1
-                //   TODO: add a fast path the strides are equal and multiples of 4
-                var src = v.data;
-                if (v.Stride < 0)
-                {
-                    src += (-Dimension + 1) * v.Stride;
-                }
-
-                var dst = data;
-                if (Stride < 0)
-                {
-                    dst += (-Dimension + 1) * Stride;
-                }
-
-                for (int i = 0; i < Dimension; i++, src += v.Stride, dst += Stride)
-                {
-                    *dst += *src * s;
-                }
-            }
+            // The kernel runs in vectors of eight floats when both strides are 1, and in a plain loop otherwise. It
+            // adds with fused multiply-adds, so the result can differ from separate products and sums in the last bit.
+            Unity.Numerics.Kernels.Blas.Axpy(Dimension, s, v.KernelStart, v.Stride, KernelStart, Stride);
         }
 
         /// <summary>
@@ -244,54 +203,9 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return 0;
             }
 
-            float sum = 0;
-
-            // fast path whenever both strides are 1
-            if (Stride == 1 && v.Stride == 1)
-            {
-                int start = 0;
-                if (Dimension >= 4)
-                {
-                    int dim4 = Dimension & ~0x3;
-
-                    var ptr1 = (float4*)data;
-                    var ptr2 = (float4*)v.data;
-                    for (int i = 0; i < dim4; i += 4, ptr1++, ptr2++)
-                    {
-                        sum += math.dot(*ptr1, *ptr2);
-                    }
-                    start = dim4;
-                }
-
-                for (int i = start; i < Dimension; i++)
-                {
-                    sum += data[i] * v.data[i];
-                }
-            }
-            else
-            {
-                // general path.
-                //   TODO: add a fast path when only one of the strides is 1
-                //   TODO: add a fast path the strides are equal and multiples of 4
-                var ptr1 = data;
-                if (Stride < 0)
-                {
-                    ptr1 += (-Dimension + 1) * Stride;
-                }
-
-                var ptr2 = v.data;
-                if (v.Stride < 0)
-                {
-                    ptr2 += (-Dimension + 1) * v.Stride;
-                }
-
-                for (int i = 0; i < Dimension; i++, ptr1 += Stride, ptr2 += v.Stride)
-                {
-                    sum += *ptr1 * *ptr2;
-                }
-            }
-
-            return sum;
+            // The kernel keeps four sums of eight floats when both strides are 1, and one sum otherwise, so the
+            // result can differ from a single running sum in the last bits.
+            return Unity.Numerics.Kernels.Blas.Dot(Dimension, KernelStart, Stride, v.KernelStart, v.Stride);
         }
 
         /// <summary>
@@ -371,42 +285,9 @@ namespace Unity.Numerics.Linear.Dense.Primitives
 
             var dataStart = data + start;
 
-            // fast path for stride=1
-            if (Stride == 1)
-            {
-                int idx = 0;
-                var ptr = (float4*)dataStart;
-
-                if (size >= 4)
-                {
-                    int dim4 = size & ~0x3;
-                    for (int i = 0; i < dim4; i += 4, ptr++)
-                    {
-                        *ptr *= s;
-                    }
-                    idx = dim4;
-                }
-
-                var sptr = (float*)ptr;
-                for (int i = idx; i < size; i++, sptr++)
-                {
-                    *sptr *= s;
-                }
-            }
-            else
-            {
-                // general path
-                var ptr = dataStart;
-                if (Stride < 0)
-                {
-                    ptr += (-size + 1) * Stride;
-                }
-
-                for (int i = 0; i < size; i++, ptr += Stride)
-                {
-                    *ptr *= s;
-                }
-            }
+            // The same entries as the loops that this replaces: with a negative stride, they start at the far end.
+            var first = Stride >= 0 ? dataStart : dataStart + (long)(1 - size) * Stride;
+            Unity.Numerics.Kernels.Blas.Scale(size, s, first, Stride);
         }
 
         /// <summary>

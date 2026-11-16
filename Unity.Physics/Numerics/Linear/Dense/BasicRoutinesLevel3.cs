@@ -95,11 +95,11 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return;
             }
 
-            // When A is not transposed, and A, B and C are each stored in one block with whole columns, the product
-            // goes to the GEMM kernel in Unity.Numerics.Kernels. The kernel adds up the products in another order and
-            // with fused multiply-adds, so the result can differ from the loops below in the last bits.
-            if (opA == Op.None && TryColumnMajor(A, out float* a, out int lda) && TryColumnMajor(B, out float* b, out int ldb) &&
-                TryColumnMajor(this, out float* c, out int ldc) && !Overlaps(this, c, ldc, A, a, lda) && !Overlaps(this, c, ldc, B, b, ldb))
+            // When the kernels can take the storage of A, B and C, and C shares none of it with A or B, the product
+            // goes to the GEMM kernel in Unity.Numerics.Kernels, with op(A) and op(B) as views. A transposed A is
+            // copied into panels by the kernel. The kernel adds up the products in another order and with fused
+            // multiply-adds, so the result can differ from the loops below in the last bits.
+            if (TryView(A, out var a) && TryView(B, out var b) && TryView(this, out var c) && !Overlaps(c, a) && !Overlaps(c, b))
             {
                 for (int i = 0; i < N; i++)
                 {
@@ -113,15 +113,7 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                     }
                 }
 
-                if (opB == Op.None)
-                {
-                    Unity.Numerics.Kernels.Blas.GemmNN(M, N, K, alpha, a, lda, b, ldb, c, ldc);
-                }
-                else
-                {
-                    Unity.Numerics.Kernels.Blas.GemmNT(M, N, K, alpha, a, lda, b, ldb, c, ldc);
-                }
-
+                Unity.Numerics.Kernels.Blas.Gemm(alpha, opA == Op.None ? a : a.Transpose, opB == Op.None ? b : b.Transpose, c);
                 return;
             }
 
@@ -222,43 +214,60 @@ namespace Unity.Numerics.Linear.Dense.Primitives
         }
 
         /// <summary>
-        /// Finds whether the matrix is stored in column-major order in one block: every column is a line of floats, and
-        /// the columns are the same distance apart. If it is, returns the first entry and that distance.
+        /// Runs <see cref="MultiplyByTriangular"/> or, if <paramref name="solve"/> is true,
+        /// <see cref="SolveGeneralizedTriangular"/> with the kernels in Unity.Numerics.Kernels, if they can take the
+        /// storage of A and of this matrix and the two share none of it. Returns false otherwise, and then the caller
+        /// runs its own loops.
+        /// <para>
+        /// The kernels work with a triangle on the left. A product or solve with op(A) on the right is the same one
+        /// with op(A)^T on the left of this matrix's transpose, which is the same storage with the strides swapped.
+        /// alpha (T B) and T^-1 (alpha B) both equal the routine's result with B scaled by alpha first, so this matrix
+        /// is scaled first.
+        /// </para>
         /// </summary>
-        static bool TryColumnMajor(in Matrix matrix, out float* first, out int columnStride)
+        bool TryTriangularKernel(Side side, TriangularType type, Op op, DiagonalType diag, float alpha, in Matrix A, bool solve)
         {
-            first = null;
-            columnStride = 0;
-            int columns = matrix.NumCols;
-            if (columns == 0 || matrix.NumRows == 0)
+            int n = side == Side.Left ? NumRows : NumCols;
+            if (!TryView(A, out var a) || !TryView(this, out var b) || A.NumRows < n || A.NumCols < n || Overlaps(a, b))
             {
                 return false;
             }
 
-            first = matrix.Cols[0].ReinterpretCast<float>();
-            columnStride = columns > 1 ? (int)(matrix.Cols[1].ReinterpretCast<float>() - first) : matrix.NumRows;
-            if (columnStride < matrix.NumRows)
+            if (alpha != 1)
             {
-                return false;
-            }
-
-            for (int j = 0; j < columns; j++)
-            {
-                if (matrix.Cols[j].Stride != 1 || matrix.Cols[j].ReinterpretCast<float>() != first + (long)j * columnStride)
+                for (int j = 0; j < NumCols; j++)
                 {
-                    return false;
+                    Cols[j].Scale(alpha);
+                }
+            }
+
+            bool lower = TriangleForKernels(a, n, side, type, op, out var triangle);
+            var target = side == Side.Left ? b : b.Transpose;
+            bool unit = diag == DiagonalType.Unit;
+            if (solve)
+            {
+                if (lower)
+                {
+                    Unity.Numerics.Kernels.Blas.TrsmLeftLower(triangle, target, unit);
+                }
+                else
+                {
+                    Unity.Numerics.Kernels.Blas.TrsmLeftUpper(triangle, target, unit);
+                }
+            }
+            else
+            {
+                if (lower)
+                {
+                    Unity.Numerics.Kernels.Blas.TrmmLeftLower(triangle, target, unit);
+                }
+                else
+                {
+                    Unity.Numerics.Kernels.Blas.TrmmLeftUpper(triangle, target, unit);
                 }
             }
 
             return true;
-        }
-
-        /// <summary>Whether the storage of two column-major matrices overlaps.</summary>
-        static bool Overlaps(in Matrix x, float* xFirst, int xStride, in Matrix y, float* yFirst, int yStride)
-        {
-            float* xEnd = xFirst + (long)(x.NumCols - 1) * xStride + x.NumRows;
-            float* yEnd = yFirst + (long)(y.NumCols - 1) * yStride + y.NumRows;
-            return xFirst < yEnd && yFirst < xEnd;
         }
 
         /// <summary>
@@ -328,6 +337,11 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             if (alpha == 0)
             {
                 Clear();
+                return;
+            }
+
+            if (TryTriangularKernel(side, type, op, diag, alpha, A, false))
+            {
                 return;
             }
 
@@ -579,6 +593,11 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             if (alpha == 0)
             {
                 Clear();
+                return;
+            }
+
+            if (TryTriangularKernel(side, type, op, diag, alpha, A, true))
+            {
                 return;
             }
 

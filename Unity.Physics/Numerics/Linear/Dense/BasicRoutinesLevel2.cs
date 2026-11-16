@@ -44,10 +44,28 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return;
             }
 
-            Scale(beta);
+            // As in the reference BLAS, a beta of 0 sets this vector to 0 without reading it, so NaN in it doesn't
+            // carry into the result.
+            if (beta == 0.0f)
+            {
+                Clear();
+            }
+            else
+            {
+                Scale(beta);
+            }
 
             if (alpha == 0.0f)
                 return;
+
+            // The kernel takes op(A) as a view, with the transpose as the same storage with the strides swapped. The
+            // loops below are kept for storage that the kernel can't take, or where this vector shares storage with A
+            // or x.
+            if (Matrix.TryView(A, out var a) && !Matrix.Overlaps(a, AsColumn) && !Matrix.Overlaps(x.AsColumn, AsColumn))
+            {
+                Unity.Numerics.Kernels.Blas.Gemv(alpha, op == Op.None ? a : a.Transpose, x.KernelStart, x.Stride, KernelStart, Stride);
+                return;
+            }
 
             if (op == Op.None)
             {
@@ -68,19 +86,11 @@ namespace Unity.Numerics.Linear.Dense.Primitives
             }
             else
             {
-                if (alpha == 1.0f)
+                // These loops used to overwrite entry i with the product, which dropped beta times the old entry and
+                // ignored this vector's stride. They now add the product to entry i, as the summary says.
+                for (int i = 0; i < A.NumCols; i++)
                 {
-                    for (int i = 0; i < A.NumCols; i++)
-                    {
-                        data[i] = A.Cols[i].Dot(x);
-                    }
-                }
-                else
-                {
-                    for (int i = 0; i < A.NumCols; i++)
-                    {
-                        data[i] = alpha * A.Cols[i].Dot(x);
-                    }
+                    this[i] += alpha * A.Cols[i].Dot(x);
                 }
             }
         }
@@ -110,6 +120,23 @@ namespace Unity.Numerics.Linear.Dense.Primitives
 
             if (A.NumRows == 0 || A.NumCols == 0 || Dimension == 0)
             {
+                return;
+            }
+
+            // The kernel's triangular product, with this vector as a matrix of one column, unless this vector shares
+            // storage with A.
+            if (Matrix.TryView(A, out var a) && A.NumRows >= Dimension && A.NumCols >= Dimension && !Matrix.Overlaps(a, AsColumn))
+            {
+                bool lower = Matrix.TriangleForKernels(a, Dimension, Side.Left, type, op, out var triangle);
+                if (lower)
+                {
+                    Unity.Numerics.Kernels.Blas.TrmmLeftLower(triangle, AsColumn, diag == DiagonalType.Unit);
+                }
+                else
+                {
+                    Unity.Numerics.Kernels.Blas.TrmmLeftUpper(triangle, AsColumn, diag == DiagonalType.Unit);
+                }
+
                 return;
             }
 
@@ -309,6 +336,15 @@ namespace Unity.Numerics.Linear.Dense.Primitives
         {
             if (NumRows == 0 || NumCols == 0 || alpha == 0)
             {
+                return;
+            }
+
+            // The kernel's product with an inner dimension of 1: x as a matrix of one column times y as a matrix of
+            // one row. The loops below are kept for storage that the kernel can't take, or that x or y shares.
+            if (TryView(this, out var m) && x.Dimension == NumRows && y.Dimension == NumCols &&
+                !Overlaps(m, x.AsColumn) && !Overlaps(m, y.AsColumn))
+            {
+                Unity.Numerics.Kernels.Blas.Gemm(alpha, x.AsColumn, y.AsRow, m);
                 return;
             }
 
