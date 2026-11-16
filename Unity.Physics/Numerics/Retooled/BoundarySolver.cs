@@ -36,19 +36,42 @@ namespace Unity.Physics.Numerics.Retooled
         public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
             BoundCoupling* couplings, int couplingCount, bool bounded, double* z)
         {
+            return Solve(n, w, q, problemLower, problemUpper, states, couplings, couplingCount, bounded, z,
+                MaxPivotingIterations, false, out _);
+        }
+
+        /// <summary>
+        /// Solves as the overload above does, with two differences. First, the solve takes at most
+        /// <paramref name="maxRounds"/> rounds, where one round is one solve for the free rows. If the solve runs out of
+        /// rounds after it has found at least one answer that meets every condition, it returns the last such answer
+        /// and true. That answer holds for the coupled bounds of its own round, so those bounds lag behind the answer.
+        /// Second, if <paramref name="warm"/> is true, the caller's guess at the states also counts for coupled rows.
+        /// Before the first round, the solver sets the coupled bounds from the source impulses that were applied before
+        /// this solve, as if this solve added nothing to them. Then a coupled row whose bounds have room starts in the
+        /// state that the caller guessed for it, instead of starting free. <paramref name="rounds"/> returns the number
+        /// of rounds that the solve took.
+        /// </summary>
+        public static bool Solve(int n, double* w, double* q, double* problemLower, double* problemUpper, byte* states,
+            BoundCoupling* couplings, int couplingCount, bool bounded, double* z, int maxRounds, bool warm, out int rounds)
+        {
             var lowerArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var upperArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var coupledArray = new NativeArray<bool>(n, Allocator.Temp);
             var factor = new NativeArray<double>(n * n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var rhs = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var free = new NativeArray<int>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var bestArray = new NativeArray<double>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var guessArray = new NativeArray<byte>(n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             double* lower = (double*)lowerArray.GetUnsafePtr();
             double* upper = (double*)upperArray.GetUnsafePtr();
             bool* coupled = (bool*)coupledArray.GetUnsafePtr();
+            double* best = (double*)bestArray.GetUnsafePtr();
+            byte* guess = (byte*)guessArray.GetUnsafePtr();
             for (int i = 0; i < n; i++)
             {
                 lower[i] = problemLower[i];
                 upper[i] = problemUpper[i];
+                guess[i] = states[i];
             }
 
             for (int c = 0; bounded && c < couplingCount; c++)
@@ -59,14 +82,26 @@ namespace Unity.Physics.Numerics.Retooled
                 }
             }
 
+            // A warm start sets the coupled bounds from the impulses that were applied before this solve.
+            warm &= bounded;
+            if (warm)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    z[i] = 0.0;
+                }
+
+                Couple(couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
+            }
+
             for (int i = 0; i < n; i++)
             {
-                byte state = bounded ? states[i] : Free;
+                byte state = bounded ? guess[i] : Free;
                 if (bounded && lower[i] == upper[i])
                 {
                     state = LowerTight;
                 }
-                else if (coupled[i] || state > UpperTight)
+                else if ((coupled[i] && !warm) || state > UpperTight)
                 {
                     state = Free;
                 }
@@ -79,8 +114,11 @@ namespace Unity.Physics.Numerics.Retooled
             int stalled = 0;
             bool flipAll = true;
             int couplingRounds = 0;
-            for (int iteration = 1; iteration <= MaxPivotingIterations; iteration++)
+            bool found = false;
+            rounds = 0;
+            for (int iteration = 1; iteration <= maxRounds; iteration++)
             {
+                rounds = iteration;
                 SolveFree(n, w, q, lower, upper, states, z, (double*)factor.GetUnsafePtr(), (double*)rhs.GetUnsafePtr(),
                     (int*)free.GetUnsafePtr());
                 if (!bounded)
@@ -92,6 +130,12 @@ namespace Unity.Physics.Numerics.Retooled
                 int infeasible = Pivot(n, w, q, lower, upper, states, z, flipAll);
                 if (infeasible == 0)
                 {
+                    found = true;
+                    for (int i = 0; i < n; i++)
+                    {
+                        best[i] = z[i];
+                    }
+
                     if (couplingRounds == MaxCouplingIterations || !Couple(couplings, couplingCount, problemLower, problemUpper,
                         lower, upper, states, z))
                     {
@@ -118,7 +162,16 @@ namespace Unity.Physics.Numerics.Retooled
                 }
             }
 
-            if (!result)
+            if (!result && found)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    z[i] = best[i];
+                }
+
+                result = true;
+            }
+            else if (!result)
             {
                 for (int i = 0; i < n; i++)
                 {
@@ -132,6 +185,8 @@ namespace Unity.Physics.Numerics.Retooled
             factor.Dispose();
             rhs.Dispose();
             free.Dispose();
+            bestArray.Dispose();
+            guessArray.Dispose();
             return result;
         }
 

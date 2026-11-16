@@ -442,6 +442,7 @@ namespace KSP.Retooled.Physics
                 YieldAngle = VesselForest.YieldAngle,
                 MinimumHoldSteps = VesselForest.MinimumHoldSteps,
                 DeflectionSmoothingSteps = VesselForest.DeflectionSmoothingSteps,
+                Caps = VesselForest.Caps,
             };
             input.DirectSolverCache = directSolverCache;
             input.VesselSet = vesselSet;
