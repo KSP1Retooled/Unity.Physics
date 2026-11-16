@@ -99,6 +99,13 @@ namespace KSP.Retooled.Physics
         [NativeDisableUnsafePtrRestriction]
         public NativeStore.WorldData* World;
 
+        /// <summary>
+        /// The load state of each joint, at the joint's index in the world's list. Locking reads the smoothed loads
+        /// from it. See <see cref="JointLoadStates"/>.
+        /// </summary>
+        [NativeDisableUnsafePtrRestriction]
+        public JointLoadState* States;
+
         [ReadOnly]
         public NativeArray<int> BuiltIndices;
 
@@ -206,20 +213,21 @@ namespace KSP.Retooled.Physics
         {
             if (unit.Group < 0)
             {
-                return JointLock(World->joints[unit.Joint]);
+                return JointLock(World->joints[unit.Joint], States + unit.Joint);
             }
 
             JointGroup group = Groups[unit.Group];
             JointForestLock allowed = JointForestLock.Lockable | JointForestLock.Holdable;
             for (int i = 0; i < group.MemberCount; i++)
             {
-                allowed &= JointLock(World->joints[Members[group.FirstMember + i].Joint]);
+                int joint = Members[group.FirstMember + i].Joint;
+                allowed &= JointLock(World->joints[joint], States + joint);
             }
 
             return allowed;
         }
 
-        private JointForestLock JointLock(NativeStore.JointData* joint)
+        private JointForestLock JointLock(NativeStore.JointData* joint, JointLoadState* state)
         {
             int lockedAngles = 0;
             for (int i = 0; i < 3; i++)
@@ -233,8 +241,8 @@ namespace KSP.Retooled.Physics
             }
 
             float fraction = math.max(
-                joint->breakForce > 0.0f ? joint->breakingForce / joint->breakForce : 0.0f,
-                joint->breakTorque > 0.0f ? joint->breakingTorque / joint->breakTorque : 0.0f);
+                state->BreakForce > 0.0f ? state->BreakingForce / state->BreakForce : 0.0f,
+                state->BreakTorque > 0.0f ? state->BreakingTorque / state->BreakTorque : 0.0f);
             return (fraction < LockFraction ? JointForestLock.Lockable : JointForestLock.None)
                 | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
         }

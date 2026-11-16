@@ -62,6 +62,10 @@ namespace KSP.Retooled.Physics
         // a load.
         private NativeList<byte> jointsOverloaded;
 
+        // The load state of each joint, in the order of the store's list of joints. The joint commands keep it in that
+        // order between steps. See JointLoadStates.
+        private UnsafeList<JointLoadState>* jointStates;
+
         // The joints and groups outside the active vessels of this step. See ListOtherJointsJob.
         private NativeList<int> otherJoints;
         private NativeList<int> otherGroups;
@@ -207,6 +211,8 @@ namespace KSP.Retooled.Physics
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
             jointsOverloaded = new NativeList<byte>(Allocator.Persistent);
+            jointStates = UnsafeList<JointLoadState>.Create((int)store->jointCount, Allocator.Persistent);
+            JointLoadStates.Register(store, jointStates);
             otherJoints = new NativeList<int>(Allocator.Persistent);
             otherGroups = new NativeList<int>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -274,6 +280,8 @@ namespace KSP.Retooled.Physics
             jointLoads.Dispose();
             groupLoads.Dispose();
             jointsOverloaded.Dispose();
+            JointLoadStates.Unregister(store);
+            UnsafeList<JointLoadState>.Destroy(jointStates);
             otherJoints.Dispose();
             otherGroups.Dispose();
             directSolverCache.Dispose();
@@ -608,6 +616,7 @@ namespace KSP.Retooled.Physics
             JobHandle loaded = new SeedJointLoadsJob
             {
                 World = store,
+                States = jointStates->Ptr,
                 Loads = jointLoads.AsArray(),
                 Joints = otherJoints.AsArray(),
                 Listed = listed,
@@ -644,6 +653,7 @@ namespace KSP.Retooled.Physics
             JobHandle settled = new SettleJointLoadsJob
             {
                 World = store,
+                States = jointStates->Ptr,
                 Loads = jointLoads.AsArray(),
                 Overloaded = jointsOverloaded.AsArray(),
                 Joints = otherJoints.AsArray(),
@@ -656,6 +666,7 @@ namespace KSP.Retooled.Physics
             {
                 World = store,
                 Globals = globals,
+                States = jointStates->Ptr,
                 Overloaded = jointsOverloaded.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(settled);
@@ -685,6 +696,11 @@ namespace KSP.Retooled.Physics
             // change size after this point in the step.
             jointLoads.ResizeUninitialized((int)store->jointCount);
             jointsOverloaded.ResizeUninitialized((int)store->jointCount);
+            if (jointStates->Length != (int)store->jointCount)
+            {
+                throw new InvalidOperationException("the joints' load states and the store's joints differ in number");
+            }
+
             if (!vesselSet.IsCreated)
             {
                 return default;
@@ -693,6 +709,7 @@ namespace KSP.Retooled.Physics
             return new VesselLoadsJob
             {
                 World = store,
+                States = jointStates->Ptr,
                 Units = jointUnits.AsArray(),
                 Groups = jointGroups.AsArray(),
                 Members = jointGroupMembers.AsArray(),
@@ -1265,6 +1282,7 @@ namespace KSP.Retooled.Physics
                 JobHandle emitted = new BuildJointsJob
                 {
                     World = store,
+                    States = jointStates->Ptr,
                     BuiltIndices = builtIndices.AsArray(),
                     Units = jointUnits.AsDeferredJobArray(),
                     Output = stream.AsWriter(),
