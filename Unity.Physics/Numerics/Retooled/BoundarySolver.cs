@@ -81,9 +81,9 @@ namespace Unity.Physics.Numerics.Retooled
         }
 
         /// <summary>
-        /// Solves as the overload above does. If <paramref name="update"/> is true, a round whose free rows differ from
-        /// the last round's by only a few rows changes the last round's factor instead of factoring W_FF again, and a
-        /// round with the same free rows uses the last round's factor as it is. If <paramref name="update"/> is false,
+        /// Solves as the overload above does. If <paramref name="update"/> is true, a round keeps the rows of the last
+        /// round's factor up to the first row that left the free set and factors only the rest again, and a round with
+        /// the same free rows uses the last round's factor as it is. If <paramref name="update"/> is false,
         /// every round factors W_FF from the start, as the solver did before. Both ways give the same answer up to
         /// rounding. If <paramref name="stats"/> is not null, the solve adds what it did to it.
         /// </summary>
@@ -246,11 +246,13 @@ namespace Unity.Physics.Numerics.Retooled
         /// <summary>
         /// The Cholesky factor L L^T of W_FF, where F is the set of free rows, kept from one round of pivoting to the
         /// next. The factor's rows are the free rows in the order in which they joined the factor, so a row that joins
-        /// goes at the end. Each round asks the factor to solve W_FF z_F = q_F - W_FT z_T, where T is the set of rows at
-        /// a bound. If the round's free rows are the ones that the factor holds, the factor is used as it is. If only a
-        /// few rows differ, the rows that left the free set are taken out of the factor and the rows that joined it are
-        /// added at the end, which costs about n^2 for each row instead of the n^3 / 6 of a new factor. Otherwise, or if
-        /// updates are turned off, W_FF is factored again from the start.
+        /// goes at the end, and the rows that stay free longest come first. Each round asks the factor to solve
+        /// W_FF z_F = q_F - W_FT z_T, where T is the set of rows at a bound. If the round's free rows are the ones that
+        /// the factor holds, the factor is used as it is. Otherwise, the rows of L before the first row that left the
+        /// free set stay as they are, because a row of L depends only on the rows of W_FF up to its own. The rows from
+        /// there on, and the rows that joined, are factored again. That costs (m^3 - k^3) / 6 for m free rows of which
+        /// the first k stay, against m^3 / 6 for a new factor. With updates turned off, every round factors W_FF from
+        /// the start.
         /// </summary>
         unsafe struct FreeFactor
         {
@@ -265,8 +267,6 @@ namespace Unity.Physics.Numerics.Retooled
             NativeArray<int> orderArray;
             NativeArray<int> placeArray;
             NativeArray<double> rhsArray;
-            NativeArray<double> workArray;
-            NativeArray<double> rotationArray;
             NativeArray<int> tightArray;
             int m;
             bool valid;
@@ -281,8 +281,6 @@ namespace Unity.Physics.Numerics.Retooled
                 orderArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 placeArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 rhsArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                workArray = new NativeArray<double>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                rotationArray = new NativeArray<double>(2 * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 tightArray = new NativeArray<int>(size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 int* place = (int*)placeArray.GetUnsafePtr();
                 for (int i = 0; i < n; i++)
@@ -300,8 +298,6 @@ namespace Unity.Physics.Numerics.Retooled
                 orderArray.Dispose();
                 placeArray.Dispose();
                 rhsArray.Dispose();
-                workArray.Dispose();
-                rotationArray.Dispose();
                 tightArray.Dispose();
             }
 
@@ -316,14 +312,13 @@ namespace Unity.Physics.Numerics.Retooled
                 double* rhs = (double*)rhsArray.GetUnsafePtr();
                 int* tight = (int*)tightArray.GetUnsafePtr();
 
-                // Find the rows at a bound, and how the free rows differ from the rows that the factor holds.
-                int tightCount = 0, freeCount = 0, added = 0, removed = 0;
-                long removeCost = 0;
+                // Find the rows at a bound, and how the free rows differ from the rows that the factor holds. The rows
+                // of the factor before the first row that left the free set can stay.
+                int tightCount = 0, added = 0, removed = 0, kept = valid && update ? m : 0;
                 for (int i = 0; i < n; i++)
                 {
                     if (states[i] == Free)
                     {
-                        freeCount++;
                         added += place[i] < 0 ? 1 : 0;
                     }
                     else
@@ -333,8 +328,7 @@ namespace Unity.Physics.Numerics.Retooled
                         if (place[i] >= 0)
                         {
                             removed++;
-                            long after = m - place[i];
-                            removeCost += after * after;
+                            kept = math.min(kept, place[i]);
                         }
                     }
                 }
@@ -346,47 +340,53 @@ namespace Unity.Physics.Numerics.Retooled
                     stats->RemovedRows += removed;
                 }
 
-                // Taking a row out at place k costs about (m - k)^2, and adding a row costs about m^2 / 2. A new factor
-                // costs about m^3 / 6.
-                long size = freeCount;
-                bool keep = update && valid && added + removed == 0;
-                bool change = update && valid && !keep && removeCost + added * size * size / 2 < size * size * size / 6;
-                if (keep)
+                if (valid && update && added + removed == 0)
                 {
                     if (stats != null)
                     {
                         stats->Reuses++;
                     }
                 }
-                else if (change)
+                else
                 {
-                    for (int i = 0; i < n; i++)
+                    // The new order: the rows that stay, in their order, and then the rows that joined.
+                    int next = kept;
+                    for (int a = kept; a < m; a++)
                     {
-                        if (states[i] != Free && place[i] >= 0)
+                        int row = order[a];
+                        place[row] = -1;
+                        if (states[row] == Free)
                         {
-                            Remove(place[i]);
+                            order[next++] = row;
                         }
+                    }
+
+                    for (int a = kept; a < next; a++)
+                    {
+                        place[order[a]] = a;
                     }
 
                     for (int i = 0; i < n; i++)
                     {
                         if (states[i] == Free && place[i] < 0)
                         {
-                            Append(w, i);
+                            place[i] = next;
+                            order[next++] = i;
                         }
                     }
 
+                    m = next;
+                    FactorFrom(w, kept);
                     if (stats != null)
                     {
-                        stats->Updates++;
-                    }
-                }
-                else
-                {
-                    Factor(w, states);
-                    if (stats != null)
-                    {
-                        stats->Factorizations++;
+                        if (kept > 0)
+                        {
+                            stats->Updates++;
+                        }
+                        else
+                        {
+                            stats->Factorizations++;
+                        }
                     }
                 }
 
@@ -433,24 +433,15 @@ namespace Unity.Physics.Numerics.Retooled
                 }
             }
 
-            /// <summary>Factors W_FF from the start, with the free rows in their own order.</summary>
-            void Factor(double* w, byte* states)
+            /// <summary>
+            /// Factors the rows of W_FF from place <paramref name="first"/> on, in the factor's order, and keeps the rows
+            /// of L before it. With <paramref name="first"/> zero, this is a new factor.
+            /// </summary>
+            void FactorFrom(double* w, int first)
             {
                 double* l = (double*)factorArray.GetUnsafePtr();
                 int* order = (int*)orderArray.GetUnsafePtr();
-                int* place = (int*)placeArray.GetUnsafePtr();
-                m = 0;
-                for (int i = 0; i < n; i++)
-                {
-                    place[i] = -1;
-                    if (states[i] == Free)
-                    {
-                        place[i] = m;
-                        order[m++] = i;
-                    }
-                }
-
-                for (int a = 0; a < m; a++)
+                for (int a = first; a < m; a++)
                 {
                     double* wi = w + (long)order[a] * n;
                     double* ra = l + (long)a * n;
@@ -460,8 +451,8 @@ namespace Unity.Physics.Numerics.Retooled
                     }
                 }
 
-                // Factor W_FF in place as L L^T, where L is lower triangular.
-                for (int a = 0; a < m; a++)
+                // Factor W_FF in place as L L^T, where L is lower triangular. Row a of L needs only the rows before it.
+                for (int a = first; a < m; a++)
                 {
                     double* ra = l + (long)a * n;
                     for (int b = 0; b <= a; b++)
@@ -481,86 +472,6 @@ namespace Unity.Physics.Numerics.Retooled
                 }
 
                 valid = true;
-            }
-
-            /// <summary>
-            /// Takes the row at place <paramref name="k"/> out of the factor. The rows after it move up by one place, and
-            /// each of them loses its entry in column k. What that column held, x, is added back to the rows below it as
-            /// the rank-one update L' L'^T = L_33 L_33^T + x x^T, done with one rotation for each column.
-            /// </summary>
-            void Remove(int k)
-            {
-                double* l = (double*)factorArray.GetUnsafePtr();
-                int* order = (int*)orderArray.GetUnsafePtr();
-                int* place = (int*)placeArray.GetUnsafePtr();
-                double* x = (double*)workArray.GetUnsafePtr();
-                place[order[k]] = -1;
-                for (int i = k + 1; i < m; i++)
-                {
-                    double* from = l + (long)i * n;
-                    double* to = l + (long)(i - 1) * n;
-                    for (int j = 0; j < k; j++)
-                    {
-                        to[j] = from[j];
-                    }
-
-                    x[i - k - 1] = from[k];
-                    for (int j = k + 1; j <= i; j++)
-                    {
-                        to[j - 1] = from[j];
-                    }
-
-                    order[i - 1] = order[i];
-                    place[order[i - 1]] = i - 1;
-                }
-
-                m--;
-
-                // The rotation of column a depends on row a's diagonal and on x[a] after the rotations of the columns
-                // before a. So the rows can take the rotations one row at a time, in order, which reads each row of L
-                // where it lies in memory instead of down its columns.
-                double* cosines = (double*)rotationArray.GetUnsafePtr();
-                double* sines = cosines + n;
-                for (int r = k; r < m; r++)
-                {
-                    double* row = l + (long)r * n;
-                    double xr = x[r - k];
-                    for (int a = k; a < r; a++)
-                    {
-                        double updated = (row[a] + sines[a - k] * xr) / cosines[a - k];
-                        xr = cosines[a - k] * xr - sines[a - k] * updated;
-                        row[a] = updated;
-                    }
-
-                    double d = row[r];
-                    double rotated = math.sqrt(d * d + xr * xr);
-                    cosines[r - k] = rotated / d;
-                    sines[r - k] = xr / d;
-                    row[r] = rotated;
-                }
-            }
-
-            /// <summary>
-            /// Adds row <paramref name="row"/> at the end of the factor. Its row of L solves L y = W_F,row against the
-            /// rows already in the factor, and its diagonal entry is the square root of W_row,row - y . y.
-            /// </summary>
-            void Append(double* w, int row)
-            {
-                double* l = (double*)factorArray.GetUnsafePtr();
-                int* order = (int*)orderArray.GetUnsafePtr();
-                int* place = (int*)placeArray.GetUnsafePtr();
-                double* wi = w + (long)row * n;
-                double* y = l + (long)m * n;
-                for (int b = 0; b < m; b++)
-                {
-                    double* rb = l + (long)b * n;
-                    y[b] = (wi[order[b]] - Dot(y, rb, b)) / rb[b];
-                }
-
-                y[m] = math.sqrt(math.max(wi[row] - Dot(y, y, m), 1e-300));
-                order[m] = row;
-                place[row] = m;
-                m++;
             }
         }
 

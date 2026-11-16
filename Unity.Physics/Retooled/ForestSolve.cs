@@ -2429,8 +2429,8 @@ namespace Unity.Physics
         public bool ColdStart;
 
         /// <summary>
-        /// If true, every round of pivoting factors its free rows from the start. If false, a round changes the last
-        /// round's factor when only a few rows joined or left the free set, see
+        /// If true, every round of pivoting factors its free rows from the start. If false, a round keeps what it can of
+        /// the last round's factor, see
         /// <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>. For measuring what the updates save.
         /// </summary>
         public bool RefactorEveryRound;
