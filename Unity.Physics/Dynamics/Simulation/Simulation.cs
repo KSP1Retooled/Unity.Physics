@@ -61,6 +61,13 @@ namespace Unity.Physics
         /// <param name="stepInput">    The step input. </param>
         public void Reset(SimulationStepInput stepInput)
         {
+            // A context that is only ever reset here, never through ScheduleReset, still needs the pair count: a step
+            // job that it is given checks that all of its containers exist.
+            if (!IslandPairCount.IsCreated)
+            {
+                IslandPairCount = new NativeReference<int>(0, Allocator.Persistent);
+            }
+
             m_NumDynamicBodies = stepInput.World.NumDynamicBodies;
             if (!m_InputVelocities.IsCreated || m_InputVelocities.Length < m_NumDynamicBodies)
             {
