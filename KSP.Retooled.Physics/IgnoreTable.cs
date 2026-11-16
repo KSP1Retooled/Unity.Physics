@@ -45,7 +45,7 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Marks a table that has the fields below. A table made by older code ends before them, and it can survive a
-        /// domain reload into this code. <see cref="TableOf"/> then grows the table before it writes these fields.
+        /// domain reload into this code. <see cref="Upgrade"/> then grows the table before it reads or writes these fields.
         /// </summary>
         private ulong layout;
 
@@ -171,6 +171,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static void Reslot(NativeStore.StoreGlobals* globals)
         {
+            Upgrade(globals);
             IgnoreTable* table = globals->ignoreTable;
             if (table != null && table->slotCount != 0)
             {
@@ -197,19 +198,39 @@ namespace KSP.Retooled.Physics
                     table->firstEdge[i] = 0;
                 }
 
+                table->layout = CurrentLayout;
                 globals->ignoreTable = table;
             }
 
-            if (globals->ignoreTable->layout != CurrentLayout)
+            return globals->ignoreTable;
+        }
+
+        /// <summary>
+        /// Gives a table that older code made the fields that it lacks. <see cref="BackendHost.Attach"/> calls this
+        /// through <see cref="Reslot"/>, after a domain reload and before anything else reads the table, so that every
+        /// other method can read <see cref="layout"/>.
+        ///
+        /// A table made by code older than the groups is 64 bytes long and ends just before <see cref="layout"/>. So
+        /// this method first moves the table to a block of the current size, and only then reads the field. The heap
+        /// keeps the old bytes, and a table that already has the current size keeps all of its fields. In a table that
+        /// was 64 bytes long, the new bytes hold whatever the heap left there, and the field doesn't match the current
+        /// layout, unless those bytes happen to spell it.
+        /// </summary>
+        internal static void Upgrade(NativeStore.StoreGlobals* globals)
+        {
+            if (globals->ignoreTable == null)
             {
-                // Copy a table made by older code into a block that is large enough for the new fields.
-                IgnoreTable* grown = (IgnoreTable*)StoreOps.Reallocate(globals, globals->ignoreTable, (ulong)sizeof(IgnoreTable));
-                grown->layout = CurrentLayout;
-                grown->Groups = null;
-                globals->ignoreTable = grown;
+                return;
             }
 
-            return globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)StoreOps.Reallocate(globals, globals->ignoreTable, (ulong)sizeof(IgnoreTable));
+            if (table->layout != CurrentLayout)
+            {
+                table->layout = CurrentLayout;
+                table->Groups = null;
+            }
+
+            globals->ignoreTable = table;
         }
 
         private static uint KeyOf(uint first, uint second)
