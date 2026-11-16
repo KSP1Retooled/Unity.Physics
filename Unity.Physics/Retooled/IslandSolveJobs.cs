@@ -236,6 +236,7 @@ namespace Unity.Physics
                 Fuse = fusedVessels && !LegacyRowBuild,
                 MinimumParts = FusedVesselParts,
                 Contacts = FusedContacts,
+                Buffers = work.Buffers,
             }.Schedule(handle);
 
             if (fusedVessels)
@@ -249,7 +250,7 @@ namespace Unity.Physics
                     MotionDatas = world.MotionDatas,
                     Bodies = world.Bodies,
                     StepInput = substepInput,
-                    Team = work.Buffers.Teams->Ptr + substeps,
+                    Teams = work.Buffers.FusedTeams,
                 }.Schedule(lanes, 1, handle);
             }
 
@@ -529,10 +530,18 @@ namespace Unity.Physics
             /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<SparseSolveTeam>* Teams;
 
+            /// <summary>
+            /// One team for each island that the fused vessel job solves, the island with the most parts first.
+            /// <see cref="MarkFusedVesselIslandsJob"/> fills this list.
+            /// </summary>
+            [NativeDisableUnsafePtrRestriction] public UnsafeList<FusedTeam>* FusedTeams;
+
             public DirectIslandBuffers(int substeps, Allocator allocator)
             {
-                // The team after the substeps' teams belongs to the fused vessel job.
+                // The team after the substeps' teams never runs. The main thread configures it here, because only the
+                // main thread can read the clock's conversion rate, and each fused island's team starts as a copy of it.
                 Teams = UnsafeList<SparseSolveTeam>.Create(substeps + 1, allocator);
+                FusedTeams = UnsafeList<FusedTeam>.Create(4, allocator);
                 Teams->Resize(substeps + 1, NativeArrayOptions.ClearMemory);
                 for (int substep = 0; substep <= substeps; substep++)
                 {
@@ -596,7 +605,25 @@ namespace Unity.Physics
                 UnsafeList<LCP.MLCPIndexFlag>.Destroy(IndexFlags);
                 UnsafeList<int>.Destroy(Bounded);
                 UnsafeList<SparseSolveTeam>.Destroy(Teams);
+                UnsafeList<FusedTeam>.Destroy(FusedTeams);
             }
+        }
+
+        /// <summary>
+        /// The team that solves one fused island, with the island's index, its number of vessel parts, and the number
+        /// of lanes that help the team at the moment. A lane that has no island of its own to lead helps the team that
+        /// has the most parts for each lane that works on it.
+        /// </summary>
+        unsafe struct FusedTeam
+        {
+            public SparseSolveTeam Team;
+            public int Island;
+            public int Parts;
+            public int Helpers;
+
+            // Keep the next team's flags out of the cache line that holds this team's count of helpers, which the lanes
+            // change while they pick a team.
+            fixed byte separation[64];
         }
 
         struct DirectIslandWork
@@ -1237,6 +1264,9 @@ namespace Unity.Physics
             /// <summary>The value of <see cref="FusedContacts"/> when the job was scheduled.</summary>
             public bool Contacts;
 
+            /// <summary>The buffers that hold a team for each fused island and the configured team that they copy.</summary>
+            public DirectIslandBuffers Buffers;
+
             public void Execute()
             {
                 // An island smaller than MinimumParts goes to the fused job only if it is the one island of the step
@@ -1261,7 +1291,40 @@ namespace Unity.Physics
                     Islands[i] = island;
                 }
 
+                ListFusedTeams();
                 AssignVesselForests(Cache, Islands.AsArray(), IslandVessels.AsArray(), Vessels);
+            }
+
+            /// <summary>
+            /// Gives each fused island a team of its own. The teams are sorted by the islands' part counts, the most
+            /// parts first and then by island index, so that the first lanes of the fused job lead the largest islands.
+            /// Each team is a copy of the unused team after the substeps' teams, which the main thread configured.
+            /// </summary>
+            void ListFusedTeams()
+            {
+                UnsafeList<FusedTeam>* teams = Buffers.FusedTeams;
+                SparseSolveTeam configured = Buffers.Teams->Ptr[Buffers.Teams->Length - 1];
+                teams->Clear();
+                for (int i = 0; i < Islands.Length; i++)
+                {
+                    if (!Islands[i].Fused)
+                    {
+                        continue;
+                    }
+
+                    var team = new FusedTeam { Team = configured, Island = i, Parts = Islands[i].VesselParts };
+                    int at = teams->Length;
+                    teams->Add(team);
+
+                    // The islands come in index order, so an island moves ahead only of islands with fewer parts.
+                    while (at > 0 && teams->Ptr[at - 1].Parts < team.Parts)
+                    {
+                        teams->Ptr[at] = teams->Ptr[at - 1];
+                        at--;
+                    }
+
+                    teams->Ptr[at] = team;
+                }
             }
 
             /// <summary>
@@ -1277,7 +1340,11 @@ namespace Unity.Physics
 
         /// <summary>
         /// Solves every island that <see cref="MarkFusedVesselIslandsJob"/> marked, for all the substeps of the step.
-        /// The first lane leads, and the others help with the stages that split the parts into ranges.
+        /// Each island has a team of its own, so that several islands can be solved at the same time. Each lane first
+        /// leads every island that has no leader yet, the largest island first. A lane that finds no island to lead
+        /// helps the stages of the islands that are still being solved, which split the parts into ranges. With one
+        /// thread, the islands are solved one after another, as before. Each island's results do not depend on which
+        /// lanes helped it, because each stage combines its tasks' results in the same order.
         /// </summary>
         [BurstCompile]
         unsafe struct SolveFusedVesselIslandsJob : IJobParallelFor
@@ -1308,36 +1375,125 @@ namespace Unity.Physics
 
             public StepInput StepInput;
 
+            /// <summary>A team for each fused island, the island with the most parts first.</summary>
             [NativeDisableUnsafePtrRestriction]
-            public SparseSolveTeam* Team;
+            public UnsafeList<FusedTeam>* Teams;
 
             static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.HelpFused");
 
             public void Execute(int lane)
             {
-                if (!Team->TryLead())
+                FusedTeam* teams = Teams->Ptr;
+                int count = Teams->Length;
+
+                // Lead each island that no lane leads yet. A lane that finishes an island looks for another one.
+                for (int t = 0; t < count; t++)
                 {
-                    using (HelpMarker.Auto())
+                    if (!teams[t].Team.TryLead())
                     {
-                        Team->Help();
+                        continue;
                     }
 
-                    return;
+                    DirectIsland island = Islands[teams[t].Island];
+                    System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
+                    SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
+                        (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
+                        StepInput, &teams[t].Team);
+                    teams[t].Team.Finish();
                 }
 
-                for (int islandIndex = 0; islandIndex < Islands.Length; islandIndex++)
+                // Every island has a leader now. With several islands, work on the open stages of every island, the
+                // largest island first, for as long as some stage is open. A lane that has found no open stage for the
+                // spin time waits on the island that has the most parts for each lane that works on it, counting its
+                // leader. It works on that island's stages until the island is solved, and then looks at all the
+                // islands again. With one island, the lane waits on it at once, as before.
+                using (HelpMarker.Auto())
                 {
-                    DirectIsland island = Islands[islandIndex];
-                    if (island.Fused)
+                    while (true)
                     {
-                        FusedIslandSolveCount.Data++;
-                        SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
-                            (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
-                            StepInput, Team);
+                        if (count > 1 && !SweepOpenStages(teams, count))
+                        {
+                            return;
+                        }
+
+                        int best = -1;
+                        long bestParts = 0, bestLanes = 1;
+                        for (int t = 0; t < count; t++)
+                        {
+                            if (teams[t].Team.Finished)
+                            {
+                                continue;
+                            }
+
+                            // This island has more parts for each lane than the best so far when its parts times the best
+                            // island's lanes are more than the best island's parts times its lanes.
+                            long lanes = System.Threading.Volatile.Read(ref teams[t].Helpers) + 1;
+                            if (best < 0 || teams[t].Parts * bestLanes > bestParts * lanes)
+                            {
+                                best = t;
+                                bestParts = teams[t].Parts;
+                                bestLanes = lanes;
+                            }
+                        }
+
+                        if (best < 0)
+                        {
+                            return;
+                        }
+
+                        System.Threading.Interlocked.Increment(ref teams[best].Helpers);
+                        teams[best].Team.Help();
+                        System.Threading.Interlocked.Decrement(ref teams[best].Helpers);
+
+                        // A helper that stayed idle past its patience gives its thread back to the job system rather than
+                        // wait for another island.
+                        if (!teams[best].Team.Finished)
+                        {
+                            return;
+                        }
                     }
                 }
+            }
 
-                Team->Finish();
+            /// <summary>
+            /// Runs the tasks of every open stage of the islands, the largest island first, until no stage has been
+            /// open for the teams' spin time. Returns false if every island is solved.
+            /// </summary>
+            static bool SweepOpenStages(FusedTeam* teams, int count)
+            {
+                long spinTicks = teams[0].Team.SpinTicks;
+                long idleSince = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                while (true)
+                {
+                    bool unsolved = false, worked = false;
+                    for (int t = 0; t < count; t++)
+                    {
+                        if (!teams[t].Team.Finished)
+                        {
+                            unsolved = true;
+                            worked |= teams[t].Team.TryWork();
+                        }
+                    }
+
+                    if (!unsolved)
+                    {
+                        return false;
+                    }
+
+                    long now = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    if (worked)
+                    {
+                        idleSince = now;
+                    }
+                    else if (now - idleSince > spinTicks)
+                    {
+                        return true;
+                    }
+                    else
+                    {
+                        Unity.Burst.Intrinsics.Common.Pause();
+                    }
+                }
             }
         }
     }
