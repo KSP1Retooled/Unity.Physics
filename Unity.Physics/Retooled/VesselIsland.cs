@@ -174,11 +174,21 @@ namespace Unity.Physics
             // when the forest's layout was last built, and if each moving part's body still has the same number.
             bool known = forest->VesselMode && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
                 && forest->VesselSignature[0] == (ulong)islandVesselCount && forest->FusedCompactOfWorld.Length == math.max(1, motionCount);
+            int closureStart = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
             {
                 VesselRecord vessel = set.Vessels[islandVessels[v]];
                 known = forest->VesselSignature[1 + 3 * v] == vessel.Id && forest->VesselSignature[2 + 3 * v] == vessel.StructureVersion
                     && forest->VesselSignature[3 + 3 * v] == (((ulong)(uint)vessel.PartCount << 32) | (uint)vessel.ClosureCount);
+
+                // The signature leaves out where the vessel's parts and closures start in the set. Those move when an
+                // earlier vessel in the set changes, so check them against the kept tables.
+                int partStart = known && v < forest->VesselPartStart.Length ? forest->VesselPartStart[v] : -1;
+                known = known && partStart >= 0 && (vessel.PartCount == 0
+                    || (partStart < forest->PartSetPart.Length && forest->PartSetPart[partStart] == vessel.FirstPart));
+                known = known && (vessel.ClosureCount == 0
+                    || (closureStart < forest->ClosureSetIndex.Length && forest->ClosureSetIndex[closureStart] == vessel.FirstClosure));
+                closureStart += vessel.ClosureCount;
             }
 
             int numbered = 0;
@@ -396,9 +406,10 @@ namespace Unity.Physics
                 forest->BodyPart.Resize(math.max(1, bodies));
                 UnsafeUtility.MemSet(forest->BodyPart.Ptr, 0xFF, forest->BodyPart.Length * (long)sizeof(int));
 
-                // When the layout has changed, number the parts and closures again, one vessel after another, and record
-                // where each one comes from in the vessel set.
-                if (!same)
+                // Number the parts and closures, one vessel after another, and record where each one comes from in the
+                // vessel set. Do this on every refill, even when the signature is the same: the signature leaves out
+                // each vessel's first part and first closure in the set, and those move when an earlier vessel in the
+                // set changes.
                 {
                     forest->PartSetPart.Resize(partCount);
                     forest->PartVesselStart.Resize(partCount);
@@ -532,11 +543,17 @@ namespace Unity.Physics
             ForestIsland* forest = run.Forest;
             VesselSet set = run.Vessels;
             int setPart = forest->PartSetPart[part];
-            int body = CompactOf(run, set.PartBodies[setPart]);
-            forest->PartBody[part] = body;
-            if (body >= 0)
+
+            // With a known layout, the numbering of the bodies is the same, so the mapping between parts and bodies
+            // is already right.
+            if (!run.KnownLayout)
             {
-                forest->BodyPart[body] = part;
+                int body = CompactOf(run, set.PartBodies[setPart]);
+                forest->PartBody[part] = body;
+                if (body >= 0)
+                {
+                    forest->BodyPart[body] = part;
+                }
             }
 
             bool changed = false;
