@@ -680,7 +680,9 @@ namespace Unity.Physics
         /// Fits the bounds of every node that the root reaches to <paramref name="aabbs"/>, without changing the shape
         /// of the tree. A parallel build can leave unused nodes between its branches, and <see cref="Refit"/> would
         /// read those too. This method visits only the nodes in the tree. It lists them parent first, then fits them
-        /// in the reverse order, so that each node is fitted after all of its children.
+        /// in the reverse order, so that each node is fitted after all of its children. The step fits the tree in
+        /// parallel instead, with <see cref="FindRefitSubtree"/>, <see cref="RefitSubtree"/> and
+        /// <see cref="RefitAboveCut"/>, and the tests compare that refit with this one.
         /// </summary>
         internal unsafe void RefitFromRoot(NativeArray<Aabb> aabbs)
         {
@@ -718,23 +720,174 @@ namespace Unity.Physics
                 Node* node = baseNode + order[i];
                 if (node->IsLeaf)
                 {
-                    // Only the bounds change. The counts of elements and free slots stay as the build left them.
-                    for (int j = 0; j < 4; ++j)
-                    {
-                        node->Bounds.SetAabb(j, node->IsLeafValid(j) ? bounds[node->Data[j]] : Aabb.Empty);
-                    }
+                    FitLeafNode(bounds, node);
                 }
                 else
                 {
-                    for (int j = 0; j < 4; j++)
-                    {
-                        node->Bounds.SetAabb(j, node->IsInternalValid(j) ? baseNode[node->Data[j]].Bounds.GetCompoundAabb() : Aabb.Empty);
-                    }
+                    FitInternalNode(baseNode, node);
                 }
             }
 
             UnsafeUtility.Free(order, Allocator.Temp);
             UnsafeUtility.Free(pending, Allocator.Temp);
+        }
+
+        /// <summary>
+        /// The depth at which a parallel refit cuts the tree. Each node at this depth is the root of one subtree, and
+        /// <see cref="RefitSubtree"/> fits one subtree. A tree whose nodes have four children each has 4 to the power of
+        /// this depth subtrees, which is <see cref="RefitSubtreeCount"/>.
+        /// </summary>
+        internal const int RefitCutDepth = 3;
+
+        /// <summary>The number of subtrees that a parallel refit can fit at the same time.</summary>
+        internal const int RefitSubtreeCount = 1 << (2 * RefitCutDepth);
+
+        /// <summary>
+        /// Returns the root of the subtree that the parallel refit's slot <paramref name="slot"/> fits, or 0 when the
+        /// slot has no subtree. The base-4 digits of the slot, from the highest, choose a child at each level below the
+        /// root of the tree. A slot whose path leads to a missing child has no subtree. A slot whose path reaches a leaf
+        /// above the cut fits that leaf only if the slot's remaining digits are all 0, so that no two slots fit the same
+        /// leaf. Every node that the root reaches is then fitted by exactly one slot, except the internal nodes above
+        /// the cut, which <see cref="RefitAboveCut"/> fits afterwards.
+        /// </summary>
+        internal unsafe int FindRefitSubtree(int slot)
+        {
+            Node* baseNode = m_Nodes;
+            int index = 1;
+            for (int level = 0; level < RefitCutDepth; level++)
+            {
+                int shift = 2 * (RefitCutDepth - 1 - level);
+                Node* node = baseNode + index;
+                if (node->IsLeaf)
+                {
+                    int remainingDigits = slot & ((1 << (shift + 2)) - 1);
+                    return remainingDigits == 0 ? index : 0;
+                }
+
+                int child = (slot >> shift) & 3;
+                if (!node->IsInternalValid(child))
+                {
+                    return 0;
+                }
+
+                index = node->Data[child];
+            }
+
+            return index;
+        }
+
+        /// <summary>
+        /// Fits the bounds of every node in the subtree below <paramref name="root"/>, including the root, to
+        /// <paramref name="aabbs"/>, without changing the shape of the subtree. Each node gets the same bounds as in
+        /// <see cref="RefitFromRoot"/>, because a node's bounds depend only on its children's bounds. The method
+        /// walks the subtree depth first and fits each internal node after all of its children.
+        /// </summary>
+        internal unsafe void RefitSubtree(int root, NativeArray<Aabb> aabbs)
+        {
+            Node* baseNode = m_Nodes;
+            Aabb* bounds = (Aabb*)aabbs.GetUnsafeReadOnlyPtr();
+
+            // The stack holds the nodes that still have to be visited, and the internal nodes whose children are
+            // being visited, as the complement of their index. Node indices start at 1, so a complement is always
+            // negative. Each level of the tree adds at most four entries, so a tree from the builder fits in the
+            // inline stack. A deeper tree moves the stack to the heap.
+            const int inlineCapacity = 256;
+            int* inlineStack = stackalloc int[inlineCapacity];
+            int* stack = inlineStack;
+            int capacity = inlineCapacity;
+            int count = 0;
+            stack[count++] = root;
+            while (count > 0)
+            {
+                int entry = stack[--count];
+                if (entry < 0)
+                {
+                    FitInternalNode(baseNode, baseNode + ~entry);
+                    continue;
+                }
+
+                SafetyChecks.CheckIndexAndThrow(entry, m_MaxNodeCount);
+                Node* node = baseNode + entry;
+                if (node->IsLeaf)
+                {
+                    FitLeafNode(bounds, node);
+                    continue;
+                }
+
+                if (count + 5 > capacity)
+                {
+                    int* grown = (int*)UnsafeUtility.Malloc((long)capacity * 2 * sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Temp);
+                    UnsafeUtility.MemCpy(grown, stack, (long)count * sizeof(int));
+                    if (stack != inlineStack)
+                    {
+                        UnsafeUtility.Free(stack, Allocator.Temp);
+                    }
+
+                    stack = grown;
+                    capacity *= 2;
+                }
+
+                stack[count++] = ~entry;
+                for (int j = 0; j < 4; j++)
+                {
+                    if (node->IsInternalValid(j))
+                    {
+                        stack[count++] = node->Data[j];
+                    }
+                }
+            }
+
+            if (stack != inlineStack)
+            {
+                UnsafeUtility.Free(stack, Allocator.Temp);
+            }
+        }
+
+        /// <summary>
+        /// Fits the internal nodes above the cut of the parallel refit, after <see cref="RefitSubtree"/> has fitted
+        /// every subtree that <see cref="FindRefitSubtree"/> returns.
+        /// </summary>
+        internal unsafe void RefitAboveCut()
+        {
+            FitAboveCut(m_Nodes, 1, 0);
+        }
+
+        static unsafe void FitAboveCut(Node* baseNode, int index, int depth)
+        {
+            Node* node = baseNode + index;
+            if (node->IsLeaf || depth >= RefitCutDepth)
+            {
+                return;
+            }
+
+            for (int j = 0; j < 4; j++)
+            {
+                if (node->IsInternalValid(j))
+                {
+                    FitAboveCut(baseNode, node->Data[j], depth + 1);
+                }
+            }
+
+            FitInternalNode(baseNode, node);
+        }
+
+        // Only the bounds change. The counts of elements and free slots stay as the build left them.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static unsafe void FitLeafNode(Aabb* bounds, Node* node)
+        {
+            for (int j = 0; j < 4; ++j)
+            {
+                node->Bounds.SetAabb(j, node->IsLeafValid(j) ? bounds[node->Data[j]] : Aabb.Empty);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static unsafe void FitInternalNode(Node* baseNode, Node* node)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                node->Bounds.SetAabb(j, node->IsInternalValid(j) ? baseNode[node->Data[j]].Bounds.GetCompoundAabb() : Aabb.Empty);
+            }
         }
 
         static unsafe void RefitOne(NativeArray<Aabb> aabbs, Node* baseNode, Node* currentNode)
