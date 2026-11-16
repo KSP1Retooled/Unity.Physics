@@ -310,5 +310,44 @@ namespace KSP.Retooled.Physics.Tests
             Simulate();
             Assert.That(JointTopology.Version, Is.EqualTo(version), "moving bodies and stepping keep the version");
         }
+
+        /// <summary>
+        /// A box rests on the ground, so that the step keeps the impulse of its contact for the next step's warm start.
+        /// Then the box is destroyed and a new box is made in its place. The store often gives the new box's shape the
+        /// memory of the old box's shape, and the step keeps the impulses by the shapes' addresses. The new box's
+        /// contact is new, so it must start without an impulse. The test repeats this, so that the store reuses the
+        /// memory at least once, and it counts how often that happened.
+        /// </summary>
+        [Test]
+        public unsafe void ANewShapeInTheMemoryOfARemovedShapeStartsWithoutItsImpulse()
+        {
+            const int rounds = 20;
+            Ground();
+            Rigidbody box = DynamicBox(new Vector3(0.0f, 0.5f, 0.0f));
+            int reused = 0;
+            for (int round = 0; round < rounds; round++)
+            {
+                Simulate(3);
+                var before = new HashSet<(long, long)>();
+                foreach (ManifoldRecord record in StepKernel.Current->Manifolds)
+                {
+                    Assert.That(record.Impulse, Is.GreaterThan(0.0f), "the box rests on the ground");
+                    before.Add(((long)record.ShapeA, (long)record.ShapeB));
+                }
+
+                Object.DestroyImmediate(box.gameObject);
+                box = DynamicBox(new Vector3(0.0f, 0.5f, 0.0f));
+                Simulate();
+                Unity.Collections.NativeList<ManifoldRecord> manifolds = StepKernel.Current->Manifolds;
+                Assert.That(manifolds.Length, Is.GreaterThan(0), "the new box touches the ground");
+                foreach (ManifoldRecord record in manifolds)
+                {
+                    reused += before.Contains(((long)record.ShapeA, (long)record.ShapeB)) ? 1 : 0;
+                    Assert.That(record.WarmImpulse, Is.Zero, $"round {round}: the new box's contact starts without an impulse");
+                }
+            }
+
+            Debug.Log($"[PipelineCacheTests] a new box's contact had the shapes' addresses of the old box's contact in {reused} of {rounds} rounds");
+        }
     }
 }

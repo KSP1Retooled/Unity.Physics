@@ -202,7 +202,10 @@ namespace KSP.Retooled.Physics
             hot->target->Rotation = a->rotation;
             hot->target->Position = a->position;
             BodyEntities.Adopt(hot);
-            JointTopology.Changed();
+
+            // Every new body moves the topology version, so the new value is a number that no other body or joint
+            // received.
+            body->serial = JointTopology.Changed();
 
             // Append the new body to the array. The sequence of static bodies changes only if the new body is static.
             if ((hot->flags & NativeStore.BodyFlags.Static) != 0)

@@ -367,6 +367,53 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// A craft of two parts is built again before the next step: each part is destroyed and a new part is made in
+        /// its place at once, and then the new parts are joined. The store often gives each new body the memory of the
+        /// body that it replaces. The new craft is a new vessel all the same, so it gets a new Id. The test repeats
+        /// this, so that the store reuses the memory of both bodies at least once, and it counts how often that
+        /// happened.
+        /// </summary>
+        [Test]
+        public void ACraftBuiltAgainInTheMemoryOfAnOldCraftIsANewVessel()
+        {
+            const int rounds = 100;
+            int reused = 0;
+            List<Rigidbody> bodies = Column(2);
+            for (int round = 0; round < rounds; round++)
+            {
+                Simulate();
+                ulong oldId = OnlyVessel().Id;
+                var oldRecords = new HashSet<long>();
+                for (int i = 0; i < State->Store->bodyCount; i++)
+                {
+                    oldRecords.Add((long)State->Store->bodies[i].owner);
+                }
+
+                for (int i = 0; i < bodies.Count; i++)
+                {
+                    Object.DestroyImmediate(bodies[i].gameObject);
+                    bodies[i] = Box(new Vector3(0.0f, 10.0f - PartHeight * (i + 0.5f), 0.0f), new Vector3(0.6f, PartHeight, 0.6f))
+                        .AddComponent<Rigidbody>();
+                    bodies[i].mass = PartMass;
+                    bodies[i].useGravity = false;
+                }
+
+                StackJoint(bodies[1], bodies[0], new Vector3(0.0f, 10.0f - PartHeight, 0.0f));
+                int same = 0;
+                for (int i = 0; i < State->Store->bodyCount; i++)
+                {
+                    same += oldRecords.Contains((long)State->Store->bodies[i].owner) ? 1 : 0;
+                }
+
+                reused += same == 2 ? 1 : 0;
+                Simulate();
+                Assert.That(OnlyVessel().Id, Is.Not.EqualTo(oldId), $"round {round}: the craft that was built again is a new vessel");
+            }
+
+            Debug.Log($"[VesselBuildTests] the new craft had both of the old craft's body records in {reused} of {rounds} rounds");
+        }
+
         [Test]
         public void AStrutDestroyedAndCreatedAgainInOneFrameKeepsItsVessel()
         {

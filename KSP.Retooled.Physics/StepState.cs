@@ -320,6 +320,9 @@ namespace KSP.Retooled.Physics
         /// <summary>The store updated by this simulation state. Used by tests.</summary>
         internal readonly NativeStore.WorldData* Store => store;
 
+        /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
+        internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
+
         /// <summary>The vessels compiled during the last build. Used by tests.</summary>
         internal readonly VesselBuild Vessels => vesselBuild;
 
@@ -379,6 +382,16 @@ namespace KSP.Retooled.Physics
 
             // Submit the batched jobs so that workers can run them while the main thread schedules the jobs below.
             JobHandle.ScheduleBatchedJobs();
+
+            // The store reuses the memory of a removed shape for the next shape that it makes, so a new shape can have
+            // the address of a shape that was removed since the last step. The last impulses are kept by the shapes'
+            // addresses, so a new contact would then start with the impulse of a contact that no longer exists. Drop
+            // the impulses of removed shapes before the contacts read them. ForgetRemovedShapesJob clears the list of
+            // removed shapes later in the step.
+            if (store->removedShapeCount != 0 && lastImpulses.Count != 0)
+            {
+                new ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
+            }
 
             manifolds.Clear();
             manifoldPoints.Clear();
