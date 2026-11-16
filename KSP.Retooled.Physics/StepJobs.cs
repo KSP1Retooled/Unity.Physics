@@ -141,11 +141,11 @@ namespace KSP.Retooled.Physics
         /// bodies the same serial number. So Unity Physics can tell two bodies apart by the whole entity, even when they
         /// had the same row: the island cache uses this to drop the lock states of a body that no longer exists. The
         /// version is never zero, because the code that reads these bodies treats a version of zero as a body that is
-        /// not in the store.
+        /// not in the store. A row that a test builds by hand has no owner, and its version is 1.
         /// </summary>
         private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
         {
-            uint serial = body.owner->serial;
+            uint serial = body.owner != null ? body.owner->serial : 0u;
             return new RigidBody
             {
                 Collider = body.collider->Value,
