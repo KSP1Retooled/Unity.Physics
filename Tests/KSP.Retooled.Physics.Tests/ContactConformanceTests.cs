@@ -200,6 +200,20 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void AFastSmallBoxDoesNotPassThroughAThinStaticBox()
+        {
+            // The plate is 5 cm thick and its top face lies at y = 0. At 2,000 m/s, the box moves much farther than the
+            // plate's thickness in one step, so the box stops on the plate only if its contact row reaches one step ahead.
+            Box(new Vector3(0.0f, -0.025f, 0.0f), new Vector3(20.0f, 0.05f, 20.0f));
+            Rigidbody body = Box(new Vector3(0.0f, 5.0f, 0.0f), new Vector3(0.2f, 0.2f, 0.2f)).AddComponent<Rigidbody>();
+            body.linearVelocity = new Vector3(0.0f, -2000.0f, 0.0f);
+
+            Simulate(20);
+
+            Assert.That(body.position.y, Is.GreaterThan(0.0f));
+        }
+
+        [Test]
         public void DetectCollisionsFalseLetsTheBodyFallThrough()
         {
             Ground();
