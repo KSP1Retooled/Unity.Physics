@@ -74,6 +74,9 @@ namespace Unity.Physics
                 Timestep = stepInput.Timestep,
                 Team = team,
                 Caps = stepInput.DirectSolverCache.Forest.Caps,
+                Substep = stepInput.CurrentSubstep,
+                RigidBodies = stepInput.Bodies,
+                RigidBodyCount = stepInput.BodyCount,
             };
 
             int builds = forest->StructureBuilds;
@@ -154,14 +157,18 @@ namespace Unity.Physics
 
             if (applyImpulses)
             {
+                long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 ApplySparseImpulses(problem, null, linear, angular, compactBodies, headerList, impulses, motionVelocities, motionDatas,
                     sparseContacts, team);
+                long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (recovery != null)
                 {
                     SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
                         math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
                         (ForestRun*)UnsafeUtility.AddressOf(ref run));
                 }
+
+                BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
             }
 
             return solved;
@@ -373,6 +380,9 @@ namespace Unity.Physics
                     Timestep = stepInput.Timestep,
                     Team = team,
                     Caps = stepInput.DirectSolverCache.Forest.Caps,
+                    Substep = substep,
+                    RigidBodies = stepInput.Bodies,
+                    RigidBodyCount = stepInput.BodyCount,
                 };
 
                 int builds = forest->StructureBuilds;
@@ -782,6 +792,18 @@ namespace Unity.Physics
         /// </summary>
         static unsafe int CompactOf(in ForestRun run, int worldBody) =>
             worldBody >= 0 && worldBody < run.CompactOfWorldLength ? run.CompactOfWorld[worldBody] : -1;
+
+        /// <summary>
+        /// Gives the step's solver input the world's bodies, see <see cref="StepInput.Bodies"/>. The pointer is taken
+        /// without safety checks, because jobs that write the bodies can still be running when the step is scheduled.
+        /// </summary>
+        internal static unsafe void SetBodies(ref StepInput stepInput, in PhysicsWorld world)
+        {
+            stepInput.BodyCount = world.NumBodies;
+            stepInput.Bodies = world.NumBodies > 0
+                ? (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies)
+                : null;
+        }
 
         /// <summary>
         /// Converts a body to a kernel part with mass, principal inertia, and a pose and velocity in world space.

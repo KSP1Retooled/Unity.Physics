@@ -246,6 +246,108 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A craft of 8 parts lies on the ground with a loose box resting beside each part, so that the island's boundary
+        /// has rows against the boxes, which are not in a vessel. Then 20 kinematic boxes far away, made after the craft
+        /// and before the loose boxes, are destroyed. That moves the loose boxes to other places in the world. The scene
+        /// runs twice: once with the boundary rows' keys by place in the world, as before, and once with the keys by the
+        /// body's serial number, which the backend gives each body's entity. Every row is warm in the steps before the
+        /// boxes go. In the step after, the keys by place miss the rows against the loose boxes, and the keys by serial
+        /// number miss none.
+        /// </summary>
+        [Test]
+        public void RowsAgainstLooseBodiesKeepTheirWarmStartWhenAnotherBodyGoes()
+        {
+            var missed = new long[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { KeyByWorldIndex = pass == 0 });
+                LyingCraft(8);
+                var far = new List<Rigidbody>();
+                for (int i = 0; i < 20; i++)
+                {
+                    Rigidbody body = Box(new Vector3(200.0f + 2.0f * i, 5.0f, 0.0f), new Vector3(1.0f, 1.0f, 1.0f)).AddComponent<Rigidbody>();
+                    body.isKinematic = true;
+                    far.Add(body);
+                }
+
+                for (int i = 0; i < 8; i++)
+                {
+                    Rigidbody box = Box(new Vector3(i - 4.0f, 0.25f, 0.6f), new Vector3(0.8f, 0.5f, 0.6f)).AddComponent<Rigidbody>();
+                    box.mass = PartMass;
+                    box.sleepThreshold = 0.0f;
+                }
+
+                Simulate(30);
+                BoundaryCounters.Reset();
+                Simulate(5);
+                BoundaryCounters before = BoundaryCounters.Current;
+                foreach (Rigidbody body in far)
+                {
+                    Object.DestroyImmediate(body.gameObject);
+                }
+
+                BoundaryCounters.Reset();
+                Simulate();
+                BoundaryCounters after = BoundaryCounters.Current;
+                missed[pass] = after.Rows - after.WarmRows;
+                Debug.Log($"[BoundaryCapTests] another body gone, keys by {(pass == 0 ? "place" : "serial number")}: before, {before.Rows} rows " +
+                    $"and {before.WarmRows} warm; after, {after.Rows} rows and {after.WarmRows} warm");
+                Assert.That(before.WarmRows, Is.EqualTo(before.Rows), "every row is warm while the bodies stay");
+                Assert.That(after.Solves, Is.GreaterThan(0), "the craft's island solves a boundary");
+            }
+
+            Assert.That(missed[0], Is.GreaterThan(0), "the keys by place miss rows");
+            Assert.That(missed[1], Is.EqualTo(0), "the keys by serial number miss none");
+        }
+
+        /// <summary>
+        /// A craft of 8 parts lies on the ground, and next to each part a loose box rests on the ground, touching the part,
+        /// so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most boxes are
+        /// held out of the boundary. A held row used to keep only its warm start, which is 95% of the contact's last
+        /// impulse, so a box whose contacts were all held sank a little in every step until its points were the deepest
+        /// and the cap took them again. The scene runs twice: once with held rows that take no impulse of their own, and
+        /// once with held rows that push when their contact closes. The boxes stay up in the second run.
+        /// </summary>
+        [Test]
+        public void BoxesWhoseContactsAreHeldDoNotSink()
+        {
+            var deepest = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { OutsideContactPoints = 4, IdleHeldRows = pass == 0 });
+                LyingCraft(8);
+                var boxes = new List<Rigidbody>();
+                for (int i = 0; i < 8; i++)
+                {
+                    Rigidbody box = Box(new Vector3(i - 4.0f, 0.25f, 0.6f), new Vector3(0.8f, 0.5f, 0.6f)).AddComponent<Rigidbody>();
+                    box.mass = PartMass;
+                    box.sleepThreshold = 0.0f;
+                    boxes.Add(box);
+                }
+
+                Simulate(50);
+                BoundaryCounters.Reset();
+                for (int step = 0; step < 200; step++)
+                {
+                    Simulate();
+                    foreach (Rigidbody box in boxes)
+                    {
+                        deepest[pass] = Mathf.Max(deepest[pass], 0.25f - box.position.y);
+                    }
+                }
+
+                BoundaryCounters counts = BoundaryCounters.Current;
+                Debug.Log($"[BoundaryCapTests] resting held boxes, {(pass == 0 ? "idle" : "pushing")}: {counts.Solves} solves, " +
+                    $"held points {counts.HeldPoints}, manifolds left with no point {counts.EmptiedOutsideManifolds}, held rows " +
+                    $"that pushed {counts.HeldSupports}; deepest box {deepest[pass] * 1e3f:F2} mm");
+                Assert.That(counts.EmptiedOutsideManifolds, Is.GreaterThan(0), "the cap held whole manifolds out");
+            }
+
+            Assert.That(deepest[1], Is.LessThan(deepest[0]), "the held rows' pushes keep the boxes higher");
+            Assert.That(deepest[1], Is.LessThan(0.002f), "no box sinks");
+        }
+
+        /// <summary>
         /// A long craft rests on the ground, with more contact points than the cap. Then gravity goes away. Each contact
         /// starts the next step with most of its last impulse, which pushes the craft up. The solve takes that impulse
         /// back from the points that it keeps, and it has to take it back from the held points too, or the held points

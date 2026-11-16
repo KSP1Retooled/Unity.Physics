@@ -26,9 +26,10 @@ namespace Unity.Physics
         /// <summary>
         /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
         /// own, so the contact impulse that the row had before the solve, its warm start, stays applied: a sparse solve's
-        /// contact rows solve for the change from their warm-start impulse. There are two exceptions, see
-        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, and in a
-        /// push-out, a held normal row whose contact is too deep gets a push of its own.
+        /// contact rows solve for the change from their warm-start impulse. There are exceptions for normal rows, see
+        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, a held normal
+        /// row whose contact closes pushes, and in a push-out, a held normal row whose contact is too deep gets a push of
+        /// its own.
         /// </summary>
         const byte HeldRowClass = 4;
 
@@ -90,6 +91,16 @@ namespace Unity.Physics
             /// </summary>
             public BoundaryCaps Caps;
             public NativeArray<ulong> BoundaryKey;
+
+            /// <summary>For a vessel island: the substep that the run solves, for the boundary's counters.</summary>
+            public int Substep;
+
+            /// <summary>
+            /// For a vessel island: the world's bodies, so that a boundary row's key can know a body outside the island's
+            /// vessels by its entity. Null if the caller has none.
+            /// </summary>
+            public RigidBody* RigidBodies;
+            public int RigidBodyCount;
 
             /// <summary>The change of velocity of every section, and a vector of the same size to work in.</summary>
             public NativeArray<double> Velocity;
@@ -602,6 +613,7 @@ namespace Unity.Physics
             NativeArray<byte> rowClass = run.RowClass;
             NativeArray<int> rowBlock = run.RowBlock;
             NativeArray<int2> blockSections = run.BlockSections;
+            long chooseStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             if (run.VesselMode && run.Bounded)
             {
                 CapBoundary(ref run);
@@ -625,6 +637,7 @@ namespace Unity.Physics
             }
 
             long boundaryStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            long pathsWalked = boundaryStarted;
             var w = new NativeArray<double>(math.max(1, nb * nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             using (ForestBoundaryMarker.Auto())
             {
@@ -679,6 +692,7 @@ namespace Unity.Physics
                 }
 
                 pathStart[nb] = pathSection.Length;
+                pathsWalked = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
                 // The team's lanes fill W by ranges of its rows.
                 var tasks = new BoundaryTasks
@@ -704,6 +718,7 @@ namespace Unity.Physics
                 pathZ.Dispose();
             }
 
+            long filled = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             run.Boundary = boundary;
             run.BoundaryOf = boundaryOf;
             run.W = w;
@@ -712,7 +727,13 @@ namespace Unity.Physics
             {
                 run.BoundaryKey = BoundaryKeys(ref run, (int*)boundary.GetUnsafeReadOnlyPtr(), nb);
             }
-            run.BoundaryTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - boundaryStarted;
+            long ended = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            run.BoundaryTicks = ended - boundaryStarted;
+            if (run.VesselMode)
+            {
+                BoundaryCounters.AddBuild(boundaryStarted - chooseStarted + ended - filled, pathsWalked - boundaryStarted,
+                    filled - pathsWalked);
+            }
         }
 
         /// <summary>The number of rows of the boundary block W that one task fills.</summary>
@@ -1170,9 +1191,15 @@ namespace Unity.Physics
 
         /// <summary>
         /// A key for one side of a block that stays the same while the body stays in the island. A part of one of the
-        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other moving body is known by
-        /// its index in the dynamics world, and a body that does not move by its index among the bodies that do not
-        /// move. Returns 0 for no body.
+        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other body, moving or not, is
+        /// known by the version of its entity. The backend sets that version to the body's serial number, which no other
+        /// body receives, and it keeps it while the body lives. The entity's index is not part of the key, because the
+        /// index is the body's row in the backend's store, and the store moves a body to another row when an earlier
+        /// body is destroyed. So the key does not change when other bodies join or leave the world, and it does not pass
+        /// to a new body. A world whose entities share versions gives several bodies the same key. Then the blocks are
+        /// told apart by how many blocks with the same identity come before them, and the worst case is a missed warm
+        /// start. Without the world's bodies, or with <see cref="BoundaryCaps.KeyByWorldIndex"/>, a body is known by its
+        /// place in the world, as before. Returns 0 for no body.
         /// </summary>
         static unsafe ulong BodyKey(in ForestRun run, int world, int vesselParts, in NativeHashMap<int, ulong> vesselIds)
         {
@@ -1181,12 +1208,7 @@ namespace Unity.Physics
                 return 0;
             }
 
-            if (world >= run.CompactOfWorldLength)
-            {
-                return Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2);
-            }
-
-            int compact = run.CompactOfWorld[world];
+            int compact = world < run.CompactOfWorldLength ? run.CompactOfWorld[world] : -1;
             int part = compact >= 0 && compact < run.Forest->BodyPart.Length ? run.Forest->BodyPart[compact] : -1;
             if (part >= 0 && part < vesselParts)
             {
@@ -1197,7 +1219,16 @@ namespace Unity.Physics
                 }
             }
 
-            return Mix(((ulong)(uint)world << 2) | 1);
+            if (run.RigidBodies != null && world < run.RigidBodyCount && !run.Caps.KeyByWorldIndex)
+            {
+                return Mix(((ulong)(uint)run.RigidBodies[world].Entity.Version << 2) | 2);
+            }
+
+            // Without the bodies, a body that does not move is known by its index among the bodies that do not move,
+            // and a moving body by its index in the world.
+            return world >= run.CompactOfWorldLength
+                ? Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2)
+                : Mix(((ulong)(uint)world << 2) | 1);
         }
 
         /// <summary>
@@ -1607,8 +1638,10 @@ namespace Unity.Physics
                 bool warm = vesselSolve && !run.Caps.ColdStart;
                 ref UnsafeList<ulong> memory = ref run.Forest->BoundaryMemory.States;
                 int warmRows = 0;
+                var remembered = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                 for (int i = 0; i < nb; i++)
                 {
+                    remembered[i] = 0xFF;
                     int row = run.Boundary[i];
                     q[i] = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]], jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
                     lower[i] = run.Bounded ? problem.Lower[row] : double.NegativeInfinity;
@@ -1624,6 +1657,7 @@ namespace Unity.Physics
                         if (found >= 0)
                         {
                             states[i] = (byte)(memory[found] & BoundaryMemory.StateMask);
+                            remembered[i] = states[i];
                             warmRows++;
                         }
                     }
@@ -1667,19 +1701,35 @@ namespace Unity.Physics
                 if (vesselSolve)
                 {
                     int maxRounds = run.Caps.PivotRoundLimit;
+                    var stats = new BoundarySolveStats();
+                    long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
                         couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(), maxRounds, warm,
-                        out int rounds);
+                        !run.Caps.RefactorEveryRound, &stats, out int rounds);
+                    long solveTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted;
+                    int changes = 0;
+                    for (int i = 0; i < nb; i++)
+                    {
+                        changes += remembered[i] != 0xFF && remembered[i] != states[i] ? 1 : 0;
+                    }
+
                     BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
                         (byte*)states.GetUnsafeReadOnlyPtr(), nb);
                     BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, !solved, warmRows);
+                    BoundaryCounters.AddFactor(stats, solveTicks, changes, run.Substep <= 0);
                 }
                 else
                 {
+                    long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     solved = BoundarySolver.Solve(nb, (double*)run.W.GetUnsafeReadOnlyPtr(), (double*)q.GetUnsafePtr(),
                         (double*)lower.GetUnsafePtr(), (double*)upper.GetUnsafePtr(), (byte*)states.GetUnsafePtr(),
-                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr());
+                        couplings.GetUnsafePtr(), couplings.Length, run.Bounded, (double*)z.GetUnsafePtr(),
+                        BoundarySolver.MaxPivotingIterations, false, !run.Caps.RefactorEveryRound, null, out int rounds);
+                    if (run.VesselMode)
+                    {
+                        BoundaryCounters.AddPush(rounds, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
+                    }
                 }
 
                 // v += A^-1 J_b^T z.
@@ -1701,6 +1751,7 @@ namespace Unity.Physics
                 lower.Dispose();
                 upper.Dispose();
                 states.Dispose();
+                remembered.Dispose();
                 z.Dispose();
                 couplings.Dispose();
             }
@@ -1740,8 +1791,11 @@ namespace Unity.Physics
         /// <list type="bullet">
         /// <item>
         /// In a velocity solve (<paramref name="pushOut"/> false), a held row whose contact separates gives back its warm
-        /// start. The row's target is the change of its velocity that its right-hand side asks for, when that change is
-        /// negative, and the row gives back at most its warm start, which is minus its lower bound.
+        /// start, and a held row whose contact closes pushes. The row's target is the change of its velocity that its
+        /// right-hand side asks for. When that change is negative, the row gives back at most its warm start, which is
+        /// minus its lower bound. Without the push, a body whose contacts the cap holds would get only its warm start.
+        /// That is 95% of the last step's impulse, and the next step's warm start comes from it, so the body would sink
+        /// a little more in every step.
         /// </item>
         /// <item>
         /// In a push-out (<paramref name="pushOut"/> true), a held row whose contact is still too deep after the
@@ -1774,16 +1828,17 @@ namespace Unity.Physics
                 impulses[row] = 0.0f;
 
                 // A normal row may push without limit, and a friction row has a finite upper bound.
-                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue
-                    && (pushOut ? rhs[row] > 0.0f : problem.Lower[row] < 0.0f);
+                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue && (!pushOut || rhs[row] > 0.0f);
                 if (!candidate)
                 {
                     continue;
                 }
 
+                // In a velocity solve, a row whose contact separates may give back no more than its warm start, so a
+                // row without a warm start has nothing to give back.
                 double change = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]],
                     jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
-                if (pushOut ? change > 0.0 : change < 0.0)
+                if (change > 0.0 || (!pushOut && change < 0.0 && problem.Lower[row] < 0.0f))
                 {
                     held.Add(row);
                     target.Add(change);
@@ -1880,7 +1935,13 @@ namespace Unity.Physics
                 mark.Dispose();
                 path.Dispose();
                 z.Dispose();
-                BoundaryCounters.AddHeld(pushOut ? 0 : given, pushOut ? given : 0);
+                int closing = 0;
+                for (int k = 0; k < given; k++)
+                {
+                    closing += target[k] > 0.0 ? 1 : 0;
+                }
+
+                BoundaryCounters.AddHeld(pushOut ? 0 : given - closing, pushOut ? given : 0, pushOut ? 0 : closing);
             }
 
             held.Dispose();
@@ -2389,6 +2450,19 @@ namespace Unity.Physics
         public bool ColdStart;
 
         /// <summary>
+        /// If true, every round of pivoting factors its free rows from the start. If false, a round keeps what it can of
+        /// the last round's factor, see
+        /// <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>. For measuring what the updates save.
+        /// </summary>
+        public bool RefactorEveryRound;
+
+        /// <summary>
+        /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
+        /// keys did before, instead of by its entity. For measuring what the entity keys keep.
+        /// </summary>
+        public bool KeyByWorldIndex;
+
+        /// <summary>
         /// If true, every one-sided joint row stays in the boundary, even when the row is far from its stop. If false, the
         /// solve leaves out a dormant row, see <see cref="Solver"/>'s MarkDormantRows. RETOOLED_DORMANT_ROWS=0 sets this.
         /// </summary>
@@ -2532,12 +2606,55 @@ namespace Unity.Physics
         public long HeldReleases;
         public long HeldPushes;
 
+        /// <summary>Held normal rows that pushed in a velocity solve because their contact was closing.</summary>
+        public long HeldSupports;
+
         /// <summary>The most outside contact points and the most self-contact manifolds that one boundary kept.</summary>
         public long MostOutsidePoints;
         public long MostSelfManifolds;
 
         /// <summary>Joint rows that the solves left out of the boundary because they were dormant.</summary>
         public long DormantRows;
+
+        /// <summary>
+        /// What the solves did with the factor of their free rows, see <see cref="BoundarySolveStats"/>. Ticks are in
+        /// profiler timestamp units.
+        /// </summary>
+        public BoundarySolveStats Factor;
+
+        /// <summary>The time spent in the dense solve of the boundary, in profiler timestamp units.</summary>
+        public long SolveTicks;
+
+        /// <summary>
+        /// Warm rows whose state at the end of the solve differs from the state that the island remembered for them, in
+        /// the first substep of a step (against the last solve of the step before) and in later substeps.
+        /// </summary>
+        public long FirstSubstepChanges;
+        public long LaterSubstepChanges;
+        public long FirstSubstepSolves;
+
+        /// <summary>
+        /// The dense solves of a vessel island's push-out, which reuse the boundary block with other bounds, and the
+        /// pivoting rounds and the time that they took.
+        /// </summary>
+        public long PushSolves;
+        public long PushRounds;
+        public long PushTicks;
+
+        /// <summary>
+        /// The time spent building vessel islands' boundary blocks: choosing the rows (the caps, the dormant rows and
+        /// the rows' keys), walking each row's path through the factor on one lane, and filling W on the team.
+        /// </summary>
+        public long ChooseTicks;
+        public long PathTicks;
+        public long FillTicks;
+
+        /// <summary>
+        /// The time spent giving a vessel island's bodies the impulses of its rows, and pushing its bodies out of deep
+        /// contacts, which includes checking whether any contact is deep.
+        /// </summary>
+        public long ApplyTicks;
+        public long PushOutTicks;
 
         static readonly SharedStatic<BoundaryCounters> Shared = SharedStatic<BoundaryCounters>.GetOrCreate<BoundaryCounters>();
 
@@ -2579,15 +2696,62 @@ namespace Unity.Physics
             Most(ref data.MostSelfManifolds, selfManifolds);
         }
 
+        internal static void AddFactor(in BoundarySolveStats stats, long solveTicks, int changes, bool firstSubstep)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.Factor.Rounds, stats.Rounds);
+            Interlocked.Add(ref data.Factor.CouplingRounds, stats.CouplingRounds);
+            Interlocked.Add(ref data.Factor.Factorizations, stats.Factorizations);
+            Interlocked.Add(ref data.Factor.Updates, stats.Updates);
+            Interlocked.Add(ref data.Factor.Reuses, stats.Reuses);
+            Interlocked.Add(ref data.Factor.AddedRows, stats.AddedRows);
+            Interlocked.Add(ref data.Factor.RemovedRows, stats.RemovedRows);
+            Interlocked.Add(ref data.Factor.FactorTicks, stats.FactorTicks);
+            Interlocked.Add(ref data.SolveTicks, solveTicks);
+            if (firstSubstep)
+            {
+                Interlocked.Increment(ref data.FirstSubstepSolves);
+                Interlocked.Add(ref data.FirstSubstepChanges, changes);
+            }
+            else
+            {
+                Interlocked.Add(ref data.LaterSubstepChanges, changes);
+            }
+        }
+
+        internal static void AddPush(int rounds, long ticks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Increment(ref data.PushSolves);
+            Interlocked.Add(ref data.PushRounds, rounds);
+            Interlocked.Add(ref data.PushTicks, ticks);
+        }
+
+        internal static void AddFinish(long applyTicks, long pushOutTicks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.ApplyTicks, applyTicks);
+            Interlocked.Add(ref data.PushOutTicks, pushOutTicks);
+        }
+
+        internal static void AddBuild(long chooseTicks, long pathTicks, long fillTicks)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Add(ref data.ChooseTicks, chooseTicks);
+            Interlocked.Add(ref data.PathTicks, pathTicks);
+            Interlocked.Add(ref data.FillTicks, fillTicks);
+        }
+
         internal static void AddDormant(int dormantRows)
         {
             Interlocked.Add(ref Shared.Data.DormantRows, dormantRows);
         }
 
-        internal static void AddHeld(int releases, int pushes)
+        internal static void AddHeld(int releases, int pushes, int supports)
         {
             Interlocked.Add(ref Shared.Data.HeldReleases, releases);
             Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
+            Interlocked.Add(ref Shared.Data.HeldSupports, supports);
         }
 
         static void Most(ref long most, long value)
