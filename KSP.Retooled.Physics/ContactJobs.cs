@@ -191,7 +191,9 @@ namespace KSP.Retooled.Physics
     /// the table contains all ignored pairs for the craft. Cache the result for each body pair until the ignored pairs
     /// change or any body's shapes may have changed. A change to a collision group counts as a change to the ignored
     /// pairs. Creating a body or changing its shapes requires a full collider
-    /// build, which increments the build counter recorded with the cached result.
+    /// build, which increments the build counter recorded with the cached result. A body pair is checked without the
+    /// cache when one of its bodies has no collider with an ignore id, because then only the groups matter, and
+    /// reading them costs less than the cache lookup.
     /// </summary>
     [BurstCompile]
     internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
@@ -310,6 +312,14 @@ namespace KSP.Retooled.Physics
         {
             uint rowA = (uint)Bodies[pair.BodyIndexA].Entity.Index;
             uint rowB = (uint)Bodies[pair.BodyIndexB].Entity.Index;
+
+            // When one of the bodies has no collider with an ignore id, only the collision groups can stop the pair.
+            // Reading the groups costs less than the cache lookup, so the result isn't cached.
+            if (!HasIgnoreIds(Store + rowA) || !HasIgnoreIds(Store + rowB))
+            {
+                return IsIgnored(Store + rowA, Store + rowB);
+            }
+
             ulong key = ((ulong)math.min(rowA, rowB) << 32) | math.max(rowA, rowB);
             uint ignoreVersion = Globals->ignoreVersion;
             uint wholeBuilds = WholeBuilds.Value;
@@ -325,6 +335,19 @@ namespace KSP.Retooled.Physics
                 Value = new KnownBodyPair { IgnoreVersion = ignoreVersion, WholeBuilds = wholeBuilds, Ignored = ignored },
             });
             return ignored;
+        }
+
+        private static bool HasIgnoreIds(NativeStore.BodyData* row)
+        {
+            for (int i = 0; i < row->shapeCount; i++)
+            {
+                if (row->shapes[i]->ignorePairId != 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private bool IsIgnored(NativeStore.BodyData* rowA, NativeStore.BodyData* rowB)

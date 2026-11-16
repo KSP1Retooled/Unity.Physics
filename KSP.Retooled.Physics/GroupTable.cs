@@ -239,6 +239,33 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
+        /// <summary>Returns the shape of a collider, or null if the collider has no shape.</summary>
+        internal static NativeStore.Shape* ShapeOf(NativeStore.StoreGlobals* globals, ulong engineId)
+        {
+            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            if (table == null || engineId == EmptyKey || !table->FindEntry(engineId, out uint slot))
+            {
+                return null;
+            }
+
+            return table->entries[slot].Shape;
+        }
+
+        /// <summary>
+        /// Returns the number of bytes that the group table holds on the store's heap. Used by benchmarks.
+        /// </summary>
+        internal static ulong Bytes(NativeStore.StoreGlobals* globals)
+        {
+            GroupTable* table = globals->ignoreTable != null ? globals->ignoreTable->Groups : null;
+            if (table == null)
+            {
+                return 0;
+            }
+
+            return (ulong)sizeof(GroupTable) + table->entryCount * (ulong)sizeof(Entry)
+                + table->recordCapacity * (ulong)sizeof(Record) + table->pairCount * (ulong)sizeof(ulong);
+        }
+
         /// <summary>Lists the engine ids of colliders that have a group record but no shape.</summary>
         internal static int ListOrphans(NativeStore.StoreGlobals* globals, ulong* ids, int capacity)
         {

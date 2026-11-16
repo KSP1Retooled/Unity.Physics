@@ -97,6 +97,35 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
+        /// Returns the number of bytes that the ignore table holds on the store's heap, without the group table. Used
+        /// by benchmarks.
+        /// </summary>
+        internal static ulong Bytes(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            if (table == null)
+            {
+                return 0;
+            }
+
+            return (ulong)sizeof(IgnoreTable) + IdCount * (sizeof(uint) + sizeof(ushort))
+                + table->edgeCapacity * (ulong)sizeof(Edge) + table->slotCount * (ulong)sizeof(uint);
+        }
+
+        /// <summary>Returns the number of ignored pairs.</summary>
+        internal static ulong PairCount(NativeStore.StoreGlobals* globals)
+        {
+            IgnoreTable* table = globals->ignoreTable;
+            ulong count = 0;
+            for (uint i = 0; table != null && i < table->slotCount; i++)
+            {
+                count += table->slots[i] != EmptySlot && table->slots[i] != DeletedSlot ? 1u : 0u;
+            }
+
+            return count;
+        }
+
+        /// <summary>
         /// Removes every ignored pair involving a destroyed collider and frees its id.
         /// </summary>
         internal static void Forget(NativeStore.StoreGlobals* globals, uint id)
