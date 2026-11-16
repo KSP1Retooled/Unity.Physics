@@ -57,6 +57,11 @@ namespace KSP.Retooled.Physics
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
 
+        // For each joint, 1 if its smoothed load exceeded its break limits in this step, for BreakJointsJob. The jobs
+        // that settle the loads write the flags. A byte for each joint is much less memory to write and to scan than
+        // a load.
+        private NativeList<byte> jointsOverloaded;
+
         // The joints and groups outside the active vessels of this step. See ListOtherJointsJob.
         private NativeList<int> otherJoints;
         private NativeList<int> otherGroups;
@@ -144,6 +149,7 @@ namespace KSP.Retooled.Physics
             jointsWritten = new NativeList<int>(Allocator.Persistent);
             jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
             groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
+            jointsOverloaded = new NativeList<byte>(Allocator.Persistent);
             otherJoints = new NativeList<int>(Allocator.Persistent);
             otherGroups = new NativeList<int>(Allocator.Persistent);
             directSolverCache = DirectSolverCache.Create();
@@ -207,6 +213,7 @@ namespace KSP.Retooled.Physics
             jointsWritten.Dispose();
             jointLoads.Dispose();
             groupLoads.Dispose();
+            jointsOverloaded.Dispose();
             otherJoints.Dispose();
             otherGroups.Dispose();
             directSolverCache.Dispose();
@@ -570,6 +577,7 @@ namespace KSP.Retooled.Physics
             {
                 World = store,
                 Loads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
                 Joints = otherJoints.AsArray(),
                 Listed = listed,
                 DeltaTime = deltaTime,
@@ -580,7 +588,7 @@ namespace KSP.Retooled.Physics
             {
                 World = store,
                 Globals = globals,
-                Loads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(settled);
         }
@@ -607,6 +615,7 @@ namespace KSP.Retooled.Physics
             // The jobs write the joint loads through arrays that the safety system doesn't track, so the list must not
             // change size after this point in the step.
             jointLoads.ResizeUninitialized((int)store->jointCount);
+            jointsOverloaded.ResizeUninitialized((int)store->jointCount);
             if (!vesselSet.IsCreated)
             {
                 return default;
@@ -627,6 +636,7 @@ namespace KSP.Retooled.Physics
                 EdgeLoads = vesselBuild.EdgeLoads.AsArray(),
                 ClosureLoads = vesselBuild.ClosureLoads.AsArray(),
                 JointLoads = jointLoads.AsArray(),
+                Overloaded = jointsOverloaded.AsArray(),
             }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 

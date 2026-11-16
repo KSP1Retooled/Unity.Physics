@@ -1828,7 +1828,8 @@ namespace KSP.Retooled.Physics
     /// leading joint's body0. Edge loads describe what the parent applied to the child. Closure loads describe what
     /// part A applied to part B. The load of a group is shared among its members as <see cref="ShareGroupLoadsJob"/>
     /// does. Each member's load starts at zero because the bodies of an active vessel are awake. Each joint's load is
-    /// then settled as <see cref="SettleJointLoadsJob"/> does. The joints of active vessels have no impulse events, so
+    /// then settled as <see cref="SettleJointLoadsJob"/> does, and the job writes the joint's flag for
+    /// <see cref="BreakJointsJob"/> . The joints of active vessels have no impulse events, so
     /// this job doesn't need to wait for the jobs that read the events, and those jobs skip these joints.
     /// </summary>
     [BurstCompile]
@@ -1873,10 +1874,16 @@ namespace KSP.Retooled.Physics
         [ReadOnly]
         public NativeArray<VesselEdgeLoad> ClosureLoads;
 
-        // The jobs for the other joints write their loads at the same time. No joint is in both sets.
+        // The jobs for the other joints write their loads at the same time. No joint is in both sets. This job uses the
+        // loads only to share the load of a group among its members.
         [NativeDisableParallelForRestriction]
         [NativeDisableContainerSafetyRestriction]
         public NativeArray<JointLoad> JointLoads;
+
+        // As with the loads, the jobs for the other joints write the flags of their own joints at the same time.
+        [NativeDisableParallelForRestriction]
+        [NativeDisableContainerSafetyRestriction]
+        public NativeArray<byte> Overloaded;
 
         /// <summary>Processes part indices first, followed by closure indices.</summary>
         public void Execute(int index)
@@ -1926,8 +1933,8 @@ namespace KSP.Retooled.Physics
             JointUnit jointUnit = Units[unit];
             if (jointUnit.Group < 0)
             {
-                SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], ref jointLoad, DeltaTime);
-                JointLoads[jointUnit.Joint] = jointLoad;
+                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], jointLoad, DeltaTime);
+                Overloaded[jointUnit.Joint] = overloaded ? (byte)1 : (byte)0;
                 return;
             }
 
@@ -1941,9 +1948,8 @@ namespace KSP.Retooled.Physics
             for (int i = 0; i < group.MemberCount; i++)
             {
                 int joint = Members[group.FirstMember + i].Joint;
-                JointLoad memberLoad = JointLoads[joint];
-                SettleJointLoadsJob.SettleAwake(World->joints[joint], ref memberLoad, DeltaTime);
-                JointLoads[joint] = memberLoad;
+                bool overloaded = SettleJointLoadsJob.SettleAwake(World->joints[joint], JointLoads[joint], DeltaTime);
+                Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
             }
         }
 
