@@ -72,6 +72,9 @@ namespace Unity.Physics
         /// </summary>
         public const int ForestVesselKind = -12;
 
+        /// <summary>Identifies the stage that fills the boundary block of a forest solve, by ranges of its rows.</summary>
+        public const int ForestBoundaryKind = -13;
+
         struct Stage
         {
             public void* Context;
@@ -300,6 +303,10 @@ namespace Unity.Physics
             else if (stage.Kind == ForestVesselKind)
             {
                 Solver.ForestVesselTask(stage.Context, task);
+            }
+            else if (stage.Kind == ForestBoundaryKind)
+            {
+                Solver.ForestBoundaryTask(stage.Context, task);
             }
             else
             {
