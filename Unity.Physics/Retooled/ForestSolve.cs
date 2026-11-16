@@ -25,8 +25,10 @@ namespace Unity.Physics
 
         /// <summary>
         /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
-        /// own. The contact impulse that the row had before the solve stays applied, because a sparse solve's contact
-        /// rows solve for the change from their warm-start impulse.
+        /// own, so the contact impulse that the row had before the solve, its warm start, stays applied: a sparse solve's
+        /// contact rows solve for the change from their warm-start impulse. There are two exceptions, see
+        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, and in a
+        /// push-out, a held normal row whose contact is too deep gets a push of its own.
         /// </summary>
         const byte HeldRowClass = 4;
 
@@ -756,35 +758,59 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>A contact point or a contact manifold, with its depth, for sorting the deepest first.</summary>
+        /// <summary>
+        /// A contact point or a contact manifold, with its depth, for sorting. Items sort by their rank first, lowest
+        /// first, then by depth, deepest first. Items of the same rank and the same depth sort by <see cref="Tie"/>, which
+        /// changes from one solve to the next, so that a tie does not always go against the same rows.
+        /// </summary>
         struct DepthItem : IComparable<DepthItem>
         {
+            public int Rank;
             public float Depth;
+            public uint Tie;
             public int Index;
+
+            /// <summary>For a point that the cap on outside points sorts, the index of its manifold in the cap's list.</summary>
+            public int Group;
 
             public int CompareTo(DepthItem other)
             {
-                int order = other.Depth.CompareTo(Depth);
+                int order = Rank.CompareTo(other.Rank);
+                if (order == 0)
+                {
+                    order = other.Depth.CompareTo(Depth);
+                }
+
+                if (order == 0)
+                {
+                    order = Tie.CompareTo(other.Tie);
+                }
+
                 return order != 0 ? order : Index.CompareTo(other.Index);
             }
         }
 
         /// <summary>
         /// Applies the run's caps to a vessel island's boundary. The rows that a cap drops become held rows, see
-        /// <see cref="HeldRowClass"/>. The caps are these, deepest first in each case:
+        /// <see cref="HeldRowClass"/>. The caps are these:
         /// <list type="bullet">
-        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points.</item>
+        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points, the deepest.</item>
         /// <item>
         /// Contacts between two parts of the same vessel keep at most <see cref="BoundaryCaps.SelfContactManifolds"/>
-        /// manifolds. A dropped manifold's friction rows are held too.
+        /// manifolds, the deepest by their deepest point. A dropped manifold's friction rows are held too.
         /// </item>
         /// <item>
         /// Other contacts, for example against the ground or against another body, keep at most
-        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. If a manifold loses every
-        /// point, its friction rows are held too.
+        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. The cap takes every manifold's
+        /// deepest point first, deepest first, then every manifold's second deepest point, and so on, so that the loss
+        /// is spread over the manifolds. A manifold that keeps a point keeps its friction rows too, and those count
+        /// against a limit on rows: the cap on points plus the friction rows of the manifolds that the cap would allow
+        /// at <see cref="BoundaryCaps.DefaultPointsPerManifold"/> points each, so 448 rows for 256 points. If a manifold
+        /// loses every point, its friction rows are held too.
         /// </item>
         /// </list>
-        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance.
+        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance. When two points or
+        /// two manifolds tie, the cap breaks the tie by a hash that changes with every solve of the island.
         /// </summary>
         static unsafe void CapBoundary(ref ForestRun run)
         {
@@ -804,11 +830,13 @@ namespace Unity.Physics
                 vesselParts += run.Vessels.Vessels[run.IslandVessels[v]].PartCount;
             }
 
+            ulong turn = (ulong)forest->BoundaryMemory.CapCount++ << 32;
             var points = new NativeList<DepthItem>(8, Allocator.Temp);
             var outsidePoints = new NativeList<DepthItem>(64, Allocator.Temp);
             var outsideBlocks = new NativeList<int2>(16, Allocator.Temp);
             var selfManifolds = new NativeList<DepthItem>(16, Allocator.Temp);
             int heldPoints = 0;
+            long outsideRows = 0;
             for (int b = 0; b < problem.BlockCount; b++)
             {
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
@@ -829,7 +857,8 @@ namespace Unity.Physics
                     float distance = contact.AccessAngularJacobian(i).ContactDistance;
                     if (distance <= ContactRowReach)
                     {
-                        points.Add(new DepthItem { Depth = -distance, Index = block.FirstRow + points.Length });
+                        int row = block.FirstRow + points.Length;
+                        points.Add(new DepthItem { Depth = -distance, Tie = (uint)Mix((ulong)row | turn), Index = row });
                     }
                 }
 
@@ -848,15 +877,21 @@ namespace Unity.Physics
 
                 if (IsSelfContact(run, forest, block, vesselParts))
                 {
-                    selfManifolds.Add(new DepthItem { Depth = points[0].Depth, Index = b });
+                    selfManifolds.Add(new DepthItem { Depth = points[0].Depth, Tie = (uint)Mix((ulong)b | turn), Index = b });
                 }
                 else
                 {
-                    outsideBlocks.Add(new int2(b, points.Length));
-                    for (int k = 0; k < math.min(perManifold, points.Length); k++)
+                    int kept = math.min(perManifold, points.Length);
+                    outsideRows += kept + frictionRows;
+                    for (int k = 0; k < kept; k++)
                     {
-                        outsidePoints.Add(points[k]);
+                        DepthItem point = points[k];
+                        point.Rank = k;
+                        point.Group = outsideBlocks.Length;
+                        outsidePoints.Add(point);
                     }
+
+                    outsideBlocks.Add(new int2(b, points.Length));
                 }
             }
 
@@ -876,17 +911,39 @@ namespace Unity.Physics
                 }
             }
 
+            // The cap on outside points also limits the rows that the kept points bring with them: each manifold that keeps
+            // a point brings its friction rows too. The limit on rows is what the cap on points allows when every kept
+            // manifold keeps all of its points, for example 256 points and the friction rows of 64 manifolds.
+            long rowLimit = outsideLimit >= int.MaxValue
+                ? long.MaxValue
+                : outsideLimit + 3L * (outsideLimit / math.min(perManifold, BoundaryCaps.DefaultPointsPerManifold));
             int keptOutside = outsidePoints.Length;
-            if (outsidePoints.Length > outsideLimit)
+            int emptied = 0;
+            if (outsidePoints.Length > outsideLimit || outsideRows > rowLimit)
             {
                 outsidePoints.Sort();
-                for (int k = outsideLimit; k < outsidePoints.Length; k++)
+                var touched = new NativeArray<bool>(outsideBlocks.Length, Allocator.Temp);
+                long used = 0;
+                keptOutside = 0;
+                for (int k = 0; k < outsidePoints.Length; k++)
                 {
-                    run.RowClass[outsidePoints[k].Index] = HeldRowClass;
-                    heldPoints++;
+                    DepthItem point = outsidePoints[k];
+                    int2 owner = outsideBlocks[point.Group];
+                    int cost = 1 + (touched[point.Group] ? 0 : problem.Blocks[owner.x].RowCount - owner.y);
+                    if (keptOutside < outsideLimit && used + cost <= rowLimit)
+                    {
+                        touched[point.Group] = true;
+                        used += cost;
+                        keptOutside++;
+                    }
+                    else
+                    {
+                        run.RowClass[point.Index] = HeldRowClass;
+                        heldPoints++;
+                    }
                 }
 
-                keptOutside = outsideLimit;
+                touched.Dispose();
                 for (int k = 0; k < outsideBlocks.Length; k++)
                 {
                     SparseConstraintSolver.ConstraintBlock block = problem.Blocks[outsideBlocks[k].x];
@@ -897,6 +954,7 @@ namespace Unity.Physics
                         anyKept |= run.RowClass[row] == BoundaryRowClass;
                     }
 
+                    emptied += anyKept ? 0 : 1;
                     for (int row = block.FirstRow + normalRows; !anyKept && row < block.FirstRow + block.RowCount; row++)
                     {
                         run.RowClass[row] = HeldRowClass;
@@ -904,7 +962,7 @@ namespace Unity.Physics
                 }
             }
 
-            BoundaryCounters.AddCaps(heldPoints, heldManifolds, keptOutside, math.min(selfManifolds.Length, selfLimit));
+            BoundaryCounters.AddCaps(heldPoints, heldManifolds, keptOutside, math.min(selfManifolds.Length, selfLimit), emptied);
             points.Dispose();
             outsidePoints.Dispose();
             outsideBlocks.Dispose();
@@ -1004,57 +1062,147 @@ namespace Unity.Physics
 
         /// <summary>
         /// Makes a key for each boundary row that stays the same from one solve to the next while the row's constraint
-        /// lasts. The key comes from the two world bodies of the row's block, the block's type, how many blocks of the same
-        /// bodies and type come before it in the island, and the row's place in its block. The two lowest bits of each key
-        /// are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// lasts. The key comes from the row's block and from the row's own place in its constraint. The two lowest bits
+        /// of each key are zero, so that <see cref="BoundaryMemory"/> can keep a state in them.
+        /// <list type="bullet">
+        /// <item>
+        /// A block is known by its two bodies, see <see cref="BodyKey"/>, its type and, for a contact that has them, its
+        /// two collider keys. If the island has several blocks with all of these the same, a block is also known by how
+        /// many of them come before it among all of the island's blocks. The count includes blocks that have no
+        /// boundary rows, so that a cap or a dormant row in an earlier block does not change it.
+        /// </item>
+        /// <item>
+        /// A contact's normal row is known by its point's index in the manifold, and a friction row by its place among
+        /// the three friction rows. So when a point drops out of the rows, the other rows keep their keys. A joint row
+        /// is known by its place in its block, because a joint always has the same rows.
+        /// </item>
+        /// </list>
         /// </summary>
         static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
         {
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             var keys = new NativeArray<ulong>(math.max(1, nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var blockKeys = new NativeArray<ulong>(math.max(1, problem.BlockCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var seen = new NativeHashMap<ulong, int>(16, Allocator.Temp);
-            int lastBlock = -1;
-            ulong blockKey = 0;
+            var vesselIds = new NativeHashMap<int, ulong>(math.max(1, run.IslandVesselCount), Allocator.Temp);
+            int vesselParts = 0;
+            for (int v = 0; v < run.IslandVesselCount; v++)
+            {
+                VesselRecord vessel = run.Vessels.Vessels[run.IslandVessels[v]];
+                vesselIds[vesselParts] = vessel.Id;
+                vesselParts += vessel.PartCount;
+            }
+
+            for (int b = 0; b < problem.BlockCount; b++)
+            {
+                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
+                JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
+                ulong identity;
+                if (header != null)
+                {
+                    identity = Mix(BodyKey(run, header->BodyPair.BodyIndexA, vesselParts, vesselIds) * 0x9E3779B97F4A7C15UL
+                        + BodyKey(run, header->BodyPair.BodyIndexB, vesselParts, vesselIds)) ^ (ulong)header->Type;
+                    if (header->Type == JacobianType.Contact && header->HasContactManifold)
+                    {
+                        ColliderKeyPair colliders = header->AccessColliderKeys();
+                        identity = Mix(identity + (((ulong)colliders.ColliderKeyA.Value << 32) | colliders.ColliderKeyB.Value));
+                    }
+                }
+                else
+                {
+                    int worldA = block.BodyA >= 0 ? run.WorldBodies[block.BodyA] : -1;
+                    int worldB = block.BodyB >= 0 ? run.WorldBodies[block.BodyB] : -1;
+                    identity = Mix(BodyKey(run, worldA, vesselParts, vesselIds) * 0x9E3779B97F4A7C15UL
+                        + BodyKey(run, worldB, vesselParts, vesselIds)) ^ 0xFFUL;
+                }
+
+                int occurrence = 0;
+                if (seen.TryGetValue(identity, out int before))
+                {
+                    occurrence = before + 1;
+                }
+
+                seen[identity] = occurrence;
+                blockKeys[b] = Mix(identity + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
+            }
+
             for (int i = 0; i < nb; i++)
             {
                 int row = boundary[i];
                 int b = run.RowBlock[row];
                 SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
-                if (b != lastBlock)
+                JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
+                ulong place = (ulong)(row - block.FirstRow);
+                if (header != null && header->Type == JacobianType.Contact)
                 {
-                    lastBlock = b;
-                    JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
-                    int bodyA, bodyB;
-                    ulong type;
-                    if (header != null)
-                    {
-                        bodyA = header->BodyPair.BodyIndexA;
-                        bodyB = header->BodyPair.BodyIndexB;
-                        type = (ulong)header->Type;
-                    }
-                    else
-                    {
-                        bodyA = block.BodyA >= 0 ? run.WorldBodies[block.BodyA] : -1;
-                        bodyB = block.BodyB >= 0 ? run.WorldBodies[block.BodyB] : -1;
-                        type = 0xFF;
-                    }
-
-                    ulong pairKey = Mix(((ulong)(uint)bodyA << 32) | (uint)bodyB) ^ type;
-                    int occurrence = 0;
-                    if (seen.TryGetValue(pairKey, out int before))
-                    {
-                        occurrence = before + 1;
-                    }
-
-                    seen[pairKey] = occurrence;
-                    blockKey = Mix(pairKey + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
+                    place = ContactRowPlace(ref *header, row - block.FirstRow);
                 }
 
-                keys[i] = Mix(blockKey + (ulong)(row - block.FirstRow)) & ~(ulong)BoundaryMemory.StateMask;
+                keys[i] = Mix(blockKeys[b] + place) & ~(ulong)BoundaryMemory.StateMask;
             }
 
+            blockKeys.Dispose();
             seen.Dispose();
+            vesselIds.Dispose();
             return keys;
+        }
+
+        /// <summary>
+        /// A key for one side of a block that stays the same while the body stays in the island. A part of one of the
+        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other moving body is known by
+        /// its index in the dynamics world, and a body that does not move by its index among the bodies that do not
+        /// move. Returns 0 for no body.
+        /// </summary>
+        static unsafe ulong BodyKey(in ForestRun run, int world, int vesselParts, in NativeHashMap<int, ulong> vesselIds)
+        {
+            if (world < 0)
+            {
+                return 0;
+            }
+
+            if (world >= run.CompactOfWorldLength)
+            {
+                return Mix(((ulong)(uint)(world - run.CompactOfWorldLength) << 2) | 2);
+            }
+
+            int compact = run.CompactOfWorld[world];
+            int part = compact >= 0 && compact < run.Forest->BodyPart.Length ? run.Forest->BodyPart[compact] : -1;
+            if (part >= 0 && part < vesselParts)
+            {
+                int start = run.Forest->PartVesselStart[part];
+                if (vesselIds.TryGetValue(start, out ulong id))
+                {
+                    return Mix(Mix(id) + (((ulong)(uint)(part - start) << 2) | 3));
+                }
+            }
+
+            return Mix(((ulong)(uint)world << 2) | 1);
+        }
+
+        /// <summary>
+        /// The place of a contact block's row in its contact: for a normal row, the index of the row's point in the
+        /// manifold, and for a friction row, 0x10000 plus its place among the three friction rows. The block's first
+        /// rows are the normal rows of the points within reach, in the manifold's order, and the friction rows follow.
+        /// </summary>
+        static unsafe ulong ContactRowPlace(ref JacobianHeader header, int offset)
+        {
+            int count = header.AccessBaseJacobian<ContactJacobian>().BaseJacobian.NumContacts;
+            int normals = 0;
+            int point = -1;
+            for (int k = 0; k < count; k++)
+            {
+                if (header.AccessAngularJacobian(k).ContactDistance <= ContactRowReach)
+                {
+                    if (normals == offset)
+                    {
+                        point = k;
+                    }
+
+                    normals++;
+                }
+            }
+
+            return offset < normals && point >= 0 ? (ulong)point : 0x10000UL + (ulong)(offset - normals);
         }
 
         /// <summary>Mixes the bits of a 64-bit value, as the last step of MurmurHash3 does.</summary>
@@ -1363,7 +1511,10 @@ namespace Unity.Physics
         /// <summary>
         /// Solves the run's island for the right-hand side <paramref name="rhs"/> against the factor and boundary block it
         /// holds, and writes every row's impulse; a row inside a section gets none here. Returns false if the boundary's
-        /// pivoting ran out of iterations, leaving its impulses clamped to their bounds.
+        /// pivoting ran out of iterations before it found an answer. The boundary's impulses are then the result of a
+        /// few sweeps of projected Gauss-Seidel: they are inside their bounds and near the answer, so a velocity solve
+        /// can apply them. A vessel island's velocity solve counts such a solve in
+        /// <see cref="BoundaryCounters.UnsettledSolves"/>. A push-out does not apply them, see <see cref="SolvePushOut"/>.
         /// </summary>
         static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
         {
@@ -1409,6 +1560,14 @@ namespace Unity.Physics
                 SolveAgainstFactor(ref run, v);
             }
 
+            // In a vessel island's velocity solve, the held rows whose contacts separate give back their warm start before
+            // the boundary is solved, so that the boundary sees the velocities without it.
+            bool heldSolved = run.VesselMode && run.Bounded;
+            if (heldSolved && vesselStart)
+            {
+                SolveHeldRows(ref run, rhs, impulses, v, false);
+            }
+
             // The boundary: (J_b A^-1 J_b^T + E_b) z = r_b - J_b v0, bounded.
             int nb = run.BoundaryCount;
             bool solved = true;
@@ -1450,9 +1609,10 @@ namespace Unity.Physics
                 }
 
                 // A cap can keep some of a coupling's source rows out of the boundary. The rows that stay are next to each
-                // other in the boundary, because the boundary keeps the rows' order. A held row adds nothing to the source
-                // impulse, so the coupling only needs its range of source rows moved. A coupling whose own rows are held
-                // is left out.
+                // other in the boundary, because the boundary keeps the rows' order. A held row's impulse is known before
+                // the boundary is solved, so the coupling counts it with the impulse that was applied before the solve,
+                // and the coupling only needs its range of source rows moved. A coupling whose own rows are held is left
+                // out.
                 var couplings = new NativeList<BoundCoupling>(problem.CouplingCount, Allocator.Temp);
                 for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
                 {
@@ -1471,6 +1631,10 @@ namespace Unity.Physics
                             firstSource = firstSource < 0 ? run.BoundaryOf[row] : firstSource;
                             sourceCount++;
                         }
+                        else if (heldSolved && run.RowClass[row] == HeldRowClass)
+                        {
+                            coupling.HeldSourceImpulse += impulses[row];
+                        }
                     }
 
                     coupling.FirstRow = run.BoundaryOf[coupling.FirstRow];
@@ -1488,7 +1652,7 @@ namespace Unity.Physics
                         out int rounds);
                     BoundaryMemory.Remember(ref memory, (ulong*)run.BoundaryKey.GetUnsafeReadOnlyPtr(),
                         (byte*)states.GetUnsafeReadOnlyPtr(), nb);
-                    BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, warmRows);
+                    BoundaryCounters.AddSolve(nb, rounds, rounds >= maxRounds, !solved, warmRows);
                 }
                 else
                 {
@@ -1520,6 +1684,13 @@ namespace Unity.Physics
                 couplings.Dispose();
             }
 
+            // In a push-out, the held rows whose contacts are still too deep after the boundary's push get a push of
+            // their own.
+            if (heldSolved && !vesselStart)
+            {
+                SolveHeldRows(ref run, rhs, impulses, v, true);
+            }
+
             // Every forest row's impulse from the velocities: z = E^-1 (r - J v).
             for (int row = 0; row < rows; row++)
             {
@@ -1533,13 +1704,167 @@ namespace Unity.Physics
                 {
                     impulses[row] = problem.Lower[row];
                 }
-                else if (rowClass == SectionRowClass || rowClass == HeldRowClass || rowClass == DormantRowClass)
+                else if (rowClass == SectionRowClass || rowClass == DormantRowClass || (rowClass == HeldRowClass && !heldSolved))
                 {
                     impulses[row] = 0.0f;
                 }
             }
 
             return solved;
+        }
+
+        /// <summary>
+        /// Gives some of a vessel island's held normal rows an impulse, see <see cref="HeldRowClass"/>. Every other held
+        /// row gets no impulse. There are two cases:
+        /// <list type="bullet">
+        /// <item>
+        /// In a velocity solve (<paramref name="pushOut"/> false), a held row whose contact separates gives back its warm
+        /// start. The row's target is the change of its velocity that its right-hand side asks for, when that change is
+        /// negative, and the row gives back at most its warm start, which is minus its lower bound.
+        /// </item>
+        /// <item>
+        /// In a push-out (<paramref name="pushOut"/> true), a held row whose contact is still too deep after the
+        /// boundary's push gets a push of its own. The row's target is the rest of the push that its right-hand side
+        /// asks for.
+        /// </item>
+        /// </list>
+        /// Each row takes the impulse that would meet its target if the row were alone: the target divided by the row's
+        /// diagonal entry of W. That entry costs one walk along the row's path to the root of the factor, as in
+        /// <see cref="BuildBoundary"/>, but no other entry of W is needed. Several held rows can move the same bodies,
+        /// for example the four points of one box, so the routine then scales all of their impulses by one factor. The
+        /// factor is the one that meets the targets best in the least-squares sense, between 0 and 1. It costs one more
+        /// solve against the factor. The routine adds the change of the sections' velocities to <paramref name="v"/>,
+        /// writes each held row's impulse, and returns how many rows got one. With
+        /// <see cref="BoundaryCaps.IdleHeldRows"/>, every held row gets no impulse.
+        /// </summary>
+        static unsafe int SolveHeldRows(ref ForestRun run, float* rhs, float* impulses, double* v, bool pushOut)
+        {
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            float* jacobian = run.Jacobian;
+            var held = new NativeList<int>(16, Allocator.Temp);
+            var target = new NativeList<double>(16, Allocator.Temp);
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (run.RowClass[row] != HeldRowClass)
+                {
+                    continue;
+                }
+
+                impulses[row] = 0.0f;
+
+                // A normal row may push without limit, and a friction row has a finite upper bound.
+                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue
+                    && (pushOut ? rhs[row] > 0.0f : problem.Lower[row] < 0.0f);
+                if (!candidate)
+                {
+                    continue;
+                }
+
+                double change = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]],
+                    jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                if (pushOut ? change > 0.0 : change < 0.0)
+                {
+                    held.Add(row);
+                    target.Add(change);
+                }
+            }
+
+            int given = held.Length;
+            if (given > 0)
+            {
+                ForestIsland* forest = run.Forest;
+                ref VesselContext context = ref forest->Context;
+                int sections = forest->SectionCount;
+                var y = new NativeArray<double>(6 * sections, Allocator.Temp);
+                var mark = new NativeArray<int>(sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var path = new NativeArray<int>(sections, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                var z = new NativeArray<double>(given, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                for (int s = 0; s < sections; s++)
+                {
+                    mark[s] = -1;
+                }
+
+                int* seeds = stackalloc int[2];
+                double* yPtr = (double*)y.GetUnsafePtr();
+                double* work = (double*)run.Work.GetUnsafePtr();
+                UnsafeUtility.MemClear(work, run.Work.Length * (long)sizeof(double));
+                for (int k = 0; k < given; k++)
+                {
+                    int row = held[k];
+                    int2 sides = run.BlockSections[run.RowBlock[row]];
+                    float* columns = jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row;
+                    int seedCount = 0;
+                    if (sides.x >= 0)
+                    {
+                        seeds[seedCount++] = sides.x;
+                        (double6.Load(yPtr + 6 * sides.x) + BlockRows.Load(columns)).Store(yPtr + 6 * sides.x);
+                    }
+
+                    if (sides.y >= 0)
+                    {
+                        if (sides.y != sides.x)
+                        {
+                            seeds[seedCount++] = sides.y;
+                        }
+
+                        (double6.Load(yPtr + 6 * sides.y) + BlockRows.Load(columns + 6)).Store(yPtr + 6 * sides.y);
+                    }
+
+                    int count = context.CollectPath(seeds, seedCount, (int*)path.GetUnsafePtr(), (int*)mark.GetUnsafePtr(), k);
+                    context.ForwardPath(yPtr, (int*)path.GetUnsafePtr(), count);
+                    double diagonal = problem.Epsilon[row];
+                    for (int p = 0; p < count; p++)
+                    {
+                        int s = path[p];
+                        double6 ys = double6.Load(yPtr + 6 * s);
+                        diagonal += double6.Dot(ys, context.InverseDiagonal(s, ys));
+                        default(double6).Store(yPtr + 6 * s);
+                    }
+
+                    double impulse = target[k] / math.max(diagonal, 1e-300);
+                    if (!pushOut)
+                    {
+                        impulse = math.max(impulse, problem.Lower[row]);
+                    }
+
+                    z[k] = impulse;
+                    BlockRows.Add(work, sides, columns, impulse);
+                }
+
+                SolveAgainstFactor(ref run, work);
+                // The scale is the one that best meets the targets in the least-squares sense, kept between 0 and 1.
+                double along = 0.0, squared = 0.0;
+                for (int k = 0; k < given; k++)
+                {
+                    int row = held[k];
+                    double moved = BlockRows.Dot(work, run.BlockSections[run.RowBlock[row]],
+                        jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                    along += moved * target[k];
+                    squared += moved * moved;
+                }
+
+                double scale = squared > 0.0 ? math.clamp(along / squared, 0.0, 1.0) : 0.0;
+
+                for (int i = 0; i < run.Velocity.Length; i++)
+                {
+                    v[i] += scale * work[i];
+                }
+
+                for (int k = 0; k < given; k++)
+                {
+                    impulses[held[k]] = (float)(scale * z[k]);
+                }
+
+                y.Dispose();
+                mark.Dispose();
+                path.Dispose();
+                z.Dispose();
+                BoundaryCounters.AddHeld(pushOut ? 0 : given, pushOut ? given : 0);
+            }
+
+            held.Dispose();
+            target.Dispose();
+            return given;
         }
 
         /// <summary>
@@ -2012,7 +2337,8 @@ namespace Unity.Physics
     /// <summary>
     /// Limits on the boundary block of a vessel island, so that the dense solve of the boundary stays small. The
     /// defaults come from the vessel solver study. A field that is zero takes its default, and a field that is negative
-    /// turns its limit off. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
+    /// turns its limit off, except for <see cref="SelfContactManifolds"/>, which never goes above
+    /// <see cref="MaxSelfContactManifolds"/>. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
     /// </summary>
     public struct BoundaryCaps
     {
@@ -2048,6 +2374,13 @@ namespace Unity.Physics
         public bool KeepDormantRows;
 
         /// <summary>
+        /// If true, a held row never takes an impulse of its own: a held normal row keeps its warm start even while its
+        /// contact separates, and it gets no push-out. If false, see <see cref="Solver"/>'s SolveHeldRows. For measuring
+        /// what the held rows' own impulses do.
+        /// </summary>
+        public bool IdleHeldRows;
+
+        /// <summary>
         /// How far, in metres or radians, a one-sided joint row must stay from its stop over the step for the solve to
         /// leave it out of the boundary.
         /// </summary>
@@ -2065,10 +2398,12 @@ namespace Unity.Physics
         /// <summary>The limit on points per manifold that applies, after defaults.</summary>
         public int PointLimit => Limit(PointsPerManifold, DefaultPointsPerManifold);
 
-        /// <summary>The limit on self-contact manifolds that applies, after defaults. It is never more than 25.</summary>
-        public int SelfManifoldLimit => SelfContactManifolds < 0
-            ? int.MaxValue
-            : Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
+        /// <summary>
+        /// The limit on self-contact manifolds that applies, after defaults. It is never more than 25, so a negative
+        /// setting, which turns the other limits off, gives 25 here.
+        /// </summary>
+        public int SelfManifoldLimit =>
+            Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
 
         /// <summary>The limit on pivoting rounds that applies, after defaults.</summary>
         public int PivotRoundLimit => Limit(PivotRounds, DefaultPivotRounds);
@@ -2086,6 +2421,9 @@ namespace Unity.Physics
         public const int StateMask = 3;
 
         public UnsafeList<ulong> States;
+
+        /// <summary>How many times the caps have chosen this island's boundary rows. It seeds the hash that breaks ties.</summary>
+        public uint CapCount;
 
         public void Dispose()
         {
@@ -2150,12 +2488,28 @@ namespace Unity.Physics
         /// <summary>Solves that used every round that the cap allows.</summary>
         public long CappedSolves;
 
+        /// <summary>
+        /// Solves that ran out of rounds before they found any answer that met every condition. Sweeps of projected
+        /// Gauss-Seidel finished these solves, see <see cref="Unity.Physics.Numerics.Retooled.BoundarySolver"/>.
+        /// </summary>
+        public long UnsettledSolves;
+
         /// <summary>Rows that started from the state that the island remembered for them.</summary>
         public long WarmRows;
 
         /// <summary>Contact points held out of the boundary, and self-contact manifolds held out of it.</summary>
         public long HeldPoints;
         public long HeldSelfManifolds;
+
+        /// <summary>Contact manifolds against bodies outside the vessel that the cap on outside points left with no point.</summary>
+        public long EmptiedOutsideManifolds;
+
+        /// <summary>
+        /// Held normal rows that gave back some of their warm start because their contact was separating, and held
+        /// normal rows that got a push-out of their own because their contact was too deep.
+        /// </summary>
+        public long HeldReleases;
+        public long HeldPushes;
 
         /// <summary>The most outside contact points and the most self-contact manifolds that one boundary kept.</summary>
         public long MostOutsidePoints;
@@ -2174,7 +2528,7 @@ namespace Unity.Physics
             Shared.Data = default;
         }
 
-        internal static void AddSolve(int rows, int rounds, bool capped, int warmRows)
+        internal static void AddSolve(int rows, int rounds, bool capped, bool unsettled, int warmRows)
         {
             ref BoundaryCounters data = ref Shared.Data;
             Interlocked.Increment(ref data.Solves);
@@ -2186,14 +2540,20 @@ namespace Unity.Physics
                 Interlocked.Increment(ref data.CappedSolves);
             }
 
+            if (unsettled)
+            {
+                Interlocked.Increment(ref data.UnsettledSolves);
+            }
+
             Most(ref data.MostRounds, rounds);
         }
 
-        internal static void AddCaps(int heldPoints, int heldManifolds, int outsidePoints, int selfManifolds)
+        internal static void AddCaps(int heldPoints, int heldManifolds, int outsidePoints, int selfManifolds, int emptiedManifolds)
         {
             ref BoundaryCounters data = ref Shared.Data;
             Interlocked.Add(ref data.HeldPoints, heldPoints);
             Interlocked.Add(ref data.HeldSelfManifolds, heldManifolds);
+            Interlocked.Add(ref data.EmptiedOutsideManifolds, emptiedManifolds);
             Most(ref data.MostOutsidePoints, outsidePoints);
             Most(ref data.MostSelfManifolds, selfManifolds);
         }
@@ -2201,6 +2561,12 @@ namespace Unity.Physics
         internal static void AddDormant(int dormantRows)
         {
             Interlocked.Add(ref Shared.Data.DormantRows, dormantRows);
+        }
+
+        internal static void AddHeld(int releases, int pushes)
+        {
+            Interlocked.Add(ref Shared.Data.HeldReleases, releases);
+            Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
         }
 
         static void Most(ref long most, long value)

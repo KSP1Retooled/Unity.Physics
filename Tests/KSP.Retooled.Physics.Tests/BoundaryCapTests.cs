@@ -103,8 +103,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 100 parts that lies on the ground has 400 contact points, more than the cap of 256. The boundary
-        /// keeps 256 of them, and the craft rests on the ground without sinking or shaking.
+        /// A craft of 100 parts that lies on the ground has 400 contact points, more than the cap of 256. The cap takes
+        /// every part's deepest point before any part's second point, so every part keeps some of its points, and the
+        /// boundary keeps no more than the 448 rows that 256 points in manifolds of 4 would bring. The craft rests on the
+        /// ground without sinking or shaking.
         /// </summary>
         [Test]
         public void ALongCraftOnTheGroundKeepsItsContactPointsUnderTheCap()
@@ -125,13 +127,17 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             BoundaryCounters counts = BoundaryCounters.Current;
-            Debug.Log($"[BoundaryCapTests] lying craft: {counts.Solves} solves, {counts.Rows / (double)System.Math.Max(1, counts.Solves):F0} " +
-                $"rows a solve, most outside points {counts.MostOutsidePoints}, held points {counts.HeldPoints}, " +
-                $"rounds a solve {counts.Rounds / (double)System.Math.Max(1, counts.Solves):F2} (most {counts.MostRounds}, " +
-                $"{counts.CappedSolves} at the cap); centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
+            double rows = counts.Rows / (double)System.Math.Max(1, counts.Solves);
+            Debug.Log($"[BoundaryCapTests] lying craft: {counts.Solves} solves, {rows:F0} rows a solve, most outside points " +
+                $"{counts.MostOutsidePoints}, held points {counts.HeldPoints}, manifolds left with no point " +
+                $"{counts.EmptiedOutsideManifolds}, rounds a solve {counts.Rounds / (double)System.Math.Max(1, counts.Solves):F2} " +
+                $"(most {counts.MostRounds}, {counts.CappedSolves} at the cap, {counts.UnsettledSolves} without an answer); " +
+                $"centres from {lowest:F4} to {highest:F4} m, fastest {fastest:F4} m/s");
             Assert.That(counts.Solves, Is.GreaterThan(0), "the craft's island solves a boundary");
-            Assert.That(counts.MostOutsidePoints, Is.EqualTo(BoundaryCaps.DefaultOutsideContactPoints), "the cap holds");
+            Assert.That(counts.MostOutsidePoints, Is.LessThanOrEqualTo(BoundaryCaps.DefaultOutsideContactPoints), "the cap holds");
+            Assert.That(rows, Is.LessThanOrEqualTo(448.0), "the limit on rows holds");
             Assert.That(counts.HeldPoints, Is.GreaterThan(0), "the cap held points out");
+            Assert.That(counts.EmptiedOutsideManifolds, Is.EqualTo(0), "every part keeps some of its points");
             Assert.That(lowest, Is.GreaterThan(0.29f), "no part sinks");
             Assert.That(highest, Is.LessThan(0.31f), "no part lifts");
             Assert.That(fastest, Is.LessThan(0.02f), "no part shakes");
@@ -195,6 +201,99 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(counts.HeldSelfManifolds, Is.GreaterThan(0), "the cap held manifolds out");
             Assert.That(deepest, Is.LessThan(0.01f), "the columns stay apart");
             Assert.That(fastest, Is.LessThan(0.05f), "the columns hang still");
+        }
+
+        /// <summary>
+        /// A craft of 8 parts lies on the ground, and next to each part a loose box sits 3 cm deep in the ground, touching
+        /// the part, so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most
+        /// boxes are held out of the boundary. The scene runs twice: once with held rows that take no impulse of their
+        /// own, as before, and once with held rows that are too deep getting a push-out of their own. The boxes come
+        /// further out of the ground in the second run.
+        /// </summary>
+        [Test]
+        public void HeldContactsThatAreTooDeepArePushedOut()
+        {
+            const float depth = 0.03f;
+            var deepest = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { OutsideContactPoints = 4, IdleHeldRows = pass == 0 });
+                LyingCraft(8);
+                var boxes = new List<Rigidbody>();
+                for (int i = 0; i < 8; i++)
+                {
+                    Rigidbody box = Box(new Vector3(i - 4.0f, 0.25f - depth, 0.6f), new Vector3(0.8f, 0.5f, 0.6f)).AddComponent<Rigidbody>();
+                    box.mass = PartMass;
+                    box.sleepThreshold = 0.0f;
+                    boxes.Add(box);
+                }
+
+                BoundaryCounters.Reset();
+                Simulate(3);
+                foreach (Rigidbody box in boxes)
+                {
+                    deepest[pass] = Mathf.Max(deepest[pass], 0.25f - box.position.y);
+                }
+
+                BoundaryCounters counts = BoundaryCounters.Current;
+                Debug.Log($"[BoundaryCapTests] deep held contacts, {(pass == 0 ? "idle" : "pushed")}: {counts.Solves} solves, " +
+                    $"held points {counts.HeldPoints}, manifolds left with no point {counts.EmptiedOutsideManifolds}, held rows " +
+                    $"pushed {counts.HeldPushes}; deepest box after 3 steps {deepest[pass] * 1e3f:F2} mm");
+                Assert.That(counts.EmptiedOutsideManifolds, Is.GreaterThan(0), "the cap held whole manifolds out");
+            }
+
+            Assert.That(deepest[1], Is.LessThan(deepest[0] - 0.005f), "the push-out of the held rows lifts the boxes");
+        }
+
+        /// <summary>
+        /// A long craft rests on the ground, with more contact points than the cap. Then gravity goes away. Each contact
+        /// starts the next step with most of its last impulse, which pushes the craft up. The solve takes that impulse
+        /// back from the points that it keeps, and it has to take it back from the held points too, or the held points
+        /// throw the craft into the air. The scene runs twice: once with held rows that keep their warm start, as before,
+        /// and once with held rows that give it back.
+        /// </summary>
+        [Test]
+        public void HeldContactsGiveBackTheirWarmStartWhenTheyAreNotNeeded()
+        {
+            var fastest = new float[2];
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Fresh(new BoundaryCaps { IdleHeldRows = pass == 0 });
+                List<Rigidbody> bodies = LyingCraft(100);
+                Simulate(100);
+                UnityEngine.Physics.gravity = Vector3.zero;
+                BoundaryCounters.Reset();
+                for (int step = 0; step < 10; step++)
+                {
+                    Simulate();
+                    foreach (Rigidbody body in bodies)
+                    {
+                        fastest[pass] = Mathf.Max(fastest[pass], body.linearVelocity.y);
+                    }
+                }
+
+                BoundaryCounters counts = BoundaryCounters.Current;
+                Debug.Log($"[BoundaryCapTests] gravity gone, {(pass == 0 ? "idle" : "given back")}: held points {counts.HeldPoints}, " +
+                    $"held rows that gave back their warm start {counts.HeldReleases}; fastest upward speed {fastest[pass]:F4} m/s");
+                Assert.That(counts.HeldPoints, Is.GreaterThan(0), "the cap held points out");
+            }
+
+            Assert.That(fastest[1], Is.LessThan(0.5f * fastest[0]), "giving back the warm start keeps the craft lower");
+            Assert.That(fastest[1], Is.LessThan(0.03f), "the craft stays on the ground, apart from the push out of its resting depth");
+        }
+
+        /// <summary>
+        /// The limit on self-contact manifolds takes its default of 8 for a setting of zero, and it never goes above 25,
+        /// not even for a negative setting, which turns the other limits off.
+        /// </summary>
+        [Test]
+        public void TheSelfContactLimitNeverGoesAbove25()
+        {
+            Assert.That(new BoundaryCaps().SelfManifoldLimit, Is.EqualTo(BoundaryCaps.DefaultSelfContactManifolds));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = 12 }.SelfManifoldLimit, Is.EqualTo(12));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = 40 }.SelfManifoldLimit, Is.EqualTo(BoundaryCaps.MaxSelfContactManifolds));
+            Assert.That(new BoundaryCaps { SelfContactManifolds = -1 }.SelfManifoldLimit, Is.EqualTo(BoundaryCaps.MaxSelfContactManifolds));
+            Assert.That(new BoundaryCaps { OutsideContactPoints = -1 }.OutsidePointLimit, Is.EqualTo(int.MaxValue));
         }
 
         /// <summary>
