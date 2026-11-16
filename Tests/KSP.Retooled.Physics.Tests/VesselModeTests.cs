@@ -163,9 +163,10 @@ namespace KSP.Retooled.Physics.Tests
 
         /// <summary>
         /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
-        /// default. <see cref="FusedVesselModeTests"/> runs the same tests with every vessel island in the fused job.
+        /// default, which sends every vessel island to the fused job. These tests keep the vessels in the substeps'
+        /// jobs, and <see cref="FusedVesselModeTests"/> runs the same tests with the default.
         /// </summary>
-        protected virtual int FusedParts => 0;
+        protected virtual int FusedParts => int.MaxValue;
 
         [SetUp]
         public void Begin()
@@ -602,11 +603,11 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A floating column of 64 parts goes to the fused job when it is the only vessel of its size, and two such
-        /// columns stay with the substeps' jobs, which solve them in parallel.
+        /// By default, every vessel island goes to the fused job, however small it is and however many there are: one
+        /// floating column of 64 parts, and two of them. Before, two such columns stayed with the substeps' jobs.
         /// </summary>
         [Test]
-        public void OneMidSizedVesselGoesToTheFusedJobButTwoDoNot()
+        public void SmallVesselsGoToTheFusedJobHoweverManyThereAre()
         {
             bool wasFused = Unity.Physics.Solver.VesselFused;
             Unity.Physics.Solver.VesselFused = true;
@@ -633,8 +634,119 @@ namespace KSP.Retooled.Physics.Tests
                     long before = Unity.Physics.Solver.FusedIslandSolves;
                     vessels.Step(5);
                     long fused = Unity.Physics.Solver.FusedIslandSolves - before;
-                    Assert.That(fused, columns == 1 ? Is.EqualTo(5) : Is.EqualTo(0), $"fused island solves with {columns} columns");
+                    Assert.That(fused, Is.EqualTo(5 * columns), $"fused island solves with {columns} columns");
                 }
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+        }
+
+        /// <summary>
+        /// A fleet of twelve small vessels, columns of 3 to 8 parts, falls onto the ground at a slant. The scene runs
+        /// twice: once with the substeps' jobs, and once with the fused vessel job, which the default rule sends every
+        /// column to. The fused job solves several columns at once. It lands the columns where the substeps' jobs land
+        /// them, with the same loads, within the tolerance of <see cref="TheFusedJobLandsAColumnAsTheIslandPathDoes"/>.
+        /// </summary>
+        [Test]
+        public void AFleetOfSmallVesselsLandsTheSameInTheFusedJobAsInTheSubsteps()
+        {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            const int columns = 12;
+            const int steps = 60;
+            var positions = new Vector3[2][];
+            var loads = new double3[2][];
+            try
+            {
+                Unity.Physics.Solver.VesselFused = true;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    VesselForest.ForgetIslands();
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : Unity.Physics.Solver.DefaultFusedVesselParts;
+                    Ground();
+                    var bodies = new List<Rigidbody>();
+                    for (int c = 0; c < columns; c++)
+                    {
+                        foreach (Rigidbody body in Column(3 + c % 6, 0.6f, double.PositiveInfinity, 3.0f * c))
+                        {
+                            body.angularVelocity = new Vector3(0.05f * c, 0.0f, 0.3f);
+                            bodies.Add(body);
+                        }
+                    }
+
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.FusedIslandSolves;
+                    vessels.Step(steps);
+                    long fused = Unity.Physics.Solver.FusedIslandSolves - before;
+                    Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.EqualTo(columns * steps),
+                        $"in pass {pass}, the columns go to the fused job only in the second pass, and then every column in every step");
+                    positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
+                    loads[pass] = new double3[bodies.Count];
+                    for (int i = 0; i < bodies.Count; i++)
+                    {
+                        loads[pass][i] = vessels.Load(i).Force;
+                    }
+                }
+            }
+            finally
+            {
+                Unity.Physics.Solver.VesselFused = wasFused;
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
+
+            double largestPose = 0.0, largestLoad = 0.0;
+            for (int i = 0; i < positions[0].Length; i++)
+            {
+                float pose = (positions[1][i] - positions[0][i]).magnitude;
+                float load = (float)math.length(loads[1][i] - loads[0][i]);
+                float size = (float)math.length(loads[0][i]);
+                largestPose = System.Math.Max(largestPose, pose);
+                largestLoad = System.Math.Max(largestLoad, load);
+                Assert.That(pose, Is.LessThan(1e-3f), $"part {i} lands in the same place");
+                Assert.That(load, Is.LessThan(0.01f * size + 0.01f), $"part {i}'s edge carries the same load");
+            }
+
+            Debug.Log($"[VesselModeTests] small fleet: largest difference from the substeps' jobs {largestPose:E2} m in pose, {largestLoad:E2} N in load");
+        }
+
+        /// <summary>
+        /// Forty floating vessels of two parts each, every one a fused island. The fused job keeps the state of every
+        /// one of them from step to step, so that no island builds its structure again. With room for only 32 islands,
+        /// eight of them built their structure again in every step.
+        /// </summary>
+        [Test]
+        public void FortyFusedIslandsKeepTheirStructuresFromStepToStep()
+        {
+            bool wasFused = Unity.Physics.Solver.VesselFused;
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            try
+            {
+                Unity.Physics.Solver.VesselFused = true;
+                Unity.Physics.Solver.FusedVesselParts = 2;
+                for (int c = 0; c < 40; c++)
+                {
+                    foreach (Rigidbody body in Column(2, 5.0f, double.PositiveInfinity, 3.0f * c))
+                    {
+                        body.useGravity = false;
+                    }
+                }
+
+                Begin(vessels);
+                vessels.Step(3);
+                VesselForest.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
+                long before = Unity.Physics.Solver.FusedIslandSolves;
+                vessels.Step(5);
+                VesselForest.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
+                Assert.That(Unity.Physics.Solver.FusedIslandSolves - before, Is.EqualTo(40 * 5), "every vessel is a fused island in every step");
+                Assert.That(builds1 - builds0, Is.EqualTo(0), "no fused island builds its structure again");
             }
             finally
             {
@@ -739,11 +851,11 @@ namespace KSP.Retooled.Physics.Tests
     }
 
     /// <summary>
-    /// The tests of <see cref="VesselModeTests"/> with the fused vessel job taking every vessel island of two parts or
-    /// more, so that the fused job's results are checked against the same expectations as the ordinary path's.
+    /// The tests of <see cref="VesselModeTests"/> with the fused vessel job taking every vessel island, as it does by
+    /// default, so that the fused job's results are checked against the same expectations as the substeps' jobs'.
     /// </summary>
     public class FusedVesselModeTests : VesselModeTests
     {
-        protected override int FusedParts => 2;
+        protected override int FusedParts => 0;
     }
 }

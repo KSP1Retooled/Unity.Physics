@@ -23,9 +23,10 @@ namespace KSP.Retooled.Physics.Tests
 
         /// <summary>
         /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
-        /// default. <see cref="FusedVesselStepTests"/> runs the same tests with every vessel island in the fused job.
+        /// default, which sends every vessel island to the fused job. These tests keep the vessels in the substeps'
+        /// jobs, and <see cref="FusedVesselStepTests"/> runs the same tests with the default.
         /// </summary>
-        protected virtual int FusedParts => 0;
+        protected virtual int FusedParts => int.MaxValue;
 
         [SetUp]
         public void TurnVesselsOn()
@@ -345,11 +346,11 @@ namespace KSP.Retooled.Physics.Tests
     }
 
     /// <summary>
-    /// The tests of <see cref="VesselStepTests"/> with the fused vessel job taking every vessel island of two parts or
-    /// more, so that the fused job's results are checked against the same expectations as the ordinary path's.
+    /// The tests of <see cref="VesselStepTests"/> with the fused vessel job taking every vessel island, as it does by
+    /// default, so that the fused job's results are checked against the same expectations as the substeps' jobs'.
     /// </summary>
     public class FusedVesselStepTests : VesselStepTests
     {
-        protected override int FusedParts => 2;
+        protected override int FusedParts => 0;
     }
 }
