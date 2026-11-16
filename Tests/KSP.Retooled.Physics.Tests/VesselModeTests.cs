@@ -231,13 +231,13 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>Boxes in a column, each one a part of a vessel, joined by rigid edges. The parts don't collide.</summary>
-        private List<Rigidbody> Column(int count, float bottom, double breakForce = double.PositiveInfinity)
+        private List<Rigidbody> Column(int count, float bottom, double breakForce = double.PositiveInfinity, float x = 0.0f)
         {
             var bodies = new List<Rigidbody>();
             var parents = new List<int>();
             for (int i = 0; i < count; i++)
             {
-                Rigidbody body = Box(new Vector3(0.0f, bottom + 1.0f * (count - 1 - i) + 0.5f, 0.0f), new Vector3(0.6f, 1.0f, 0.6f))
+                Rigidbody body = Box(new Vector3(x, bottom + 1.0f * (count - 1 - i) + 0.5f, 0.0f), new Vector3(0.6f, 1.0f, 0.6f))
                     .AddComponent<Rigidbody>();
                 body.mass = PartMass;
 
@@ -253,7 +253,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             vessels.AddVessel(bodies, parents, i => RigidEdge(bodies[i], bodies[i - 1],
-                new Vector3(0.0f, bottom + 1.0f * (count - i), 0.0f), breakForce));
+                new Vector3(x, bottom + 1.0f * (count - i), 0.0f), breakForce));
             return bodies;
         }
 
@@ -524,6 +524,45 @@ namespace KSP.Retooled.Physics.Tests
 
             Debug.Log($"[VesselModeTests] fused landing: bottom edge force {loads[0]:F3} by the island's jobs, {loads[1]:F3} by the fused job");
             Assert.That(loads[1], Is.EqualTo(loads[0]).Within(0.01f * loads[0] + 0.01f), "the bottom edge carries the same load");
+        }
+
+        /// <summary>
+        /// A floating column of 64 parts goes to the fused job when it is the only vessel of its size, and two such
+        /// columns stay with the substeps' jobs, which solve them in parallel.
+        /// </summary>
+        [Test]
+        public void OneMidSizedVesselGoesToTheFusedJobButTwoDoNot()
+        {
+            int fusedParts = Unity.Physics.Solver.FusedVesselParts;
+            Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+            try
+            {
+                for (int columns = 1; columns <= 2; columns++)
+                {
+                    TearDownScene();
+                    SetUpScene();
+                    VesselForest.Enabled = true;
+                    vessels.Dispose();
+                    vessels = new TestVessels();
+                    for (int c = 0; c < columns; c++)
+                    {
+                        foreach (Rigidbody body in Column(64, 5.0f, double.PositiveInfinity, 3.0f * c))
+                        {
+                            body.useGravity = false;
+                        }
+                    }
+
+                    Begin(vessels);
+                    long before = Unity.Physics.Solver.FusedIslandSolves;
+                    vessels.Step(5);
+                    long fused = Unity.Physics.Solver.FusedIslandSolves - before;
+                    Assert.That(fused, columns == 1 ? Is.EqualTo(5) : Is.EqualTo(0), $"fused island solves with {columns} columns");
+                }
+            }
+            finally
+            {
+                Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            }
         }
 
         [Test]
