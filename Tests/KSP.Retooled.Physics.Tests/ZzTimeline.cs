@@ -41,7 +41,53 @@ namespace KSP.Retooled.Physics.Tests
             public int[] ClosureB;
         }
 
+        /// <summary>
+        /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x2", names that many
+        /// copies of the craft side by side along x, 10 m apart, as in <see cref="VesselForestBench"/>.
+        /// </summary>
         private static Graph Load(string name)
+        {
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(name, @"^(.+)x(\d+)$");
+            if (!match.Success)
+            {
+                return LoadFile(name);
+            }
+
+            Graph single = LoadFile(match.Groups[1].Value);
+            int copies = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
+            int parts = single.Parent.Length;
+            float spacing = single.Position.Max(p => p.x) - single.Position.Min(p => p.x) + 10.0f;
+            var graph = new Graph
+            {
+                Parent = new int[parts * copies], Mass = new float[parts * copies], Inertia = new Vector3[parts * copies],
+                Position = new Vector3[parts * copies], Joint = new Vector3[parts * copies], Swing = new float[parts * copies],
+                ClosureA = new int[single.ClosureA.Length * copies], ClosureB = new int[single.ClosureA.Length * copies],
+            };
+            for (int copy = 0; copy < copies; copy++)
+            {
+                var offset = new Vector3(copy * spacing, 0.0f, 0.0f);
+                for (int i = 0; i < parts; i++)
+                {
+                    int to = copy * parts + i;
+                    graph.Parent[to] = single.Parent[i] >= 0 ? copy * parts + single.Parent[i] : -1;
+                    graph.Mass[to] = single.Mass[i];
+                    graph.Inertia[to] = single.Inertia[i];
+                    graph.Position[to] = single.Position[i] + offset;
+                    graph.Joint[to] = single.Joint[i] + offset;
+                    graph.Swing[to] = single.Swing[i];
+                }
+
+                for (int k = 0; k < single.ClosureA.Length; k++)
+                {
+                    graph.ClosureA[copy * single.ClosureA.Length + k] = copy * parts + single.ClosureA[k];
+                    graph.ClosureB[copy * single.ClosureA.Length + k] = copy * parts + single.ClosureB[k];
+                }
+            }
+
+            return graph;
+        }
+
+        private static Graph LoadFile(string name)
         {
             string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Packages", "io.github.ksp1retooled.physics",
                 "Tests", "VesselGraphs~"));
@@ -140,7 +186,11 @@ namespace KSP.Retooled.Physics.Tests
 
             if (ground)
             {
-                Box(new Vector3(0.0f, lowest - 0.5f, 0.0f), new Vector3(400.0f, 1.0f, 400.0f));
+                // A fleet of copies that reaches past the 400 m ground gets a ground that covers it, as in the bench.
+                float left = graph.Position.Min(p => p.x), right = graph.Position.Max(p => p.x);
+                bool fits = left > -190.0f && right < 190.0f;
+                Box(new Vector3(fits ? 0.0f : 0.5f * (left + right), lowest - 0.5f, 0.0f),
+                    new Vector3(fits ? 400.0f : right - left + 100.0f, 1.0f, 400.0f));
             }
         }
 
@@ -182,7 +232,9 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Initialize();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
             UnityEngine.Profiling.Profiler.maxUsedMemory = 1 << 30;
-            foreach (string craft in new[] { "tu160", "synthetic4500" })
+            // PROFILE_CRAFT lists the crafts, separated by commas, such as "tu160x2" for two copies of the Tu-160.
+            string crafts = Environment.GetEnvironmentVariable("PROFILE_CRAFT");
+            foreach (string craft in string.IsNullOrEmpty(crafts) ? new[] { "tu160", "synthetic4500" } : crafts.Split(','))
             {
                 Graph graph = Load(craft);
                 foreach (bool ground in new[] { false, true })
