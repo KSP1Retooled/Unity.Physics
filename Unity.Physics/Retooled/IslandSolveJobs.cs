@@ -1373,12 +1373,20 @@ namespace Unity.Physics
                     teams[t].Team.Finish();
                 }
 
-                // Every island has a leader now. Help the island that has the most parts for each lane that works on it,
-                // counting its leader, and then the next one, until every island is solved.
+                // Every island has a leader now. With several islands, work on the open stages of every island, the
+                // largest island first, for as long as some stage is open. A lane that has found no open stage for the
+                // spin time waits on the island that has the most parts for each lane that works on it, counting its
+                // leader. It works on that island's stages until the island is solved, and then looks at all the
+                // islands again. With one island, the lane waits on it at once, as before.
                 using (HelpMarker.Auto())
                 {
                     while (true)
                     {
+                        if (count > 1 && !SweepOpenStages(teams, count))
+                        {
+                            return;
+                        }
+
                         int best = -1;
                         long bestParts = 0, bestLanes = 1;
                         for (int t = 0; t < count; t++)
@@ -1414,6 +1422,47 @@ namespace Unity.Physics
                         {
                             return;
                         }
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Runs the tasks of every open stage of the islands, the largest island first, until no stage has been
+            /// open for the teams' spin time. Returns false if every island is solved.
+            /// </summary>
+            static bool SweepOpenStages(FusedTeam* teams, int count)
+            {
+                long spinTicks = teams[0].Team.SpinTicks;
+                long idleSince = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                while (true)
+                {
+                    bool unsolved = false, worked = false;
+                    for (int t = 0; t < count; t++)
+                    {
+                        if (!teams[t].Team.Finished)
+                        {
+                            unsolved = true;
+                            worked |= teams[t].Team.TryWork();
+                        }
+                    }
+
+                    if (!unsolved)
+                    {
+                        return false;
+                    }
+
+                    long now = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    if (worked)
+                    {
+                        idleSince = now;
+                    }
+                    else if (now - idleSince > spinTicks)
+                    {
+                        return true;
+                    }
+                    else
+                    {
+                        Unity.Burst.Intrinsics.Common.Pause();
                     }
                 }
             }

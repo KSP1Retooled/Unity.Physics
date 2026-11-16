@@ -232,6 +232,36 @@ namespace Unity.Physics
         }
 
         /// <summary>
+        /// Runs the tasks that are left in the current stage, if the leader has published a stage that still has tasks
+        /// to claim, and returns whether it found such a stage. It never waits. A lane that helps several teams calls
+        /// this on each team in turn, so that it works wherever a stage is open.
+        /// </summary>
+        public bool TryWork()
+        {
+            long current = Interlocked.Read(ref next);
+            long generation = current >> 32;
+            if (Volatile.Read(ref finished) != 0 || generation == 0)
+            {
+                return false;
+            }
+
+            // The leader writes a stage's slot before it publishes the stage's generation, and it doesn't write that
+            // slot again until two generations later. Work checks the generation before it claims each task, so it
+            // runs no task of a stage that has ended.
+            Stage stage = (generation & 1) == 0 ? even : odd;
+            if ((current & uint.MaxValue) >= stage.TaskCount)
+            {
+                return false;
+            }
+
+            Work(generation, stage);
+            return true;
+        }
+
+        /// <summary>The time that an idle helper spins before it blocks, in timestamp ticks.</summary>
+        public long SpinTicks => spinTicks;
+
+        /// <summary>
         /// Waits for a signal from the leader unless a new stage is available or the leader has finished.
         /// </summary>
         void Park(long seen)
