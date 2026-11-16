@@ -565,30 +565,32 @@ namespace KSP.Retooled.Physics.Tests
         /// if it has no pair at those addresses. If the backend didn't end the old pair, Unity kept the old pair with
         /// the ids of the destroyed colliders, and the new pair got one OnTriggerStay and then no more. The store frees
         /// the memory of destroyed shapes, but the heap doesn't hand the same addresses back in any fixed order, so the
-        /// test repeats the scene until the addresses were reused a few times.
+        /// test repeats the scene until the new pair took the addresses of an earlier destroyed pair a few times. Without
+        /// the fix, Unity kept the old pairs of every earlier iteration, so the new pair can match any of them.
         /// </summary>
         [Test]
         public unsafe void ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays()
         {
             const int wantedReuses = 3;
             int reuses = 0;
+            var destroyedPairs = new HashSet<(long, long)>();
             for (int iteration = 0; iteration < 200 && reuses < wantedReuses; iteration++)
             {
                 GameObject oldZone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f));
                 Rigidbody oldBody = WeightlessBox(Vector3.zero);
                 Simulate(3);
-                (long, long) oldShapes = (ShapeAddress(oldZone), ShapeAddress(oldBody.gameObject));
+                destroyedPairs.Add((ShapeAddress(oldZone), ShapeAddress(oldBody.gameObject)));
                 DestroyAll();
 
                 TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f)).AddComponent<TriggerLog>();
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
                 Simulate();
-                bool reused = (ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)) == oldShapes;
+                bool reused = destroyedPairs.Contains((ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)));
                 Simulate(100);
 
-                Assert.That(zone.Enters.Count, Is.EqualTo(1), $"iteration {iteration}, addresses reused: {reused}");
-                Assert.That(zone.Stays.Count, Is.GreaterThan(3), $"iteration {iteration}, addresses reused: {reused}");
-                Assert.That(zone.Exits.Count, Is.EqualTo(1), $"iteration {iteration}, addresses reused: {reused}");
+                Assert.That(zone.Enters.Count, Is.EqualTo(1), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
+                Assert.That(zone.Stays.Count, Is.GreaterThan(3), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
+                Assert.That(zone.Exits.Count, Is.EqualTo(1), $"iteration {iteration}, new pair at the addresses of a pair destroyed in this test: {reused}");
                 reuses += reused ? 1 : 0;
                 DestroyAll();
             }
