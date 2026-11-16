@@ -14,8 +14,8 @@ namespace Unity.Numerics.Kernels
     /// The Cholesky factor A = L L^T of a symmetric positive definite matrix, and changes to it. L is lower triangular.
     /// The factor and the solves take a <see cref="MatrixView{T}"/> in any layout, or a pointer to a matrix that is
     /// stored column by column with a leading dimension: entry (i, j) of L is then l[i + j * ldl]. The changes to the
-    /// factor take only the second form. The routines read and write only the lower triangle, except that the matrix
-    /// products may also write entries above the diagonal, so the caller must not keep anything there.
+    /// factor take only the second form. The factor reads and writes only the lower triangle, so the entries above the
+    /// diagonal keep their values.
     /// </summary>
     public static unsafe partial class CholeskyLLT
     {

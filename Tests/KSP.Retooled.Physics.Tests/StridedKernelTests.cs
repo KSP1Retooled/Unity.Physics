@@ -89,6 +89,25 @@ namespace KSP.Retooled.Physics.Tests
             return data;
         }
 
+        /// <summary>
+        /// Stores a lower triangular matrix with NaN above its diagonal, and on it if <paramref name="unitDiagonal"/>
+        /// is true, so that a kernel that reads those entries gives NaN in its answer.
+        /// </summary>
+        internal static double[] StoreTriangle(double[,] l, Place place, bool unitDiagonal)
+        {
+            double[] data = Store(l, place);
+            int n = l.GetLength(0);
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = unitDiagonal ? i : i + 1; j < n; j++)
+                {
+                    data[place.Index(i, j)] = double.NaN;
+                }
+            }
+
+            return data;
+        }
+
         internal static double[,] Load(double[] data, Place place, int rows, int columns)
         {
             var m = new double[rows, columns];
@@ -384,7 +403,8 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            AssertNear(c, Load(cData, cp, n, n), 1e-12, "C", (i, j) => i >= j);
+            // The entries above the diagonal keep their values.
+            AssertNear(c, Load(cData, cp, n, n), 1e-12, "C");
         }
 
         [Test]
@@ -403,15 +423,7 @@ namespace KSP.Retooled.Physics.Tests
 
             double[,] x = RandomMatrix(n, nrhs, (uint)(n + nrhs));
             Place lp = Place.Of(lLayout, n, n), bp = Place.Of(bLayout, n, nrhs);
-            double[] lData = Store(l, lp);
-            if (unitDiagonal)
-            {
-                // A solve with a unit diagonal must not read the diagonal.
-                for (int i = 0; i < n; i++)
-                {
-                    lData[lp.Index(i, i)] = double.NaN;
-                }
-            }
+            double[] lData = StoreTriangle(l, lp, unitDiagonal);
 
             // B = L X, so the lower solve gives X back; B = L^T X, so the solve with the upper triangle L^T does.
             double[] lower = Store(Multiply(l, x), bp);
@@ -450,6 +462,37 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>The triangular products B := L B and B := L^T B take any layout and never read outside the triangle.</summary>
+        [Test]
+        public void TheTriangularProductsTakeAnyLayout([ValueSource(nameof(Sizes))] int n, [Values(1, 5)] int nrhs,
+            [Values] Layout lLayout, [Values(Layout.ColumnMajor, Layout.Transposed, Layout.EveryOtherRow)] Layout bLayout,
+            [Values] bool unitDiagonal)
+        {
+            double[,] l = Lower(n, (uint)(n * 3 + nrhs));
+            if (unitDiagonal)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    l[i, i] = 1.0;
+                }
+            }
+
+            double[,] x = RandomMatrix(n, nrhs, (uint)(n * 2 + nrhs));
+            Place lp = Place.Of(lLayout, n, n), bp = Place.Of(bLayout, n, nrhs);
+            double[] lData = StoreTriangle(l, lp, unitDiagonal);
+            double[] lower = Store(x, bp);
+            double[] upper = Store(x, bp);
+            fixed (double* lPtr = lData, lowerPtr = lower, upperPtr = upper)
+            {
+                MatrixView<double> lv = lp.View(lPtr, n, n);
+                Blas.TrmmLeftLower(lv, bp.View(lowerPtr, n, nrhs), unitDiagonal);
+                Blas.TrmmLeftUpper(lv.Transpose, bp.View(upperPtr, n, nrhs), unitDiagonal);
+            }
+
+            AssertNear(Multiply(l, x), Load(lower, bp, n, nrhs), 1e-12 * n, "lower");
+            AssertNear(Multiply(Transpose(l), x), Load(upper, bp, n, nrhs), 1e-12 * n, "upper");
+        }
+
         [Test]
         public void TheFactorAndItsSolvesTakeAnyLayout([Values(1, 5, 16, 17, 40, 70)] int n, [Values] Layout layout)
         {
@@ -468,6 +511,8 @@ namespace KSP.Retooled.Physics.Tests
             {
                 for (int j = i + 1; j < n; j++)
                 {
+                    // The factor never writes above the diagonal.
+                    Assert.That(l[i, j], Is.EqualTo(a[i, j]), $"entry ({i}, {j}) above the diagonal");
                     l[i, j] = 0.0;
                 }
             }

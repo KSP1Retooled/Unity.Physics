@@ -40,11 +40,9 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The lower triangle of C += alpha A A^T, where A is n by k and C is n by n. The routine also writes some
-        /// entries above the diagonal of C, in the tiles that the diagonal crosses, so the caller must not keep
-        /// anything there. faer's triangular matrix product computes a tile that the diagonal crosses into a buffer
-        /// and copies its lower part. A factor stored as a lower triangle keeps nothing above its diagonal, so this
-        /// port writes the whole tile instead.
+        /// The lower triangle of C += alpha A A^T, where A is n by k and C is n by n. As in faer's triangular matrix
+        /// product, a tile that the diagonal crosses is computed into a buffer and only its lower part is added to C,
+        /// so the entries above the diagonal of C keep their values.
         /// </summary>
         public static void SyrkLower(double alpha, MatrixView<double> a, MatrixView<double> c)
         {
@@ -107,6 +105,7 @@ namespace Unity.Numerics.Kernels
         static void GemmTiles(int m, int n, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
             double* c, int ldc, Triangle triangle)
         {
+            double* buffer = stackalloc double[8 * 6];
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
@@ -118,14 +117,7 @@ namespace Unity.Numerics.Kernels
                     double* ai = a + i;
                     double* bj = b + (long)j * bColumn;
                     double* cij = c + i + (long)j * ldc;
-                    if (rows == 8 && columns == 6)
-                    {
-                        Kernel8x6(k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc);
-                    }
-                    else
-                    {
-                        KernelEdge(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc);
-                    }
+                    Tile(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc, i - j, triangle, buffer);
                 }
             }
         }
@@ -149,6 +141,7 @@ namespace Unity.Numerics.Kernels
             int k = a.Columns;
             int n = b.Columns;
             double* panel = stackalloc double[8 * PanelDepth];
+            double* buffer = stackalloc double[8 * 6];
             for (int p0 = 0; p0 < k; p0 += PanelDepth)
             {
                 int depth = math.min(PanelDepth, k - p0);
@@ -172,14 +165,61 @@ namespace Unity.Numerics.Kernels
                         int columns = math.min(6, n - j);
                         double* bj = bp + (long)j * b.ColumnStride;
                         double* cij = c + i + (long)j * ldc;
-                        if (rows == 8 && columns == 6)
-                        {
-                            Kernel8x6(depth, alpha, panel, 8, bj, b.RowStride, b.ColumnStride, cij, ldc);
-                        }
-                        else
-                        {
-                            KernelEdge(rows, columns, depth, alpha, panel, 8, bj, b.RowStride, b.ColumnStride, cij, ldc);
-                        }
+                        Tile(rows, columns, depth, alpha, panel, 8, bj, b.RowStride, b.ColumnStride, cij, ldc, i - j, triangle, buffer);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// One tile of C, of up to 8 rows and 6 columns, whose first entry is <paramref name="offset"/> rows below the
+        /// diagonal of C. In a product of one triangle, a tile that the diagonal crosses is computed into
+        /// <paramref name="buffer"/> first, and only its entries in the triangle are added to C, as faer's triangular
+        /// product does. So the product never writes an entry of C outside the triangle.
+        /// </summary>
+        static void Tile(int rows, int columns, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
+            double* c, int ldc, int offset, Triangle triangle, double* buffer)
+        {
+            bool crossed = triangle == Triangle.Lower ? offset < columns - 1 : triangle == Triangle.Upper && offset + rows - 1 > 0;
+            if (!crossed)
+            {
+                if (rows == 8 && columns == 6)
+                {
+                    Kernel8x6(k, alpha, a, lda, b, bRow, bColumn, c, ldc);
+                }
+                else
+                {
+                    KernelEdge(rows, columns, k, alpha, a, lda, b, bRow, bColumn, c, ldc);
+                }
+
+                return;
+            }
+
+            // With a buffer of zeros and alpha 1, the buffer takes the sums as they are, and alpha is applied below
+            // with the same rounding as in a tile that is written directly.
+            for (int t = 0; t < 8 * 6; t++)
+            {
+                buffer[t] = 0.0;
+            }
+
+            if (rows == 8 && columns == 6)
+            {
+                Kernel8x6(k, 1.0, a, lda, b, bRow, bColumn, buffer, 8);
+            }
+            else
+            {
+                KernelEdge(rows, columns, k, 1.0, a, lda, b, bRow, bColumn, buffer, 8);
+            }
+
+            for (int s = 0; s < columns; s++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    bool inside = triangle == Triangle.Lower ? r + offset >= s : r + offset <= s;
+                    if (inside)
+                    {
+                        double* entry = c + r + (long)s * ldc;
+                        *entry = FusedMath.Fma(alpha, buffer[r + 8 * s], *entry);
                     }
                 }
             }

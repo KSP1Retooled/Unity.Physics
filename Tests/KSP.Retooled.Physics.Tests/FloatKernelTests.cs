@@ -32,6 +32,22 @@ namespace KSP.Retooled.Physics.Tests
             return data;
         }
 
+        /// <summary>Stores a lower triangular matrix with NaN above its diagonal, and on it for a unit diagonal.</summary>
+        private static float[] StoreFloatTriangle(double[,] l, Place place, bool unitDiagonal)
+        {
+            float[] data = StoreFloat(l, place);
+            int n = l.GetLength(0);
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = unitDiagonal ? i : i + 1; j < n; j++)
+                {
+                    data[place.Index(i, j)] = float.NaN;
+                }
+            }
+
+            return data;
+        }
+
         private static double[,] LoadFloat(float[] data, Place place, int rows, int columns)
         {
             var m = new double[rows, columns];
@@ -184,7 +200,8 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            AssertNear(c, LoadFloat(cData, cp, n, n), 1e-4, "C", (i, j) => i >= j);
+            // The entries above the diagonal keep their values.
+            AssertNear(c, LoadFloat(cData, cp, n, n), 1e-4, "C");
         }
 
         [Test]
@@ -210,14 +227,7 @@ namespace KSP.Retooled.Physics.Tests
             l = Rounded(l);
             double[,] x = RandomMatrix(n, nrhs, (uint)(n + nrhs));
             Place lp = Place.Of(lLayout, n, n), bp = Place.Of(bLayout, n, nrhs);
-            float[] lData = StoreFloat(l, lp);
-            if (unitDiagonal)
-            {
-                for (int i = 0; i < n; i++)
-                {
-                    lData[lp.Index(i, i)] = float.NaN;
-                }
-            }
+            float[] lData = StoreFloatTriangle(l, lp, unitDiagonal);
 
             double[,] lx = Multiply(l, x), ux = Multiply(Transpose(l), x);
             float[] lower = StoreFloat(lx, bp);
@@ -249,6 +259,37 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void TheTriangularProductsMatchPlainLoops([Values(1, 5, 8, 9, 20, 33, 70)] int n, [Values(1, 5)] int nrhs,
+            [Values(Layout.ColumnMajor, Layout.Transposed, Layout.EveryOtherRow)] Layout lLayout,
+            [Values(Layout.ColumnMajor, Layout.Transposed)] Layout bLayout, [Values] bool unitDiagonal)
+        {
+            double[,] l = Lower(n, (uint)(n * 5 + nrhs));
+            if (unitDiagonal)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    l[i, i] = 1.0;
+                }
+            }
+
+            l = Rounded(l);
+            double[,] x = Rounded(RandomMatrix(n, nrhs, (uint)(n + 2 * nrhs)));
+            Place lp = Place.Of(lLayout, n, n), bp = Place.Of(bLayout, n, nrhs);
+            float[] lData = StoreFloatTriangle(l, lp, unitDiagonal);
+            float[] lower = StoreFloat(x, bp);
+            float[] upper = StoreFloat(x, bp);
+            fixed (float* lPtr = lData, lowerPtr = lower, upperPtr = upper)
+            {
+                MatrixView<float> lv = lp.View(lPtr, n, n);
+                Blas.TrmmLeftLower(lv, bp.View(lowerPtr, n, nrhs), unitDiagonal);
+                Blas.TrmmLeftUpper(lv.Transpose, bp.View(upperPtr, n, nrhs), unitDiagonal);
+            }
+
+            AssertNear(Multiply(l, x), LoadFloat(lower, bp, n, nrhs), 1e-5 * n, "lower");
+            AssertNear(Multiply(Transpose(l), x), LoadFloat(upper, bp, n, nrhs), 1e-5 * n, "upper");
+        }
+
+        [Test]
         public void TheFactorAndItsSolveMatchPlainLoops([Values(1, 5, 8, 31, 32, 33, 64, 100)] int n,
             [Values(Layout.ColumnMajor, Layout.Transposed, Layout.EveryOtherRow)] Layout layout)
         {
@@ -272,6 +313,8 @@ namespace KSP.Retooled.Physics.Tests
             {
                 for (int j = i + 1; j < n; j++)
                 {
+                    // The factor never writes above the diagonal.
+                    Assert.That(l[i, j], Is.EqualTo(a[i, j]), $"entry ({i}, {j}) above the diagonal");
                     l[i, j] = 0.0;
                 }
             }

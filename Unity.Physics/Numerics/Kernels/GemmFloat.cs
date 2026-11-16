@@ -33,7 +33,7 @@ namespace Unity.Numerics.Kernels
 
         /// <summary>
         /// The lower triangle of C += alpha A A^T for floats, where A is n by k and C is n by n. As for doubles, the
-        /// routine also writes the entries above the diagonal in the tiles that the diagonal crosses.
+        /// entries above the diagonal of C keep their values.
         /// </summary>
         public static void SyrkLower(float alpha, MatrixView<float> a, MatrixView<float> c)
         {
@@ -88,6 +88,7 @@ namespace Unity.Numerics.Kernels
         static void GemmTiles(int m, int n, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
             float* c, int ldc, Triangle triangle)
         {
+            float* buffer = stackalloc float[16 * 6];
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
@@ -99,14 +100,7 @@ namespace Unity.Numerics.Kernels
                     float* ai = a + i;
                     float* bj = b + (long)j * bColumn;
                     float* cij = c + i + (long)j * ldc;
-                    if (rows == 16 && columns == 6)
-                    {
-                        Kernel16x6(k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc);
-                    }
-                    else
-                    {
-                        KernelEdge(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc);
-                    }
+                    Tile(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc, i - j, triangle, buffer);
                 }
             }
         }
@@ -122,6 +116,7 @@ namespace Unity.Numerics.Kernels
             int k = a.Columns;
             int n = b.Columns;
             float* panel = stackalloc float[16 * PanelDepth];
+            float* buffer = stackalloc float[16 * 6];
             for (int p0 = 0; p0 < k; p0 += PanelDepth)
             {
                 int depth = math.min(PanelDepth, k - p0);
@@ -145,14 +140,61 @@ namespace Unity.Numerics.Kernels
                         int columns = math.min(6, n - j);
                         float* bj = bp + (long)j * b.ColumnStride;
                         float* cij = c + i + (long)j * ldc;
-                        if (rows == 16 && columns == 6)
-                        {
-                            Kernel16x6(depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc);
-                        }
-                        else
-                        {
-                            KernelEdge(rows, columns, depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc);
-                        }
+                        Tile(rows, columns, depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc, i - j, triangle, buffer);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// One tile of C, of up to 16 rows and 6 columns, whose first entry is <paramref name="offset"/> rows below the
+        /// diagonal of C. In a product of one triangle, a tile that the diagonal crosses is computed into
+        /// <paramref name="buffer"/> first, and only its entries in the triangle are added to C, as faer's triangular
+        /// product does. So the product never writes an entry of C outside the triangle.
+        /// </summary>
+        static void Tile(int rows, int columns, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
+            float* c, int ldc, int offset, Triangle triangle, float* buffer)
+        {
+            bool crossed = triangle == Triangle.Lower ? offset < columns - 1 : triangle == Triangle.Upper && offset + rows - 1 > 0;
+            if (!crossed)
+            {
+                if (rows == 16 && columns == 6)
+                {
+                    Kernel16x6(k, alpha, a, lda, b, bRow, bColumn, c, ldc);
+                }
+                else
+                {
+                    KernelEdge(rows, columns, k, alpha, a, lda, b, bRow, bColumn, c, ldc);
+                }
+
+                return;
+            }
+
+            // With a buffer of zeros and alpha 1, the buffer takes the sums as they are, and alpha is applied below
+            // with the same rounding as in a tile that is written directly.
+            for (int t = 0; t < 16 * 6; t++)
+            {
+                buffer[t] = 0f;
+            }
+
+            if (rows == 16 && columns == 6)
+            {
+                Kernel16x6(k, 1f, a, lda, b, bRow, bColumn, buffer, 16);
+            }
+            else
+            {
+                KernelEdge(rows, columns, k, 1f, a, lda, b, bRow, bColumn, buffer, 16);
+            }
+
+            for (int s = 0; s < columns; s++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    bool inside = triangle == Triangle.Lower ? r + offset >= s : r + offset <= s;
+                    if (inside)
+                    {
+                        float* entry = c + r + (long)s * ldc;
+                        *entry = FusedMath.Fma(alpha, buffer[r + 16 * s], *entry);
                     }
                 }
             }
