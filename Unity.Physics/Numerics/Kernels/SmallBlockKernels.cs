@@ -224,40 +224,5 @@ namespace Unity.Numerics.Kernels
         {
             Blas.Axpy(count, scale, from, into);
         }
-
-        /// <summary>
-        /// Solves C y = own in place, where C is a lower triangular block with <paramref name="size"/> rows that was
-        /// not replaced by its inverse. <paramref name="inverse"/> holds the reciprocal of each diagonal entry of C.
-        /// </summary>
-        public static void SolveLower(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = 0; row < size; row++)
-            {
-                double sum = own[row];
-                for (int j = 0; j < row; j++)
-                {
-                    sum = FusedMath.Fma(-c[row * size + j], own[j], sum);
-                }
-
-                own[row] = sum * inverse[row];
-            }
-        }
-
-        /// <summary>
-        /// Solves C^T y = own in place, where C is a lower triangular block with <paramref name="size"/> rows that was
-        /// not replaced by its inverse. <paramref name="inverse"/> holds the reciprocal of each diagonal entry of C.
-        /// </summary>
-        public static void SolveUpper(double* c, double* own, double* inverse, int size)
-        {
-            for (int row = size - 1; row >= 0; row--)
-            {
-                double answer = own[row] * inverse[row];
-                own[row] = answer;
-                for (int j = 0; j < row; j++)
-                {
-                    own[j] = FusedMath.Fma(-c[row * size + j], answer, own[j]);
-                }
-            }
-        }
     }
 }

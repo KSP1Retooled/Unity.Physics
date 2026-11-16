@@ -33,8 +33,6 @@ namespace KSP.Retooled.Physics.Tests
             SubtractProductTranspose,
             SubtractProduct,
             AddScaled,
-            SolveLower,
-            SolveUpper,
         }
 
         [BurstCompile(CompileSynchronously = true)]
@@ -136,28 +134,6 @@ namespace KSP.Retooled.Physics.Tests
                                 }
 
                                 break;
-                            case Routine.SolveLower:
-                                if (Kernel)
-                                {
-                                    Blas.TrsvLower(MatrixView<double>.RowMajor(o, Size, Size, Size), w, 1);
-                                }
-                                else
-                                {
-                                    SmallBlockKernels.SolveLower(o, w, inverse, Size);
-                                }
-
-                                break;
-                            case Routine.SolveUpper:
-                                if (Kernel)
-                                {
-                                    Blas.TrsvUpper(MatrixView<double>.RowMajor(o, Size, Size, Size).Transpose, w, 1);
-                                }
-                                else
-                                {
-                                    SmallBlockKernels.SolveUpper(o, w, inverse, Size);
-                                }
-
-                                break;
                         }
                     }
 
@@ -206,7 +182,6 @@ namespace KSP.Retooled.Physics.Tests
                 (Routine.SubtractProductTranspose, 6, 6), (Routine.SubtractProductTranspose, 12, 6),
                 (Routine.SubtractProduct, 6, 6), (Routine.SubtractProduct, 6, 12), (Routine.SubtractProduct, 12, 6),
                 (Routine.AddScaled, 6, 6), (Routine.AddScaled, 12, 12),
-                (Routine.SolveLower, 6, 6), (Routine.SolveUpper, 6, 6), (Routine.SolveLower, 12, 12),
             };
 
             foreach ((Routine routine, int rows, int size) in cases)
@@ -256,7 +231,7 @@ namespace KSP.Retooled.Physics.Tests
                         }
                     }
 
-                    if (routine == Routine.SolveAgainstTranspose || routine == Routine.SolveLower || routine == Routine.SolveUpper)
+                    if (routine == Routine.SolveAgainstTranspose)
                     {
                         // A lower triangle with a diagonal between 1 and 2.
                         double* inv = (double*)inverse.GetUnsafePtr() + (long)b * size;
