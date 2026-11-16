@@ -135,6 +135,7 @@ namespace KSP.Retooled.Physics.Tests
             bool wasForest = VesselForest.Enabled;
             bool wasLocking = VesselForest.Locking;
             bool wasVessels = VesselPipeline.Enabled;
+            int aloneParts = Unity.Physics.Solver.FusedAloneParts;
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             VesselForest.Initialize();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
@@ -172,6 +173,13 @@ namespace KSP.Retooled.Physics.Tests
                             foreach (string option in options.Where(o => o.StartsWith("parts=")))
                             {
                                 Unity.Physics.Solver.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
+                            }
+
+                            // "compiled:alone=N" sets the size below which the fused job solves an island on one lane.
+                            Unity.Physics.Solver.FusedAloneParts = aloneParts;
+                            foreach (string option in options.Where(o => o.StartsWith("alone=")))
+                            {
+                                Unity.Physics.Solver.FusedAloneParts = int.Parse(option.Substring("alone=".Length), CultureInfo.InvariantCulture);
                             }
 
                             VesselForest.Enabled = path != "sparse";
@@ -265,6 +273,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselPipeline.Enabled = wasVessels;
             Unity.Physics.Solver.FusedContacts = true;
             Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+            Unity.Physics.Solver.FusedAloneParts = aloneParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"Timeline-{tag}.txt"), report.ToString());
             Debug.Log("[ZzTimeline] done");
