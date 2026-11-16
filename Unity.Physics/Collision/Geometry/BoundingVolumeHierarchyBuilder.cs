@@ -685,15 +685,21 @@ namespace Unity.Physics
         internal unsafe void RefitFromRoot(NativeArray<Aabb> aabbs)
         {
             Node* baseNode = m_Nodes;
-            var order = new NativeList<int>(m_NodesList != null ? m_NodesList->Length : 64, Allocator.Temp);
-            var pending = new NativeList<int>(64, Allocator.Temp);
-            pending.Add(1);
-            while (pending.Length > 0)
+            Aabb* bounds = (Aabb*)aabbs.GetUnsafeReadOnlyPtr();
+
+            // Every node in the tree is listed once, so the list never holds more than the node count. The pending
+            // stack holds at most three entries for each level of the tree, plus one.
+            int capacity = m_NodesList != null ? m_NodesList->Length : m_MaxNodeCount;
+            int* order = (int*)UnsafeUtility.Malloc((long)capacity * sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Temp);
+            int* pending = (int*)UnsafeUtility.Malloc((long)capacity * sizeof(int), UnsafeUtility.AlignOf<int>(), Allocator.Temp);
+            int listed = 0;
+            int waiting = 0;
+            pending[waiting++] = 1;
+            while (waiting > 0)
             {
-                int index = pending[pending.Length - 1];
-                pending.RemoveAt(pending.Length - 1);
+                int index = pending[--waiting];
                 SafetyChecks.CheckIndexAndThrow(index, m_MaxNodeCount);
-                order.Add(index);
+                order[listed++] = index;
                 Node* node = baseNode + index;
                 if (node->IsInternal)
                 {
@@ -701,19 +707,34 @@ namespace Unity.Physics
                     {
                         if (node->IsInternalValid(j))
                         {
-                            pending.Add(node->Data[j]);
+                            pending[waiting++] = node->Data[j];
                         }
                     }
                 }
             }
 
-            for (int i = order.Length - 1; i >= 0; i--)
+            for (int i = listed - 1; i >= 0; i--)
             {
-                RefitOne(aabbs, baseNode, baseNode + order[i]);
+                Node* node = baseNode + order[i];
+                if (node->IsLeaf)
+                {
+                    // Only the bounds change. The counts of elements and free slots stay as the build left them.
+                    for (int j = 0; j < 4; ++j)
+                    {
+                        node->Bounds.SetAabb(j, node->IsLeafValid(j) ? bounds[node->Data[j]] : Aabb.Empty);
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < 4; j++)
+                    {
+                        node->Bounds.SetAabb(j, node->IsInternalValid(j) ? baseNode[node->Data[j]].Bounds.GetCompoundAabb() : Aabb.Empty);
+                    }
+                }
             }
 
-            order.Dispose();
-            pending.Dispose();
+            UnsafeUtility.Free(order, Allocator.Temp);
+            UnsafeUtility.Free(pending, Allocator.Temp);
         }
 
         static unsafe void RefitOne(NativeArray<Aabb> aabbs, Node* baseNode, Node* currentNode)
