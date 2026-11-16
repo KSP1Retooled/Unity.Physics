@@ -33,15 +33,21 @@ namespace KSP.Retooled.Physics.Tests
         [TearDown]
         public void TearDownScene()
         {
+            DestroyAll();
+            UnityEngine.Physics.simulationMode = simulationMode;
+            UnityEngine.Physics.gravity = gravity;
+            UnityEngine.Physics.autoSyncTransforms = autoSyncTransforms;
+        }
+
+        /// <summary>Destroys every object that the test made, and leaves the scene's settings as they are.</summary>
+        protected void DestroyAll()
+        {
             foreach (GameObject gameObject in created)
             {
                 Object.DestroyImmediate(gameObject);
             }
 
             created.Clear();
-            UnityEngine.Physics.simulationMode = simulationMode;
-            UnityEngine.Physics.gravity = gravity;
-            UnityEngine.Physics.autoSyncTransforms = autoSyncTransforms;
         }
 
         protected GameObject Track(GameObject gameObject)

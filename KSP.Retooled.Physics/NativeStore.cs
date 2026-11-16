@@ -581,6 +581,14 @@ namespace KSP.Retooled.Physics
         internal const uint TriggerEventEnter = 1;
         internal const uint TriggerEventExit = 2;
 
+        /// <summary>
+        /// The type of the event that ends a trigger pair whose shape was removed (Physics::TriggerEventType::Invalid).
+        /// Such an event carries zero EngineObjectIds. Unity's PhysX backend sends one for each trigger pair that PhysX
+        /// reports with eREMOVED_SHAPE_TRIGGER or eREMOVED_SHAPE_OTHER. When Unity gets an event of this type with a
+        /// zero id, it removes the pair from the cache that it sends OnTriggerStay from, and it sends no message.
+        /// </summary>
+        internal const uint TriggerEventShapeRemoved = 0;
+
         [StructLayout(LayoutKind.Sequential)]
         internal struct TriggerEvent
         {
