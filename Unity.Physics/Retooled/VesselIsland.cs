@@ -2,7 +2,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Profiling;
 
 namespace Unity.Physics

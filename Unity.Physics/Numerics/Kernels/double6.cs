@@ -1,8 +1,12 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Kernels
 {
+    /// <summary>
+    /// Six doubles, held as a double4 and a double2, for one row of a <see cref="double6x6"/> or one block of a vector
+    /// with six entries per block.
+    /// </summary>
     public unsafe struct double6
     {
         public double4 Low;

@@ -1,8 +1,7 @@
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
-using Unity.Numerics.Kernels;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Kernels
 {
     /// <summary>Represents a 6x6 matrix of doubles, stored row by row.</summary>
     public unsafe struct double6x6

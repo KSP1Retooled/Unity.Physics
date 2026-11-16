@@ -5,7 +5,8 @@ using Unity.Burst.Intrinsics;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
+using Unity.Numerics.Linear;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
 using Unity.Numerics.Kernels;
@@ -461,13 +462,13 @@ namespace Unity.Physics
                 bool keepResidual = residualHeld && factored;
                 if (keepResidual)
                 {
-                    DenseKernels.AddScaled(correction.Ptr, right.Ptr, -1.0, correction.Length);
+                    SmallBlockKernels.AddScaled(correction.Ptr, right.Ptr, -1.0, correction.Length);
                 }
 
                 AssembleRightHandSide(problem);
                 if (keepResidual)
                 {
-                    DenseKernels.AddScaled(correction.Ptr, right.Ptr, 1.0, correction.Length);
+                    SmallBlockKernels.AddScaled(correction.Ptr, right.Ptr, 1.0, correction.Length);
                 }
 
                 statistics.AssembleTime += Lap(ref started);
@@ -1696,7 +1697,7 @@ namespace Unity.Physics
             int size = node.Size;
             double* diagonal = values + node.Diagonal;
             double* inverse = inverseDiagonal.Ptr + node.Start;
-            DenseKernels.CholeskyInPlace(diagonal, inverse, size, node.Sign);
+            SmallBlockKernels.CholeskyInPlace(diagonal, inverse, size, node.Sign);
 
             Neighbour* column = neighbours.Ptr + node.FirstNeighbour;
             if (SparseBlockCounters.Enabled)
@@ -1710,12 +1711,12 @@ namespace Unity.Physics
 
             for (int i = 0; i < node.NeighbourCount; i++)
             {
-                DenseKernels.SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
+                SmallBlockKernels.SolveAgainstTranspose(values + column[i].Offset, nodes[column[i].Node].Size, diagonal, inverse, size);
             }
 
             if (size == double6x6.Size)
             {
-                DenseKernels.InvertTriangle(diagonal, inverse);
+                SmallBlockKernels.InvertTriangle(diagonal, inverse);
             }
         }
 
@@ -1733,7 +1734,7 @@ namespace Unity.Physics
             {
                 Node first = nodes[column[i].Node];
                 double* firstBlock = values + column[i].Offset;
-                DenseKernels.SubtractProductTranspose(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
+                SmallBlockKernels.SubtractProductTranspose(values + first.Diagonal, first.Size, first.Size, firstBlock, firstBlock, size, node.Sign, true);
 
                 // Elimination connected the first neighbour to every later neighbour in the same order, so a single
                 // pass finds all the blocks.
@@ -1747,7 +1748,7 @@ namespace Unity.Physics
                     }
 
                     int laterSize = nodes[column[j].Node].Size;
-                    DenseKernels.SubtractProductTranspose(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
+                    SmallBlockKernels.SubtractProductTranspose(values + targets[target].Offset, laterSize, first.Size, values + column[j].Offset, firstBlock, size, node.Sign, false);
                 }
             }
         }
@@ -1846,7 +1847,7 @@ namespace Unity.Physics
                 WaitUntilReady(sourceIndex, forwardStamp);
                 Node source = nodes[sourceIndex];
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + update.y].Offset;
-                DenseKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+                SmallBlockKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
             }
 
             // Then gather contributions from earlier top nodes. Their answers already include the node sign that serial
@@ -1857,7 +1858,7 @@ namespace Unity.Physics
                 WaitUntilReady(row.x, forwardStamp);
                 Node source = nodes[row.x];
                 double* block = factor.Ptr + neighbours[source.FirstNeighbour + row.y].Offset;
-                DenseKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
+                SmallBlockKernels.SubtractOrDefer(ref owed, six, into, block, x + source.Start, node.Size, source.Size);
             }
 
             if (six)
@@ -1922,7 +1923,7 @@ namespace Unity.Physics
                     }
                     else
                     {
-                        DenseKernels.SubtractProduct(into, values + column[i].Offset, own, other.Size, size, node.Sign);
+                        SmallBlockKernels.SubtractProduct(into, values + column[i].Offset, own, other.Size, size, node.Sign);
                     }
                 }
 
@@ -1940,7 +1941,7 @@ namespace Unity.Physics
             for (int i = 0; i < endNeighbour; i++)
             {
                 Node other = nodes[column[i].Node];
-                DenseKernels.SubtractProduct(x + other.Start, values + column[i].Offset, own, other.Size, size, node.Sign);
+                SmallBlockKernels.SubtractProduct(x + other.Start, values + column[i].Offset, own, other.Size, size, node.Sign);
             }
 
             for (int row = 0; row < size; row++)
@@ -1979,7 +1980,7 @@ namespace Unity.Physics
                     sum.Store(own);
                     for (int row = 0; row < other.Size; row++)
                     {
-                        DenseKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
+                        SmallBlockKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
                     }
 
                     sum = double6.Load(own);
@@ -1996,7 +1997,7 @@ namespace Unity.Physics
                 double* source = x + other.Start;
                 for (int row = 0; row < other.Size; row++)
                 {
-                    DenseKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
+                    SmallBlockKernels.AddScaled(own, block + row * size, -node.Sign * source[row], size);
                 }
             }
 
@@ -2007,7 +2008,7 @@ namespace Unity.Physics
             {
                 double answer = own[row] * inverse[row];
                 own[row] = answer;
-                DenseKernels.AddScaled(own, c + row * size, -answer, row);
+                SmallBlockKernels.AddScaled(own, c + row * size, -answer, row);
             }
         }
 

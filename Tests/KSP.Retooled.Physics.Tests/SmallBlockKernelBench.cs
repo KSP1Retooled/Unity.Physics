@@ -6,22 +6,21 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using Unity.Physics.Numerics.Retooled;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Times each routine in <see cref="DenseKernels"/> against the kernel in Unity.Numerics.Kernels that does the same
+    /// Times each routine in <see cref="SmallBlockKernels"/> against the kernel in Unity.Numerics.Kernels that does the same
     /// work, at the block sizes that the sparse solver factors in the bench scenes. In those scenes almost every node
     /// has 6 unknowns, one per body, and almost every block below the diagonal is 6 by 6; a few nodes have 7 or 12
     /// (see the histogram that VesselForestBench prints with RETOOLED_BENCH_HISTOGRAM=1). A Burst job runs each routine
     /// on a few hundred blocks that are stored row by row, as the solver stores them, and repeats that many times. The
     /// kernels take the blocks as row-major views. The bench prints nanoseconds per call for the old routine and the
-    /// kernel, and the largest difference between their answers. Logs/DenseKernelBench.txt holds the table.
+    /// kernel, and the largest difference between their answers. Logs/SmallBlockKernelBench.txt holds the table.
     /// </summary>
     [Explicit("A benchmark, under a minute long")]
-    public unsafe class DenseKernelBench
+    public unsafe class SmallBlockKernelBench
     {
         private const int Blocks = 256;
         private const int Repeats = 400;
@@ -76,7 +75,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.CholeskyInPlace(w, inverse, Size, -1.0);
+                                    SmallBlockKernels.CholeskyInPlace(w, inverse, Size, -1.0);
                                 }
 
                                 break;
@@ -88,7 +87,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SolveAgainstTranspose(w, Rows, o, inverse, Size);
+                                    SmallBlockKernels.SolveAgainstTranspose(w, Rows, o, inverse, Size);
                                 }
 
                                 break;
@@ -99,7 +98,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SubtractProductTranspose(w, Rows, Rows, o, o, Size, 1.0, true);
+                                    SmallBlockKernels.SubtractProductTranspose(w, Rows, Rows, o, o, Size, 1.0, true);
                                 }
 
                                 break;
@@ -111,7 +110,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SubtractProductTranspose(w, Rows, Rows, o, o, Size, 1.0, false);
+                                    SmallBlockKernels.SubtractProductTranspose(w, Rows, Rows, o, o, Size, 1.0, false);
                                 }
 
                                 break;
@@ -122,7 +121,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SubtractProduct(w, o, o + block, Rows, Size, 1.0);
+                                    SmallBlockKernels.SubtractProduct(w, o, o + block, Rows, Size, 1.0);
                                 }
 
                                 break;
@@ -133,7 +132,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.AddScaled(w, o, -0.5, Size);
+                                    SmallBlockKernels.AddScaled(w, o, -0.5, Size);
                                 }
 
                                 break;
@@ -144,7 +143,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SolveLower(o, w, inverse, Size);
+                                    SmallBlockKernels.SolveLower(o, w, inverse, Size);
                                 }
 
                                 break;
@@ -155,7 +154,7 @@ namespace KSP.Retooled.Physics.Tests
                                 }
                                 else
                                 {
-                                    DenseKernels.SolveUpper(o, w, inverse, Size);
+                                    SmallBlockKernels.SolveUpper(o, w, inverse, Size);
                                 }
 
                                 break;
@@ -197,7 +196,7 @@ namespace KSP.Retooled.Physics.Tests
         public void Measure()
         {
             var table = new StringBuilder();
-            table.AppendLine("[DenseKernelBench] ns per call, old DenseKernels routine / kernel (lower is better), " +
+            table.AppendLine("[SmallBlockKernelBench] ns per call, old SmallBlockKernels routine / kernel (lower is better), " +
                 $"{Blocks} blocks x {Repeats} repeats, Burst job, blocks stored row by row; the largest difference is against the largest entry");
             (Routine routine, int rows, int size)[] cases =
             {
@@ -312,7 +311,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Debug.Log(table.ToString());
-            System.IO.File.WriteAllText(System.IO.Path.Combine(Application.dataPath, "..", "Logs", "DenseKernelBench.txt"), table.ToString());
+            System.IO.File.WriteAllText(System.IO.Path.Combine(Application.dataPath, "..", "Logs", "SmallBlockKernelBench.txt"), table.ToString());
         }
 
         private static double Time(Routine routine, int rows, int size, int stride, bool kernel, NativeArray<double> matrices, NativeArray<double> work,

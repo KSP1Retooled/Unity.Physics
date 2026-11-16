@@ -8,7 +8,7 @@ using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Memory;
 using Unity.Physics;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
 
 namespace KSP.Retooled.Physics.Tests
 {

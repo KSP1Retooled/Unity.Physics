@@ -1,17 +1,18 @@
 using NUnit.Framework;
 using Unity.Mathematics;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
 
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The dense solve of a vessel island's boundary block when it runs out of pivoting rounds. Each problem looks like
+    /// Tests <see cref="BlockPrincipalPivoting"/>, which solves a vessel island's boundary block, including what it does
+    /// when it runs out of pivoting rounds and how it changes its factor between rounds. Each problem looks like
     /// a set of contacts between a few bodies: every contact has two normal rows, which may only push, and three
     /// friction rows, whose bounds are the coefficient of friction times the sum of the contact's normal impulses. The
     /// matrix is J M^-1 J^T plus a small compliance, with random Jacobians, so that the rows are strongly coupled and
     /// a cold solve needs many rounds.
     /// </summary>
-    public unsafe class BoundarySolverTests
+    public unsafe class BlockPrincipalPivotingTests
     {
         private const int Contacts = 12;
         private const int RowsPerContact = 5;
@@ -99,7 +100,7 @@ namespace KSP.Retooled.Physics.Tests
             fixed (byte* sp = states)
             fixed (BoundCoupling* cp = problem.Couplings)
             {
-                return BoundarySolver.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, maxRounds, false, out rounds);
+                return BlockPrincipalPivoting.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, maxRounds, false, out rounds);
             }
         }
 
@@ -108,7 +109,7 @@ namespace KSP.Retooled.Physics.Tests
         /// round to round or factoring them again in every round.
         /// </summary>
         private static bool Solve(in Problem problem, byte[] start, bool update, out double[] z, out byte[] states,
-            out int rounds, out BoundarySolveStats stats)
+            out int rounds, out BlockPrincipalPivotingStats stats)
         {
             z = new double[Rows];
             states = start != null ? (byte[])start.Clone() : new byte[Rows];
@@ -119,9 +120,9 @@ namespace KSP.Retooled.Physics.Tests
             fixed (double* w = problem.W, qp = q, lp = lower, up = upper, zp = z)
             fixed (byte* sp = states)
             fixed (BoundCoupling* cp = problem.Couplings)
-            fixed (BoundarySolveStats* statsPointer = &stats)
+            fixed (BlockPrincipalPivotingStats* statsPointer = &stats)
             {
-                return BoundarySolver.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, start != null, update,
+                return BlockPrincipalPivoting.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, start != null, update,
                     statsPointer, out rounds);
             }
         }
@@ -154,7 +155,7 @@ namespace KSP.Retooled.Physics.Tests
                     byte[] start = pass == 0 ? null : nearby;
                     bool solvedAgain = Solve(next, start, false, out double[] again, out byte[] againStates, out int againRounds, out _);
                     bool solvedChanged = Solve(next, start, true, out double[] changed, out byte[] changedStates, out int changedRounds,
-                        out BoundarySolveStats stats);
+                        out BlockPrincipalPivotingStats stats);
                     string what = $"seed {seed}, {(pass == 0 ? "cold" : "warm")}";
                     Assert.That(solvedChanged, Is.EqualTo(solvedAgain), what);
                     Assert.That(changedRounds, Is.EqualTo(againRounds), $"{what}: rounds");
@@ -178,7 +179,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            UnityEngine.Debug.Log($"[BoundarySolverTests] factor changes: {factorizations} rounds factored, {updates} changed, " +
+            UnityEngine.Debug.Log($"[BlockPrincipalPivotingTests] factor changes: {factorizations} rounds factored, {updates} changed, " +
                 $"{reuses} reused; largest difference {largest:E2} of the largest impulse");
             Assert.That(updates, Is.GreaterThan(0), "some rounds changed the factor");
             Assert.That(reuses, Is.GreaterThan(0), "some rounds reused the factor");
@@ -242,7 +243,7 @@ namespace KSP.Retooled.Physics.Tests
             fixed (byte* sp = states, pp = priority)
             fixed (BoundCoupling* cp = problem.Couplings)
             {
-                BoundarySolver.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, true, update, pp, null, out rounds);
+                BlockPrincipalPivoting.Solve(Rows, w, qp, lp, up, sp, cp, Contacts, true, zp, 200, true, update, pp, null, out rounds);
             }
         }
 
@@ -339,7 +340,7 @@ namespace KSP.Retooled.Physics.Tests
             CheckAnswer(hard, z, states, "capped");
 
             double best = Energy(hard, exact), capped = Energy(hard, z);
-            UnityEngine.Debug.Log($"[BoundarySolverTests] seed {seed}: {needed} rounds without a cap; 1/2 z^T W z - q^T z is " +
+            UnityEngine.Debug.Log($"[BlockPrincipalPivotingTests] seed {seed}: {needed} rounds without a cap; 1/2 z^T W z - q^T z is " +
                 $"{best:F4} for the answer and {capped:F4} after 8 rounds");
             Assert.That(capped, Is.LessThan(0.0), "the capped impulses do better than no impulses");
         }

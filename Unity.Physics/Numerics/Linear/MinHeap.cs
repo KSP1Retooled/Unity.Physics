@@ -1,7 +1,7 @@
 using System;
 using Unity.Collections;
 
-namespace Unity.Physics.Numerics.Retooled
+namespace Unity.Numerics.Linear
 {
     /// <summary>
     /// Stores 64-bit priorities in a binary heap, so that the smallest priority comes out first. The sparse constraint

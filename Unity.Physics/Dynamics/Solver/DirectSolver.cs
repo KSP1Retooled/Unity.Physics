@@ -25,7 +25,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Physics.Numerics.Retooled;
+using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
