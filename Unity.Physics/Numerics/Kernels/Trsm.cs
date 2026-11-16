@@ -66,15 +66,20 @@ namespace Unity.Numerics.Kernels
 
         /// <summary>
         /// The base case of <see cref="TrsmLeftLower(MatrixView{double}, MatrixView{double}, bool)"/>, for 4 rows or
-        /// fewer. It computes the reciprocals of the diagonal once. If the rows of B are contiguous and its columns are
-        /// not, it works on whole rows of B: row i takes out the earlier rows times L's multipliers and is scaled by
-        /// the reciprocal, which runs in vectors along the row. Otherwise it runs the forward substitution down each
-        /// column of B.
+        /// fewer. If the rows of B are contiguous and its columns are not, it works along the rows of B in vectors, see
+        /// <see cref="TrsmLeftLowerByRows"/>. Otherwise it computes the reciprocals of the diagonal once and runs the
+        /// forward substitution down each column of B.
         /// </summary>
         static void TrsmLeftLowerBaseCase(MatrixView<double> l, MatrixView<double> b, bool unitDiagonal)
         {
             int n = l.Rows;
             int nrhs = b.Columns;
+            if (!b.ColumnsAreContiguous && b.RowsAreContiguous)
+            {
+                TrsmLeftLowerByRows(l, b, unitDiagonal);
+                return;
+            }
+
             double4 inverse = 1.0;
             if (!unitDiagonal)
             {
@@ -82,25 +87,6 @@ namespace Unity.Numerics.Kernels
                 {
                     inverse[i] = 1.0 / l[i, i];
                 }
-            }
-
-            if (!b.ColumnsAreContiguous && b.RowsAreContiguous)
-            {
-                for (int i = 0; i < n; i++)
-                {
-                    double* bi = b.At(i, 0);
-                    for (int p = 0; p < i; p++)
-                    {
-                        Axpy(nrhs, -l[i, p], b.At(p, 0), bi);
-                    }
-
-                    if (!unitDiagonal)
-                    {
-                        Scale(nrhs, inverse[i], bi);
-                    }
-                }
-
-                return;
             }
 
             for (int j = 0; j < nrhs; j++)
@@ -114,6 +100,71 @@ namespace Unity.Numerics.Kernels
                     }
 
                     b[i, j] = y;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The base case for a B whose rows are contiguous, such as the transpose of a matrix stored column by column.
+        /// It takes four entries of every row of B at a time into registers, solves for them there, and stores them,
+        /// so each entry of B is read and written once. Row i is x_i = (b_i - sum over p of L[i, p] x_p) times the
+        /// reciprocal of L[i, i], with the products taken out in the order of p, as a column update of each earlier
+        /// row would take them out.
+        /// </summary>
+        static void TrsmLeftLowerByRows(MatrixView<double> l, MatrixView<double> b, bool unitDiagonal)
+        {
+            int n = l.Rows;
+            int nrhs = b.Columns;
+            double* r0 = b.At(0, 0);
+            double* r1 = n > 1 ? b.At(1, 0) : r0;
+            double* r2 = n > 2 ? b.At(2, 0) : r0;
+            double* r3 = n > 3 ? b.At(3, 0) : r0;
+            double i0 = unitDiagonal ? 1.0 : 1.0 / l[0, 0];
+            double i1 = n > 1 && !unitDiagonal ? 1.0 / l[1, 1] : 1.0;
+            double i2 = n > 2 && !unitDiagonal ? 1.0 / l[2, 2] : 1.0;
+            double i3 = n > 3 && !unitDiagonal ? 1.0 / l[3, 3] : 1.0;
+            double m10 = n > 1 ? -l[1, 0] : 0.0;
+            double m20 = n > 2 ? -l[2, 0] : 0.0, m21 = n > 2 ? -l[2, 1] : 0.0;
+            double m30 = n > 3 ? -l[3, 0] : 0.0, m31 = n > 3 ? -l[3, 1] : 0.0, m32 = n > 3 ? -l[3, 2] : 0.0;
+            int k = 0;
+            for (; k + 4 <= nrhs; k += 4)
+            {
+                double4 x0 = *(double4*)(r0 + k) * i0;
+                *(double4*)(r0 + k) = x0;
+                if (n > 1)
+                {
+                    double4 x1 = FusedMath.Fma(m10, x0, *(double4*)(r1 + k)) * i1;
+                    *(double4*)(r1 + k) = x1;
+                    if (n > 2)
+                    {
+                        double4 x2 = FusedMath.Fma(m21, x1, FusedMath.Fma(m20, x0, *(double4*)(r2 + k))) * i2;
+                        *(double4*)(r2 + k) = x2;
+                        if (n > 3)
+                        {
+                            double4 x3 = FusedMath.Fma(m32, x2, FusedMath.Fma(m31, x1, FusedMath.Fma(m30, x0, *(double4*)(r3 + k)))) * i3;
+                            *(double4*)(r3 + k) = x3;
+                        }
+                    }
+                }
+            }
+
+            for (; k < nrhs; k++)
+            {
+                double x0 = r0[k] * i0;
+                r0[k] = x0;
+                if (n > 1)
+                {
+                    double x1 = FusedMath.Fma(m10, x0, r1[k]) * i1;
+                    r1[k] = x1;
+                    if (n > 2)
+                    {
+                        double x2 = FusedMath.Fma(m21, x1, FusedMath.Fma(m20, x0, r2[k])) * i2;
+                        r2[k] = x2;
+                        if (n > 3)
+                        {
+                            r3[k] = FusedMath.Fma(m32, x2, FusedMath.Fma(m31, x1, FusedMath.Fma(m30, x0, r3[k]))) * i3;
+                        }
+                    }
                 }
             }
         }

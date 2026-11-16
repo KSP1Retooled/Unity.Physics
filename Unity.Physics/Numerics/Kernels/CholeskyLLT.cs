@@ -15,7 +15,7 @@ namespace Unity.Numerics.Kernels
     /// The factor and the solves take a <see cref="MatrixView{T}"/> in any layout, or a pointer to a matrix that is
     /// stored column by column with a leading dimension: entry (i, j) of L is then l[i + j * ldl]. The changes to the
     /// factor take only the second form. The factor reads and writes only the lower triangle, so the entries above the
-    /// diagonal keep their values.
+    /// diagonal keep their values, unless the caller lets it write some of them to save time (keepUpper false).
     /// </summary>
     public static unsafe partial class CholeskyLLT
     {
@@ -38,11 +38,13 @@ namespace Unity.Numerics.Kernels
         /// upper left block, solves for the block below it, takes that block's product with itself out of the lower
         /// right block, and factors the lower right block. A pivot that is not larger than
         /// <see cref="SmallestPivot"/> is raised to it, and the routine goes on. Returns how many pivots were raised.
+        /// If <paramref name="keepUpper"/> is false, the products may write entries above the diagonal, which is
+        /// faster for the small blocks of the recursion; see <see cref="Blas.SyrkLower(double, MatrixView{double}, MatrixView{double}, bool)"/>.
         /// </summary>
-        public static int Factor(MatrixView<double> a)
+        public static int Factor(MatrixView<double> a, bool keepUpper = true)
         {
             int raised = 0;
-            Factor(a, false, ref raised);
+            Factor(a, false, keepUpper, ref raised);
             return raised;
         }
 
@@ -51,16 +53,16 @@ namespace Unity.Numerics.Kernels
         /// not positive, as faer does, and returns its index. Returns -1 if every pivot is positive. When the routine
         /// stops, the columns before that index hold their part of the factor and the rest of the matrix is changed.
         /// </summary>
-        public static int TryFactor(MatrixView<double> a)
+        public static int TryFactor(MatrixView<double> a, bool keepUpper = true)
         {
             int raised = 0;
-            return Factor(a, true, ref raised);
+            return Factor(a, true, keepUpper, ref raised);
         }
 
         /// <summary>The factor of a matrix that is stored column by column with leading dimension <paramref name="lda"/>.</summary>
-        public static int Factor(int n, double* a, int lda)
+        public static int Factor(int n, double* a, int lda, bool keepUpper = true)
         {
-            return Factor(MatrixView<double>.ColumnMajor(a, n, n, lda));
+            return Factor(MatrixView<double>.ColumnMajor(a, n, n, lda), keepUpper);
         }
 
         /// <summary>
@@ -68,7 +70,7 @@ namespace Unity.Numerics.Kernels
         /// the index of the first pivot that is not positive, or -1. Otherwise it raises small pivots, counts them in
         /// <paramref name="raised"/>, and returns -1.
         /// </summary>
-        static int Factor(MatrixView<double> a, bool stop, ref int raised)
+        static int Factor(MatrixView<double> a, bool stop, bool keepUpper, ref int raised)
         {
             int n = a.Rows;
             if (n <= BaseCaseRows)
@@ -79,7 +81,7 @@ namespace Unity.Numerics.Kernels
             }
 
             int bs = n / 2;
-            int failed = Factor(a.Block(0, 0, bs, bs), stop, ref raised);
+            int failed = Factor(a.Block(0, 0, bs, bs), stop, keepUpper, ref raised);
             if (failed >= 0)
             {
                 return failed;
@@ -88,8 +90,8 @@ namespace Unity.Numerics.Kernels
             // A_10 := A_10 L_00^-T, which is the lower solve on A_10^T.
             MatrixView<double> a10 = a.Block(bs, 0, n - bs, bs);
             Blas.TrsmLeftLower(a.Block(0, 0, bs, bs), a10.Transpose);
-            Blas.SyrkLower(-1.0, a10, a.Block(bs, bs, n - bs, n - bs));
-            failed = Factor(a.Block(bs, bs, n - bs, n - bs), stop, ref raised);
+            Blas.SyrkLower(-1.0, a10, a.Block(bs, bs, n - bs, n - bs), keepUpper);
+            failed = Factor(a.Block(bs, bs, n - bs, n - bs), stop, keepUpper, ref raised);
             return failed >= 0 ? bs + failed : -1;
         }
 
@@ -97,9 +99,15 @@ namespace Unity.Numerics.Kernels
         /// faer's base case (new_cholesky, LLT variant), for a matrix whose columns are contiguous. It works from the
         /// left, one column at a time. The column's entries from the diagonal down stay in registers while every
         /// earlier column k takes its share out of them, with a multiplier of -L[j, k]. Then the diagonal entry becomes
-        /// its square root, and the entries below it are multiplied by the root's reciprocal. faer copies the matrix
-        /// into a buffer that is aligned to the vectors and keeps the windows aligned; this port works in place with
-        /// unaligned loads, and the entries past the last whole vector are done one at a time.
+        /// its square root, and the entries below it are multiplied by the root's reciprocal.
+        /// <para>
+        /// faer copies the matrix into a buffer that is aligned to the vectors and keeps the windows aligned. This port
+        /// works in place with unaligned loads. The entries past the last whole vector, fewer than four, go in one more
+        /// vector whose window ends at the last row, so it also covers some rows above them. Those rows hold entries
+        /// that the other vectors also compute, or entries above the diagonal, whose results are thrown away; only the
+        /// entries past the last whole vector are stored from it. This needs at least 4 rows. A smaller matrix builds
+        /// that vector one entry at a time.
+        /// </para>
         /// </summary>
         static int FactorBaseCase(int n, double* a, int lda, bool stop, ref int raised)
         {
@@ -109,15 +117,27 @@ namespace Unity.Numerics.Kernels
                 int rows = n - j;
                 int vectors = rows >> 2;
                 int rest = rows & 3;
+                bool window = rest > 0 && n >= 4;
                 double4 c0 = vectors > 0 ? *(double4*)aj : 0.0;
                 double4 c1 = vectors > 1 ? *(double4*)(aj + 4) : 0.0;
                 double4 c2 = vectors > 2 ? *(double4*)(aj + 8) : 0.0;
                 double4 c3 = vectors > 3 ? *(double4*)(aj + 12) : 0.0;
-                double* tail = aj + 4 * vectors;
+
+                // The last vector: rows n - 4 to n - 1 with a window, or the rest of the rows from lane 0 without one.
+                int first = window ? n - 4 : j + 4 * vectors;
+                int lane = window ? 4 - rest : 0;
+                double* tail = a + first + (long)j * lda;
                 double4 t = 0.0;
-                for (int i = 0; i < rest; i++)
+                if (window)
                 {
-                    t[i] = tail[i];
+                    t = *(double4*)tail;
+                }
+                else
+                {
+                    for (int i = 0; i < rest; i++)
+                    {
+                        t[i] = tail[i];
+                    }
                 }
 
                 for (int k = 0; k < j; k++)
@@ -144,7 +164,11 @@ namespace Unity.Numerics.Kernels
                         c3 = FusedMath.Fma(f, *(double4*)(ak + 12), c3);
                     }
 
-                    if (rest > 0)
+                    if (window)
+                    {
+                        t = FusedMath.Fma(f, *(double4*)(a + first + (long)k * lda), t);
+                    }
+                    else if (rest > 0)
                     {
                         double* kt = ak + 4 * vectors;
                         double4 v = new double4(kt[0], rest > 1 ? kt[1] : 0.0, rest > 2 ? kt[2] : 0.0, 0.0);
@@ -152,7 +176,7 @@ namespace Unity.Numerics.Kernels
                     }
                 }
 
-                double diagonal = vectors > 0 ? c0.x : t.x;
+                double diagonal = vectors > 0 ? c0.x : t[lane];
                 if (stop && !(diagonal > 0.0))
                 {
                     return j;
@@ -177,7 +201,7 @@ namespace Unity.Numerics.Kernels
                 }
                 else
                 {
-                    t.x = root;
+                    t[lane] = root;
                 }
 
                 if (vectors > 0)
@@ -202,7 +226,7 @@ namespace Unity.Numerics.Kernels
 
                 for (int i = 0; i < rest; i++)
                 {
-                    tail[i] = t[i];
+                    tail[lane + i] = t[lane + i];
                 }
             }
 

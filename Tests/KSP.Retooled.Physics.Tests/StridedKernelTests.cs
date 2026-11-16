@@ -499,14 +499,27 @@ namespace KSP.Retooled.Physics.Tests
             double[,] a = PositiveDefinite(n, (uint)n);
             Place place = Place.Of(layout, n, n);
             double[] data = Store(a, place);
+            double[] scratchUpper = Store(a, place);
             int failed;
-            fixed (double* p = data)
+            fixed (double* p = data, q = scratchUpper)
             {
                 failed = CholeskyLLT.TryFactor(place.View(p, n, n));
+
+                // A factor that may write above the diagonal gives the same lower triangle, entry for entry.
+                CholeskyLLT.Factor(place.View(q, n, n), keepUpper: false);
             }
 
             Assert.That(failed, Is.EqualTo(-1));
             double[,] l = Load(data, place, n, n);
+            double[,] fast = Load(scratchUpper, place, n, n);
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = 0; j <= i; j++)
+                {
+                    Assert.That(fast[i, j], Is.EqualTo(l[i, j]), $"keepUpper false: entry ({i}, {j})");
+                }
+            }
+
             for (int i = 0; i < n; i++)
             {
                 for (int j = i + 1; j < n; j++)

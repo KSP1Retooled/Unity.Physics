@@ -5,6 +5,7 @@
 // float version of Gemm.cs, written on its own for the wider vectors: a 256-bit register holds 8 floats against 4
 // doubles, so the tile has twice the rows.
 
+using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
@@ -28,16 +29,24 @@ namespace Unity.Numerics.Kernels
         /// <summary>C += alpha A B for floats, where A is m by k, B is k by n and C is m by n, in any layout.</summary>
         public static void Gemm(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c)
         {
-            Gemm(alpha, a, b, c, Triangle.All);
+            Gemm(alpha, a, b, c, Triangle.All, null);
         }
 
         /// <summary>
         /// The lower triangle of C += alpha A A^T for floats, where A is n by k and C is n by n. As for doubles, the
         /// entries above the diagonal of C keep their values.
         /// </summary>
-        public static void SyrkLower(float alpha, MatrixView<float> a, MatrixView<float> c)
+        public static void SyrkLower(float alpha, MatrixView<float> a, MatrixView<float> c, bool keepUpper = true)
         {
-            Gemm(alpha, a, a.Transpose, c, Triangle.Lower);
+            if (keepUpper)
+            {
+                float* saved = stackalloc float[16 * 6];
+                Gemm(alpha, a, a.Transpose, c, Triangle.Lower, saved);
+            }
+            else
+            {
+                Gemm(alpha, a, a.Transpose, c, Triangle.Lower, null);
+            }
         }
 
         /// <summary>
@@ -45,7 +54,7 @@ namespace Unity.Numerics.Kernels
         /// computed as its transpose, an A whose columns are not contiguous is copied into panels of 16 rows, and a C
         /// with neither rows nor columns contiguous takes a plain loop.
         /// </summary>
-        static void Gemm(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c, Triangle triangle)
+        static void Gemm(float alpha, MatrixView<float> a, MatrixView<float> b, MatrixView<float> c, Triangle triangle, float* saved)
         {
             int m = c.Rows;
             int n = c.Columns;
@@ -59,7 +68,7 @@ namespace Unity.Numerics.Kernels
             {
                 if (c.RowsAreContiguous)
                 {
-                    Gemm(alpha, b.Transpose, a.Transpose, c.Transpose, Flip(triangle));
+                    Gemm(alpha, b.Transpose, a.Transpose, c.Transpose, Flip(triangle), saved);
                 }
                 else
                 {
@@ -72,11 +81,11 @@ namespace Unity.Numerics.Kernels
             int ldc = c.LeadingDimension;
             if (a.ColumnsAreContiguous)
             {
-                GemmTiles(m, n, k, alpha, a.Data, a.LeadingDimension, b.Data, b.RowStride, b.ColumnStride, c.Data, ldc, triangle);
+                GemmTiles(m, n, k, alpha, a.Data, a.LeadingDimension, b.Data, b.RowStride, b.ColumnStride, c.Data, ldc, triangle, saved);
             }
             else
             {
-                GemmPacked(alpha, a, b, c.Data, ldc, triangle);
+                GemmPacked(alpha, a, b, c.Data, ldc, triangle, saved);
             }
         }
 
@@ -86,9 +95,8 @@ namespace Unity.Numerics.Kernels
         /// with vectors of eight and four floats, and the last rows one at a time.
         /// </summary>
         static void GemmTiles(int m, int n, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
-            float* c, int ldc, Triangle triangle)
+            float* c, int ldc, Triangle triangle, float* saved)
         {
-            float* buffer = stackalloc float[triangle == Triangle.All ? 0 : 16 * 6];
             for (int j = 0; j < n; j += 6)
             {
                 int columns = math.min(6, n - j);
@@ -100,7 +108,7 @@ namespace Unity.Numerics.Kernels
                     float* ai = a + i;
                     float* bj = b + (long)j * bColumn;
                     float* cij = c + i + (long)j * ldc;
-                    Tile(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc, i - j, triangle, buffer);
+                    Tile(rows, columns, k, alpha, ai, lda, bj, bRow, bColumn, cij, ldc, i - j, triangle, saved);
                 }
             }
         }
@@ -110,13 +118,12 @@ namespace Unity.Numerics.Kernels
         /// a time, for up to <see cref="PanelDepth"/> steps of the inner dimension (16 KiB of floats), into a buffer
         /// where the panel's columns are contiguous, and runs every tile of those rows of C over it.
         /// </summary>
-        static void GemmPacked(float alpha, MatrixView<float> a, MatrixView<float> b, float* c, int ldc, Triangle triangle)
+        static void GemmPacked(float alpha, MatrixView<float> a, MatrixView<float> b, float* c, int ldc, Triangle triangle, float* saved)
         {
             int m = a.Rows;
             int k = a.Columns;
             int n = b.Columns;
             float* panel = stackalloc float[16 * math.min(PanelDepth, k)];
-            float* buffer = stackalloc float[triangle == Triangle.All ? 0 : 16 * 6];
             for (int p0 = 0; p0 < k; p0 += PanelDepth)
             {
                 int depth = math.min(PanelDepth, k - p0);
@@ -140,7 +147,7 @@ namespace Unity.Numerics.Kernels
                         int columns = math.min(6, n - j);
                         float* bj = bp + (long)j * b.ColumnStride;
                         float* cij = c + i + (long)j * ldc;
-                        Tile(rows, columns, depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc, i - j, triangle, buffer);
+                        Tile(rows, columns, depth, alpha, panel, 16, bj, b.RowStride, b.ColumnStride, cij, ldc, i - j, triangle, saved);
                     }
                 }
             }
@@ -148,53 +155,60 @@ namespace Unity.Numerics.Kernels
 
         /// <summary>
         /// One tile of C, of up to 16 rows and 6 columns, whose first entry is <paramref name="offset"/> rows below the
-        /// diagonal of C. In a product of one triangle, a tile that the diagonal crosses is computed into
-        /// <paramref name="buffer"/> first, and only its entries in the triangle are added to C, as faer's triangular
-        /// product does. So the product never writes an entry of C outside the triangle.
+        /// diagonal of C. In a product of one triangle, a tile that the diagonal crosses also holds entries outside the
+        /// triangle. faer computes such a tile into a buffer and copies the triangle's part. If
+        /// <paramref name="saved"/> is not null, this port saves the entries outside the triangle there, writes the
+        /// whole tile, and puts the saved entries back, which touches only those few entries. So the product leaves
+        /// every entry of C outside the triangle as it was. If it is null, the whole tile is written.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void Tile(int rows, int columns, int k, float alpha, float* a, int lda, float* b, int bRow, int bColumn,
-            float* c, int ldc, int offset, Triangle triangle, float* buffer)
+            float* c, int ldc, int offset, Triangle triangle, float* saved)
         {
-            bool crossed = triangle == Triangle.Lower ? offset < columns - 1 : triangle == Triangle.Upper && offset + rows - 1 > 0;
-            if (!crossed)
+            bool crossed = saved != null &&
+                (triangle == Triangle.Lower ? offset < columns - 1 : triangle == Triangle.Upper && offset + rows - 1 > 0);
+            if (crossed)
             {
-                if (rows == 16 && columns == 6)
-                {
-                    Kernel16x6(k, alpha, a, lda, b, bRow, bColumn, c, ldc);
-                }
-                else
-                {
-                    KernelEdge(rows, columns, k, alpha, a, lda, b, bRow, bColumn, c, ldc);
-                }
-
-                return;
-            }
-
-            // With a buffer of zeros and alpha 1, the buffer takes the sums as they are, and alpha is applied below
-            // with the same rounding as in a tile that is written directly.
-            for (int t = 0; t < 16 * 6; t++)
-            {
-                buffer[t] = 0f;
+                Outside(rows, columns, offset, triangle, c, ldc, saved, false);
             }
 
             if (rows == 16 && columns == 6)
             {
-                Kernel16x6(k, 1f, a, lda, b, bRow, bColumn, buffer, 16);
+                Kernel16x6(k, alpha, a, lda, b, bRow, bColumn, c, ldc);
             }
             else
             {
-                KernelEdge(rows, columns, k, 1f, a, lda, b, bRow, bColumn, buffer, 16);
+                KernelEdge(rows, columns, k, alpha, a, lda, b, bRow, bColumn, c, ldc);
             }
 
+            if (crossed)
+            {
+                Outside(rows, columns, offset, triangle, c, ldc, saved, true);
+            }
+        }
+
+        /// <summary>
+        /// Copies the entries of a tile that lie outside the triangle into <paramref name="saved"/>, or back from it if
+        /// <paramref name="restore"/> is true. Entry (r, s) of the tile is in the lower triangle if r + offset >= s, and
+        /// in the upper one if r + offset &lt;= s, so in each column the entries outside are one run of rows.
+        /// </summary>
+        static void Outside(int rows, int columns, int offset, Triangle triangle, float* c, int ldc, float* saved, bool restore)
+        {
+            int count = 0;
             for (int s = 0; s < columns; s++)
             {
-                for (int r = 0; r < rows; r++)
+                int from = triangle == Triangle.Lower ? 0 : math.max(0, s - offset + 1);
+                int to = triangle == Triangle.Lower ? math.min(rows, math.max(0, s - offset)) : rows;
+                float* column = c + (long)s * ldc;
+                for (int r = from; r < to; r++)
                 {
-                    bool inside = triangle == Triangle.Lower ? r + offset >= s : r + offset <= s;
-                    if (inside)
+                    if (restore)
                     {
-                        float* entry = c + r + (long)s * ldc;
-                        *entry = FusedMath.Fma(alpha, buffer[r + 16 * s], *entry);
+                        column[r] = saved[count++];
+                    }
+                    else
+                    {
+                        saved[count++] = column[r];
                     }
                 }
             }

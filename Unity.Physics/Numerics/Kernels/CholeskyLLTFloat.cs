@@ -20,12 +20,13 @@ namespace Unity.Numerics.Kernels
         /// <summary>
         /// Factors the n by n matrix of floats in the lower triangle of <paramref name="a"/> in place, with the
         /// recursion of the double version. A pivot that is not larger than <see cref="SmallestPivotFloat"/> is raised
-        /// to it. Returns how many pivots were raised.
+        /// to it. Returns how many pivots were raised. If <paramref name="keepUpper"/> is false, the products may write
+        /// entries above the diagonal.
         /// </summary>
-        public static int Factor(MatrixView<float> a)
+        public static int Factor(MatrixView<float> a, bool keepUpper = true)
         {
             int raised = 0;
-            Factor(a, false, ref raised);
+            Factor(a, false, keepUpper, ref raised);
             return raised;
         }
 
@@ -33,13 +34,13 @@ namespace Unity.Numerics.Kernels
         /// Factors the matrix of floats, but stops at the first pivot that is not positive and returns its index, as
         /// faer does. Returns -1 if every pivot is positive.
         /// </summary>
-        public static int TryFactor(MatrixView<float> a)
+        public static int TryFactor(MatrixView<float> a, bool keepUpper = true)
         {
             int raised = 0;
-            return Factor(a, true, ref raised);
+            return Factor(a, true, keepUpper, ref raised);
         }
 
-        static int Factor(MatrixView<float> a, bool stop, ref int raised)
+        static int Factor(MatrixView<float> a, bool stop, bool keepUpper, ref int raised)
         {
             int n = a.Rows;
             if (n <= FloatBaseCaseRows)
@@ -50,7 +51,7 @@ namespace Unity.Numerics.Kernels
             }
 
             int bs = n / 2;
-            int failed = Factor(a.Block(0, 0, bs, bs), stop, ref raised);
+            int failed = Factor(a.Block(0, 0, bs, bs), stop, keepUpper, ref raised);
             if (failed >= 0)
             {
                 return failed;
@@ -58,15 +59,17 @@ namespace Unity.Numerics.Kernels
 
             MatrixView<float> a10 = a.Block(bs, 0, n - bs, bs);
             Blas.TrsmLeftLower(a.Block(0, 0, bs, bs), a10.Transpose);
-            Blas.SyrkLower(-1f, a10, a.Block(bs, bs, n - bs, n - bs));
-            failed = Factor(a.Block(bs, bs, n - bs, n - bs), stop, ref raised);
+            Blas.SyrkLower(-1f, a10, a.Block(bs, bs, n - bs, n - bs), keepUpper);
+            failed = Factor(a.Block(bs, bs, n - bs, n - bs), stop, keepUpper, ref raised);
             return failed >= 0 ? bs + failed : -1;
         }
 
         /// <summary>
         /// faer's base case for floats whose columns are contiguous. Column j's entries from the diagonal down stay in
         /// up to four vectors of eight floats, and the entries past the last whole vector in one more, while every
-        /// earlier column takes its share out of them.
+        /// earlier column takes its share out of them. As in the double version, that last vector's window ends at the
+        /// last row when the matrix has at least 8 rows, and only the entries past the last whole vector are stored
+        /// from it; a smaller matrix builds that vector one entry at a time.
         /// </summary>
         static int FactorBaseCase(int n, float* a, int lda, bool stop, ref int raised)
         {
@@ -80,12 +83,22 @@ namespace Unity.Numerics.Kernels
                 float8 c1 = vectors > 1 ? *(float8*)(aj + 8) : 0f;
                 float8 c2 = vectors > 2 ? *(float8*)(aj + 16) : 0f;
                 float8 c3 = vectors > 3 ? *(float8*)(aj + 24) : 0f;
-                float* tail = aj + 8 * vectors;
+                bool window = rest > 0 && n >= 8;
+                int first = window ? n - 8 : j + 8 * vectors;
+                int lane = window ? 8 - rest : 0;
+                float* tail = a + first + (long)j * lda;
                 float8 t = 0f;
                 float* tp = (float*)&t;
-                for (int i = 0; i < rest; i++)
+                if (window)
                 {
-                    tp[i] = tail[i];
+                    t = *(float8*)tail;
+                }
+                else
+                {
+                    for (int i = 0; i < rest; i++)
+                    {
+                        tp[i] = tail[i];
+                    }
                 }
 
                 for (int k = 0; k < j; k++)
@@ -112,7 +125,11 @@ namespace Unity.Numerics.Kernels
                         c3 = FusedMath.Fma(f, *(float8*)(ak + 24), c3);
                     }
 
-                    if (rest > 0)
+                    if (window)
+                    {
+                        t = FusedMath.Fma(f, *(float8*)(a + first + (long)k * lda), t);
+                    }
+                    else if (rest > 0)
                     {
                         float* kt = ak + 8 * vectors;
                         float8 v = 0f;
@@ -126,7 +143,7 @@ namespace Unity.Numerics.Kernels
                     }
                 }
 
-                float diagonal = vectors > 0 ? c0.Low.x : t.Low.x;
+                float diagonal = vectors > 0 ? c0.Low.x : tp[lane];
                 if (stop && !(diagonal > 0f))
                 {
                     return j;
@@ -152,7 +169,7 @@ namespace Unity.Numerics.Kernels
                 }
                 else
                 {
-                    tp[0] = root;
+                    tp[lane] = root;
                 }
 
                 if (vectors > 1)
@@ -172,7 +189,7 @@ namespace Unity.Numerics.Kernels
 
                 for (int i = 0; i < rest; i++)
                 {
-                    tail[i] = tp[i];
+                    tail[lane + i] = tp[lane + i];
                 }
             }
 

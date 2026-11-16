@@ -153,6 +153,10 @@ namespace Unity.Numerics.Kernels
         /// weights and the copy of that part in B's storage; this port takes a scratch array of
         /// <see cref="InsertScratch"/> doubles for them. If p equals n, nothing moves and the last step has no rows.
         /// </para>
+        /// <para>
+        /// The product and the factor of the new diagonal block write the whole tiles that its diagonal crosses, so
+        /// some entries above the diagonal of the factor change, as they did before the factor learned to keep them.
+        /// </para>
         /// Returns how many pivots were raised to <see cref="SmallestPivot"/>.
         /// </summary>
         public static int InsertRowsAndColumns(int n, MatrixView<double> l, int p, int r, MatrixView<double> b, double* scratch)
@@ -210,8 +214,8 @@ namespace Unity.Numerics.Kernels
                 }
             }
 
-            Blas.SyrkLower(-1.0, l10, l11);
-            int raised = Factor(l11);
+            Blas.SyrkLower(-1.0, l10, l11, false);
+            int raised = Factor(l11, false);
 
             // The new rows' part below the diagonal block: (B_2 - L_20 X) L_11^-T, which is the lower solve on its
             // transpose.

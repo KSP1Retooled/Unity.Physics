@@ -17,6 +17,25 @@ namespace Unity.Numerics.Kernels
         public static void TrsvLower(MatrixView<double> l, double* x, int incx, bool unitDiagonal = false)
         {
             int n = l.Rows;
+            if (n <= 4 && l.RowStride == 1 && incx == 1)
+            {
+                // The fast path: L stored column by column and x contiguous.
+                double* d = l.Data;
+                long ld = l.ColumnStride;
+                for (int i = 0; i < n; i++)
+                {
+                    double y = x[i];
+                    for (int p = 0; p < i; p++)
+                    {
+                        y = FusedMath.Fma(-d[i + p * ld], x[p], y);
+                    }
+
+                    x[i] = unitDiagonal ? y : y / d[i + i * ld];
+                }
+
+                return;
+            }
+
             if (n <= 4)
             {
                 for (int i = 0; i < n; i++)
@@ -49,6 +68,26 @@ namespace Unity.Numerics.Kernels
         public static void TrsvUpper(MatrixView<double> u, double* x, int incx, bool unitDiagonal = false)
         {
             int n = u.Rows;
+            if (n <= 4 && u.ColumnStride == 1 && incx == 1)
+            {
+                // The fast path: U is the transpose of a lower triangle stored column by column, so row i of U is
+                // column i of that triangle, and x is contiguous.
+                double* d = u.Data;
+                long ld = u.RowStride;
+                for (int i = n - 1; i >= 0; i--)
+                {
+                    double y = x[i];
+                    for (int p = i + 1; p < n; p++)
+                    {
+                        y = FusedMath.Fma(-d[p + i * ld], x[p], y);
+                    }
+
+                    x[i] = unitDiagonal ? y : y / d[i + i * ld];
+                }
+
+                return;
+            }
+
             if (n <= 4)
             {
                 for (int i = n - 1; i >= 0; i--)

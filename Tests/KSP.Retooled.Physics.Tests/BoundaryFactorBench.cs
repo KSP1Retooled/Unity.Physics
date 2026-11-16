@@ -57,7 +57,7 @@ namespace KSP.Retooled.Physics.Tests
                             }
                         }
 
-                        CholeskyLLT.Factor(M, Factor, Stride);
+                        CholeskyLLT.Factor(M, Factor, Stride, keepUpper: false);
                     }
                 }
 
