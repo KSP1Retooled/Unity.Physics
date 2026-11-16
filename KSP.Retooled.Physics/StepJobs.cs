@@ -9,6 +9,70 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
+    /// Sorts the store's simulated bodies into the dynamic and static bodies of the build, and gives each store row its
+    /// index in the built world, or -1 if the row isn't built. The built world has the dynamic bodies first, so a
+    /// static body's index starts after them. The main thread runs this job, because the step needs the counts before
+    /// it schedules anything else. Burst runs the loops about ten times as fast as the same code in C#.
+    /// </summary>
+    [BurstCompile]
+    internal unsafe struct PartitionBodiesJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        public NativeList<int> DynamicIndices;
+        public NativeList<int> StaticIndices;
+        public NativeList<int> BuiltIndices;
+
+        /// <summary>The flags of a dynamic body that receives its pose during write-back instead of from its motion.</summary>
+        public NativeStore.BodyFlags PosedByWriteBack;
+
+        /// <summary>Set to 1 if no dynamic body has a flag in <see cref="PosedByWriteBack"/>, and to 0 otherwise.</summary>
+        public NativeReference<int> MotionsMatchStore;
+
+        public void Execute()
+        {
+            int count = (int)World->bodyCount;
+            DynamicIndices.Clear();
+            StaticIndices.Clear();
+            BuiltIndices.ResizeUninitialized(count);
+            int matches = 1;
+            for (int i = 0; i < count; i++)
+            {
+                NativeStore.BodyFlags flags = World->bodies[i].flags;
+                BuiltIndices[i] = -1;
+                if ((flags & NativeStore.BodyFlags.Simulated) == 0)
+                {
+                    continue;
+                }
+
+                if ((flags & NativeStore.BodyFlags.Static) != 0)
+                {
+                    BuiltIndices[i] = StaticIndices.Length;
+                    StaticIndices.Add(i);
+                }
+                else
+                {
+                    BuiltIndices[i] = DynamicIndices.Length;
+                    DynamicIndices.Add(i);
+                    if ((flags & PosedByWriteBack) != 0)
+                    {
+                        matches = 0;
+                    }
+                }
+            }
+
+            int dynamicCount = DynamicIndices.Length;
+            for (int s = 0; s < StaticIndices.Length; s++)
+            {
+                BuiltIndices[StaticIndices[s]] += dynamicCount;
+            }
+
+            MotionsMatchStore.Value = matches;
+        }
+    }
+
+    /// <summary>
     /// Updates velocities before the solver runs, as PhysX does, by applying accumulated forces, gravity, damping and
     /// velocity limits. The backend therefore passes zero gravity to Unity Physics. When the solver resolves contacts,
     /// the velocities already include the acceleration for the whole step. Positions are then updated by <c> v * dt
