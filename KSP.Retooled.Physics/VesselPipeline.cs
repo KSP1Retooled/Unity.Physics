@@ -180,8 +180,9 @@ namespace KSP.Retooled.Physics
         public NativeList<IntPtr> PartJointRecords;
         public NativeList<IntPtr> ClosureJointRecords;
 
-        // The serial numbers of the joints at those records. The store reuses the memory of a destroyed joint, so a
-        // joint is the same joint only if its record and its serial number are the same.
+        // The serial numbers of the bodies and joints at those records. The store reuses the memory of a destroyed body
+        // or joint, so a body or joint is the same one only if its record and its serial number are the same.
+        public NativeList<uint> PartBodySerials;
         public NativeList<uint> PartJointSerials;
         public NativeList<uint> ClosureJointSerials;
 
@@ -232,6 +233,7 @@ namespace KSP.Retooled.Physics
                 PartBodyRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 PartJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
                 ClosureJointRecords = new NativeList<IntPtr>(Allocator.Persistent),
+                PartBodySerials = new NativeList<uint>(Allocator.Persistent),
                 PartJointSerials = new NativeList<uint>(Allocator.Persistent),
                 ClosureJointSerials = new NativeList<uint>(Allocator.Persistent),
                 Active = new NativeList<byte>(Allocator.Persistent),
@@ -270,6 +272,7 @@ namespace KSP.Retooled.Physics
             PartBodyRecords.Dispose();
             PartJointRecords.Dispose();
             ClosureJointRecords.Dispose();
+            PartBodySerials.Dispose();
             PartJointSerials.Dispose();
             ClosureJointSerials.Dispose();
             Active.Dispose();
@@ -305,6 +308,7 @@ namespace KSP.Retooled.Physics
             PartBodyRecords.Clear();
             PartJointRecords.Clear();
             ClosureJointRecords.Clear();
+            PartBodySerials.Clear();
             PartJointSerials.Clear();
             ClosureJointSerials.Clear();
             Active.Clear();
@@ -451,7 +455,9 @@ namespace KSP.Retooled.Physics
     /// <para>
     /// Before it compiles new vessels, the job tries to keep each vessel of the previous compilation as it was. A vessel
     /// is kept when all of its bodies still exist and move, and every forest unit that touches one of its bodies joins
-    /// the two bodies of one of its edges or closures. When no unit joins the two bodies of an edge or closure any more,
+    /// the two bodies of one of its edges or closures. The job knows a body by its record's address and its serial
+    /// number. The store reuses the memory of a destroyed body for the next body that it makes, so without the serial
+    /// number a vessel could be kept on the new bodies of a craft that was built again in the same memory. When no unit joins the two bodies of an edge or closure any more,
     /// because the game removed the joint or the joint broke, the edge or closure becomes a tombstone. A tombstone stays
     /// in its place in the vessel but has no constraints: an edge is marked broken, and a closure has no stiffness.
     /// When a joint between the same two bodies appears within <see cref="TombstoneSteps"/> steps, it takes the
@@ -541,6 +547,7 @@ namespace KSP.Retooled.Physics
             // The results of the previous compilation, copied before the build is cleared.
             private NativeArray<VesselRecord> oldVessels;
             private NativeArray<IntPtr> oldBodies;
+            private NativeArray<uint> oldBodySerials;
             private NativeArray<IntPtr> oldJoints;
             private NativeArray<IntPtr> oldClosures;
             private NativeArray<uint> oldJointSerials;
@@ -570,6 +577,7 @@ namespace KSP.Retooled.Physics
                 // Keep the results of the previous compilation until they have been compared with the new vessels.
                 oldVessels = new NativeArray<VesselRecord>(Build.Vessels.AsArray(), Allocator.Temp);
                 oldBodies = new NativeArray<IntPtr>(Build.PartBodyRecords.AsArray(), Allocator.Temp);
+                oldBodySerials = new NativeArray<uint>(Build.PartBodySerials.AsArray(), Allocator.Temp);
                 oldJoints = new NativeArray<IntPtr>(Build.PartJointRecords.AsArray(), Allocator.Temp);
                 oldClosures = new NativeArray<IntPtr>(Build.ClosureJointRecords.AsArray(), Allocator.Temp);
                 oldJointSerials = new NativeArray<uint>(Build.PartJointSerials.AsArray(), Allocator.Temp);
@@ -729,7 +737,8 @@ namespace KSP.Retooled.Physics
 
                 for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
                 {
-                    if (!bodyOfRecord.TryGetValue(oldBodies[part], out int body) || keptBy[body] >= 0 || !Moving(World->bodies + body))
+                    if (!bodyOfRecord.TryGetValue(oldBodies[part], out int body) || World->bodies[body].owner->serial != oldBodySerials[part]
+                        || keptBy[body] >= 0 || !Moving(World->bodies + body))
                     {
                         return false;
                     }
@@ -1198,6 +1207,7 @@ namespace KSP.Retooled.Physics
                 Build.PartVesselFirst.Add(firstPart);
                 Build.PartTombstones.Add(tombstone);
                 Build.PartBodyRecords.Add((IntPtr)World->bodies[body].owner);
+                Build.PartBodySerials.Add(World->bodies[body].owner->serial);
                 Build.PartJointRecords.Add(unit >= 0 ? (IntPtr)World->joints[Units[unit].Joint] : IntPtr.Zero);
                 Build.PartJointSerials.Add(unit >= 0 ? World->joints[Units[unit].Joint]->serial : 0u);
             }
@@ -1272,6 +1282,7 @@ namespace KSP.Retooled.Physics
                 for (int i = 0; i < vessel.PartCount; i++)
                 {
                     if (Build.PartBodyRecords[vessel.FirstPart + i] != oldBodies[old.FirstPart + i]
+                        || Build.PartBodySerials[vessel.FirstPart + i] != oldBodySerials[old.FirstPart + i]
                         || Build.PartJointRecords[vessel.FirstPart + i] != oldJoints[old.FirstPart + i]
                         || Build.PartJointSerials[vessel.FirstPart + i] != oldJointSerials[old.FirstPart + i])
                     {

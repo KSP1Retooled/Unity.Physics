@@ -128,6 +128,10 @@ namespace KSP.Retooled.Physics
 
             // As in BodyData, the plugin only knows the fields above.
             public BodyHome home;
+
+            // A number that no other body received. The store reuses the memory of a destroyed body for the next body
+            // that is made, so the address alone doesn't tell two bodies apart.
+            public uint serial;
         }
 
         /// <summary>
