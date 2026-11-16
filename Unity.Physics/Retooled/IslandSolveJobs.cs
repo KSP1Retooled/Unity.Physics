@@ -251,6 +251,7 @@ namespace Unity.Physics
                     Bodies = world.Bodies,
                     StepInput = substepInput,
                     Teams = work.Buffers.FusedTeams,
+                    Lanes = lanes,
                 }.Schedule(lanes, 1, handle);
             }
 
@@ -395,7 +396,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Whether a large island whose bodies are all vessel parts is solved by one fused job for the whole step. In
+        /// Whether an island whose bodies are all vessel parts is solved by one fused job for the whole step. In
         /// every substep, that job updates the island's contacts and joints and builds their rows, fills the parts,
         /// solves the vessels with the contacts and joints as their boundary block, writes the loads and integrates
         /// the parts' bodies. It does this without the per-body setup of the sparse solve, without the jobs and waits
@@ -440,11 +441,17 @@ namespace Unity.Physics
 
         /// <summary>
         /// The number of vessel parts at which an island whose bodies are all vessel parts goes to the fused vessel
-        /// job. A smaller island stays with the substeps' jobs, which solve the small islands in parallel with each
-        /// other, unless it is the only island of the step with <see cref="LoneFusedVesselParts"/> parts or more. The
-        /// backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches, and tests set this to send small
-        /// vessels to the fused job. The value is stored in a SharedStatic, because the jobs are scheduled from Burst
-        /// code.
+        /// job. A smaller island stays with the substeps' jobs. By default, every such island goes to the fused job,
+        /// however small it is and however many there are. The fused job gives each island a team of its own and
+        /// solves several islands at once, so on the bench (whole steps, the minimum of three rounds) small craft are
+        /// as fast or faster there than in the substeps' jobs. Floating, sixteen craft of 128 parts take 0.78 ms
+        /// instead of 1.10 ms on eight threads and 1.94 ms instead of 2.26 ms on one. Thirty-two craft of 32 parts take
+        /// 0.48 ms instead of 0.53 ms on eight threads, and 64 craft of 8 parts take 0.37 ms instead of 0.46 ms. On
+        /// the ground the times are about the same: sixteen craft of 128 parts take 2.17 ms instead of 2.24 ms on eight
+        /// threads and 6.08 ms instead of 6.14 ms on one. Before round 4, the fused job solved one island after
+        /// another, and sixteen craft of 128 parts took 0.8 ms more floating and 2 ms more on the ground there. The backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches,
+        /// and tests set this to keep small vessels in the substeps' jobs. The value is stored in a SharedStatic,
+        /// because the jobs are scheduled from Burst code.
         /// </summary>
         public static int FusedVesselParts
         {
@@ -453,15 +460,7 @@ namespace Unity.Physics
         }
 
         /// <summary>The value of <see cref="FusedVesselParts"/> until something sets it.</summary>
-        public const int DefaultFusedVesselParts = 256;
-
-        /// <summary>
-        /// The number of vessel parts at which an island goes to the fused vessel job when it is the only island of
-        /// the step of that size. On the bench, one craft of 64 or 128 parts takes 0.05 to 0.1 ms less per step in the
-        /// fused job. Sixteen crafts of 128 parts take 0.8 ms more floating and 2 ms more on the ground, because the
-        /// fused job solves them one after another.
-        /// </summary>
-        const int LoneFusedVesselParts = 64;
+        public const int DefaultFusedVesselParts = 1;
 
         struct FusedVesselPartsKey { }
 
@@ -1238,9 +1237,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Marks each large island whose bodies are all vessel parts for the fused vessel job. The island's contacts and
-        /// joints go into the fused job's boundary block. Then gives every vessel island the forest that will solve it,
-        /// see <see cref="AssignVesselForests"/>. The job works per island and per vessel, and never per part.
+        /// Marks each island whose bodies are all vessel parts, and that has at least <see cref="FusedVesselParts"/>
+        /// vessel parts, for the fused vessel job. The island's contacts and joints go into the fused job's boundary
+        /// block. Then gives every vessel island the forest that will solve it, see <see cref="AssignVesselForests"/>.
+        /// The job works per island and per vessel, and never per part.
         /// </summary>
         [BurstCompile]
         unsafe struct MarkFusedVesselIslandsJob : IJob
@@ -1269,20 +1269,10 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                // An island smaller than MinimumParts goes to the fused job only if it is the one island of the step
-                // that could. The fused job solves its islands one after another, while the substeps' jobs solve small
-                // islands in parallel with each other, so several small islands are faster outside the fused job.
-                int loneParts = math.min(MinimumParts, LoneFusedVesselParts);
-                int small = 0;
-                for (int i = 0; Fuse && i < Islands.Length; i++)
-                {
-                    small += Fusable(Islands[i], loneParts) && Islands[i].VesselParts < MinimumParts ? 1 : 0;
-                }
-
                 for (int i = 0; Fuse && i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
-                    if (!Fusable(island, island.VesselParts >= MinimumParts || small > 1 ? MinimumParts : loneParts))
+                    if (!Fusable(island, MinimumParts))
                     {
                         continue;
                     }
@@ -1379,6 +1369,13 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction]
             public UnsafeList<FusedTeam>* Teams;
 
+            /// <summary>
+            /// The number of lanes that the job was scheduled with. With one lane, no other lane can help an island,
+            /// so the lane solves each island without a team. Publishing the stages to a team cost 0.05 to 0.1 ms a
+            /// step on one thread for sixteen craft of 128 parts.
+            /// </summary>
+            public int Lanes;
+
             static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.HelpFused");
 
             public void Execute(int lane)
@@ -1398,7 +1395,7 @@ namespace Unity.Physics
                     System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
                     SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
                         (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
-                        StepInput, &teams[t].Team);
+                        StepInput, Lanes > 1 ? &teams[t].Team : null);
                     teams[t].Team.Finish();
                 }
 

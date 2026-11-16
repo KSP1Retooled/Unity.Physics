@@ -58,8 +58,11 @@ namespace Unity.Physics
         Slot* slots;
 
         // Keep the state of at most this many fused vessel islands. Any additional fused island solves with a
-        // forest that it creates for the step only.
-        const int FusedCapacity = 32;
+        // forest that it creates for the step only, and builds its structure again in every step. The fused job takes
+        // vessel islands of every size, so a scene with many small craft or much debris has many fused islands. With
+        // 32 slots, 64 craft of 8 parts took 1.0 ms a step instead of 0.4 ms, because half of them built their
+        // structure again in every step.
+        const int FusedCapacity = 256;
 
         /// <summary>
         /// The persistent state of one fused vessel island. The key is the ID of the island's first vessel, which the
@@ -81,6 +84,13 @@ namespace Unity.Physics
 
         [NativeDisableUnsafePtrRestriction]
         FusedSlot* fusedSlots;
+
+        /// <summary>
+        /// The slot that holds each vessel's state, by the vessel's ID, for the vessels that have a slot. Only the job
+        /// that marks the fused islands changes it, before the fused job reads it from several threads.
+        /// </summary>
+        [NativeDisableUnsafePtrRestriction]
+        UnsafeHashMap<ulong, int>* fusedSlotOfVessel;
 
         /// <summary>
         /// The forest that holds the newest lock states of a vessel, and the step in which that forest was handed the
@@ -210,6 +220,9 @@ namespace Unity.Physics
             cache.fusedSlots = (FusedSlot*)UnsafeUtility.MallocTracked(FusedCapacity * sizeof(FusedSlot), UnsafeUtility.AlignOf<FusedSlot>(),
                 Allocator.Persistent, 0);
             UnsafeUtility.MemClear(cache.fusedSlots, FusedCapacity * sizeof(FusedSlot));
+            cache.fusedSlotOfVessel = (UnsafeHashMap<ulong, int>*)UnsafeUtility.MallocTracked(UnsafeUtility.SizeOf<UnsafeHashMap<ulong, int>>(),
+                UnsafeUtility.AlignOf<UnsafeHashMap<ulong, int>>(), Allocator.Persistent, 0);
+            *cache.fusedSlotOfVessel = new UnsafeHashMap<ulong, int>(FusedCapacity, Allocator.Persistent);
             cache.vesselOwners = (UnsafeHashMap<ulong, VesselOwner>*)UnsafeUtility.MallocTracked(UnsafeUtility.SizeOf<UnsafeHashMap<ulong, VesselOwner>>(),
                 UnsafeUtility.AlignOf<UnsafeHashMap<ulong, VesselOwner>>(), Allocator.Persistent, 0);
             *cache.vesselOwners = new UnsafeHashMap<ulong, VesselOwner>(64, Allocator.Persistent);
@@ -469,6 +482,11 @@ namespace Unity.Physics
                 fusedSlots[slot] = default;
             }
 
+            if (fusedSlotOfVessel != null)
+            {
+                fusedSlotOfVessel->Clear();
+            }
+
             if (vesselOwners != null)
             {
                 vesselOwners->Clear();
@@ -541,16 +559,13 @@ namespace Unity.Physics
         /// </summary>
         internal ForestIsland* FindFusedForest(ulong vesselId)
         {
-            for (int slot = 0; fusedSlots != null && slot < FusedCapacity; slot++)
+            if (fusedSlots == null || !fusedSlotOfVessel->TryGetValue(vesselId, out int slot))
             {
-                if (fusedSlots[slot].Used && fusedSlots[slot].VesselId == vesselId)
-                {
-                    fusedSlots[slot].LastUsed = *step;
-                    return fusedSlots[slot].Forest;
-                }
+                return null;
             }
 
-            return null;
+            fusedSlots[slot].LastUsed = *step;
+            return fusedSlots[slot].Forest;
         }
 
         /// <summary>
@@ -568,24 +583,19 @@ namespace Unity.Physics
             }
 
             long now = *step;
-            int found = -1, oldest = -1;
-            for (int slot = 0; slot < FusedCapacity; slot++)
+            if (!fusedSlotOfVessel->TryGetValue(vesselId, out int found))
             {
-                if (fusedSlots[slot].Used && fusedSlots[slot].VesselId == vesselId)
+                // Only a vessel that has no slot yet looks through the slots, for one that no vessel used in this step.
+                int oldest = -1;
+                for (int slot = 0; slot < FusedCapacity; slot++)
                 {
-                    found = slot;
-                    break;
+                    if ((!fusedSlots[slot].Used || fusedSlots[slot].LastUsed != now) && (oldest < 0 || !fusedSlots[slot].Used
+                        || (fusedSlots[oldest].Used && fusedSlots[slot].LastUsed < fusedSlots[oldest].LastUsed)))
+                    {
+                        oldest = slot;
+                    }
                 }
 
-                if ((!fusedSlots[slot].Used || fusedSlots[slot].LastUsed != now) && (oldest < 0 || !fusedSlots[slot].Used
-                    || (fusedSlots[oldest].Used && fusedSlots[slot].LastUsed < fusedSlots[oldest].LastUsed)))
-                {
-                    oldest = slot;
-                }
-            }
-
-            if (found < 0)
-            {
                 if (oldest < 0)
                 {
                     return null;
@@ -593,11 +603,17 @@ namespace Unity.Physics
 
                 // The slot's old forest belongs to another vessel, so start again from an empty one.
                 found = oldest;
+                if (fusedSlots[found].Used)
+                {
+                    fusedSlotOfVessel->Remove(fusedSlots[found].VesselId);
+                }
+
                 ForgetOwners(fusedSlots[found].Forest);
                 ForestIsland.Destroy(fusedSlots[found].Forest);
                 fusedSlots[found].Forest = ForestIsland.Create();
                 fusedSlots[found].VesselId = vesselId;
                 fusedSlots[found].Used = true;
+                fusedSlotOfVessel->Add(vesselId, found);
             }
 
             fusedSlots[found].LastUsed = now;
@@ -768,6 +784,9 @@ namespace Unity.Physics
 
             UnsafeUtility.FreeTracked(fusedSlots, Allocator.Persistent);
             fusedSlots = null;
+            fusedSlotOfVessel->Dispose();
+            UnsafeUtility.FreeTracked(fusedSlotOfVessel, Allocator.Persistent);
+            fusedSlotOfVessel = null;
             vesselOwners->Dispose();
             UnsafeUtility.FreeTracked(vesselOwners, Allocator.Persistent);
             vesselOwners = null;
