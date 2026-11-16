@@ -144,6 +144,14 @@ namespace Unity.Physics
                 return;
             }
 
+            // The leader runs a stage that has one task by itself and does not publish it. If the leader published it,
+            // the parked helpers would wake up, find nothing to do, and spin again before they park.
+            if (taskCount == 1)
+            {
+                Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
+                return;
+            }
+
             long generation = (Interlocked.Read(ref next) >> 32) + 1;
             var stage = new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = taskCount };
             if ((generation & 1) == 0)
