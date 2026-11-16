@@ -26,9 +26,10 @@ namespace Unity.Physics
         /// <summary>
         /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
         /// own, so the contact impulse that the row had before the solve, its warm start, stays applied: a sparse solve's
-        /// contact rows solve for the change from their warm-start impulse. There are two exceptions, see
-        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, and in a
-        /// push-out, a held normal row whose contact is too deep gets a push of its own.
+        /// contact rows solve for the change from their warm-start impulse. There are exceptions for normal rows, see
+        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, a held normal
+        /// row whose contact closes pushes, and in a push-out, a held normal row whose contact is too deep gets a push of
+        /// its own.
         /// </summary>
         const byte HeldRowClass = 4;
 
@@ -1752,8 +1753,11 @@ namespace Unity.Physics
         /// <list type="bullet">
         /// <item>
         /// In a velocity solve (<paramref name="pushOut"/> false), a held row whose contact separates gives back its warm
-        /// start. The row's target is the change of its velocity that its right-hand side asks for, when that change is
-        /// negative, and the row gives back at most its warm start, which is minus its lower bound.
+        /// start, and a held row whose contact closes pushes. The row's target is the change of its velocity that its
+        /// right-hand side asks for. When that change is negative, the row gives back at most its warm start, which is
+        /// minus its lower bound. Without the push, a body whose contacts the cap holds would get only its warm start.
+        /// That is 95% of the last step's impulse, and the next step's warm start comes from it, so the body would sink
+        /// a little more in every step.
         /// </item>
         /// <item>
         /// In a push-out (<paramref name="pushOut"/> true), a held row whose contact is still too deep after the
@@ -1786,16 +1790,17 @@ namespace Unity.Physics
                 impulses[row] = 0.0f;
 
                 // A normal row may push without limit, and a friction row has a finite upper bound.
-                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue
-                    && (pushOut ? rhs[row] > 0.0f : problem.Lower[row] < 0.0f);
+                bool candidate = !run.Caps.IdleHeldRows && problem.Upper[row] >= float.MaxValue && (!pushOut || rhs[row] > 0.0f);
                 if (!candidate)
                 {
                     continue;
                 }
 
+                // In a velocity solve, a row whose contact separates may give back no more than its warm start, so a
+                // row without a warm start has nothing to give back.
                 double change = rhs[row] - BlockRows.Dot(v, run.BlockSections[run.RowBlock[row]],
                     jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
-                if (pushOut ? change > 0.0 : change < 0.0)
+                if (change > 0.0 || (!pushOut && change < 0.0 && problem.Lower[row] < 0.0f))
                 {
                     held.Add(row);
                     target.Add(change);
@@ -1892,7 +1897,13 @@ namespace Unity.Physics
                 mark.Dispose();
                 path.Dispose();
                 z.Dispose();
-                BoundaryCounters.AddHeld(pushOut ? 0 : given, pushOut ? given : 0);
+                int closing = 0;
+                for (int k = 0; k < given; k++)
+                {
+                    closing += target[k] > 0.0 ? 1 : 0;
+                }
+
+                BoundaryCounters.AddHeld(pushOut ? 0 : given - closing, pushOut ? given : 0, pushOut ? 0 : closing);
             }
 
             held.Dispose();
@@ -2551,6 +2562,9 @@ namespace Unity.Physics
         public long HeldReleases;
         public long HeldPushes;
 
+        /// <summary>Held normal rows that pushed in a velocity solve because their contact was closing.</summary>
+        public long HeldSupports;
+
         /// <summary>The most outside contact points and the most self-contact manifolds that one boundary kept.</summary>
         public long MostOutsidePoints;
         public long MostSelfManifolds;
@@ -2689,10 +2703,11 @@ namespace Unity.Physics
             Interlocked.Add(ref Shared.Data.DormantRows, dormantRows);
         }
 
-        internal static void AddHeld(int releases, int pushes)
+        internal static void AddHeld(int releases, int pushes, int supports)
         {
             Interlocked.Add(ref Shared.Data.HeldReleases, releases);
             Interlocked.Add(ref Shared.Data.HeldPushes, pushes);
+            Interlocked.Add(ref Shared.Data.HeldSupports, supports);
         }
 
         static void Most(ref long most, long value)

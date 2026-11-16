@@ -509,7 +509,7 @@ namespace KSP.Retooled.Physics.Tests
                     $"{boundary.UnsettledSolves} of them without an answer), " +
                     $"{boundary.HeldPoints / (double)boundary.Solves:F0} points held a solve " +
                     $"({boundary.EmptiedOutsideManifolds} manifolds left with no point, {boundary.HeldReleases} held rows gave back " +
-                    $"their warm start, {boundary.HeldPushes} held rows pushed out), " +
+                    $"their warm start, {boundary.HeldSupports} held rows pushed, {boundary.HeldPushes} held rows pushed out), " +
                     $"{boundary.DormantRows / (double)boundary.Solves:F1} dormant rows a solve, " +
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
                 double tickMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
