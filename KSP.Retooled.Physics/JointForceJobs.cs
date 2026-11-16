@@ -254,13 +254,25 @@ namespace KSP.Retooled.Physics
         /// <summary>Writes one joint's load to the store and smooths it, as described for this job.</summary>
         internal static void Settle(NativeStore.JointData* joint, ref JointLoad load, float deltaTime)
         {
-            joint->force = load.Force;
-            joint->torque = load.Torque;
             if (JointForceJobs.IsAsleep(joint))
             {
+                joint->force = load.Force;
+                joint->torque = load.Torque;
                 return;
             }
 
+            SettleAwake(joint, ref load, deltaTime);
+        }
+
+        /// <summary>
+        /// Settles the load of a joint that the caller knows has at least one moving body that is awake, as
+        /// <see cref="Settle"/> does. The caller saves the reads of the joint's two bodies, which are often not in the
+        /// cache.
+        /// </summary>
+        internal static void SettleAwake(NativeStore.JointData* joint, ref JointLoad load, float deltaTime)
+        {
+            joint->force = load.Force;
+            joint->torque = load.Torque;
             float follow = deltaTime / (BreakingTimeConstant + deltaTime);
             joint->breakingForce += (math.length(joint->force) - joint->breakingForce) * follow;
             joint->breakingTorque += (math.length(joint->torque) - joint->breakingTorque) * follow;
