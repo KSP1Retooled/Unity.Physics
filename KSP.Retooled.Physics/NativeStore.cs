@@ -375,6 +375,15 @@ namespace KSP.Retooled.Physics
             public Body* body1;
             public void* userData;
 
+            // The value of JointSettings.Version after the last command that changed this joint's settings. The vessel
+            // fill jobs compare it with the value that they saw when they last computed the joint's edge or closure.
+            // The plugin never reads joint records, so this field doesn't change the plugin's layout.
+            public uint settingsStamp;
+
+            // A number that no other joint received. The store reuses the memory of a destroyed joint for the next
+            // joint that is made, so the address alone doesn't tell two joints apart.
+            public uint serial;
+
             // There are JointAxisCount consecutive axes. AxisOf accesses them by adding an offset to the address of the
             // first axis.
             public JointAxis axes0;

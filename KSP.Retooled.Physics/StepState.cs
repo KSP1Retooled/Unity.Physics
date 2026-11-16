@@ -161,6 +161,9 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
 
             collidersBuilt.Complete();
+
+            // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
+            vesselsFilled.Complete();
             ReleaseDeadColliders();
             for (uint i = 0; i < store->bodyCount; i++)
             {
@@ -583,7 +586,9 @@ namespace KSP.Retooled.Physics
 
             // Only queries read the dynamic tree at this stage. Rebuild it at the solved poses while this thread writes
             // back the motions, schedules the jobs that read joint loads and publishes the contacts. The query snapshot
-            // reads only the store, so it doesn't wait for the rebuild either.
+            // reads only the store, so it doesn't wait for the rebuild either. The snapshot also runs while WriteBackJob
+            // and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot reads only Static, and
+            // neither job changes it.
             JobHandle tree = world.CollisionWorld.ScheduleUpdateDynamicTree(ref world, deltaTime, float3.zero, default);
             JobHandle snapshot = ScheduleQuerySnapshot(default);
 
@@ -683,7 +688,8 @@ namespace KSP.Retooled.Physics
                 PublishQueryWorld();
             }
 
-            // Wait for the snapshot before changing the flags that it reads.
+            // FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
+            // first, although it has.
             using (BackendMarkers.StepSleep.Auto())
             {
                 sleep.Complete();
@@ -883,6 +889,10 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
         {
+            // FinishStep waits for the jobs that fill the vessels' edges and closures. A step that threw before
+            // FinishStep leaves them running, and this build compiles the vessels again and resizes their lists. In the
+            // usual case, the jobs have already finished.
+            vesselsFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
                 dynamicIndices.Clear();
@@ -986,6 +996,8 @@ namespace KSP.Retooled.Physics
                         World = store,
                         Units = jointUnits.AsArray(),
                         Roles = jointRoles.AsArray(),
+                        Groups = jointGroups.AsArray(),
+                        Members = jointGroupMembers.AsArray(),
                         Build = vesselBuild,
                         Step = (int)stepCount,
                         TombstoneSteps = VesselPipeline.TombstoneSteps,
@@ -1038,12 +1050,13 @@ namespace KSP.Retooled.Physics
                 vesselsFilled = default;
                 if (vesselSet.IsCreated)
                 {
-                    // Reuse the edges and closures from earlier steps unless the vessels were compiled again or a
-                    // joint's settings changed. The fill jobs also compute an entry again when a body's motion frame
-                    // changed.
+                    // Reuse the edges and closures from earlier steps unless the vessels were compiled again. The fill
+                    // jobs compute an entry again when a body's motion frame changed, or when the settings of one of its
+                    // joints changed. They look at the joints' settings stamps only when the version moved.
                     uint settings = JointSettings.Version;
                     bool resized = vesselBuild.SizeCaches();
-                    bool refillAll = resized || compiledThisStep || !cacheFilled || settings != cachedSettings;
+                    bool refillAll = resized || compiledThisStep || !cacheFilled;
+                    bool settingsChanged = settings != cachedSettings;
                     cacheFilled = true;
                     cachedSettings = settings;
                     JobHandle edgesFilled = new FillVesselEdgesJob
@@ -1061,8 +1074,10 @@ namespace KSP.Retooled.Physics
                         PartVesselFirst = vesselBuild.PartVesselFirst.AsArray(),
                         Edges = vesselBuild.Edges.AsArray(),
                         RefillAll = refillAll,
+                        SettingsChanged = settingsChanged,
                         EdgeCache = vesselBuild.EdgeCache.AsArray(),
                         EdgeCacheFrames = vesselBuild.EdgeCacheFrames.AsArray(),
+                        EdgeCacheStamps = vesselBuild.EdgeCacheStamps.AsArray(),
                     }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, groupsFound);
 
                     JobHandle closuresFilled = new FillVesselClosuresJob
@@ -1078,8 +1093,10 @@ namespace KSP.Retooled.Physics
                         ClosurePartB = vesselBuild.ClosurePartB.AsArray(),
                         Closures = vesselBuild.Closures.AsArray(),
                         RefillAll = refillAll,
+                        SettingsChanged = settingsChanged,
                         ClosureCache = vesselBuild.ClosureCache.AsArray(),
                         ClosureCacheFrames = vesselBuild.ClosureCacheFrames.AsArray(),
+                        ClosureCacheStamps = vesselBuild.ClosureCacheStamps.AsArray(),
                     }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, groupsFound);
                     // The joint loads at the end of the step need this list. Waiting for BuildJointsJob keeps the job
                     // from reading a group while BuildJointsJob writes it.

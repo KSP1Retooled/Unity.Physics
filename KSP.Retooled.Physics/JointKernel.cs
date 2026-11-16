@@ -62,16 +62,20 @@ namespace KSP.Retooled.Physics
 
         internal static uint Version => (uint)Shared.Data;
 
-        internal static unsafe void Changed()
+        /// <summary>Moves the version on and returns the new value.</summary>
+        internal static unsafe uint Changed()
         {
-            System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
         }
     }
 
     /// <summary>
-    /// Counts the commands that may change a joint's settings: its anchors, frames, break limits, axis locks and drives.
-    /// Commands that only set a drive target leave this version the same. The vessel jobs reuse the edge and closure
-    /// values that they computed in an earlier step while this version stays the same.
+    /// Counts the commands that changed a joint's settings: its anchors, frames, break limits, axis locks and drives.
+    /// A command that only sets a drive target, or that sets a value that the joint already has, leaves this version the
+    /// same. The joint that a command changed records the new version in its settings stamp. While this version stays
+    /// the same, the vessel fill jobs reuse every edge and closure that they computed in an earlier step. When it moves,
+    /// they compute again only the edges and closures whose joints have a stamp that differs from the one they saw.
+    /// All worlds share this counter, as they share <see cref="JointTopology"/>.
     /// </summary>
     internal static class JointSettings
     {
@@ -81,9 +85,10 @@ namespace KSP.Retooled.Physics
 
         internal static uint Version => (uint)Shared.Data;
 
-        internal static unsafe void Changed()
+        /// <summary>Moves the version on and returns the new value.</summary>
+        internal static unsafe uint Changed()
         {
-            System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
         }
     }
 
@@ -136,9 +141,13 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            if (!SetsTarget(command))
+            // The game often sends a setting again with the value that the joint already has. Keep a copy of the record,
+            // so that only a command that really changes a setting moves the joint's settings stamp.
+            bool setsTarget = SetsTarget(command);
+            NativeStore.JointData before = default;
+            if (!setsTarget)
             {
-                JointSettings.Changed();
+                before = *joint;
             }
 
             // The groups and forest roles depend on which joints are mergeable. For mergeable joints, they also depend
@@ -156,6 +165,11 @@ namespace KSP.Retooled.Physics
             if (mergeable != wasMergeable || (mergeable && moved))
             {
                 JointTopology.Changed();
+            }
+
+            if (!setsTarget && UnsafeUtility.MemCmp(&before, joint, sizeof(NativeStore.JointData)) != 0)
+            {
+                joint->settingsStamp = JointSettings.Changed();
             }
         }
 
@@ -414,7 +428,9 @@ namespace KSP.Retooled.Physics
 
             joint->index = world->jointCount;
             world->joints[world->jointCount++] = joint;
-            JointTopology.Changed();
+
+            // Every new joint moves the topology version, so the new value is a number that no other joint received.
+            joint->serial = JointTopology.Changed();
             return joint;
         }
 
