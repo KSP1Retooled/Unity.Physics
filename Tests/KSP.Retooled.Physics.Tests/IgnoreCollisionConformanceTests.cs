@@ -122,6 +122,35 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(body.position.y, Is.LessThan(-1.0f));
         }
 
+        /// <summary>
+        /// Two overlapping boxes ignore each other, so the step learns that their two bodies never collide. Then the
+        /// first box is turned off, and a third box is moved onto the second box. The third box also has an ignored pair,
+        /// with a box far away, but not with the second box, so the two must push apart. The backend keeps what it learned
+        /// about a pair of bodies by their rows in its store. Turning a box off destroys its body, and the store moves
+        /// its last body, the third box, into the row of the destroyed body. Turning the box off changes neither the
+        /// ignored pairs nor the colliders, so only the bodies' serial numbers show that the row holds another body.
+        /// </summary>
+        [Test]
+        public void ABodyInTheRowOfAnIgnoredBodyStillCollides()
+        {
+            // The bodies are made in this order so that the third box is the last body in the store.
+            Rigidbody far = WeightlessBox(new Vector3(-10.0f, 0.0f, 0.0f));
+            Rigidbody second = WeightlessBox(new Vector3(0.0f, 0.0f, 0.0f));
+            Rigidbody first = WeightlessBox(new Vector3(0.2f, 0.0f, 0.0f));
+            Rigidbody third = WeightlessBox(new Vector3(10.0f, 0.0f, 0.0f));
+            UnityEngine.Physics.IgnoreCollision(first.GetComponent<Collider>(), second.GetComponent<Collider>());
+            UnityEngine.Physics.IgnoreCollision(third.GetComponent<Collider>(), far.GetComponent<Collider>());
+
+            Simulate(5);
+            AssertVector(new Vector3(0.2f, 0.0f, 0.0f), first.position, 0.01f, "ignored, so left overlapping");
+
+            first.gameObject.SetActive(false);
+            third.position = new Vector3(0.2f, 0.0f, 0.0f);
+            Simulate(100);
+
+            Assert.That(third.position.x - second.position.x, Is.GreaterThan(0.5f), "the third box isn't ignored, so the boxes push apart");
+        }
+
         [Test]
         public void AColliderDestroyedWhileIgnoredGivesUpItsPairs()
         {

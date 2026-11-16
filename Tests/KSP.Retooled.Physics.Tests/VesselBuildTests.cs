@@ -414,6 +414,95 @@ namespace KSP.Retooled.Physics.Tests
             Debug.Log($"[VesselBuildTests] the new craft had both of the old craft's body records in {reused} of {rounds} rounds");
         }
 
+        /// <summary>
+        /// The step keeps each edge that it filled by the edge's part index, and a new compilation can give that index to
+        /// a part of another vessel. Here two columns become vessels, with parts of different lengths, so that their
+        /// edges have different anchors. Then every part is put to sleep, and the first column loses the joints in its
+        /// middle. When that edge's tombstone expires, the vessels are compiled again while no vessel takes part in the
+        /// step, so the fill jobs don't run in that step: the second column, which is kept, now comes first, and the two
+        /// halves of the first column follow. The number of parts stays the same. When the parts wake, every edge must be
+        /// computed for its own joints, so the edges must match the edges that the step computes when it compiles
+        /// everything again. This holds because each compilation empties the cached edges.
+        /// </summary>
+        [Test]
+        public void EdgesCompiledWhileEveryVesselSleepsAreFilledForTheirOwnJoints()
+        {
+            const int parts = 6;
+            var bodies = new List<Rigidbody>();
+            for (int column = 0; column < 2; column++)
+            {
+                float height = column == 0 ? PartHeight : 2.0f * PartHeight;
+                float x = 5.0f * column;
+                for (int i = 0; i < parts; i++)
+                {
+                    Rigidbody body = Box(new Vector3(x, 20.0f - height * (i + 0.5f), 0.0f), new Vector3(0.6f, height, 0.6f))
+                        .AddComponent<Rigidbody>();
+                    body.mass = PartMass;
+                    body.useGravity = false;
+                    if (i > 0)
+                    {
+                        StackJoint(body, bodies[bodies.Count - 1], new Vector3(x, 20.0f - height * i, 0.0f));
+                    }
+
+                    bodies.Add(body);
+                }
+            }
+
+            Simulate(2);
+            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(2), "two vessels take part");
+
+            void SleepAll()
+            {
+                foreach (Rigidbody body in bodies)
+                {
+                    body.Sleep();
+                }
+            }
+
+            SleepAll();
+            Simulate();
+            Assert.That(State->VesselSet.VesselCount, Is.Zero, "no vessel takes part while its parts sleep");
+
+            foreach (ConfigurableJoint joint in bodies[3].GetComponents<ConfigurableJoint>())
+            {
+                Object.DestroyImmediate(joint);
+            }
+
+            for (int step = 0; step <= VesselPipeline.TombstoneSteps; step++)
+            {
+                SleepAll();
+                Simulate();
+                Assert.That(State->VesselSet.VesselCount, Is.Zero, $"step {step}: no vessel takes part");
+            }
+
+            Assert.That(State->Vessels.Vessels.Length, Is.EqualTo(3), "the first column became two vessels when its tombstone expired");
+            Assert.That(State->Vessels.PartStoreBodies.Length, Is.EqualTo(2 * parts), "the number of parts stays the same");
+
+            foreach (Rigidbody body in bodies)
+            {
+                body.WakeUp();
+            }
+
+            Simulate();
+            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(3), "the vessels take part again");
+            var kept = new VesselEdge[2 * parts];
+            for (int part = 0; part < kept.Length; part++)
+            {
+                kept[part] = State->VesselSet.Edges[part];
+            }
+
+            // Compile again, which keeps every vessel in its place and computes every edge.
+            JointTopology.Changed();
+            Simulate();
+            for (int part = 0; part < kept.Length; part++)
+            {
+                VesselEdge fresh = State->VesselSet.Edges[part];
+                Assert.That(kept[part].Parent, Is.EqualTo(fresh.Parent), $"part {part}'s parent");
+                Assert.That(kept[part].ChildAnchor, Is.EqualTo(fresh.ChildAnchor), $"part {part}'s anchor on itself");
+                Assert.That(kept[part].ParentAnchor, Is.EqualTo(fresh.ParentAnchor), $"part {part}'s anchor on its parent");
+            }
+        }
+
         [Test]
         public void AStrutDestroyedAndCreatedAgainInOneFrameKeepsItsVessel()
         {

@@ -170,12 +170,16 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Caches whether every collider pair between two bodies is ignored. Records the versions of the ignored pairs and
-    /// collider builds used to calculate that result.
+    /// collider builds used to calculate that result. The cache knows the pair by the two bodies' rows in the store, and
+    /// a row passes to another body when a body is destroyed. So the entry also records the serial numbers of the two
+    /// bodies: first the body in the lower row, then the body in the higher row.
     /// </summary>
     internal struct KnownBodyPair
     {
         public uint IgnoreVersion;
         public uint WholeBuilds;
+        public uint SerialLow;
+        public uint SerialHigh;
         public bool Ignored;
     }
 
@@ -320,10 +324,18 @@ namespace KSP.Retooled.Physics
                 return IsIgnored(Store + rowA, Store + rowB);
             }
 
-            ulong key = ((ulong)math.min(rowA, rowB) << 32) | math.max(rowA, rowB);
+            uint low = math.min(rowA, rowB);
+            uint high = math.max(rowA, rowB);
+            ulong key = ((ulong)low << 32) | high;
             uint ignoreVersion = Globals->ignoreVersion;
             uint wholeBuilds = WholeBuilds.Value;
-            if (Known.TryGetValue(key, out KnownBodyPair known) && known.IgnoreVersion == ignoreVersion && known.WholeBuilds == wholeBuilds)
+
+            // When a body is destroyed, the store moves its last body into the destroyed body's row. That changes neither
+            // version, so the serial numbers tell whether the rows still hold the bodies that the entry was made for.
+            uint serialLow = Store[low].owner->serial;
+            uint serialHigh = Store[high].owner->serial;
+            if (Known.TryGetValue(key, out KnownBodyPair known) && known.IgnoreVersion == ignoreVersion && known.WholeBuilds == wholeBuilds
+                && known.SerialLow == serialLow && known.SerialHigh == serialHigh)
             {
                 return known.Ignored;
             }
@@ -332,7 +344,14 @@ namespace KSP.Retooled.Physics
             Learned.Enqueue(new KeyValue
             {
                 Key = key,
-                Value = new KnownBodyPair { IgnoreVersion = ignoreVersion, WholeBuilds = wholeBuilds, Ignored = ignored },
+                Value = new KnownBodyPair
+                {
+                    IgnoreVersion = ignoreVersion,
+                    WholeBuilds = wholeBuilds,
+                    SerialLow = serialLow,
+                    SerialHigh = serialHigh,
+                    Ignored = ignored,
+                },
             });
             return ignored;
         }
