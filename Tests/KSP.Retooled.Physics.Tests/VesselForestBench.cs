@@ -52,7 +52,23 @@ namespace KSP.Retooled.Physics.Tests
         private static int fusedParts = Unity.Physics.Solver.DefaultFusedVesselParts;
         private static bool fusedOn = true;
 
+        /// <summary>
+        /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x4", names a scene of
+        /// that many whole copies of the craft side by side, so that the step has several large vessels.
+        /// </summary>
         private static Graph Load(string name)
+        {
+            System.Text.RegularExpressions.Match copies = System.Text.RegularExpressions.Regex.Match(name, @"^(.+)x(\d+)$");
+            if (copies.Success)
+            {
+                Graph single = LoadFile(copies.Groups[1].Value);
+                return Copies(single, single.Parent.Length, int.Parse(copies.Groups[2].Value, CultureInfo.InvariantCulture));
+            }
+
+            return LoadFile(name);
+        }
+
+        private static Graph LoadFile(string name)
         {
             string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Packages", "io.github.ksp1retooled.physics",
                 "Tests", "VesselGraphs~"));
@@ -107,6 +123,15 @@ namespace KSP.Retooled.Physics.Tests
                 return graph;
             }
 
+            return Copies(graph, parts, copies);
+        }
+
+        /// <summary>
+        /// Lays out <paramref name="copies"/> copies of the first <paramref name="parts"/> parts of a craft side by side
+        /// along x, 10 m apart.
+        /// </summary>
+        private static Graph Copies(Graph graph, int parts, int copies)
+        {
             float left = float.MaxValue, right = float.MinValue;
             for (int i = 0; i < parts; i++)
             {
@@ -240,7 +265,19 @@ namespace KSP.Retooled.Physics.Tests
 
             if (ground)
             {
-                Box(new Vector3(0.0f, lowest - 0.5f, 0.0f), new Vector3(400.0f, 1.0f, 400.0f));
+                // The ground is 400 m square under the origin. A fleet of copies that reaches past it gets a ground
+                // that covers the whole fleet with 50 m to spare.
+                float left = float.MaxValue, right = float.MinValue;
+                for (int i = 0; i < graph.Parent.Length; i++)
+                {
+                    left = Mathf.Min(left, graph.Position[i].x);
+                    right = Mathf.Max(right, graph.Position[i].x);
+                }
+
+                bool fits = left > -190.0f && right < 190.0f;
+                float center = fits ? 0.0f : 0.5f * (left + right);
+                float width = fits ? 400.0f : right - left + 100.0f;
+                Box(new Vector3(center, lowest - 0.5f, 0.0f), new Vector3(width, 1.0f, 400.0f));
             }
 
             return bodies;
