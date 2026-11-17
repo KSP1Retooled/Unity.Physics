@@ -1976,6 +1976,7 @@ namespace Unity.Physics
             run.SubtreeTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - subtreeStarted;
             tasks.Phase = SectionTasks.SplitLoads;
             SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestSectionsKind, partTasks, null);
+            ForestStrutLoads(ref run, problem, impulses);
         }
 
         /// <summary>

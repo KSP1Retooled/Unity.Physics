@@ -30,7 +30,8 @@ namespace KSP.Retooled.Physics.Tests
             double toMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
             var text = new System.Text.StringBuilder("[StrutLoadCost] craft | scene | steps | systems factored | unknowns each | ms per factor | " +
-                "section solves per step | ms per solve | ms of solves per step\n");
+                "section solves per step | ms per solve | ms of solves per step | blocks off the diagonal | " +
+                "ms per solve: subtree loads, substitution, link loads\n");
             string crafts = System.Environment.GetEnvironmentVariable("STRUT_COST_CRAFT") ?? "tu160,pegasus";
             string scenes = System.Environment.GetEnvironmentVariable("STRUT_COST_SCENE") ?? "ground";
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(30, 30);
@@ -58,7 +59,11 @@ namespace KSP.Retooled.Physics.Tests
                             double solveMs = (after.SolveTicks - before.SolveTicks) * toMs;
                             text.Append($"{craft} | {scene} | {steps} | {factored} | {unknowns / (double)System.Math.Max(1, factored):F0} | " +
                                 $"{factorMs / System.Math.Max(1, factored):F3} | {solves / (double)steps:F1} | " +
-                                $"{solveMs / System.Math.Max(1, solves):F4} | {solveMs / steps:F4}\n");
+                                $"{solveMs / System.Math.Max(1, solves):F4} | {solveMs / steps:F4} | " +
+                                $"{(after.FactoredBlocks - before.FactoredBlocks) / (double)System.Math.Max(1, factored):F0} | " +
+                                $"{(after.LoadTicks - before.LoadTicks) * toMs / System.Math.Max(1, solves):F4}, " +
+                                $"{(after.SubstituteTicks - before.SubstituteTicks) * toMs / System.Math.Max(1, solves):F4}, " +
+                                $"{(after.LinkTicks - before.LinkTicks) * toMs / System.Math.Max(1, solves):F4}\n");
                         }
                         finally
                         {

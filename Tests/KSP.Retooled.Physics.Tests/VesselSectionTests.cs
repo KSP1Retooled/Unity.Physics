@@ -335,6 +335,62 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(Mathf.Abs(brokeAt[1] - brokeAt[0]), Is.LessThanOrEqualTo(2), "at the load it breaks at yielding");
         }
 
+        /// <summary>
+        /// A column hung from the world, with a heavy radial part on the side of its middle part and a strut from the radial
+        /// part down to the bottom part. Locked into one section, the strut and the radial part's joint carry the loads
+        /// that they carry yielding, not the radial part's whole moment on its joint and nothing on the strut.
+        /// </summary>
+        [Test]
+        public void ALockedStrutCarriesItsShareAsTheYieldingOne()
+        {
+            bool wasStrutLoads = Unity.Physics.StrutLoads.Enabled;
+            Unity.Physics.StrutLoads.Enabled = true;
+            var strut = new Vector3[2];
+            var arm = new Vector3[2];
+            var lockedPairs = new long[2];
+            try
+            {
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    Fresh(pass == 1);
+                    var bodies = new List<Rigidbody>();
+                    for (int i = 0; i < 3; i++)
+                    {
+                        Rigidbody body = Box(new Vector3(0.0f, 10.0f - i, 0.0f), new Vector3(0.6f, 1.0f, 0.6f)).AddComponent<Rigidbody>();
+                        body.mass = PartMass;
+                        bodies.Add(body);
+                        RigidJoint(body, i > 0 ? bodies[i - 1] : null, new Vector3(0.0f, 10.5f - i, 0.0f));
+                    }
+
+                    Rigidbody radial = Box(new Vector3(2.3f, 9.0f, 0.0f), new Vector3(4.0f, 0.6f, 0.6f)).AddComponent<Rigidbody>();
+                    radial.mass = 4.0f * PartMass;
+                    ConfigurableJoint armJoint = RigidJoint(radial, bodies[1], new Vector3(0.3f, 9.0f, 0.0f));
+                    ConfigurableJoint strutJoint = RigidJoint(radial, bodies[2], new Vector3(2.3f, 8.5f, 0.0f));
+                    foreach (Rigidbody body in bodies)
+                    {
+                        UnityEngine.Physics.IgnoreCollision(body.GetComponent<UnityEngine.Collider>(), radial.GetComponent<UnityEngine.Collider>());
+                    }
+
+                    Simulate(60);
+                    strut[pass] = strutJoint.currentForce;
+                    arm[pass] = armJoint.currentForce;
+                    Sections(out _, out lockedPairs[pass]);
+                }
+            }
+            finally
+            {
+                Unity.Physics.StrutLoads.Enabled = wasStrutLoads;
+            }
+
+            float weight = 4.0f * PartMass * -Gravity;
+            Debug.Log($"[VesselSectionTests] strut: yielding strut {strut[0]:F2} arm {arm[0]:F2}; locked ({lockedPairs[1]} locked pairs) " +
+                $"strut {strut[1]:F2} arm {arm[1]:F2}; the radial part weighs {weight:F2}");
+            Assert.That(lockedPairs[1], Is.GreaterThanOrEqualTo(3), "the column and the radial part lock into one section");
+            Assert.That(strut[0].magnitude, Is.GreaterThan(0.2f * weight), "yielding, the strut carries a real share");
+            Assert.That((strut[1] - strut[0]).magnitude, Is.LessThan(0.1f * weight), "locked, the strut carries the share it carries yielding");
+            Assert.That((arm[1] - arm[0]).magnitude, Is.LessThan(0.1f * weight), "and so does the radial part's joint");
+        }
+
         /// <summary>A locked column on the ground falls asleep as the yielding one does, and wakes when pushed.</summary>
         [Test]
         public void ALockedColumnSleepsAndWakesAsTheYieldingOne()

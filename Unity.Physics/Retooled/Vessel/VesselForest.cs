@@ -218,6 +218,14 @@ namespace Unity.Physics
         /// </summary>
         public VesselStatics Statics;
 
+        /// <summary>
+        /// The forest path's static systems, one for each multi-part section with closures inside it, built from the rows
+        /// for the structure build <see cref="ForestStaticsBuiltFor"/>.
+        /// </summary>
+        public UnsafeList<SectionStatics> ForestStatics;
+
+        public int ForestStaticsBuiltFor;
+
         /// <summary>The time step and the switch that <see cref="Statics"/> were last prepared with.</summary>
         public double StaticsTimeStep;
 
@@ -309,6 +317,8 @@ namespace Unity.Physics
                 PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
                 FusedWorldBodies = new UnsafeList<int>(16, Allocator.Persistent),
                 Statics = VesselStatics.Create(Allocator.Persistent),
+                ForestStatics = new UnsafeList<SectionStatics>(0, Allocator.Persistent),
+                ForestStaticsBuiltFor = -1,
                 TakenIds = new UnsafeList<ulong>(4, Allocator.Persistent),
                 TakenVersions = new UnsafeList<uint>(4, Allocator.Persistent),
                 TakenStarts = new UnsafeList<int>(4, Allocator.Persistent),
@@ -391,6 +401,12 @@ namespace Unity.Physics
             forest->PrefixTorque.Dispose();
             forest->FusedWorldBodies.Dispose();
             forest->Statics.Dispose();
+            for (int e = 0; e < forest->ForestStatics.Length; e++)
+            {
+                forest->ForestStatics[e].Dispose();
+            }
+
+            forest->ForestStatics.Dispose();
             forest->TakenIds.Dispose();
             forest->TakenVersions.Dispose();
             forest->TakenStarts.Dispose();

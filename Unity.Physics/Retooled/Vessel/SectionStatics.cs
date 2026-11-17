@@ -42,6 +42,13 @@ namespace Unity.Physics
             public long Solves;
 
             public long SolveTicks;
+
+            /// <summary>The blocks off the diagonal of the factors, and the solves' time in their three parts.</summary>
+            public long FactoredBlocks;
+
+            public long LoadTicks;
+            public long SubstituteTicks;
+            public long LinkTicks;
         }
 
         internal static readonly SharedStatic<Totals> Counts = SharedStatic<Totals>.GetOrCreate<CountsKey>();
@@ -143,6 +150,21 @@ namespace Unity.Physics
         /// <summary>How many pivots the factor had to clamp. It should be zero.</summary>
         public int ClampedPivots;
 
+        /// <summary>
+        /// For the forest path, which builds its systems from rows: each unknown's position in the elimination order, the
+        /// body of each unknown, each body's unknown or -1, the section's first body, and the links. A link is a pair,
+        /// the unknowns of its child and parent sides or -1, and 1 for a closure or 0 for a tree pair.
+        /// </summary>
+        public UnsafeList<int> Position;
+
+        public UnsafeList<int> Bodies;
+        public UnsafeList<int> BodyMap;
+        public int FirstBody;
+        public UnsafeList<int4> PairLinks;
+
+        /// <summary>The unknown that a body moves with, or -1 when the body is held fixed or isn't in the system.</summary>
+        public int BodyUnknown(int body) => body < BodyMap.Length ? BodyMap[body] : -1;
+
         /// <summary>Whether a section of the current structure uses this system, while the systems are matched.</summary>
         public bool Claimed;
 
@@ -155,6 +177,13 @@ namespace Unity.Physics
             Inverse.Dispose();
             Blocks.Dispose();
             Links.Dispose();
+            if (Position.IsCreated)
+            {
+                Position.Dispose();
+                Bodies.Dispose();
+                BodyMap.Dispose();
+                PairLinks.Dispose();
+            }
         }
     }
 
@@ -363,6 +392,7 @@ namespace Unity.Physics
                     long ticks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
                     System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Factored);
                     System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredUnknowns, Entries[SectionEntry[s]].Count);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredBlocks, Entries[SectionEntry[s]].Rows.Length);
                     System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactorTicks, ticks);
                 }
 
@@ -775,7 +805,9 @@ namespace Unity.Physics
                 }
             }
 
+            long loaded = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             SectionStaticsSolve.Solve(entry, rhs);
+            long substituted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
             for (int l = 0; l < entry->Links.Length; l++)
             {
@@ -801,9 +833,148 @@ namespace Unity.Physics
                 }
             }
 
+            long finished = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Solves);
-            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SolveTicks,
-                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SolveTicks, finished - started);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, loaded - started);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SubstituteTicks, substituted - loaded);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LinkTicks, finished - substituted);
+        }
+    }
+
+    /// <summary>Orders and factors a static system that its caller assembled.</summary>
+    internal static unsafe class StaticFactor
+    {
+        /// <summary>
+        /// Orders a system of <paramref name="count"/> unknowns by minimum degree and factors it, as SectionStatics' own
+        /// build does. The diagonal holds one 6 by 6 block for each unknown in the caller's order; coupling c joins unknowns
+        /// couplings[c].x and .y with the block of row x and column y, 36 doubles from couplingBlocks + 36 c. Fills the
+        /// entry's Count, Position (each unknown's place in the elimination order), ColumnStart, Rows, Inverse and Blocks.
+        /// </summary>
+        public static void Factor(SectionStatics* entry, int count, double* diagonal, int2* couplings, double* couplingBlocks,
+            int couplingCount)
+        {
+            var adjacencyStart = new NativeArray<int>(count + 1, Allocator.Temp);
+            for (int c = 0; c < couplingCount; c++)
+            {
+                adjacencyStart[couplings[c].x + 1]++;
+                adjacencyStart[couplings[c].y + 1]++;
+            }
+
+            for (int v = 0; v < count; v++)
+            {
+                adjacencyStart[v + 1] += adjacencyStart[v];
+            }
+
+            var adjacency = new NativeArray<int>(math.max(1, adjacencyStart[count]), Allocator.Temp);
+            var fill = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            for (int c = 0; c < couplingCount; c++)
+            {
+                int a = couplings[c].x, b = couplings[c].y;
+                adjacency[adjacencyStart[a] + fill[a]++] = b;
+                adjacency[adjacencyStart[b] + fill[b]++] = a;
+            }
+
+            var order = new NativeList<int>(math.max(1, count), Allocator.Temp);
+            MinimumDegreeOrdering.Compute(count, adjacency, adjacencyStart, order);
+            var position = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            var columnStart = new NativeArray<int>(count + 1, Allocator.Temp);
+            var parentOf = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            var firstChild = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            var nextSibling = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            var rows = new NativeList<int>(math.max(1, 2 * count), Allocator.Temp);
+            SymbolicCholesky.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+                firstChild, nextSibling);
+
+            entry->Count = count;
+            entry->Position.Clear();
+            entry->Position.AddRange(position.GetUnsafeReadOnlyPtr(), count);
+            entry->ColumnStart.Clear();
+            entry->ColumnStart.AddRange(columnStart.GetUnsafeReadOnlyPtr(), count + 1);
+            entry->Rows.Clear();
+            entry->Rows.AddRange(rows.GetUnsafeReadOnlyPtr(), rows.Length);
+
+            int offDiagonal = rows.Length;
+            entry->Inverse.Resize(VesselBlocks.Size * math.max(1, count));
+            var work = new NativeArray<double>(VesselBlocks.Size * (count + offDiagonal), Allocator.Temp);
+            double* blocks = (double*)work.GetUnsafePtr();
+            double* off = blocks + VesselBlocks.Size * count;
+            for (int v = 0; v < count; v++)
+            {
+                VesselBlocks.Copy(blocks + VesselBlocks.Size * position[v], diagonal + VesselBlocks.Size * v);
+            }
+
+            double* turned = stackalloc double[VesselBlocks.Size];
+            for (int c = 0; c < couplingCount; c++)
+            {
+                int pa = position[couplings[c].x], pb = position[couplings[c].y];
+                double* block = couplingBlocks + VesselBlocks.Size * c;
+                if (pa > pb)
+                {
+                    VesselBlocks.Transpose(turned, block);
+                    block = turned;
+                }
+
+                int lower = math.min(pa, pb), upper = math.max(pa, pb);
+                int e = Find(entry->Rows.Ptr, columnStart[lower], columnStart[lower + 1], upper);
+                VesselBlocks.Add(off + VesselBlocks.Size * e, block);
+            }
+
+            entry->ClampedPivots = 0;
+            double* scratch = stackalloc double[VesselBlocks.Size];
+            int* structure = entry->Rows.Ptr;
+            for (int j = 0; j < count; j++)
+            {
+                double* inverse = entry->Inverse.Ptr + VesselBlocks.Size * j;
+                if (!VesselBlocks.InvertSymmetric(inverse, blocks + VesselBlocks.Size * j))
+                {
+                    entry->ClampedPivots++;
+                }
+
+                int columnFirst = columnStart[j], columnCount = columnStart[j + 1] - columnFirst;
+                double* column = off + VesselBlocks.Size * columnFirst;
+                for (int p = columnCount - 1; p >= 0; p--)
+                {
+                    double* up = column + VesselBlocks.Size * p;
+                    int row = structure[columnFirst + p];
+                    VesselBlocks.Mul(scratch, inverse, up);
+                    VesselBlocks.SubtractTransposeMul(blocks + VesselBlocks.Size * row, up, scratch);
+                    for (int q = p + 1; q < columnCount; q++)
+                    {
+                        int e = Find(structure, columnStart[row], columnStart[row + 1], structure[columnFirst + q]);
+                        VesselBlocks.SubtractTransposeMul(off + VesselBlocks.Size * e, up, column + VesselBlocks.Size * q);
+                    }
+
+                    VesselBlocks.Copy(up, scratch);
+                }
+            }
+
+            entry->Blocks.Resize(VesselBlocks.Size * math.max(1, offDiagonal));
+            UnsafeUtility.MemCpy(entry->Blocks.Ptr, off, (long)VesselBlocks.Size * offDiagonal * sizeof(double));
+        }
+
+        static int Find(int* rows, int from, int to, int row)
+        {
+            int low = from, high = to - 1;
+            while (low <= high)
+            {
+                int middle = (low + high) >> 1;
+                if (rows[middle] == row)
+                {
+                    return middle;
+                }
+
+                if (rows[middle] < row)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return -1;
         }
     }
 
