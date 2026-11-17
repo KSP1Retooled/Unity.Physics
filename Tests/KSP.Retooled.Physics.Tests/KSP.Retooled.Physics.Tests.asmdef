@@ -9,6 +9,7 @@
         "Unity.Mathematics",
         "Unity.Numerics.Kernels",
         "Unity.Physics",
+        "Unity.Physics.Store",
         "Unity.Numerics.Linear.Solvers.Lowlevel",
         "Unity.Transforms",
         "UnityEngine.TestRunner",

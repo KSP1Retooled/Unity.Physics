@@ -13,6 +13,7 @@
         "Unity.Numerics.Linear.Sparse",
         "Unity.Numerics.Linear.Solvers.Lowlevel",
         "Unity.Numerics.Kernels",
+        "Unity.Physics.Store",
         "Unity.Profiling.Core",
         "Unity.Transforms"
     ],

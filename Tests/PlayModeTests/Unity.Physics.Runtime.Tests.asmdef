@@ -16,6 +16,7 @@
         "Unity.Numerics.Linear.Solvers.Lowlevel",
         "Unity.PerformanceTesting",
         "Unity.Physics",
+        "Unity.Physics.Store",
         "Unity.Numerics.Kernels",
         "Unity.Physics.Hybrid",
         "Unity.Physics.Editor",
