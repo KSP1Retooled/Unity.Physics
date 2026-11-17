@@ -695,6 +695,102 @@ namespace Unity.Physics.Tests.Collision.World
             }
         }
 
+        /// <summary>
+        /// Computes the bounds of a hull at many poses and scales with ConvexCollider.CalculateAabb, and with the loop
+        /// that computed them one vertex at a time before, and counts the poses where the two differ in any bit.
+        /// </summary>
+        [BurstCompile(CompileSynchronously = true)]
+        unsafe struct HullBoundsJob : IJob
+        {
+            public BlobAssetReference<Collider> Hull;
+            public NativeArray<RigidTransform> Poses;
+            public NativeArray<int> Mismatches;
+
+            public void Execute()
+            {
+                ref ConvexCollider hull = ref UnsafeUtility.AsRef<ConvexCollider>(Hull.GetUnsafePtr());
+                for (int i = 0; i < Poses.Length; i++)
+                {
+                    float scale = i % 3 == 0 ? 1.0f : i % 3 == 1 ? 0.37f : -2.5f;
+                    Aabb fast = hull.CalculateAabb(Poses[i], scale);
+                    Aabb loop = LoopBounds(ref hull, Poses[i], scale);
+                    if (math.any(math.asuint(fast.Min) != math.asuint(loop.Min)) || math.any(math.asuint(fast.Max) != math.asuint(loop.Max)))
+                    {
+                        Mismatches[0]++;
+                    }
+                }
+            }
+
+            /// <summary>ConvexCollider.CalculateAabb as it was before it rotated four vertices at a time.</summary>
+            static Aabb LoopBounds(ref ConvexCollider hull, RigidTransform transform, float uniformScale)
+            {
+                BlobArray.Accessor<float3> vertices = hull.ConvexHull.Vertices;
+                float3 min = math.rotate(transform, vertices[0]);
+                float3 max = min;
+                for (int i = 1; i < vertices.Length; ++i)
+                {
+                    float3 v = math.rotate(transform, vertices[i]);
+                    min = math.min(min, v);
+                    max = math.max(max, v);
+                }
+
+                min = (min - new float3(hull.ConvexHull.ConvexRadius)) * uniformScale + transform.pos;
+                max = (max + new float3(hull.ConvexHull.ConvexRadius)) * uniformScale + transform.pos;
+                return new Aabb { Min = math.min(min, max), Max = math.max(min, max) };
+            }
+        }
+
+        /// <summary>
+        /// The bounds of a convex hull, which the hull now computes four vertices at a time, are the bounds that the
+        /// loop over one vertex at a time computed, to the last bit: for hulls of 4 to 255 vertices, with and without
+        /// a convex radius, at random poses near and far from the origin, at poses that put vertices on a coordinate
+        /// plane, where a rotated coordinate is zero, and at a position of negative zero.
+        /// </summary>
+        [TestCase(4, 0.0f)]
+        [TestCase(9, 0.0f)]
+        [TestCase(16, 0.05f)]
+        [TestCase(37, 0.0f)]
+        [TestCase(64, 0.05f)]
+        [TestCase(128, 0.0f)]
+        [TestCase(255, 0.0f)]
+        public unsafe void HullBoundsAreTheBoundsOfTheLoopOverVertices(int points, float bevel)
+        {
+            var input = new NativeArray<float3>(points, Allocator.Temp);
+            var random = new Unity.Mathematics.Random((uint)points);
+            for (int i = 0; i < points; i++)
+            {
+                // Some points on the coordinate planes, so that a rotation about an axis leaves a coordinate at zero.
+                float3 point = random.NextFloat3Direction() * new float3(1.0f, 2.0f, 0.5f);
+                input[i] = i % 5 == 0 ? new float3(point.x, 0.0f, point.z) : point;
+            }
+
+            ConvexHullGenerationParameters parameters = ConvexHullGenerationParameters.Default;
+            parameters.BevelRadius = bevel;
+            BlobAssetReference<Collider> hull = ConvexCollider.Create(input, parameters);
+            input.Dispose();
+            var poses = new NativeArray<RigidTransform>(20000, Allocator.TempJob);
+            var mismatches = new NativeArray<int>(1, Allocator.TempJob);
+            try
+            {
+                for (int i = 0; i < poses.Length; i++)
+                {
+                    float reach = i % 4 == 0 ? 1.0f : i % 4 == 1 ? 100.0f : i % 4 == 2 ? 1e4f : 1e6f;
+                    quaternion rotation = i % 7 == 0 ? quaternion.identity : i % 7 == 1 ? quaternion.RotateY(random.NextFloat(-3.0f, 3.0f)) : random.NextQuaternionRotation();
+                    float3 position = i % 11 == 0 ? new float3(-0.0f, 0.0f, -0.0f) : random.NextFloat3(-reach, reach);
+                    poses[i] = new RigidTransform(rotation, position);
+                }
+
+                new HullBoundsJob { Hull = hull, Poses = poses, Mismatches = mismatches }.Run();
+                Assert.That(mismatches[0], Is.Zero, $"poses where the bounds of a hull of {points} points differ");
+            }
+            finally
+            {
+                poses.Dispose();
+                mismatches.Dispose();
+                hull.Dispose();
+            }
+        }
+
         static void AssertSameBounds(Aabb expected, Aabb actual, string what)
         {
             Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
