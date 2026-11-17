@@ -18,9 +18,33 @@ namespace Unity.Physics
     {
         struct OffKey { }
 
+        struct CountsKey { }
+
         static readonly SharedStatic<bool> Off = SharedStatic<bool>.GetOrCreate<OffKey>();
 
-        static bool s_Initialized;
+        /// <summary>The profiler markers around the factoring of the systems and around each section's solve.</summary>
+        internal static readonly Unity.Profiling.ProfilerMarker FactorMarker =
+            new Unity.Profiling.ProfilerMarker(Unity.Profiling.ProfilerCategory.Physics, "Retooled.Physics.Vessel.StrutFactor");
+
+        internal static readonly Unity.Profiling.ProfilerMarker SolveMarker =
+            new Unity.Profiling.ProfilerMarker(Unity.Profiling.ProfilerCategory.Physics, "Retooled.Physics.Vessel.StrutSolve");
+
+        /// <summary>Running totals since the program started, for the cost report.</summary>
+        internal struct Totals
+        {
+            /// <summary>The systems factored, the unknowns in them, and the time spent factoring, in profiler ticks.</summary>
+            public long Factored;
+
+            public long FactoredUnknowns;
+            public long FactorTicks;
+
+            /// <summary>The section solves, and the time spent in them, in profiler ticks.</summary>
+            public long Solves;
+
+            public long SolveTicks;
+        }
+
+        internal static readonly SharedStatic<Totals> Counts = SharedStatic<Totals>.GetOrCreate<CountsKey>();
 
         /// <summary>Whether the sections with closures inside them take their loads from a static solve.</summary>
         public static bool Enabled
@@ -32,15 +56,22 @@ namespace Unity.Physics
         /// <summary>Reads RETOOLED_STRUT_LOADS from the environment once in each domain, on the main thread.</summary>
         public static void Initialize()
         {
-            if (s_Initialized)
+            // Burst code reads this class, so the managed flag lives in a class that Burst never sees.
+            if (StrutLoadsInitialized.Done)
             {
                 return;
             }
 
-            s_Initialized = true;
+            StrutLoadsInitialized.Done = true;
             string value = Environment.GetEnvironmentVariable("RETOOLED_STRUT_LOADS");
             Enabled = !(value == "0" || (value != null && value.Equals("false", StringComparison.OrdinalIgnoreCase)));
         }
+    }
+
+    /// <summary>Whether <see cref="StrutLoads.Initialize"/> has read the environment in this domain.</summary>
+    static class StrutLoadsInitialized
+    {
+        public static bool Done;
     }
 
     /// <summary>
@@ -325,7 +356,16 @@ namespace Unity.Physics
             for (int i = 0; i < fresh.Length; i++)
             {
                 int s = fresh[i];
-                Build(context, s, Entries.Ptr + SectionEntry[s], timeStep, partCount);
+                using (StrutLoads.FactorMarker.Auto())
+                {
+                    long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+                    Build(context, s, Entries.Ptr + SectionEntry[s], timeStep, partCount);
+                    long ticks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+                    System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Factored);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredUnknowns, Entries[SectionEntry[s]].Count);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactorTicks, ticks);
+                }
+
                 Builds++;
             }
         }
@@ -699,6 +739,8 @@ namespace Unity.Physics
                 return;
             }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = StrutLoads.SolveMarker.Auto();
+            long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             SectionStatics* entry = Entries.Ptr + entryIndex;
             int count = entry->Count;
             int start = context.SectionPartStart[s];
@@ -758,6 +800,10 @@ namespace Unity.Physics
                     context.ClosureLoads[SectionClosures[closureStart - 1 - link.Target]] = load;
                 }
             }
+
+            System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Solves);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SolveTicks,
+                Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started);
         }
     }
 
