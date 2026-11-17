@@ -414,6 +414,72 @@ namespace Unity.Physics.Tests.Collision.World
             }
         }
 
+        /// <summary>
+        /// A new body at the index of a destroyed body can get a collider at the address of the destroyed body's
+        /// collider, at the same pose. It isn't the same body, so it must not take the old body's bounds from the cache.
+        /// </summary>
+        [Test]
+        public void ANewBodyWithAColliderAtTheOldAddressDoesNotMatch()
+        {
+            BlobAssetReference<Collider> collider = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(1.0f) });
+            try
+            {
+                var before = new Physics.RigidBody
+                {
+                    Collider = collider,
+                    WorldFromBody = RigidTransform.identity,
+                    Scale = 1.0f,
+                    Entity = new Entity { Index = 3, Version = 1 },
+                };
+                Physics.RigidBody after = before;
+                Assert.That(DynamicBoundsCache.View.Matches(before, after), Is.True, "the same body at the same pose");
+
+                after.Entity = new Entity { Index = 3, Version = 2 };
+                Assert.That(DynamicBoundsCache.View.Matches(before, after), Is.False, "a new body with a collider at the old address");
+            }
+            finally
+            {
+                collider.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// An entry that held a destroyed body's collider takes the filter again when it is written for a new body
+        /// whose collider has the same address. The test changes the filter of one collider between the two writes,
+        /// in place of a new collider that the heap put at the old address.
+        /// </summary>
+        [Test]
+        public unsafe void AnEntryWrittenForANewBodyAtTheOldColliderAddressTakesTheNewFilter()
+        {
+            BlobAssetReference<Collider> collider = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(1.0f) });
+            uint colliderVersion = 1;
+            var cache = new DynamicBoundsCache(&colliderVersion, Allocator.Temp);
+            try
+            {
+                DynamicBoundsCache.View view = cache.Resize(1);
+                var body = new Physics.RigidBody
+                {
+                    Collider = collider,
+                    WorldFromBody = RigidTransform.identity,
+                    Scale = 1.0f,
+                    Entity = new Entity { Index = 3, Version = 1 },
+                };
+                view.Write(0, body, body.CalculateAabb());
+
+                var other = new CollisionFilter { BelongsTo = 2, CollidesWith = 4 };
+                collider.Value.SetCollisionFilter(other);
+                body.Entity = new Entity { Index = 3, Version = 2 };
+                view.Write(0, body, body.CalculateAabb());
+
+                Assert.That(view.Colliders[0].Filter.Equals(other), Is.True, "the entry holds the new body's filter");
+            }
+            finally
+            {
+                cache.Dispose();
+                collider.Dispose();
+            }
+        }
+
         static void AssertSameBounds(Aabb expected, Aabb actual, string what)
         {
             Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
