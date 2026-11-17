@@ -24,11 +24,13 @@ namespace KSP.Retooled.Physics
     internal static unsafe class TouchingHandOff
     {
         // The type of an entry that holds a touching pair. The two low bits hold whether the pair is a trigger pair
-        // and whether the first shape of the key is the trigger.
+        // and whether the first shape of the key is the trigger, and the next three bits hold the pair's
+        // ShapePairState.Kinematic.
         private const uint PairType = 0x54500000;
-        private const uint TypeMask = 0xFFFFFFFC;
+        private const uint TypeMask = 0xFFFFFF00;
         private const uint TriggerBit = 1;
         private const uint FirstIsTriggerBit = 2;
+        private const int KinematicShift = 2;
 
         /// <summary>Keeps the touching pairs of a world whose step state is about to be discarded.</summary>
         internal static void Save(NativeStore.WorldData* world, NativeStore.StoreGlobals* globals, NativeHashMap<ShapePairKey, ShapePairState> touching)
@@ -48,7 +50,7 @@ namespace KSP.Retooled.Physics
                 {
                     triggerShape = (NativeStore.Shape*)pair.Key.First,
                     colliderShape = (NativeStore.Shape*)pair.Key.Second,
-                    type = PairType | (state.Trigger ? TriggerBit : 0) | (state.FirstIsTrigger ? FirstIsTriggerBit : 0),
+                    type = PairType | (state.Trigger ? TriggerBit : 0) | (state.FirstIsTrigger ? FirstIsTriggerBit : 0) | ((uint)state.Kinematic << KinematicShift),
                 };
             }
 
@@ -80,6 +82,7 @@ namespace KSP.Retooled.Physics
                     LastSeen = 0,
                     Trigger = (entry.type & TriggerBit) != 0,
                     FirstIsTrigger = (entry.type & FirstIsTriggerBit) != 0,
+                    Kinematic = (byte)((entry.type >> KinematicShift) & 7),
                 };
             }
 

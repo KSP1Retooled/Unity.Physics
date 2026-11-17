@@ -173,6 +173,45 @@ namespace KSP.Retooled.Physics
         /// shape's flags then. It reads this field instead to put the two shapes in the order that Unity knows them by.
         /// </summary>
         public bool FirstIsTrigger;
+
+        /// <summary>
+        /// Which of the pair's two bodies were kinematic when the pair was last seen: <see cref="FirstKinematic"/> for
+        /// the body of the first shape of the pair's key, <see cref="SecondKinematic"/> for the body of the second, and
+        /// <see cref="KinematicKnown"/> once the bits have been set. PhysX ends a touching pair and starts it again when
+        /// one of its bodies becomes kinematic or stops being kinematic, so the contact report compares these bits with
+        /// the bodies' flags.
+        /// </summary>
+        public byte Kinematic;
+
+        internal const byte FirstKinematic = 1;
+        internal const byte SecondKinematic = 2;
+        internal const byte KinematicKnown = 4;
+
+        /// <summary>
+        /// Returns the bits of <see cref="Kinematic"/> for the bodies of a pair's shapes as they are now. A shape that
+        /// has no body counts as on a body that isn't kinematic.
+        /// </summary>
+        internal static unsafe byte KinematicOf(ShapePairKey key)
+        {
+            return (byte)(KinematicKnown
+                | (IsKinematic((NativeStore.Shape*)key.First) ? FirstKinematic : 0)
+                | (IsKinematic((NativeStore.Shape*)key.Second) ? SecondKinematic : 0));
+        }
+
+        /// <summary>
+        /// Whether a body of the pair became kinematic or stopped being kinematic since the pair was last seen. A pair
+        /// that a new step state took over after a detach of the core (<see cref="TouchingHandOff"/>) may not know its
+        /// bits yet, and then nothing changed.
+        /// </summary>
+        internal readonly bool KinematicChanged(byte now)
+        {
+            return (Kinematic & KinematicKnown) != 0 && Kinematic != now;
+        }
+
+        private static unsafe bool IsKinematic(NativeStore.Shape* shape)
+        {
+            return shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Kinematic) != 0;
+        }
     }
 
     /// <summary>
@@ -1162,8 +1201,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Counts the commands that changed whether a shape is a trigger, or changed the filter that decides which shapes
-    /// collide with it. While this version stays the same, <see cref="WakeRefilteredPairsJob"/> doesn't run. The plugin
+    /// Counts the commands that changed whether a shape is a trigger, changed the filter that decides which shapes
+    /// collide with it, or changed whether a body is kinematic. While this version stays the same, <see cref="WakeRefilteredPairsJob"/> doesn't run. The plugin
     /// mirrors the records in the store, so there is no space for this counter in a world's record. All worlds share it,
     /// as they share <see cref="JointTopology"/>.
     /// </summary>
@@ -1184,7 +1223,8 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Wakes the bodies of touching pairs whose shapes no longer pair as they did: a shape became a trigger or stopped
-    /// being one, or its filter no longer lets the two shapes collide. The step runs this job before it applies forces,
+    /// being one, its filter no longer lets the two shapes collide, or one of the two bodies became kinematic or stopped
+    /// being kinematic. The step runs this job before it applies forces,
     /// so that the narrow phase of the same step sees the pair as it is now.
     /// </summary>
     /// <remarks>
@@ -1223,7 +1263,7 @@ namespace KSP.Retooled.Physics
                 NativeStore.ShapeData* first = (NativeStore.ShapeData*)pair.Key.First;
                 NativeStore.ShapeData* second = (NativeStore.ShapeData*)pair.Key.Second;
                 bool trigger = ((first->flags | second->flags) & NativeStore.ShapeFlagTrigger) != 0;
-                if (trigger == pair.Value.Trigger && Collide(first, second))
+                if (trigger == pair.Value.Trigger && Collide(first, second) && !pair.Value.KinematicChanged(ShapePairState.KinematicOf(pair.Key)))
                 {
                     continue;
                 }
@@ -1414,13 +1454,16 @@ namespace KSP.Retooled.Physics
 
                 ShapePairKey key = ShapePairKey.Of(record.ShapeA, record.ShapeB);
                 bool found = !Touching.TryGetValue(key, out ShapePairState state);
-                if (!found && state.Trigger != record.Trigger)
+                byte kinematic = ShapePairState.KinematicOf(key);
+                if (!found && (state.Trigger != record.Trigger || state.KinematicChanged(kinematic)))
                 {
                     // A shape of the pair became a trigger or stopped being one while the two shapes touched. PhysX
                     // then ends the old pair and starts the new one in the same step: the trigger pair sends
                     // OnTriggerExit and the contact pair sends OnCollisionEnter, or the contact pair sends
                     // OnCollisionExit and the trigger pair sends OnTriggerEnter. Without the exit, Unity kept the
-                    // trigger pair and sent OnTriggerStay for it in every step.
+                    // trigger pair and sent OnTriggerStay for it in every step. PhysX does the same when one of the
+                    // two bodies becomes kinematic or stops being kinematic: the pair sends its exit and then its
+                    // enter again, OnTriggerExit and OnTriggerEnter or OnCollisionExit and OnCollisionEnter.
                     EndPair(key, state);
                     found = true;
 
@@ -1431,6 +1474,7 @@ namespace KSP.Retooled.Physics
 
                 state.LastSeen = Step;
                 state.Trigger = record.Trigger;
+                state.Kinematic = kinematic;
                 NativeStore.ShapeData* trigger = TriggerOf(record.ShapeA, record.ShapeB);
                 if (found)
                 {
@@ -1634,7 +1678,11 @@ namespace KSP.Retooled.Physics
                 NativeStore.ShapeData* second = (NativeStore.ShapeData*)key.Second;
                 int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
                 int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
-                if (!IsAwake(rowFirst) && !IsAwake(rowSecond))
+
+                // A pair whose body became kinematic or stopped being kinematic ends even when both bodies rest, as in
+                // PhysX. Otherwise a body that rested on the ground and became kinematic kept its contact pair, and
+                // when it became dynamic again, the pair sent no OnCollisionEnter.
+                if (!IsAwake(rowFirst) && !IsAwake(rowSecond) && !state.KinematicChanged(ShapePairState.KinematicOf(key)))
                 {
                     continue;
                 }
