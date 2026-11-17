@@ -238,10 +238,21 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Whether a build in which no static body changed keeps the static bodies' rows that the last build wrote into
-        /// the world, instead of writing them again from the store. RETOOLED_STATIC_REUSE=0 turns it off. Only the main
-        /// thread reads it, when it schedules a build.
+        /// the world, instead of writing them again from the store. RETOOLED_STATIC_REUSE=0 turns it off. Burst compiles
+        /// the code that reads it (the step kernel schedules the build), so it lives in a shared static, which holds
+        /// whether the reuse is off.
         /// </summary>
-        internal static bool StaticReuseEnabled = true;
+        internal static bool StaticReuseEnabled
+        {
+            get => StaticReuseOff.Data == 0;
+            set => StaticReuseOff.Data = value ? 0 : 1;
+        }
+
+        private sealed class StaticReuseOffKey
+        {
+        }
+
+        private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, StaticReuseOffKey>();
 
         /// <summary>Reads RETOOLED_STATIC_REUSE from the environment: 0 turns off the reuse of the static rows.</summary>
         internal static void ReadStaticReuseSwitch()
