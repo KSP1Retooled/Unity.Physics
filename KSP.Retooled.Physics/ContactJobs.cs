@@ -24,6 +24,11 @@ namespace KSP.Retooled.Physics
         public int RowA;
         public int RowB;
 
+        // The positions of ShapeA and ShapeB in their bodies' lists of shapes. The contact report sorts the shape pairs of
+        // a body pair by these, because the shapes' addresses differ from run to run.
+        public int ShapeIndexA;
+        public int ShapeIndexB;
+
         public BodyIndexPair BuiltPair;
         public ColliderKeyPair BuiltKeys;
 
@@ -595,8 +600,8 @@ namespace KSP.Retooled.Physics
             RigidBody bodyB = Bodies[header.BodyPair.BodyIndexB];
             ColliderKey keyA = header.ColliderKeys.ColliderKeyA;
             ColliderKey keyB = header.ColliderKeys.ColliderKeyB;
-            NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA);
-            NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB);
+            NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA, out int indexA);
+            NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB, out int indexB);
             if (IgnoreTable.Ignores(Globals, shapeA, shapeB))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
@@ -638,6 +643,8 @@ namespace KSP.Retooled.Physics
                 ShapeB = swapped ? shapeA : shapeB,
                 RowA = swapped ? rowB : rowA,
                 RowB = swapped ? rowA : rowB,
+                ShapeIndexA = swapped ? indexB : indexA,
+                ShapeIndexB = swapped ? indexA : indexB,
                 BuiltPair = header.BodyPair,
                 BuiltKeys = header.ColliderKeys,
                 FirstPoint = firstPoint,
@@ -885,10 +892,11 @@ namespace KSP.Retooled.Physics
             return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
         }
 
-        private NativeStore.ShapeData* ShapeOf(RigidBody body, ColliderKey key)
+        private NativeStore.ShapeData* ShapeOf(RigidBody body, ColliderKey key, out int index)
         {
             NativeStore.BodyData* row = Store + body.Entity.Index;
-            return row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, key, ColliderBuilder.FirstSupported(row))];
+            index = ColliderBuilder.ShapeIndexOf(body.Collider, key, ColliderBuilder.FirstSupported(row));
+            return row->shapes[index];
         }
     }
 
@@ -1665,6 +1673,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private void ReportLostTouches()
         {
+            var lost = new NativeList<LostPair>(Allocator.Temp);
             NativeArray<ShapePairKey> keys = Touching.GetKeyArray(Allocator.Temp);
             foreach (ShapePairKey key in keys)
             {
@@ -1688,7 +1697,21 @@ namespace KSP.Retooled.Physics
                 }
 
                 Touching.Remove(key);
-                EndPair(key, state);
+                long placeFirst = PlaceOf(first);
+                long placeSecond = PlaceOf(second);
+                lost.Add(new LostPair
+                {
+                    Key = key,
+                    State = state,
+                    First = math.min(placeFirst, placeSecond),
+                    Second = math.max(placeFirst, placeSecond),
+                });
+            }
+
+            lost.Sort();
+            for (int i = 0; i < lost.Length; i++)
+            {
+                EndPair(lost[i].Key, lost[i].State);
             }
         }
 
@@ -1719,8 +1742,23 @@ namespace KSP.Retooled.Physics
             ushort events = (ushort)(Messages(first, second) & NotifyTouchLost);
             if (events != 0)
             {
+                // Name the shapes as the pair's enter did (see ReadContactsJob.Begin): a static body second, and else
+                // the body in the lower row first. The key's order follows the shapes' addresses, which differ from
+                // run to run.
                 int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
                 int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
+                bool staticFirst = (World->bodies[rowFirst].flags & NativeStore.BodyFlags.Static) != 0;
+                bool staticSecond = (World->bodies[rowSecond].flags & NativeStore.BodyFlags.Static) != 0;
+                if (staticFirst != staticSecond ? staticFirst : rowFirst > rowSecond)
+                {
+                    NativeStore.ShapeData* shape = first;
+                    first = second;
+                    second = shape;
+                    int row = rowFirst;
+                    rowFirst = rowSecond;
+                    rowSecond = row;
+                }
+
                 NativeStore.BodyData* a = World->bodies + rowFirst;
                 NativeStore.BodyData* b = World->bodies + rowSecond;
                 NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, StoreOps.WorldAngularVelocity(*a), b->velocity->Linear, StoreOps.WorldAngularVelocity(*b));
@@ -1737,7 +1775,10 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Orders manifolds by body pair, then by shape pair within each body pair, so that related entries are
-        /// adjacent.
+        /// adjacent. The shape pairs go by the shapes' positions in their bodies, and the manifolds of one shape pair go
+        /// by their collider keys, so that the messages come in the same order in every run. The shapes' addresses, which
+        /// this order used before, differ from run to run, and so did the order of the messages for a body pair with
+        /// several shape pairs.
         /// </summary>
         private struct ManifoldOrder : IComparer<ManifoldRecord>
         {
@@ -1745,9 +1786,44 @@ namespace KSP.Retooled.Physics
             {
                 int order = x.RowA.CompareTo(y.RowA);
                 order = order != 0 ? order : x.RowB.CompareTo(y.RowB);
-                order = order != 0 ? order : ((long)x.ShapeA).CompareTo((long)y.ShapeA);
-                return order != 0 ? order : ((long)x.ShapeB).CompareTo((long)y.ShapeB);
+                order = order != 0 ? order : x.ShapeIndexA.CompareTo(y.ShapeIndexA);
+                order = order != 0 ? order : x.ShapeIndexB.CompareTo(y.ShapeIndexB);
+                order = order != 0 ? order : x.BuiltKeys.ColliderKeyA.Value.CompareTo(y.BuiltKeys.ColliderKeyA.Value);
+                return order != 0 ? order : x.BuiltKeys.ColliderKeyB.Value.CompareTo(y.BuiltKeys.ColliderKeyB.Value);
             }
+        }
+
+        /// <summary>
+        /// A touching pair that ends in this step because it wasn't seen, with the place of each shape in the store: its
+        /// body's row and its position among the body's shapes. <see cref="ReportLostTouches"/> ends such pairs in this
+        /// order, not in the order of the map of touching pairs, which follows the shapes' addresses.
+        /// </summary>
+        private struct LostPair : IComparable<LostPair>
+        {
+            public ShapePairKey Key;
+            public ShapePairState State;
+            public long First;
+            public long Second;
+
+            public int CompareTo(LostPair other)
+            {
+                int order = First.CompareTo(other.First);
+                return order != 0 ? order : Second.CompareTo(other.Second);
+            }
+        }
+
+        /// <summary>The place of a shape in the store, as one number: its body's row, then its position in the body.</summary>
+        private long PlaceOf(NativeStore.ShapeData* shape)
+        {
+            NativeStore.Body* body = ((NativeStore.Shape*)shape)->body;
+            NativeStore.BodyData* row = World->bodies + body->index;
+            int index = 0;
+            while (index < row->shapeCount && row->shapes[index] != shape)
+            {
+                index++;
+            }
+
+            return ((long)body->index << 32) | (uint)index;
         }
     }
 }
