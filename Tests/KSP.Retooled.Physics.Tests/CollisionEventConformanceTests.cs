@@ -882,12 +882,19 @@ namespace KSP.Retooled.Physics.Tests
                 GameObject oldZone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f));
                 Rigidbody oldBody = WeightlessBox(Vector3.zero);
                 Simulate(3);
-                destroyedPairs.Add((ShapeAddress(oldZone), ShapeAddress(oldBody.gameObject)));
+                long oldZoneShape = ShapeAddress(oldZone);
+                long oldBoxShape = ShapeAddress(oldBody.gameObject);
+                destroyedPairs.Add((oldZoneShape, oldBoxShape));
                 DestroyAll();
 
                 TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f)).AddComponent<TriggerLog>();
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
                 Simulate();
+
+                // What keeps the stays of a pair that takes the old addresses is the event that ends the old pair in
+                // Unity's cache. The test checks that event in every iteration, because the heap hands an old address
+                // back only now and then.
+                Assert.That(EndsRemovedPair(oldZoneShape, oldBoxShape), $"iteration {iteration}: the step after the destruction ends the old pair in Unity's cache");
                 bool reused = destroyedPairs.Contains((ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)));
                 Simulate(100);
 
@@ -905,7 +912,33 @@ namespace KSP.Retooled.Physics.Tests
                 DestroyAll();
             }
 
-            Assert.That(reuses, Is.EqualTo(wantedReuses), "the new shapes took the old shapes' addresses often enough");
+            // How often the heap gives the new shapes the old shapes' addresses isn't up to this code: in one run, it was 2
+            // times in 200 iterations. The event above is checked in every iteration, so fewer reuses only mean fewer
+            // checks of the stays themselves.
+            if (reuses < wantedReuses)
+            {
+                Debug.Log($"{nameof(ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays)}: the new shapes took the old shapes' addresses {reuses} times in 200 iterations.");
+            }
+        }
+
+        /// <summary>
+        /// Whether the last step reported the event for a removed shape, with zero ids, that ends the trigger pair of two
+        /// shapes in Unity's cache.
+        /// </summary>
+        private static unsafe bool EndsRemovedPair(long triggerShape, long colliderShape)
+        {
+            NativeStore.WorldData* store = StepKernel.Current->Store;
+            for (uint i = 0; i < store->triggerCount; i++)
+            {
+                NativeStore.TriggerEvent e = store->triggers[i];
+                if (e.type == NativeStore.TriggerEventShapeRemoved && (long)e.triggerShape == triggerShape && (long)e.colliderShape == colliderShape
+                    && e.trigger == 0 && e.collider == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
