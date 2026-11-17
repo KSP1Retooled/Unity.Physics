@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Interop;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -136,9 +137,9 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private static void Wake(Shape* shape)
         {
-            if (shape != null && shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
+            if (shape != null && shape->body != null && (StoreRows.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
-                BodyKinematics.Wake(StoreOps.Hot(shape->body));
+                BodyKinematics.Wake(StoreRows.Hot(shape->body));
             }
         }
 

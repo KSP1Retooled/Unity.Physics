@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Physics;
@@ -16,7 +18,7 @@ namespace KSP.Retooled.Physics.Tests
         private const float PartMass = 4.0f;
 
         /// <summary>How many vessels the backend handed to the last step.</summary>
-        private static int VesselCount() => StepKernel.Current->VesselSet.VesselCount;
+        private static int VesselCount() => StepEntryPoints.Current->VesselSet.VesselCount;
 
         private bool wasVessels;
         private bool wasForest;
@@ -378,8 +380,8 @@ namespace KSP.Retooled.Physics.Tests
             Simulate(10);
             Assert.That(VesselCount(), Is.EqualTo(1), "only the five-part column is a vessel");
 
-            int motionCount = StepKernel.Current->World.MotionVelocities.Length;
-            int* index = StepKernel.Current->IslandSolverCache.CompactIndex(motionCount);
+            int motionCount = StepEntryPoints.Current->World.MotionVelocities.Length;
+            int* index = StepEntryPoints.Current->IslandSolverCache.CompactIndex(motionCount);
             Assert.That(index != null, "the islands share an index");
             for (int body = 0; body < motionCount; body++)
             {

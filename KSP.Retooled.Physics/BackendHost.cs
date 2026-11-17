@@ -1,3 +1,9 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Commands;
+using KSP.Retooled.Physics.Entities;
+using KSP.Retooled.Physics.Host;
+using KSP.Retooled.Physics.Queries;
+using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Interop;
 using System;
 using System.Collections.Generic;
@@ -35,15 +41,15 @@ namespace KSP.Retooled.Physics
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
         // Keep Mono delegates alive while the plugin uses their function pointers during Burst compilation.
-        private static readonly QueryKernel.QueryFunction MonoQuery = QueryKernel.Run;
+        private static readonly QueryEntry.QueryFunction MonoQuery = QueryEntry.Run;
         private static readonly MeshCook.CookFunction MonoCookMesh = MeshCook.Cook;
         private static readonly MeshCook.ValidateFunction MonoValidateMesh = MeshCook.Validate;
-        private static readonly ManagedCallbacks.CommandFunction MonoBodyCommand = BodyKernel.Run;
-        private static readonly ManagedCallbacks.CommandFunction MonoShapeCommand = ShapeKernel.Run;
-        private static readonly ManagedCallbacks.CommandFunction MonoWorldCommand = WorldKernel.Run;
-        private static readonly ManagedCallbacks.CommandFunction MonoJointCommand = JointKernel.Run;
-        private static readonly ManagedCallbacks.CommandFunction MonoVehicleCommand = VehicleKernel.Run;
-        private static readonly ManagedCallbacks.RefitFunction MonoHelpRefit = StepKernel.HelpRefit;
+        private static readonly ManagedCallbacks.CommandFunction MonoBodyCommand = BodyCommands.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoShapeCommand = ShapeCommands.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoWorldCommand = WorldCommands.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoJointCommand = JointCommands.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoVehicleCommand = VehicleCommands.Run;
+        private static readonly ManagedCallbacks.RefitFunction MonoHelpRefit = StepEntryPoints.HelpRefit;
 
         private static Kernels compiledKernels;
         private static volatile bool kernelsCompiled;
@@ -53,10 +59,6 @@ namespace KSP.Retooled.Physics
 #endif
         private static bool attached;
         private static World entityWorld;
-        private static long managedQueries;
-        private static long managedCooks;
-        private static long managedCommands;
-        private static long managedSteps;
 
         /// <summary>
         /// Number of bodies processed by the Mono force job while Burst compilation is pending.
@@ -66,23 +68,23 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Number of queries executed in Mono while Burst compilation is pending.
         /// </summary>
-        public static long ManagedQueries => Interlocked.Read(ref managedQueries);
+        public static long ManagedQueries => BackendCounters.ManagedQueries;
 
         /// <summary>
         /// Number of meshes cooked in Mono while Burst compilation is pending.
         /// </summary>
-        public static long ManagedCooks => Interlocked.Read(ref managedCooks);
+        public static long ManagedCooks => BackendCounters.ManagedCooks;
 
         /// <summary>
         /// Number of body, shape, world, joint and vehicle commands executed in Mono while Burst compilation is
         /// pending.
         /// </summary>
-        public static long ManagedCommands => Interlocked.Read(ref managedCommands);
+        public static long ManagedCommands => BackendCounters.ManagedCommands;
 
         /// <summary>
         /// Number of steps and query world builds executed in Mono while Burst compilation is pending.
         /// </summary>
-        public static long ManagedSteps => Interlocked.Read(ref managedSteps);
+        public static long ManagedSteps => BackendCounters.ManagedSteps;
 
         /// <summary>
         /// Managed thread ID of the most recent step, or zero before the first step.
@@ -239,26 +241,6 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static void NoteManagedCook()
-        {
-            Interlocked.Increment(ref managedCooks);
-        }
-
-        internal static void NoteManagedCommand()
-        {
-            Interlocked.Increment(ref managedCommands);
-        }
-
-        internal static void NoteManagedQuery()
-        {
-            Interlocked.Increment(ref managedQueries);
-        }
-
-        internal static void NoteManagedStep()
-        {
-            Interlocked.Increment(ref managedSteps);
-        }
-
         /// <summary>
         /// Wait on the main thread for Burst kernel compilation and install the compiled kernels.
         /// Return false if compilation does not finish within seconds. In players, the kernels are already
@@ -332,15 +314,15 @@ namespace KSP.Retooled.Physics
         {
             return new Kernels
             {
-                query = BurstCompiler.CompileFunctionPointer<QueryKernel.QueryFunction>(QueryKernel.Run).Value,
+                query = BurstCompiler.CompileFunctionPointer<QueryEntry.QueryFunction>(QueryEntry.Run).Value,
                 cookMesh = BurstCompiler.CompileFunctionPointer<MeshCook.CookFunction>(MeshCook.Cook).Value,
                 validateMesh = BurstCompiler.CompileFunctionPointer<MeshCook.ValidateFunction>(MeshCook.Validate).Value,
-                bodyCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(BodyKernel.Run).Value,
-                shapeCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(ShapeKernel.Run).Value,
-                worldCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(WorldKernel.Run).Value,
-                jointCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(JointKernel.Run).Value,
-                vehicleCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(VehicleKernel.Run).Value,
-                helpRefit = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.RefitFunction>(StepKernel.HelpRefit).Value,
+                bodyCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(BodyCommands.Run).Value,
+                shapeCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(ShapeCommands.Run).Value,
+                worldCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(WorldCommands.Run).Value,
+                jointCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(JointCommands.Run).Value,
+                vehicleCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(VehicleCommands.Run).Value,
+                helpRefit = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.RefitFunction>(StepEntryPoints.HelpRefit).Value,
                 compiled = true,
             };
         }
@@ -536,7 +518,7 @@ namespace KSP.Retooled.Physics
             try
             {
                 ReleaseWorld(world);
-                WorldKernel.FreeBodies(world, NativeLibrary.RetooledPhysics_Globals());
+                WorldCommands.FreeBodies(world, NativeLibrary.RetooledPhysics_Globals());
             }
             catch (Exception e)
             {

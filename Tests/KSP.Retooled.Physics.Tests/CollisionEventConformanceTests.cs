@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Interop;
 using System.Collections.Generic;
 using NUnit.Framework;
@@ -897,7 +898,7 @@ namespace KSP.Retooled.Physics.Tests
         /// </summary>
         private static unsafe bool EndsRemovedPair(long triggerShape, long colliderShape)
         {
-            WorldData* store = StepKernel.Current->Store;
+            WorldData* store = StepEntryPoints.Current->Store;
             for (uint i = 0; i < store->triggerCount; i++)
             {
                 TriggerEvent e = store->triggers[i];
@@ -938,7 +939,7 @@ namespace KSP.Retooled.Physics.Tests
             body.GetComponent<Collider>().enabled = false;
             Simulate();
 
-            WorldData* store = StepKernel.Current->Store;
+            WorldData* store = StepEntryPoints.Current->Store;
             bool ended = false;
             for (uint i = 0; i < store->triggerCount; i++)
             {
@@ -954,7 +955,7 @@ namespace KSP.Retooled.Physics.Tests
         private static unsafe long ShapeAddress(GameObject gameObject)
         {
             StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
-            WorldData* store = StepKernel.Current != null ? StepKernel.Current->Store : null;
+            WorldData* store = StepEntryPoints.Current != null ? StepEntryPoints.Current->Store : null;
             if (globals == null || store == null)
             {
                 Assert.Ignore("The test reads the shapes of the Retooled backend's store.");

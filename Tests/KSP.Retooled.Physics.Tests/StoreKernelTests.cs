@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Commands;
+using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Interop;
 using NUnit.Framework;
 using Unity.Collections;
@@ -36,7 +38,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             if (world != null)
             {
-                WorldKernel.FreeBodies(world, globals);
+                WorldCommands.FreeBodies(world, globals);
                 StoreMemory.Release(globals, world->bodies);
                 StoreMemory.Release(globals, world);
                 world = null;
@@ -50,7 +52,7 @@ namespace KSP.Retooled.Physics.Tests
             args.flags = (uint)flags;
             args.enabled = isStatic ? 1u : 0u;
             args.scalar = 1.0f;
-            WorldKernel.Run((uint)WorldCommand.CreateBody, world, &args, globals);
+            WorldCommands.Run((uint)WorldCommand.CreateBody, world, &args, globals);
             return (Body*)args.pointer;
         }
 
@@ -59,14 +61,14 @@ namespace KSP.Retooled.Physics.Tests
             CommandArgs args = default;
             args.mode = geometryType;
             args.vector = extents;
-            ShapeKernel.Run((uint)ShapeCommand.CreateShape, null, &args, globals);
+            ShapeCommands.Run((uint)ShapeCommand.CreateShape, null, &args, globals);
             return (Shape*)args.pointer;
         }
 
         private void DestroyShape(Shape* shape)
         {
             CommandArgs args = default;
-            ShapeKernel.Run((uint)ShapeCommand.DestroyShape, shape, &args, globals);
+            ShapeCommands.Run((uint)ShapeCommand.DestroyShape, shape, &args, globals);
         }
 
         private void Attach(Body* body, Shape* shape)
@@ -75,7 +77,7 @@ namespace KSP.Retooled.Physics.Tests
             args.rotation = quaternion.identity;
             args.pointer = shape;
             args.enabled = 1;
-            BodyKernel.Run((uint)BodyCommand.AttachShape, body, &args, globals);
+            BodyCommands.Run((uint)BodyCommand.AttachShape, body, &args, globals);
         }
 
         private void SetTarget(Body* body, float3 position)
@@ -83,12 +85,12 @@ namespace KSP.Retooled.Physics.Tests
             CommandArgs args = default;
             args.rotation = quaternion.identity;
             args.position = position;
-            BodyKernel.Run((uint)BodyCommand.SetKinematicTarget, body, &args, globals);
+            BodyCommands.Run((uint)BodyCommand.SetKinematicTarget, body, &args, globals);
         }
 
         private bool HasTarget(Body* body)
         {
-            return (StoreOps.Hot(body)->flags & BodyFlags.HasKinematicTarget) != 0;
+            return (StoreRows.Hot(body)->flags & BodyFlags.HasKinematicTarget) != 0;
         }
 
         [Test]
@@ -102,7 +104,7 @@ namespace KSP.Retooled.Physics.Tests
             Attach(second, shape);
 
             Assert.That(first->shapeCount, Is.EqualTo(0u));
-            Assert.That(StoreOps.Hot(first)->shapeCount, Is.EqualTo(0u));
+            Assert.That(StoreRows.Hot(first)->shapeCount, Is.EqualTo(0u));
             Assert.That(second->shapeCount, Is.EqualTo(1u));
             Assert.That(shape->body == second, Is.True);
 
@@ -133,9 +135,9 @@ namespace KSP.Retooled.Physics.Tests
             Attach(body, capsule);
 
             CommandArgs args = default;
-            BodyKernel.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
+            BodyCommands.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
 
-            float3 inertia = (*StoreOps.Hot(body)).BodyMass()->Inertia;
+            float3 inertia = (*StoreRows.Hot(body)).BodyMass()->Inertia;
             Assert.That(math.all(math.isfinite(inertia)), Is.True, $"inertia {inertia}");
             Assert.That(inertia.x, Is.EqualTo(1.0f / 6.0f).Within(1e-5f), "the box alone");
 
@@ -151,12 +153,12 @@ namespace KSP.Retooled.Physics.Tests
 
             SetTarget(body, new float3(1.0f, 0.0f, 0.0f));
             Assert.That(HasTarget(body), Is.True);
-            BodyKernel.Run((uint)BodyCommand.Sleep, body, &args, globals);
+            BodyCommands.Run((uint)BodyCommand.Sleep, body, &args, globals);
             Assert.That(HasTarget(body), Is.False, "asleep");
 
             SetTarget(body, new float3(1.0f, 0.0f, 0.0f));
             args.flags = (uint)BodyFlags.Simulated;
-            BodyKernel.Run((uint)BodyCommand.SetFlags, body, &args, globals);
+            BodyCommands.Run((uint)BodyCommand.SetFlags, body, &args, globals);
             Assert.That(HasTarget(body), Is.False, "taken out of the simulation");
 
             SetTarget(body, new float3(1.0f, 0.0f, 0.0f));
@@ -168,7 +170,7 @@ namespace KSP.Retooled.Physics.Tests
             CommandArgs args = default;
             args.value = first;
             args.value2 = second;
-            ShapeKernel.Run((uint)ShapeCommand.ShouldIgnoreCollision, null, &args, globals);
+            ShapeCommands.Run((uint)ShapeCommand.ShouldIgnoreCollision, null, &args, globals);
             return args.enabled != 0;
         }
 
@@ -178,7 +180,7 @@ namespace KSP.Retooled.Physics.Tests
             args.value = first;
             args.value2 = second;
             args.enabled = ignored ? 1u : 0u;
-            ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
+            ShapeCommands.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
         }
 
         // The store's table of ignored collider pairs is shared by all live colliders. Allocate IDs from that table and
@@ -190,7 +192,7 @@ namespace KSP.Retooled.Physics.Tests
             {
                 CommandArgs args = default;
                 args.enabled = 1;
-                ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
+                ShapeCommands.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
                 ids[i] = args.value;
                 if (i + 1 < count)
                 {
@@ -207,7 +209,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             CommandArgs cleanup = default;
             cleanup.value = id;
-            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            ShapeCommands.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
         }
 
         [Test]
@@ -251,7 +253,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             CommandArgs args = default;
             args.enabled = 1;
-            ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
+            ShapeCommands.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
             uint first = args.value;
             uint second = args.value2;
 
@@ -261,19 +263,19 @@ namespace KSP.Retooled.Physics.Tests
 
             CommandArgs cleanup = default;
             cleanup.value = second;
-            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            ShapeCommands.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
             Assert.That(IsIgnored(first, second), Is.False);
 
             CommandArgs another = default;
             another.value = first;
             another.enabled = 1;
-            ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &another, globals);
+            ShapeCommands.Run((uint)ShapeCommand.IgnoreCollision, null, &another, globals);
             Assert.That(another.value2, Is.EqualTo(second), "a destroyed collider's id goes back in use");
 
             cleanup.value = second;
-            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            ShapeCommands.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
             cleanup.value = first;
-            ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
+            ShapeCommands.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
         }
 
         [Test]
@@ -320,12 +322,12 @@ namespace KSP.Retooled.Physics.Tests
             CreateBody(Dynamic, true);
 
             CommandArgs sleep = default;
-            BodyKernel.Run((uint)BodyCommand.Sleep, world->bodies[1].owner, &sleep, globals);
+            BodyCommands.Run((uint)BodyCommand.Sleep, world->bodies[1].owner, &sleep, globals);
 
-            WorldKernel.BodyCounts counts = default;
+            WorldCommands.BodyCounts counts = default;
             CommandArgs args = default;
             args.pointer = &counts;
-            WorldKernel.Run((uint)WorldCommand.GetLastSimulationStats, world, &args, globals);
+            WorldCommands.Run((uint)WorldCommand.GetLastSimulationStats, world, &args, globals);
 
             Assert.That(counts.DynamicBodies, Is.EqualTo(2u));
             Assert.That(counts.ActiveDynamicBodies, Is.EqualTo(1u));
@@ -342,7 +344,7 @@ namespace KSP.Retooled.Physics.Tests
 
             CommandArgs args = default;
             args.pointer = first;
-            WorldKernel.Run((uint)WorldCommand.DestroyBody, world, &args, globals);
+            WorldCommands.Run((uint)WorldCommand.DestroyBody, world, &args, globals);
 
             Assert.That(world->bodyCount, Is.EqualTo(1u));
             Assert.That(last->index, Is.EqualTo(0u));
@@ -363,7 +365,7 @@ namespace KSP.Retooled.Physics.Tests
 
             CommandArgs args = default;
             args.value = 1;
-            WorldKernel.Run((uint)WorldCommand.GetAllShapesByLayerMask, world, &args, globals);
+            WorldCommands.Run((uint)WorldCommand.GetAllShapesByLayerMask, world, &args, globals);
 
             Assert.That(args.size, Is.EqualTo(1ul));
             Assert.That(((void**)args.pointer)[0] == wanted, Is.True);

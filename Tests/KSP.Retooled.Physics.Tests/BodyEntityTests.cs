@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Entities;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;

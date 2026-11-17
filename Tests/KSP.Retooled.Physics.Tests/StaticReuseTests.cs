@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Mathematics;
@@ -45,10 +47,10 @@ namespace KSP.Retooled.Physics.Tests
         /// </summary>
         private static void AssertStaticRowsMatchTheStore(int step)
         {
-            StepKernel.Current->FinishPendingRefit();
-            PhysicsWorld world = StepKernel.Current->World;
-            WorldData* store = StepKernel.Current->Store;
-            Unity.Collections.NativeList<int> built = StepKernel.Current->BuiltIndices;
+            StepEntryPoints.Current->FinishPendingRefit();
+            PhysicsWorld world = StepEntryPoints.Current->World;
+            WorldData* store = StepEntryPoints.Current->Store;
+            Unity.Collections.NativeList<int> built = StepEntryPoints.Current->BuiltIndices;
             int statics = 0;
             for (int row = 0; row < (int)store->bodyCount; row++)
             {
@@ -228,9 +230,9 @@ namespace KSP.Retooled.Physics.Tests
                         break;
                 }
 
-                long kept = StepKernel.Current->KeptStaticRowsCount;
+                long kept = StepEntryPoints.Current->KeptStaticRowsCount;
                 Simulate();
-                run.Kept.Add(StepKernel.Current->KeptStaticRowsCount != kept);
+                run.Kept.Add(StepEntryPoints.Current->KeptStaticRowsCount != kept);
                 AssertStaticRowsMatchTheStore(step);
                 Look("after");
                 found.Sort(string.CompareOrdinal);

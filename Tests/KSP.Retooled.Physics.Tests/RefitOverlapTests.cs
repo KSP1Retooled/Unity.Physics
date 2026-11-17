@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
@@ -60,7 +61,7 @@ namespace KSP.Retooled.Physics.Tests
             return rays;
         }
 
-        private static bool RefitPending => StepKernel.Current->Store->treeReady == 0;
+        private static bool RefitPending => StepEntryPoints.Current->Store->treeReady == 0;
 
         /// <summary>Checks that each ray hit its own box's top face, at the box's solved pose.</summary>
         private static void AssertHitsOnTop(List<Rigidbody> bodies, NativeArray<RaycastHit> hits, string when)
@@ -112,8 +113,8 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Assume.That(StepState.ThrowsAfterRefitScheduled, Is.GreaterThan(throws), "the step ran in Mono and threw");
-            Assert.That(StepKernel.Current->RefitPending, Is.True, "the refit is pending");
-            Assert.That(StepKernel.Current->RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
+            Assert.That(StepEntryPoints.Current->RefitPending, Is.True, "the refit is pending");
+            Assert.That(StepEntryPoints.Current->RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
             using (NativeArray<RaycastCommand> rays = RaysOnto(bodies))
             using (var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob))
             {
@@ -249,7 +250,7 @@ namespace KSP.Retooled.Physics.Tests
 
                 // The same queries once the refit has finished.
                 scene.RunSimulationStages(Step, SimulationStage.PublishSimulationResults, SimulationOption.All);
-                StepKernel.Current->FinishPendingRefit();
+                StepEntryPoints.Current->FinishPendingRefit();
                 using var after = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
                 RaycastCommand.ScheduleBatch(rays, after, 16).Complete();
                 for (int i = 0; i < Count; i++)

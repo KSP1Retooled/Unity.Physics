@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Commands;
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
@@ -110,31 +111,31 @@ namespace KSP.Retooled.Physics.Tests
             Assume.That(BackendInfo.IsRetooled, "needs --backend retooled");
             foreach (BodyCommand command in Enum.GetValues(typeof(BodyCommand)))
             {
-                Assert.That(BodyKernel.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
+                Assert.That(BodyCommands.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
             }
 
             foreach (ShapeCommand command in Enum.GetValues(typeof(ShapeCommand)))
             {
                 bool read = IsGet(command.ToString()) || command == ShapeCommand.ShouldIgnoreCollision;
-                Assert.That(ShapeKernel.IsRead(command), Is.EqualTo(read), command.ToString());
+                Assert.That(ShapeCommands.IsRead(command), Is.EqualTo(read), command.ToString());
             }
 
             foreach (JointCommand command in Enum.GetValues(typeof(JointCommand)))
             {
-                Assert.That(JointKernel.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
+                Assert.That(JointCommands.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
             }
 
             foreach (VehicleCommand command in Enum.GetValues(typeof(VehicleCommand)))
             {
-                Assert.That(VehicleKernel.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
+                Assert.That(VehicleCommands.IsRead(command), Is.EqualTo(IsGet(command.ToString())), command.ToString());
             }
 
             // The plugin answers the other world reads itself, so only these reach the kernel.
-            Assert.That(WorldKernel.IsRead(WorldCommand.GetBasicStats), Is.True);
-            Assert.That(WorldKernel.IsRead(WorldCommand.GetLastSimulationStats), Is.True);
-            Assert.That(WorldKernel.IsRead(WorldCommand.GetAllShapesByLayerMask), Is.True);
-            Assert.That(WorldKernel.IsRead(WorldCommand.CreateBody), Is.False);
-            Assert.That(WorldKernel.IsRead(WorldCommand.DestroyBody), Is.False);
+            Assert.That(WorldCommands.IsRead(WorldCommand.GetBasicStats), Is.True);
+            Assert.That(WorldCommands.IsRead(WorldCommand.GetLastSimulationStats), Is.True);
+            Assert.That(WorldCommands.IsRead(WorldCommand.GetAllShapesByLayerMask), Is.True);
+            Assert.That(WorldCommands.IsRead(WorldCommand.CreateBody), Is.False);
+            Assert.That(WorldCommands.IsRead(WorldCommand.DestroyBody), Is.False);
         }
 
         private static bool IsGet(string name)

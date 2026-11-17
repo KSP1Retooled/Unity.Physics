@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Jobs;
@@ -28,7 +29,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        private static WorldData* Store => StepKernel.Current->Store;
+        private static WorldData* Store => StepEntryPoints.Current->Store;
 
         /// <summary>Checks the copies in every row of the store against the owner's serial number and the collider.</summary>
         private static void AssertRowsHoldTheirSources(string when)

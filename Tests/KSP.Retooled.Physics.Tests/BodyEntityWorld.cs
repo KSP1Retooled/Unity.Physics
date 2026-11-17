@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using KSP.Retooled.Systems.Physics;
 using NUnit.Framework;
 using Unity.Entities;
 
@@ -36,7 +35,7 @@ namespace KSP.Retooled.Physics.Tests
                 string assembly = system.Assembly.GetName().Name;
                 if (assembly.StartsWith("Unity.Physics", StringComparison.Ordinal)
                     || assembly == "Unity.Entities"
-                    || system.Namespace == typeof(BodyBindingSystem).Namespace)
+                    || system.Assembly == typeof(BackendHost).Assembly)
                 {
                     systems.Add(system);
                 }

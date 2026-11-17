@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
@@ -464,7 +466,7 @@ namespace KSP.Retooled.Physics.Tests
             {
                 Simulate(3);
                 var before = new HashSet<(long, long)>();
-                foreach (ManifoldRecord record in StepKernel.Current->Manifolds)
+                foreach (ManifoldRecord record in StepEntryPoints.Current->Manifolds)
                 {
                     Assert.That(record.Impulse, Is.GreaterThan(0.0f), "the box rests on the ground");
                     before.Add(((long)record.ShapeA, (long)record.ShapeB));
@@ -473,7 +475,7 @@ namespace KSP.Retooled.Physics.Tests
                 Object.DestroyImmediate(box.gameObject);
                 box = DynamicBox(new Vector3(0.0f, 0.5f, 0.0f));
                 Simulate();
-                Unity.Collections.NativeList<ManifoldRecord> manifolds = StepKernel.Current->Manifolds;
+                Unity.Collections.NativeList<ManifoldRecord> manifolds = StepEntryPoints.Current->Manifolds;
                 Assert.That(manifolds.Length, Is.GreaterThan(0), "the new box touches the ground");
                 foreach (ManifoldRecord record in manifolds)
                 {

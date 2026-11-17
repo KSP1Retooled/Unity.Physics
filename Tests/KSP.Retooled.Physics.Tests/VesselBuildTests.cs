@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Mathematics;
@@ -48,7 +49,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselSwitches.MinimumParts = 0;
         }
 
-        private static StepState* State => StepKernel.Current;
+        private static StepState* State => StepEntryPoints.Current;
 
         /// <summary>A stock part joint: three joints over a stack node, which the backend groups into one unit.</summary>
         private static ConfigurableJoint[] StackJoint(Rigidbody host, Rigidbody target, Vector3 node, float breakForce = float.PositiveInfinity)

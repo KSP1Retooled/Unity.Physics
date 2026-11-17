@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -513,7 +515,7 @@ namespace KSP.Retooled.Physics.Tests
                     };
                 }
 
-                PhysicsWorld world = StepKernel.Current->World;
+                PhysicsWorld world = StepEntryPoints.Current->World;
                 NativeArray<RigidBody> dynamic = world.DynamicBodies;
                 partBodies = new NativeArray<int>(count, Allocator.Persistent);
                 edges = new NativeArray<VesselEdge>(count, Allocator.Persistent);

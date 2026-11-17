@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -80,9 +81,9 @@ namespace KSP.Retooled.Physics.Tests
         private static unsafe ulong WorldHash()
         {
             // The refit of the dynamic tree can still run after the step, and it reads the bodies.
-            StepKernel.Current->FinishPendingRefit();
+            StepEntryPoints.Current->FinishPendingRefit();
             ulong hash = 14695981039346656037UL;
-            Unity.Physics.PhysicsWorld world = StepKernel.Current->World;
+            Unity.Physics.PhysicsWorld world = StepEntryPoints.Current->World;
             foreach (Unity.Physics.RigidBody body in world.Bodies)
             {
                 hash = Mix(hash, body.Collider.IsCreated ? 1 : 0);
@@ -308,7 +309,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             // The counts go to the log, not to the trace, so that the trace of a commit without them can be compared.
-            Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepKernel.Current->TreeBuildCount} times and refitted {StepKernel.Current->TreeRefitCount} times");
+            Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepEntryPoints.Current->TreeBuildCount} times and refitted {StepEntryPoints.Current->TreeRefitCount} times");
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"JointLoadTrace-{tag}.txt"), trace.ToString());
         }
 

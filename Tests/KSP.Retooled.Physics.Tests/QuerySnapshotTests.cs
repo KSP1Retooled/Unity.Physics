@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -8,7 +9,7 @@ namespace KSP.Retooled.Physics.Tests
     /// </summary>
     public unsafe class QuerySnapshotTests : PhysicsScene
     {
-        private static long Kept => BackendInfo.IsRetooled ? StepKernel.Current->KeptSnapshots : 0;
+        private static long Kept => BackendInfo.IsRetooled ? StepEntryPoints.Current->KeptSnapshots : 0;
 
         private static Collider HitDown(Vector3 from)
         {

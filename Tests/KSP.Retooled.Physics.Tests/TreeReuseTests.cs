@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
@@ -68,9 +70,9 @@ namespace KSP.Retooled.Physics.Tests
             Simulate();
             JointLoadTrace.ContactHash.Hash = 14695981039346656037UL;
             JointLoadTrace.ContactHash.Messages = 0;
-            long builds = StepKernel.Current->TreeBuildCount;
-            long refits = StepKernel.Current->TreeRefitCount;
-            long filterRefits = StepKernel.Current->TreeFilterRefitCount;
+            long builds = StepEntryPoints.Current->TreeBuildCount;
+            long refits = StepEntryPoints.Current->TreeRefitCount;
+            long filterRefits = StepEntryPoints.Current->TreeFilterRefitCount;
             for (int step = 0; step < Steps; step++)
             {
                 switch (step)
@@ -111,7 +113,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
 
                 Simulate();
-                long built = StepKernel.Current->TreeBuildCount;
+                long built = StepEntryPoints.Current->TreeBuildCount;
                 run.Built.Add(built != builds);
                 builds = built;
 
@@ -134,8 +136,8 @@ namespace KSP.Retooled.Physics.Tests
                 run.Steps.Add($"step {step}: contacts {JointLoadTrace.ContactHash.Hash:x16} in {JointLoadTrace.ContactHash.Messages} messages; {string.Join(", ", found)}");
             }
 
-            run.Refits = StepKernel.Current->TreeRefitCount - refits;
-            run.FilterRefits = StepKernel.Current->TreeFilterRefitCount - filterRefits;
+            run.Refits = StepEntryPoints.Current->TreeRefitCount - refits;
+            run.FilterRefits = StepEntryPoints.Current->TreeFilterRefitCount - filterRefits;
             foreach (Rigidbody body in bodies)
             {
                 if (body != null)
@@ -264,9 +266,9 @@ namespace KSP.Retooled.Physics.Tests
             second.transform.position = second.position;
             Simulate(2);
 
-            long builds = StepKernel.Current->TreeBuildCount;
+            long builds = StepEntryPoints.Current->TreeBuildCount;
             Simulate();
-            Assert.That(StepKernel.Current->TreeBuildCount != builds, Is.EqualTo(!refitted), refitted ? "the step refits the tree" : "the step builds the tree");
+            Assert.That(StepEntryPoints.Current->TreeBuildCount != builds, Is.EqualTo(!refitted), refitted ? "the step refits the tree" : "the step builds the tree");
 
             var found = new List<string>();
             var origin = new Vector3(0.0f, 5.0f, 0.0f);

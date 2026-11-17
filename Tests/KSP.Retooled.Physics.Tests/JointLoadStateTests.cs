@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using Unity.Mathematics;
 using UnityEngine;
@@ -23,7 +24,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        private static WorldData* Store => StepKernel.Current->Store;
+        private static WorldData* Store => StepEntryPoints.Current->Store;
 
         /// <summary>A body that hangs from the world by one locked joint at its centre.</summary>
         private ConfigurableJoint Hang(Vector3 position, float mass)

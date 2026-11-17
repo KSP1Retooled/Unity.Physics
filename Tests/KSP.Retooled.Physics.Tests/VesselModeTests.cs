@@ -1,3 +1,5 @@
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
@@ -95,8 +97,8 @@ namespace KSP.Retooled.Physics.Tests
             public void Refresh()
             {
                 // The step returns while the refit moves the built bodies to their solved poses.
-                StepKernel.Current->FinishPendingRefit();
-                PhysicsWorld world = StepKernel.Current->World;
+                StepEntryPoints.Current->FinishPendingRefit();
+                PhysicsWorld world = StepEntryPoints.Current->World;
                 NativeArray<RigidBody> dynamic = world.DynamicBodies;
                 for (int i = 0; i < Bodies.Count; i++)
                 {

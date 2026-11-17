@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Stepping;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -237,10 +238,10 @@ namespace KSP.Retooled.Physics.Tests
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             Build(VesselForestBench.Load(craft));
             Simulate(30);
-            StepKernel.Current->FinishPendingRefit();
+            StepEntryPoints.Current->FinishPendingRefit();
 
             var report = new StringBuilder();
-            PhysicsWorld world = StepKernel.Current->World;
+            PhysicsWorld world = StepEntryPoints.Current->World;
             int count = world.NumDynamicBodies;
             report.Append($"{craft}: {count} dynamic bodies, {world.CollisionWorld.Broadphase.DynamicTree.BoundingVolumeHierarchy.Domain} \n");
 
@@ -408,7 +409,7 @@ namespace KSP.Retooled.Physics.Tests
             long mismatches0 = DynamicBoundsCache.Counts->Mismatches;
             const int checkedSteps = 20;
             Simulate(checkedSteps);
-            StepKernel.Current->FinishPendingRefit();
+            StepEntryPoints.Current->FinishPendingRefit();
             DynamicBoundsCache.CheckEnabled = wasChecking;
             long hits = DynamicBoundsCache.Counts->Hits - hits0;
             report.Append($"cache: {hits / (double)checkedSteps:F0} of {count} bodies per step took their bounds from the cache, " +
