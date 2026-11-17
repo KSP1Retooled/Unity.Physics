@@ -6,6 +6,8 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Simulation.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 using Math = System.Math;
 using DispatchPair =Unity.Physics.DispatchPairSequencer.DispatchPair;
 using SolverIsland = Unity.Physics.DispatchPairSequencer.SolverIsland;

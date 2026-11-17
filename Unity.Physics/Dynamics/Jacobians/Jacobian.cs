@@ -762,7 +762,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Return the joint stiffness cap from the pair's effective mass or angular inertia; see DirectStiffness.
+        /// Return the joint stiffness cap from the pair's effective mass or angular inertia; see DirectStiffnessCap.
         /// </summary>
         static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB)
         {
@@ -778,7 +778,7 @@ namespace Unity.Physics
                     + (velocityB.IsKinematic ? 0.0f : velocityB.InverseMass);
             }
 
-            return DirectStiffness.Maximum(inverseMass);
+            return DirectStiffnessCap.Maximum(inverseMass);
         }
 
         // Calculates the spring frequency from the spring constant and mass for a simple mass-spring system.

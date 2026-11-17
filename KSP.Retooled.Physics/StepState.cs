@@ -5,6 +5,12 @@ using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Base.Threading;
+using Unity.Physics.Collision.World.Trees;
+using Unity.Physics.Dynamics.Simulation.Islands;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 
 namespace KSP.Retooled.Physics
 {
@@ -72,7 +78,7 @@ namespace KSP.Retooled.Physics
         // The joints and groups outside the active vessels of this step. See ListOtherJointsJob.
         private NativeList<int> otherJoints;
         private NativeList<int> otherGroups;
-        private DirectSolverCache directSolverCache;
+        private IslandSolverCache directSolverCache;
 
         // Prepared simulation, or null since the last FinishStep.
         // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
@@ -334,7 +340,7 @@ namespace KSP.Retooled.Physics
             JointLoadStates.Register(store, jointStates);
             otherJoints = new NativeList<int>(Allocator.Persistent);
             otherGroups = new NativeList<int>(Allocator.Persistent);
-            directSolverCache = DirectSolverCache.Create();
+            directSolverCache = IslandSolverCache.Create();
             vesselBuild = VesselBuild.Create();
             solverIslandCache = SolverIslandCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
@@ -457,7 +463,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>The direct solver's cache, including the counts of solves that used the forest.</summary>
-        internal readonly DirectSolverCache DirectSolverCache => directSolverCache;
+        internal readonly IslandSolverCache IslandSolverCache => directSolverCache;
 
         /// <summary>The world built for the simulation systems to advance.</summary>
         internal readonly PhysicsWorld World => world;
@@ -731,7 +737,7 @@ namespace KSP.Retooled.Physics
                 DeflectionSmoothingSteps = VesselForest.DeflectionSmoothingSteps,
                 Caps = VesselForest.Caps,
             };
-            input.DirectSolverCache = directSolverCache;
+            input.IslandSolverCache = directSolverCache;
             input.VesselSet = vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
             preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled);

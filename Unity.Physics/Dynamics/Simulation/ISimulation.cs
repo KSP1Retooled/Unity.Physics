@@ -2,6 +2,9 @@ using System;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics.Dynamics.Simulation.Islands;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 
 namespace Unity.Physics
 {
@@ -54,19 +57,19 @@ namespace Unity.Physics
         /// <summary>
         /// The caller-owned cache for reusing work between direct solves. The default value disables caching.
         /// </summary>
-        public DirectSolverCache DirectSolverCache;
+        internal IslandSolverCache IslandSolverCache;
 
         /// <summary>
         /// The caller-owned cache for reusing islands while the pairs being solved remain unchanged. With the default
         /// value, islands are found again every step.
         /// </summary>
-        public SolverIslandCache SolverIslandCache;
+        internal SolverIslandCache SolverIslandCache;
 
         /// <summary>
         /// The caller's persistent vessels. The direct solver solves their joints using the vessel kernel's rows. The
         /// default value supplies no vessels.
         /// </summary>
-        public VesselSet VesselSet;
+        internal VesselSet VesselSet;
 
         /// <summary>   Maximum relative velocity that can be produced when separating intersecting dynamic rigid bodies. </summary>
         public float MaxDynamicDepenetrationVelocity;

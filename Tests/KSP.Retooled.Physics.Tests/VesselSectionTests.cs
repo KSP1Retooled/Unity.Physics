@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Physics.Dynamics.Vessels.Sections;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -343,8 +344,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ALockedStrutCarriesItsShareAsTheYieldingOne()
         {
-            bool wasStrutLoads = Unity.Physics.StrutLoads.Enabled;
-            Unity.Physics.StrutLoads.Enabled = true;
+            bool wasStrutLoads = StrutLoads.Enabled;
+            StrutLoads.Enabled = true;
             var strut = new Vector3[2];
             var arm = new Vector3[2];
             var lockedPairs = new long[2];
@@ -379,7 +380,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
-                Unity.Physics.StrutLoads.Enabled = wasStrutLoads;
+                StrutLoads.Enabled = wasStrutLoads;
             }
 
             float weight = 4.0f * PartMass * -Gravity;

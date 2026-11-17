@@ -3,6 +3,8 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 
 namespace Unity.Physics
 {
@@ -413,7 +415,7 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
-                DirectSolverCache = input.DirectSolverCache,
+                IslandSolverCache = input.IslandSolverCache,
                 VesselSet = VesselSet.OrTestSet(input.VesselSet),
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1,
@@ -697,7 +699,7 @@ namespace Unity.Physics
                 NumSubsteps = input.NumSubsteps,
                 NumSolverIterations = input.NumSolverIterations,
                 DirectSolverSettings = input.DirectSolverSettings,
-                DirectSolverCache = input.DirectSolverCache,
+                IslandSolverCache = input.IslandSolverCache,
                 VesselSet = VesselSet.OrTestSet(input.VesselSet),
                 CurrentSubstep = -1,
                 CurrentSolverIteration = -1,

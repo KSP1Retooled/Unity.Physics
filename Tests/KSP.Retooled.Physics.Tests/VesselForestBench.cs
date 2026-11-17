@@ -12,6 +12,10 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Base.Threading;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Sparse;
+using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
 using BoxCollider = UnityEngine.BoxCollider;
@@ -778,7 +782,7 @@ namespace KSP.Retooled.Physics.Tests
             double settle0 = VesselForest.SettleMilliseconds;
             double[] serial0 = VesselForest.SerialMilliseconds();
             BoundaryCounters.Reset();
-            HandOffCounters.Reset();
+            WorkTeamCounters.Reset();
 
             // RETOOLED_BENCH_HISTOGRAM=1 counts the sizes of the blocks that the sparse solver factors. Counting costs
             // time on every lane, so the times of such a run are not comparable with others.
@@ -826,7 +830,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             // How fast the teams' helpers reached the stages that the leaders published.
-            HandOffCounters handOff = HandOffCounters.Current;
+            WorkTeamCounters handOff = WorkTeamCounters.Current;
             if (handOff.Stages > 0)
             {
                 double tickUs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator

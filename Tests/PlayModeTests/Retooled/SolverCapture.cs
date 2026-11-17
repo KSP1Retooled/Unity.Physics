@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using UnityEditor;
 using UnityEngine;

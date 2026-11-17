@@ -401,7 +401,7 @@ namespace KSP.Retooled.Physics
 
             float inverseMass = MovingInverseMass(leader->body0) + MovingInverseMass(leader->body1);
             float inverseInertia = MovingInverseInertia(leader->body0) + MovingInverseInertia(leader->body1);
-            float angularCap = DirectStiffness.Maximum(inverseInertia);
+            float angularCap = DirectStiffnessCap.Maximum(inverseInertia);
             group.LinearRatio = inverseInertia / math.max(inverseMass, 1e-9f);
             group.Stiffness = float3.zero;
             quaternion toJoint = math.conjugate(leader->rotation0);

@@ -8,6 +8,8 @@ using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Memory;
 using Unity.Physics;
+using Unity.Physics.Base.Threading;
+using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 
 namespace KSP.Retooled.Physics.Tests
@@ -218,7 +220,7 @@ namespace KSP.Retooled.Physics.Tests
         private struct SharedSolveJob : IJobParallelFor
         {
             [NativeDisableUnsafePtrRestriction]
-            public SparseSolveTeam* Team;
+            public WorkTeam* Team;
 
             [NativeDisableUnsafePtrRestriction]
             public SparseConstraintSolver* Solver;
@@ -290,7 +292,7 @@ namespace KSP.Retooled.Physics.Tests
                     return solver.Solve(problem, output, bounded);
                 }
 
-                SparseSolveTeam team = default;
+                WorkTeam team = default;
                 team.Configure();
                 bool converged = false;
                 fixed (SparseConstraintSolver* solverPointer = &solver)

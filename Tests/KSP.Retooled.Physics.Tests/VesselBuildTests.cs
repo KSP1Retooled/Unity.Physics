@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests

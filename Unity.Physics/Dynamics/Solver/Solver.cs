@@ -16,6 +16,8 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 using UnityEngine.Assertions;
 using static Unity.Physics.Math;
@@ -192,11 +194,11 @@ namespace Unity.Physics
             public int NumSolverIterations;
             /// <summary> The direct solver settings. </summary>
             public DirectSolverSettings DirectSolverSettings;
-            /// <summary> See <see cref="SimulationStepInput.DirectSolverCache"/>. </summary>
-            public DirectSolverCache DirectSolverCache;
+            /// <summary> See <see cref="SimulationStepInput.IslandSolverCache"/>. </summary>
+            internal IslandSolverCache IslandSolverCache;
 
             /// <summary> See <see cref="SimulationStepInput.VesselSet"/>. </summary>
-            public VesselSet VesselSet;
+            internal VesselSet VesselSet;
 
             /// <summary>
             /// The world's bodies and their number, so that a vessel island's boundary can know a body outside its

@@ -1,6 +1,8 @@
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Islands;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -11,7 +13,7 @@ namespace KSP.Retooled.Physics.Tests
     {
         private static ulong Identity(uint serial) => (ulong)serial << 32;
 
-        private static void Assign(ref DirectSolverCache cache, int[] firstBodies, ulong[] identities)
+        private static void Assign(ref IslandSolverCache cache, int[] firstBodies, ulong[] identities)
         {
             using var bodies = new NativeArray<int>(firstBodies, Allocator.Temp);
             using var ids = new NativeArray<ulong>(identities, Allocator.Temp);
@@ -21,7 +23,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void AnIslandKeepsItsSlotWhenItsFirstBodyMovesToAnotherRow()
         {
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 Assign(ref cache, new[] { 4, 9 }, new[] { Identity(11), Identity(12) });
@@ -42,7 +44,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ANewCraftInADestroyedCraftsRowDoesNotTakeItsSlotAsItsOwn()
         {
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 Assign(ref cache, new[] { 4 }, new[] { Identity(11) });
@@ -60,7 +62,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>Starts the cache's next step, as the job that lists the islands does.</summary>
-        private static void NextStep(ref DirectSolverCache cache) => Assign(ref cache, new int[0], new ulong[0]);
+        private static void NextStep(ref IslandSolverCache cache) => Assign(ref cache, new int[0], new ulong[0]);
 
         /// <summary>
         /// Verify fused slot table growth preserves every vessel's cached forest across steps.
@@ -69,7 +71,7 @@ namespace KSP.Retooled.Physics.Tests
         public void EveryFusedVesselKeepsItsForestWhenThereAreMoreThanTheTableStartsWith()
         {
             const int vessels = 600;
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 var forests = new ulong[vessels];
@@ -96,13 +98,13 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A new vessel takes the slot of a vessel that no step has solved for <see cref="DirectSolverCache.FusedKeepSteps"/>
+        /// A new vessel takes the slot of a vessel that no step has solved for <see cref="IslandSolverCache.FusedKeepSteps"/>
         /// steps, and before that, it gets a new slot.
         /// </summary>
         [Test]
         public void ANewFusedVesselTakesOnlyTheSlotOfAVesselThatStayedAwayLong()
         {
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 NextStep(ref cache);
@@ -115,7 +117,7 @@ namespace KSP.Retooled.Physics.Tests
                 ulong second = (ulong)cache.FusedForestOf(2);
                 Assert.That(second, Is.Not.EqualTo(first), "the first vessel was solved 10 steps ago and keeps its slot");
                 Assert.That(cache.FusedSlotCount, Is.EqualTo(2));
-                for (int i = 0; i < DirectSolverCache.FusedKeepSteps; i++)
+                for (int i = 0; i < IslandSolverCache.FusedKeepSteps; i++)
                 {
                     NextStep(ref cache);
                 }
@@ -138,7 +140,7 @@ namespace KSP.Retooled.Physics.Tests
         public void EveryIslandKeepsItsSlotWhenThereAreMoreThanTheTableStartsWith()
         {
             const int islands = 200;
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 var bodies = new int[islands];
@@ -180,12 +182,12 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void AnIslandThatNeedsNoSlotGetsNone()
         {
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 Assign(ref cache, new[] { 1, 4 }, new[] { Identity(11), Identity(12) });
                 ulong second = (ulong)cache.ForestOf(1);
-                Assign(ref cache, new[] { 1, 4 }, new[] { DirectSolverCache.NoSlot, Identity(12) });
+                Assign(ref cache, new[] { 1, 4 }, new[] { IslandSolverCache.NoSlot, Identity(12) });
                 Assert.That((ulong)cache.ForestOf(0), Is.EqualTo(0ul), "the fused island has no forest here");
                 Assert.That((ulong)cache.Solver(0), Is.EqualTo(0ul), "the fused island has no solver here");
                 Assert.That((ulong)cache.ForestOf(1), Is.EqualTo(second), "the other island keeps its slot");
@@ -203,7 +205,7 @@ namespace KSP.Retooled.Physics.Tests
         public void ANewIslandTakesOnlyTheSlotOfAnIslandThatStayedAwayLong()
         {
             const int first = 64;
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 var bodies = new int[first];
@@ -224,7 +226,7 @@ namespace KSP.Retooled.Physics.Tests
 
                 Assign(ref cache, new[] { 0, 500 }, new[] { identities[0], Identity(500) });
                 Assert.That(cache.SlotCount, Is.EqualTo(first + 1), "the other islands were solved 11 steps ago and keep their slots");
-                for (int i = 0; i < DirectSolverCache.SlotKeepSteps; i++)
+                for (int i = 0; i < IslandSolverCache.SlotKeepSteps; i++)
                 {
                     Assign(ref cache, new[] { 0, 500 }, new[] { identities[0], Identity(500) });
                 }
@@ -246,7 +248,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TwoIslandsNeverShareASlot()
         {
-            DirectSolverCache cache = DirectSolverCache.Create();
+            IslandSolverCache cache = IslandSolverCache.Create();
             try
             {
                 Assign(ref cache, new[] { 2, 5 }, new[] { Identity(7), Identity(7) });

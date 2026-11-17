@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests

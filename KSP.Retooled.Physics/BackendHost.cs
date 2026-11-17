@@ -5,6 +5,7 @@ using System.Threading;
 using AOT;
 using Unity.Burst;
 using Unity.Entities;
+using Unity.Physics.Base.Threading;
 using Unity.Physics.Systems;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -179,7 +180,7 @@ namespace KSP.Retooled.Physics
                 BodyEntities.Unbind();
             }
 
-            Unity.Physics.AddressWait.Install(IntPtr.Zero, IntPtr.Zero);
+            AddressWait.Install(IntPtr.Zero, IntPtr.Zero);
             NativeStore.RetooledPhysics_Detach();
             attached = false;
             compiledKernelsInPlugin = false;

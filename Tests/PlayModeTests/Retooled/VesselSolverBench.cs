@@ -12,6 +12,9 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Dynamics.Vessels.Sections;
+using Unity.Physics.Tests.Dynamics.Vessels;
 using Debug = UnityEngine.Debug;
 
 namespace KSP.Retooled.Physics.Tests
@@ -183,7 +186,7 @@ namespace KSP.Retooled.Physics.Tests
             settings.ChunkTarget = chunkTarget;
             settings.MinimumDegree = minimumDegree;
             graph.Build(rule, settings.TimeStep, 1.0, Allocator.Persistent, out var parts, out var edges, out var closures);
-            var solver = new VesselSolver(parts, edges, closures, settings);
+            var solver = new ReferenceVesselSolver(parts, edges, closures, settings);
 
             // The edges that switch in the switching case: a few dozen locked ones spread through the vessel.
             var toggled = new List<int>();

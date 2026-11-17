@@ -1,6 +1,8 @@
 using System;
 using Unity.Burst;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Islands;
 
 namespace KSP.Retooled.Physics
 {
@@ -70,7 +72,7 @@ namespace KSP.Retooled.Physics
         /// The limits on a vessel island's boundary block: contact points, self-contact manifolds and pivoting rounds. A
         /// field that is zero takes its default. See <see cref="BoundaryCaps"/>.
         /// </summary>
-        public static BoundaryCaps Caps
+        internal static BoundaryCaps Caps
         {
             get => Shared.Data.Caps;
             set => Shared.Data.Caps = value;
@@ -143,12 +145,12 @@ namespace KSP.Retooled.Physics
             solves = fallbacks = builds = 0;
             if (StepKernel.Current != null)
             {
-                StepKernel.Current->DirectSolverCache.GetForestCounts(out solves, out fallbacks, out builds);
+                StepKernel.Current->IslandSolverCache.GetForestCounts(out solves, out fallbacks, out builds);
             }
         }
 
         /// <summary>
-        /// Returns section counts for the world most recently stepped. See DirectSolverCache.GetSectionCounts.
+        /// Returns section counts for the world most recently stepped. See IslandSolverCache.GetSectionCounts.
         /// </summary>
         internal static unsafe void GetSectionCounts(out long sectionSum, out long lockedSum, out long structureBuilds,
             out long lockChanges, out double structureMilliseconds, out double residual, out long lastSections, out long lastLocked)
@@ -157,14 +159,14 @@ namespace KSP.Retooled.Physics
             structureMilliseconds = residual = 0;
             if (StepKernel.Current != null)
             {
-                StepKernel.Current->DirectSolverCache.GetSectionCounts(out sectionSum, out lockedSum, out structureBuilds,
+                StepKernel.Current->IslandSolverCache.GetSectionCounts(out sectionSum, out lockedSum, out structureBuilds,
                     out lockChanges, out structureMilliseconds, out residual, out lastSections, out lastLocked);
             }
         }
 
         /// <summary>
         /// Return lock changes for contact pairs, maximum fallback boundary rows and ten-bin deflection histograms.
-        /// See DirectSolverCache.DeflectionHistogram for bins.
+        /// See IslandSolverCache.DeflectionHistogram for bins.
         /// </summary>
         internal static unsafe void GetLockDiagnostics(out long contactChanges, out long fallbackBoundary, long[] all, long[] locked)
         {
@@ -174,9 +176,9 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            DirectSolverCache cache = StepKernel.Current->DirectSolverCache;
-            contactChanges = cache.ForestCounter(DirectSolverCache.ForestContactLockChanges);
-            fallbackBoundary = cache.ForestCounter(DirectSolverCache.ForestFallbackBoundaryMax);
+            IslandSolverCache cache = StepKernel.Current->IslandSolverCache;
+            contactChanges = cache.ForestCounter(IslandSolverCache.ForestContactLockChanges);
+            fallbackBoundary = cache.ForestCounter(IslandSolverCache.ForestFallbackBoundaryMax);
             long* a = stackalloc long[10];
             long* l = stackalloc long[10];
             cache.DeflectionHistogram(LockAngle, YieldAngle, a, l);
@@ -195,10 +197,10 @@ namespace KSP.Retooled.Physics
             var result = new double[5];
             if (StepKernel.Current != null)
             {
-                DirectSolverCache cache = StepKernel.Current->DirectSolverCache;
+                IslandSolverCache cache = StepKernel.Current->IslandSolverCache;
                 for (int i = 0; i < 5; i++)
                 {
-                    result[i] = cache.ForestMilliseconds(DirectSolverCache.ForestClassifyTime + i);
+                    result[i] = cache.ForestMilliseconds(IslandSolverCache.ForestClassifyTime + i);
                 }
             }
 
@@ -213,7 +215,7 @@ namespace KSP.Retooled.Physics
         {
             if (StepKernel.Current != null)
             {
-                StepKernel.Current->DirectSolverCache.ForgetForests();
+                StepKernel.Current->IslandSolverCache.ForgetForests();
             }
         }
 
@@ -221,16 +223,16 @@ namespace KSP.Retooled.Physics
         /// The cumulative time in milliseconds spent settling sections after the first solve, measured since the world
         /// most recently stepped was built.
         /// </summary>
-        internal static unsafe double SettleMilliseconds => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.ForestSettleMilliseconds : 0.0;
+        internal static unsafe double SettleMilliseconds => StepKernel.Current != null ? StepKernel.Current->IslandSolverCache.ForestSettleMilliseconds : 0.0;
 
         /// <summary>
         /// The largest deflection in radians used by lock tests after the last forest solve, averaged over the step.
         /// </summary>
-        internal static unsafe double LastDeflection => StepKernel.Current != null ? StepKernel.Current->DirectSolverCache.LastDeflection : 0.0;
+        internal static unsafe double LastDeflection => StepKernel.Current != null ? StepKernel.Current->IslandSolverCache.LastDeflection : 0.0;
 
         /// <summary>
         /// Returns cumulative solve times in milliseconds since the world most recently stepped was built. See
-        /// DirectSolverCache.GetSolveTimes.
+        /// IslandSolverCache.GetSolveTimes.
         /// </summary>
         internal static unsafe void GetTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
             out double forestFactor, out double forestBoundary, out double forestDrift)
@@ -238,9 +240,9 @@ namespace KSP.Retooled.Physics
             sparse = forestStart = forestSolve = forestFinish = forestFactor = forestBoundary = forestDrift = 0;
             if (StepKernel.Current != null)
             {
-                StepKernel.Current->DirectSolverCache.GetSolveTimes(out sparse, out forestStart, out forestSolve, out forestFinish,
+                StepKernel.Current->IslandSolverCache.GetSolveTimes(out sparse, out forestStart, out forestSolve, out forestFinish,
                     out forestFactor, out forestBoundary);
-                forestDrift = StepKernel.Current->DirectSolverCache.ForestDriftMilliseconds;
+                forestDrift = StepKernel.Current->IslandSolverCache.ForestDriftMilliseconds;
             }
         }
 

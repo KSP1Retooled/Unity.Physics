@@ -11,6 +11,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;

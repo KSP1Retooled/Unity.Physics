@@ -5,6 +5,8 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Base.Threading;
+using Unity.Physics.Collision.World.Trees;
 using Unity.Transforms;
 
 namespace KSP.Retooled.Physics
@@ -883,7 +885,7 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            Unity.Physics.AddressWait.Install(wait, wake);
+            AddressWait.Install(wait, wake);
         }
 
         /// <summary>

@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
@@ -376,7 +378,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(VesselCount(), Is.EqualTo(1), "only the five-part column is a vessel");
 
             int motionCount = StepKernel.Current->World.MotionVelocities.Length;
-            int* index = StepKernel.Current->DirectSolverCache.CompactIndex(motionCount);
+            int* index = StepKernel.Current->IslandSolverCache.CompactIndex(motionCount);
             Assert.That(index != null, "the islands share an index");
             for (int body = 0; body < motionCount; body++)
             {

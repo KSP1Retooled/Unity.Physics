@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Solver.Sparse;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests

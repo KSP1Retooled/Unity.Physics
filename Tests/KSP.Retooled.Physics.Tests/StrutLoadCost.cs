@@ -4,12 +4,13 @@ using System.Reflection;
 using NUnit.Framework;
 using Unity.Burst;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Sections;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What the strut loads cost: the factor of each section's static system when the section forms, and each section's
+    /// What the strut loads cost: the factor of each section's equilibrium system when the section forms, and each section's
     /// solve in every step, from the counters around them. STRUT_COST_CRAFT lists the crafts (tu160 and pegasus by
     /// default), STRUT_COST_SCENE the scenes (ground by default). Output in Logs/StrutLoadCost.txt.
     /// </summary>

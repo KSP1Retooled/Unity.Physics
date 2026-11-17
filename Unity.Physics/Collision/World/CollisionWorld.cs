@@ -7,6 +7,7 @@ using Unity.Mathematics;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Physics.Collision.World.Trees;
 using Unity.Physics.Systems;
 using Unity.Transforms;
 

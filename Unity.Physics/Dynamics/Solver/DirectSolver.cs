@@ -26,6 +26,11 @@ using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
+using Unity.Physics.Base.Threading;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Solver.Sparse;
+using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
@@ -507,7 +512,7 @@ namespace Unity.Physics
             float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that
                                                                     // we get the Hadamard product and not
                                                                     // the dot product, as desired!
-            var hatL = VectorMath.Cross(L);
+            var hatL = DoubleMath.Cross(L);
 #if false
             // Use equation (2):
 
@@ -565,7 +570,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, id.c1, startColumnA);
                 SetSubVector3(J_3, id.c2, startColumnA);
 
-                var nhat_s_A = VectorMath.Cross(-s_A);
+                var nhat_s_A = DoubleMath.Cross(-s_A);
                 SetSubVector3(J_1, new float3(nhat_s_A.c0[0], nhat_s_A.c1[0], nhat_s_A.c2[0]), startColumnA + 3);
                 SetSubVector3(J_2, new float3(nhat_s_A.c0[1], nhat_s_A.c1[1], nhat_s_A.c2[1]), startColumnA + 3);
                 SetSubVector3(J_3, new float3(nhat_s_A.c0[2], nhat_s_A.c1[2], nhat_s_A.c2[2]), startColumnA + 3);
@@ -583,7 +588,7 @@ namespace Unity.Physics
                 SetSubVector3(J_2, nid.c1, startColumnB);
                 SetSubVector3(J_3, nid.c2, startColumnB);
 
-                var hat_s_B = VectorMath.Cross(s_B);
+                var hat_s_B = DoubleMath.Cross(s_B);
                 SetSubVector3(J_1, new float3(hat_s_B.c0[0], hat_s_B.c1[0], hat_s_B.c2[0]), startColumnB + 3);
                 SetSubVector3(J_2, new float3(hat_s_B.c0[1], hat_s_B.c1[1], hat_s_B.c2[1]), startColumnB + 3);
                 SetSubVector3(J_3, new float3(hat_s_B.c0[2], hat_s_B.c1[2], hat_s_B.c2[2]), startColumnB + 3);
@@ -1069,7 +1074,7 @@ namespace Unity.Physics
                 float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that we get
                                                                         // the Hadamard product and not the dot product,
                                                                         // as desired!
-                var hatL = VectorMath.Cross(L);
+                var hatL = DoubleMath.Cross(L);
                 var stabilizationTerm = timestep * timestep * math.mul(math.mul(hatL, invI0), hatL);
                 inertiaTensor = I0 - stabilizationTerm;
                 invInertiaTensor = math.inverse(inertiaTensor);
@@ -1233,7 +1238,7 @@ namespace Unity.Physics
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
-            int contactPairs, SparseSolveTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
+            int contactPairs, WorkTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
             int* headerRows = null, int headerCount = 0, float* recovery = null, int* islandVessels = null, int islandVesselCount = 0,
             RigidBody* rigidBodies = null, int rigidBodyCount = 0)
         {
@@ -1243,7 +1248,7 @@ namespace Unity.Physics
 
             // The island numbers its bodies in the index that all the islands of the step share, if the cache has one.
             // Every entry of that index is -1 while no island solves its body.
-            int* sharedIndex = stepInput.DirectSolverCache.CompactIndex(motionVelocities.Length);
+            int* sharedIndex = stepInput.IslandSolverCache.CompactIndex(motionVelocities.Length);
             var setup = new SparseSetup
             {
                 Blocks = new NativeList<SparseConstraintSolver.ConstraintBlock>(Allocator.Temp),
@@ -1306,7 +1311,7 @@ namespace Unity.Physics
                 Bodies = (SparseConstraintSolver.Body*)bodies.GetUnsafePtr(),
             };
 
-            SparseSolveTeam.RunAll(team, &bodySetup, SparseSolveTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
+            WorkTeam.RunAll(team, &bodySetup, WorkTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
 
             NativeList<SparseConstraintSolver.ConstraintBlock> blocks = setup.Blocks;
             NativeList<BoundCoupling> couplings = setup.Couplings;
@@ -1337,7 +1342,7 @@ namespace Unity.Physics
             long solveStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
             // A forest island solves its forest joints' rows structurally and the rest as a boundary block against them.
-            ForestSettings forestSettings = stepInput.DirectSolverCache.Forest;
+            ForestSettings forestSettings = stepInput.IslandSolverCache.Forest;
 
             // An island with a vessel has no Jacobians for the vessel's edges, so it can only solve with the vessel's own rows.
             if (islandVesselCount > 0)
@@ -1363,7 +1368,7 @@ namespace Unity.Physics
 
             if (forestSettings.Enabled && headers.Length == blocks.Length && blocks.Length > 0)
             {
-                ForestIsland* forest = stepInput.DirectSolverCache.ForestOf(islandIndex);
+                ForestIsland* forest = stepInput.IslandSolverCache.ForestOf(islandIndex);
                 int builds = forest != null ? forest->Builds : 0;
                 ForestRun run = default;
                 int fallbackBoundaryRows = 0;
@@ -1374,36 +1379,36 @@ namespace Unity.Physics
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestStartTime, lap - solveStarted);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFactorTime, run.FactorTicks);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBoundaryTime, run.BoundaryTicks);
-                    stepInput.DirectSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestStartTime, lap - solveStarted);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFactorTime, run.FactorTicks);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBoundaryTime, run.BoundaryTicks);
+                    stepInput.IslandSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
                         run.LockChanges, run.StructureTicks);
-                    stepInput.DirectSolverCache.AddCount(DirectSolverCache.ForestContactLockChanges, run.ContactLockChanges);
+                    stepInput.IslandSolverCache.AddCount(IslandSolverCache.ForestContactLockChanges, run.ContactLockChanges);
                 }
 
-                stepInput.DirectSolverCache.CountForest(started ? DirectSolverCache.ForestSolves : DirectSolverCache.ForestFallbacks);
+                stepInput.IslandSolverCache.CountForest(started ? IslandSolverCache.ForestSolves : IslandSolverCache.ForestFallbacks);
                 if (!started && forest != null)
                 {
-                    stepInput.DirectSolverCache.NoteMax(DirectSolverCache.ForestFallbackBoundaryMax, fallbackBoundaryRows);
+                    stepInput.IslandSolverCache.NoteMax(IslandSolverCache.ForestFallbackBoundaryMax, fallbackBoundaryRows);
                 }
                 if (forest != null && forest->Builds != builds)
                 {
-                    stepInput.DirectSolverCache.CountForest(DirectSolverCache.ForestBuilds);
+                    stepInput.IslandSolverCache.CountForest(IslandSolverCache.ForestBuilds);
                 }
 
                 if (started)
                 {
                     SolveForest(ref run, problem.RightHandSide, impulsesPtr);
                     long solvedAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSolveTime, solvedAt - lap);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSolveTime, solvedAt - lap);
                     var bodyLinear = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var bodyAngular = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var linearPtr = (float3*)bodyLinear.GetUnsafePtr();
                     var angularPtr = (float3*)bodyAngular.GetUnsafePtr();
                     SettleForest(ref run, problem, impulsesPtr, linearPtr, angularPtr, false);
                     long settledAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSettleTime, settledAt - solvedAt);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime, settledAt - solvedAt);
                     if (holdsPositions)
                     {
                         var forestDrift = new NativeArray<float>(rows, Allocator.Temp);
@@ -1411,7 +1416,7 @@ namespace Unity.Physics
                         bool drifts = AimAtPredictedDrift(problem, null, linearPtr, angularPtr, islandBodies, headers,
                             impulsesPtr, motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team, true,
                             run.BlockInSection.IsCreated ? (byte*)run.BlockInSection.GetUnsafeReadOnlyPtr() : null);
-                        stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDriftTime,
+                        stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestDriftTime,
                             Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - settledAt);
                         if (drifts)
                         {
@@ -1441,18 +1446,18 @@ namespace Unity.Physics
 
                     float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
                         stepInput.CurrentSubstep, forestSettings.DeflectionSmoothingSteps);
-                    stepInput.DirectSolverCache.NoteDeflection(deflection);
+                    stepInput.IslandSolverCache.NoteDeflection(deflection);
 
-                    stepInput.DirectSolverCache.NoteResidual(run.Residual);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestClassifyTime, run.ClassifyTicks);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestDecideTime, run.DecideTicks);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSumsTime, run.SumsTicks);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestBodyImpulseTime, run.BodyImpulseTicks);
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestSubtreeTime, run.SubtreeTicks);
+                    stepInput.IslandSolverCache.NoteResidual(run.Residual);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestClassifyTime, run.ClassifyTicks);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestDecideTime, run.DecideTicks);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSumsTime, run.SumsTicks);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBodyImpulseTime, run.BodyImpulseTicks);
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSubtreeTime, run.SubtreeTicks);
                     run.Dispose();
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
-                    stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
+                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFinishTime,
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
                     SparseProblemObserver.Report(&problem, impulsesPtr, bounded);
                     for (int row = 0; row < rows; row++)
@@ -1471,7 +1476,7 @@ namespace Unity.Physics
                 }
             }
 
-            SparseConstraintSolver* kept = stepInput.DirectSolverCache.Solver(islandIndex);
+            SparseConstraintSolver* kept = stepInput.IslandSolverCache.Solver(islandIndex);
             var temporary = default(SparseConstraintSolver);
             if (kept == null)
             {
@@ -1511,7 +1516,7 @@ namespace Unity.Physics
             }
 
             kept->Team = null;
-            stepInput.DirectSolverCache.AddTime(DirectSolverCache.SparseTime,
+            stepInput.IslandSolverCache.AddTime(IslandSolverCache.SparseTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
 
             if (kept == &temporary)
@@ -1540,7 +1545,7 @@ namespace Unity.Physics
         /// headerRows gives each Jacobian's row range.
         /// </summary>
         static unsafe void GatherSparseBlocks(ref SparseSetup setup, IslandHeader* islandHeaders, int* headerRows, int headerCount, int rows,
-            in NativeArray<MotionVelocity> motionVelocities, SparseSolveTeam* team)
+            in NativeArray<MotionVelocity> motionVelocities, WorkTeam* team)
         {
             // Number bodies serially in Jacobian order; split Jacobian reads and list writes into disjoint task
             // ranges.
@@ -1562,7 +1567,7 @@ namespace Unity.Physics
                 CompactBodies = (int*)setup.CompactBodies.GetUnsafePtr(),
             };
 
-            SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.SummarizeJacobiansKind, taskCount, null);
+            WorkTeam.RunAll(team, &summarizing, WorkTeam.SummarizeJacobiansKind, taskCount, null);
 
             for (int h = 0; h < headerCount; h++)
             {
@@ -1593,7 +1598,7 @@ namespace Unity.Physics
             summarizing.Blocks = setup.Blocks.GetUnsafePtr();
             summarizing.HeaderPointers = setup.Headers.GetUnsafePtr();
             summarizing.Couplings = setup.Couplings.GetUnsafePtr();
-            SparseSolveTeam.RunAll(team, &summarizing, SparseSolveTeam.FillBlocksKind, taskCount, null);
+            WorkTeam.RunAll(team, &summarizing, WorkTeam.FillBlocksKind, taskCount, null);
 
             summaries.Dispose();
             taskBlocks.Dispose();
@@ -1884,7 +1889,7 @@ namespace Unity.Physics
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
-            in JacobianRows jacobianRows, float* rhsChange, SparseSolveTeam* team, bool skipSlow = false, byte* skipBlocks = null)
+            in JacobianRows jacobianRows, float* rhsChange, WorkTeam* team, bool skipSlow = false, byte* skipBlocks = null)
         {
             using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
@@ -1940,7 +1945,7 @@ namespace Unity.Physics
             };
 
             int tasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
-            SparseSolveTeam.RunAll(team, &prediction, SparseSolveTeam.PredictDriftKind, tasks, null);
+            WorkTeam.RunAll(team, &prediction, WorkTeam.PredictDriftKind, tasks, null);
             for (int compact = 0; compact < problem.BodyCount; compact++)
             {
                 motions[worldBodies[compact]] = saved[compact];
@@ -2073,7 +2078,7 @@ namespace Unity.Physics
         static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, bool sparseContacts,
-            SparseSolveTeam* team)
+            WorkTeam* team)
         {
             using ProfilerMarker.AutoScope span = ApplyImpulsesMarker.Auto();
 
@@ -2093,7 +2098,7 @@ namespace Unity.Physics
             };
 
             int headerTasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
-            SparseSolveTeam.RunAll(team, &application, SparseSolveTeam.ApplyImpulsesKind, application.BodyTasks + headerTasks, null);
+            WorkTeam.RunAll(team, &application, WorkTeam.ApplyImpulsesKind, application.BodyTasks + headerTasks, null);
         }
 
         /// <summary>

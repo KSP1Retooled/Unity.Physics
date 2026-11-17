@@ -7,6 +7,10 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Dynamics.Vessels.Sections;
+using Unity.Physics.Dynamics.Vessels.Structure;
+using Unity.Physics.Tests.Dynamics.Vessels;
 using Debug = UnityEngine.Debug;
 
 namespace KSP.Retooled.Physics.Tests
@@ -134,7 +138,7 @@ namespace KSP.Retooled.Physics.Tests
         /// The solver's last system built densely from its sections and its links' rows, as A = M + sum w J^T J and
         /// b = M v + impulse - sum J^T g, with the second column of B a random right-hand side.
         /// </summary>
-        static void DenseSystem(VesselSolver solver, NativeArray<double> a, NativeArray<double> b, double[] random)
+        static void DenseSystem(ReferenceVesselSolver solver, NativeArray<double> a, NativeArray<double> b, double[] random)
         {
             int sections = solver.SectionCount, n = 6 * sections;
             for (int s = 0; s < sections; s++)
@@ -196,7 +200,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>|A x - b| / (|A| |x| + |b|) in the max norm, with A = M + sum w J^T J applied row by row.</summary>
-        static double BackwardError(VesselSolver solver, double[] x, double[] rhs, double matrixNorm)
+        static double BackwardError(ReferenceVesselSolver solver, double[] x, double[] rhs, double matrixNorm)
         {
             int n = x.Length;
             var ax = new double[n];
@@ -248,12 +252,12 @@ namespace KSP.Retooled.Physics.Tests
             return residual / (matrixNorm * xNorm + bNorm);
         }
 
-        static VesselSolver MakeSolver(VesselGraph graph, VesselGraph.LockRule rule, double stiffnessScale,
+        static ReferenceVesselSolver MakeSolver(VesselGraph graph, VesselGraph.LockRule rule, double stiffnessScale,
             VesselSolverSettings settings, out NativeArray<VesselPart> parts, out NativeArray<VesselEdge> edges,
             out NativeArray<VesselClosure> closures)
         {
             graph.Build(rule, settings.TimeStep, stiffnessScale, Allocator.Persistent, out parts, out edges, out closures);
-            return new VesselSolver(parts, edges, closures, settings);
+            return new ReferenceVesselSolver(parts, edges, closures, settings);
         }
 
         [Test]
@@ -264,7 +268,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.ChunkTarget = chunkTarget;
             settings.MinimumDegree = minimumDegree;
-            using VesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1e3, settings,
+            using ReferenceVesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1e3, settings,
                 out var parts, out var edges, out var closures);
             try
             {
@@ -571,8 +575,8 @@ namespace KSP.Retooled.Physics.Tests
                 before[i] = lockedParts[i].Position;
             }
 
-            var locked = new VesselSolver(lockedParts, lockedEdges, closures, settings);
-            var stiff = new VesselSolver(stiffParts, stiffEdges, stiffClosures, settings);
+            var locked = new ReferenceVesselSolver(lockedParts, lockedEdges, closures, settings);
+            var stiff = new ReferenceVesselSolver(stiffParts, stiffEdges, stiffClosures, settings);
             locked.Step(false);
             stiff.Step(false);
 
@@ -768,8 +772,8 @@ namespace KSP.Retooled.Physics.Tests
             settings.HardPeriod = period;
             Build(out var lockedParts, out var lockedEdges, out var lockedClosures, false);
             Build(out var stiffParts, out var stiffEdges, out var stiffClosures, true);
-            var locked = new VesselSolver(lockedParts, lockedEdges, lockedClosures, settings);
-            var stiff = new VesselSolver(stiffParts, stiffEdges, stiffClosures, settings);
+            var locked = new ReferenceVesselSolver(lockedParts, lockedEdges, lockedClosures, settings);
+            var stiff = new ReferenceVesselSolver(stiffParts, stiffEdges, stiffClosures, settings);
             try
             {
                 locked.Step(false);
@@ -852,7 +856,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselGraph graph = VesselGraph.Load(craft);
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.CentripetalLoads = false;
-            using VesselSolver solver = MakeSolver(graph, rule, 1.0, settings, out var parts, out var edges, out var closures);
+            using ReferenceVesselSolver solver = MakeSolver(graph, rule, 1.0, settings, out var parts, out var edges, out var closures);
             try
             {
                 solver.Step(true);
@@ -890,8 +894,8 @@ namespace KSP.Retooled.Physics.Tests
             VesselGraph graph = VesselGraph.Load(craft);
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.MinimumDegree = minimumDegree;
-            using VesselSolver one = MakeSolver(graph, rule, 1.0, settings, out var parts1, out var edges1, out var closures1);
-            using VesselSolver many = MakeSolver(graph, rule, 1.0, settings, out var parts2, out var edges2, out var closures2);
+            using ReferenceVesselSolver one = MakeSolver(graph, rule, 1.0, settings, out var parts1, out var edges1, out var closures1);
+            using ReferenceVesselSolver many = MakeSolver(graph, rule, 1.0, settings, out var parts2, out var edges2, out var closures2);
             try
             {
                 for (int step = 0; step < 20; step++)
@@ -934,7 +938,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             VesselGraph graph = VesselGraph.Load("epsilon");
             VesselSolverSettings settings = VesselSolverSettings.Default;
-            using VesselSolver reused = MakeSolver(graph, VesselGraph.LockRule.LiveJointsOnly, 1.0, settings,
+            using ReferenceVesselSolver reused = MakeSolver(graph, VesselGraph.LockRule.LiveJointsOnly, 1.0, settings,
                 out var parts1, out var edges1, out var closures1);
             try
             {
@@ -956,7 +960,7 @@ namespace KSP.Retooled.Physics.Tests
                 var parts2 = new NativeArray<VesselPart>(parts1, Allocator.Persistent);
                 var edges2 = new NativeArray<VesselEdge>(edges1, Allocator.Persistent);
                 var closures2 = new NativeArray<VesselClosure>(closures1, Allocator.Persistent);
-                using var fresh = new VesselSolver(parts2, edges2, closures2, settings);
+                using var fresh = new ReferenceVesselSolver(parts2, edges2, closures2, settings);
                 int sectionsBefore = reused.SectionCount;
                 reused.MarkStructureChanged();
                 reused.Step(true);
@@ -994,7 +998,7 @@ namespace KSP.Retooled.Physics.Tests
             VesselGraph graph = VesselGraph.Load(craft);
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.MinimumDegree = minimumDegree;
-            using VesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1.0, settings,
+            using ReferenceVesselSolver solver = MakeSolver(graph, VesselGraph.LockRule.AllYielding, 1.0, settings,
                 out var parts, out var edges, out var closures);
             var before = new NativeArray<VesselPart>(parts, Allocator.Persistent);
             const int rowCount = 24;
@@ -1185,7 +1189,7 @@ namespace KSP.Retooled.Physics.Tests
                     edges[i] = edge;
                 }
 
-                using var solver = new VesselSolver(parts, edges, closures, settings);
+                using var solver = new ReferenceVesselSolver(parts, edges, closures, settings);
                 solver.Step(false);
                 Assert.AreEqual(1, solver.SectionCount);
                 double error = 0.0, loads = 0.0;

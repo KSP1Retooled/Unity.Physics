@@ -6,6 +6,8 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Dynamics.Vessels.Sections;
 
 namespace KSP.Retooled.Physics
 {
@@ -82,8 +84,8 @@ namespace KSP.Retooled.Physics
             }
 
             // RETOOLED_STRUT_LOADS=0 brings back the tree method for the loads inside a locked section.
-            Unity.Physics.StrutLoads.Initialize();
-            if (!Unity.Physics.StrutLoads.Enabled)
+            StrutLoads.Initialize();
+            if (!StrutLoads.Enabled)
             {
                 UnityEngine.Debug.Log("[VesselPipeline] RETOOLED_STRUT_LOADS=0: each locked edge carries its whole subtree, and closures inside a section carry nothing");
             }

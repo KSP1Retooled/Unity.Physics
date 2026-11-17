@@ -6,6 +6,7 @@ using System.IO.Compression;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 
 namespace KSP.Retooled.Physics.Tests
@@ -92,7 +93,7 @@ namespace KSP.Retooled.Physics.Tests
             return graph;
         }
 
-        public VesselEdgeState StateFor(int i, LockRule rule)
+        internal VesselEdgeState StateFor(int i, LockRule rule)
         {
             string kind = Kind[i];
             if (Parent[i] < 0)
@@ -130,7 +131,7 @@ namespace KSP.Retooled.Physics.Tests
         /// torque.
         /// Scale springs by stiffnessScale; dampers are 2% of their spring.
         /// </summary>
-        public void Build(LockRule rule, double timeStep, double stiffnessScale, Allocator allocator,
+        internal void Build(LockRule rule, double timeStep, double stiffnessScale, Allocator allocator,
             out NativeArray<VesselPart> parts, out NativeArray<VesselEdge> edges, out NativeArray<VesselClosure> closures,
             ulong seed = 1)
         {
