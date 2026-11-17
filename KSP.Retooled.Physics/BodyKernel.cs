@@ -76,8 +76,9 @@ namespace KSP.Retooled.Physics
     /// <remarks>
     /// The plugin stores a Burst function pointer, as it does for query functions. Until asynchronous compilation
     /// finishes, that pointer refers to a stub that runs the same code in Mono. Body commands arrive outside a step,
-    /// mostly on the main thread. Unity also reads poses from worker threads. Those workers read the rows in the state
-    /// that <see cref="BodyEntities"/> left them.
+    /// mostly on the main thread. Unity also reads poses from worker threads. The plugin answers those reads itself,
+    /// through the rows in the state that <see cref="BodyEntities"/> left them, and so it does for the main thread's
+    /// reads right after a step (see Body.cpp). GetPose reaches this kernel only on the main thread at other times.
     /// </remarks>
     [BurstCompile]
     internal static unsafe class BodyKernel
@@ -97,8 +98,59 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BodyCommand.Auto();
+            // Unity reads every awake body's pose after each step, and the poses of the moved bodies before each step. A
+            // span costs about as much as such a read, so reads run without the category's span. A read that does more
+            // work, such as GetClosestWorldPointOnBounds, still has its own span.
+            if (IsRead((BodyCommand)command))
+            {
+                Dispatch(command, handle, args, globals);
+                return;
+            }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BodyCommand.Auto();
+            Dispatch(command, handle, args, globals);
+        }
+
+        /// <summary>Whether the command only reads the body. Reads run without the category's span.</summary>
+        internal static bool IsRead(BodyCommand command)
+        {
+            switch (command)
+            {
+                case BodyCommand.GetFlags:
+                case BodyCommand.GetMass:
+                case BodyCommand.GetDamping:
+                case BodyCommand.GetPose:
+                case BodyCommand.GetShapeCount:
+                case BodyCommand.GetShapes:
+                case BodyCommand.GetShapesUserData:
+                case BodyCommand.GetUserData:
+                case BodyCommand.GetLinearVelocity:
+                case BodyCommand.GetAngularVelocity:
+                case BodyCommand.GetMaxLinearVelocity:
+                case BodyCommand.GetMaxAngularVelocity:
+                case BodyCommand.GetMaxDepenetrationVelocity:
+                case BodyCommand.GetInertiaTensor:
+                case BodyCommand.GetInertiaTensorRotation:
+                case BodyCommand.GetLocalCenterOfMass:
+                case BodyCommand.GetWorldInertiaTensorMatrix:
+                case BodyCommand.GetAccumulatedForce:
+                case BodyCommand.GetAccumulatedTorque:
+                case BodyCommand.GetLocalPointVelocity:
+                case BodyCommand.GetWorldPointVelocity:
+                case BodyCommand.GetClosestWorldPointOnBounds:
+                case BodyCommand.GetKinematicTarget:
+                case BodyCommand.GetIsSleeping:
+                case BodyCommand.GetWakeCounter:
+                case BodyCommand.GetSleepThresholdOverride:
+                case BodyCommand.GetSolverIterationsOverride:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
@@ -361,6 +413,17 @@ namespace KSP.Retooled.Physics
         {
             float3 position = hot->pose->Position;
             quaternion rotation = hot->pose->Rotation;
+
+            // A pose that equals the stored one to the last bit changes nothing. Setting the rotation again would convert
+            // the angular velocity to world space and back, which can change its last bits, so the body stays as it is.
+            // The body still wakes if Unity asks, as a PhysX body does. The bits are compared rather than the floats, so
+            // that -0 against 0, or a NaN, still counts as a change.
+            if (math.all(math.asuint(a->position) == math.asuint(position)) && math.all(math.asuint(a->rotation.value) == math.asuint(rotation.value)))
+            {
+                WakeIfAsked(hot, a);
+                return;
+            }
+
             hot->pose->Position = a->position;
             StoreOps.SetRotation(*hot, a->rotation);
             WakeIfAsked(hot, a);

@@ -59,6 +59,11 @@ namespace Retooled
 #endif
     }
 
+    void WaitWhileWordIs(int32_t* word, int32_t expected, int32_t timeoutMicroseconds)
+    {
+        WaitOnWord(word, expected, timeoutMicroseconds);
+    }
+
     extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_WaitFunctions(void** wait, void** wake)
     {
         *wait = reinterpret_cast<void*>(&WaitOnWord);

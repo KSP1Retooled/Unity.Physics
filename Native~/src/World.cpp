@@ -44,6 +44,7 @@ namespace Retooled
         world->data.gravity = ToFloat3(command.gravity);
         world->data.bounceThreshold = command.bounceThreshold;
         world->data.queryDirty = 1;
+        world->data.treeReady = 1;
         g_Worlds.push_back(world);
         command.outWorld = world;
     }
@@ -121,6 +122,9 @@ namespace Retooled
         std::unique_lock lock(world->queryLock);
         g_Managed.simulate(&world->data, command.deltaTime);
         command.ranSimulation = true;
+
+        // Unity reads the poses back next (see g_ReadBackWorld).
+        g_ReadBackWorld.store(world, std::memory_order_relaxed);
     }
 
     static void GetLastSimulationStepResults(void* object, const Context&, WorldCmd::GetLastSimulationStepResults& command)

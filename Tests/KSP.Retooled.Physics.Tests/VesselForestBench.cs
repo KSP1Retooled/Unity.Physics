@@ -902,6 +902,121 @@ namespace KSP.Retooled.Physics.Tests
             return (string.IsNullOrEmpty(value) ? fallback : value).Split(',');
         }
 
+        private static string MinMedian(List<double> samples)
+        {
+            samples.Sort();
+            return $"{samples[0]:F3} / {samples[samples.Count / 2]:F3}";
+        }
+
+        private static double Since(long start) => (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+
+        /// <summary>
+        /// Times Unity's three stages of the step one by one on the compiled path: Prepare (the sync of the Transforms
+        /// to the bodies), Run (the backend's step) and Publish (the read-back of the poses into the Transforms and the
+        /// results). It also times the whole step with Physics.Simulate, back to back, as Measure does. Each part gets
+        /// RETOOLED_BENCH_CHILDREN child Transforms (default 0). RETOOLED_BENCH_CRAFT (default tu160,tu160x4),
+        /// RETOOLED_BENCH_SCENE (default floating) and RETOOLED_BENCH_THREADS (default 8,1) pick the configurations.
+        /// Results go to VesselStageBench.txt in Logs.
+        /// </summary>
+        [Test]
+        [Timeout(7200000)]
+        public void MeasureStages()
+        {
+            if (!BackendInfo.IsRetooled)
+            {
+                Assert.Ignore("The bench measures the Unity Physics backend.");
+            }
+
+            Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
+            Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
+            bool wasVessels = VesselPipeline.Enabled, wasEnabled = VesselForest.Enabled, wasLocking = VesselForest.Locking;
+            bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
+            UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
+            bool jobDebugger = JobsUtility.JobDebuggerEnabled;
+            JobsUtility.JobDebuggerEnabled = false;
+            Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
+            int workers = JobsUtility.JobWorkerCount;
+            int children = int.Parse(Choice("RETOOLED_BENCH_CHILDREN", "0")[0], CultureInfo.InvariantCulture);
+            var report = new StringBuilder($"[VesselStageBench] compiled path, ms min / median over {Measured} steps after {WarmUp}, " +
+                $"{children} child Transforms a part; CPU load at start {SampleLoad():F1}%\n");
+            report.Append("craft | bodies | scene | threads | prepare | run | publish | whole step\n");
+            try
+            {
+                VesselForest.Enabled = true;
+                VesselPipeline.Enabled = true;
+                VesselForest.Locking = false;
+                foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,tu160x4"))
+                {
+                    Graph graph = Fleet(Load(craft));
+                    foreach (bool ground in Choice("RETOOLED_BENCH_SCENE", "floating").Select(s => s == "ground"))
+                    {
+                        foreach (int threads in Choice("RETOOLED_BENCH_THREADS", "8,1").Select(int.Parse))
+                        {
+                            TearDownScene();
+                            SetUpScene();
+                            UnityEngine.Physics.autoSyncTransforms = false;
+                            VesselForest.ForgetIslands();
+                            JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
+                            List<Rigidbody> bodies = Build(graph, ground);
+                            foreach (Rigidbody body in bodies)
+                            {
+                                Transform parent = body.transform;
+                                for (int c = 0; c < children; c++)
+                                {
+                                    var child = new GameObject("model").transform;
+                                    child.SetParent(parent, false);
+                                    parent = c == 0 ? child : parent;
+                                }
+                            }
+
+                            Simulate(WarmUp);
+                            UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
+                            var prepare = new List<double>();
+                            var run = new List<double>();
+                            var publish = new List<double>();
+                            var whole = new List<double>();
+                            for (int i = 0; i < Measured; i++)
+                            {
+                                long start = Stopwatch.GetTimestamp();
+                                scene.RunSimulationStages(Step, SimulationStage.PrepareSimulation, SimulationOption.All);
+                                prepare.Add(Since(start));
+                                start = Stopwatch.GetTimestamp();
+                                scene.RunSimulationStages(Step, SimulationStage.RunSimulation, SimulationOption.All);
+                                run.Add(Since(start));
+                                start = Stopwatch.GetTimestamp();
+                                scene.RunSimulationStages(Step, SimulationStage.PublishSimulationResults, SimulationOption.All);
+                                publish.Add(Since(start));
+                            }
+
+                            for (int i = 0; i < Measured; i++)
+                            {
+                                long start = Stopwatch.GetTimestamp();
+                                UnityEngine.Physics.Simulate(Step);
+                                whole.Add(Since(start));
+                            }
+
+                            report.Append($"{graph.Name} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threads} | " +
+                                $"{MinMedian(prepare)} | {MinMedian(run)} | {MinMedian(publish)} | {MinMedian(whole)}\n");
+                        }
+                    }
+                }
+
+                report.Append($"CPU load at the end {SampleLoad():F1}%\n");
+            }
+            finally
+            {
+                JobsUtility.JobWorkerCount = workers;
+                JobsUtility.JobDebuggerEnabled = jobDebugger;
+                VesselForest.Enabled = wasEnabled;
+                VesselForest.Locking = wasLocking;
+                VesselPipeline.Enabled = wasVessels;
+                UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
+            }
+
+            Debug.Log(report.ToString());
+            File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", "VesselStageBench.txt"), report.ToString());
+        }
+
         [Test]
         [Timeout(7200000)]
         public void Measure()

@@ -55,10 +55,35 @@ namespace Retooled
         static_cast<BodyCmd::GetIsSleeping&>(base).value = (RowFlags(object) & kBodySleeping) != 0;
     }
 
+    // Unity reads the pose of every awake body after each step, on the main thread, and the poses of the bodies whose
+    // Transforms moved before each step, mostly on job workers. The plugin reads the pose through the row's pointer
+    // wherever managed would read the same pointer without updating it first: on a worker, which can't update a pointer,
+    // and on the main thread during the read-back, when every pointer of the stepped world is current (see
+    // g_ReadBackWorld). Anywhere else on the main thread, the kernel answers, because it first updates a pointer that a
+    // structural change to the entity made stale.
+    static void GetPose(void* object, const Context& ctx, Command& base)
+    {
+        const Body* body = static_cast<const Body*>(object);
+        if (body != nullptr
+            && (std::this_thread::get_id() != g_MainThread || g_ReadBackWorld.load(std::memory_order_relaxed) == body->world))
+        {
+            const BodyPose* pose = BodyRow(body->world->data, body->index)->pose;
+            static_cast<BodyCmd::GetPose&>(base).value = Physics::Pose(pose->position.x, pose->position.y, pose->position.z,
+                pose->rotation.x, pose->rotation.y, pose->rotation.z, pose->rotation.w);
+            return;
+        }
+
+#ifdef RETOOLED_COMMAND_TRACE
+        NoteForwardedPose();
+#endif
+        Forwarded<BodyCmd::GetPose, &ManagedCallbacks::bodyCommand, None, PoseOut, true>(object, ctx, base);
+    }
+
     void BindBodyCommands(FunctionBinding* table)
     {
         table[static_cast<size_t>(BodyCmd::GetFlags::command)] = &GetFlags;
         table[static_cast<size_t>(BodyCmd::GetIsSleeping::command)] = &GetIsSleeping;
+        table[static_cast<size_t>(BodyCmd::GetPose::command)] = &GetPose;
 
         Bind<BodyCmd::SetFlags, [](CommandArgs& a, const auto& c)
         {
@@ -82,7 +107,6 @@ namespace Retooled
             PackPose(a, c.value);
             a.enabled = c.awake;
         }>(table);
-        Bind<BodyCmd::GetPose, None, PoseOut>(table);
         Bind<BodyCmd::AttachShape, [](CommandArgs& a, const auto& c)
         {
             a.pointer = c.shape;

@@ -24,9 +24,10 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker ValidateMesh = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ValidateMesh");
         internal static readonly ProfilerMarker DestroyWorld = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.DestroyWorld");
 
-        // These commands do more than read or write a field. Each is timed within the span for its command category.
-        // The remaining commands are too small to time individually, because recording a separate span would cost about
-        // as much as running the command.
+        // These commands do more than read or write a field. Each is timed within the span for its command category, or
+        // alone if the command is a read, because reads run without the category's span. The remaining commands are too
+        // small to time individually, because recording a separate span would cost about as much as running the command.
+        // For the same reason, reads such as the poses that Unity reads back after each step have no span at all.
         internal static readonly ProfilerMarker CreateBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.CreateBody");
         internal static readonly ProfilerMarker DestroyBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.DestroyBody");
         internal static readonly ProfilerMarker CreateJoint = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.CreateJoint");

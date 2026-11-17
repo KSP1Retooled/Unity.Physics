@@ -139,6 +139,14 @@ namespace KSP.Retooled.Physics
         // colliders after the build.
         private bool boundsCacheBuilt;
 
+        // The refit of the dynamic tree to the solved poses, which a step leaves running when it returns, and its jobs.
+        // The refit reads the built world and writes its dynamic bodies, the dynamic tree and the bounds cache, so every
+        // entry that reads or changes them finishes it first (FinishPendingRefit). Queries help to finish it instead,
+        // through the store's refit pointer, because they can run inside a job (see Query.cpp).
+        private SharedDynamicTreeRefit* sharedRefit;
+        private JobHandle refit;
+        private bool refitPending;
+
         /// <summary>
         /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
         /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
@@ -241,13 +249,23 @@ namespace KSP.Retooled.Physics
             wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
             colliderChanges = new NativeReference<uint>(0, Allocator.Persistent);
             boundsCache = new DynamicBoundsCache(colliderChanges.GetUnsafePtr(), Allocator.Persistent);
+            sharedRefit = (SharedDynamicTreeRefit*)UnsafeUtility.MallocTracked(sizeof(SharedDynamicTreeRefit), UnsafeUtility.AlignOf<SharedDynamicTreeRefit>(), Allocator.Persistent, 0);
+            UnsafeUtility.MemClear(sharedRefit, sizeof(SharedDynamicTreeRefit));
+            store->refit = sharedRefit;
+            store->treeReady = 1;
             knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
             learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
 
         internal void Dispose()
         {
+            // The refit writes the world that is freed below.
+            FinishPendingRefit();
             store->queryWorld = null;
+            store->refit = null;
+            sharedRefit->Dispose();
+            UnsafeUtility.FreeTracked(sharedRefit, Allocator.Persistent);
+            sharedRefit = null;
 
             forcesApplied.Complete();
             collidersBuilt.Complete();
@@ -359,6 +377,10 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal void ApplyForces(float deltaTime)
         {
+            // WorldState.Step has already finished the last step's refit. This is for a step that runs the systems
+            // some other way.
+            FinishPendingRefit();
+
             // A step that threw after this stage last time can have left the job running.
             forcesApplied.Complete();
             store->queryWorld = null;
@@ -763,11 +785,16 @@ namespace KSP.Retooled.Physics
             // bounds to the new poses is enough. Queries then find the same hits as in a rebuilt tree, but they can
             // report the hits of a query that returns many in a different order. Neither Unity nor PhysX promises an
             // order for those queries, and the order already changed from step to step as the bodies moved.
+            // The step doesn't wait for the refit: it runs on the workers while Unity reads the poses back on this
+            // thread. The refit clears the store's treeReady word now and sets it when it has finished. Until then,
+            // every entry that reads the tree or the built world finishes the refit first (FinishPendingRefit), and a
+            // query helps to finish it (see Query.cpp).
             // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
             // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
             // reads only Static, and neither job changes it.
-            JobHandle tree = world.CollisionWorld.ScheduleRefitDynamicTree(ref world, deltaTime, float3.zero, motionsSolved,
-                boundsCacheBuilt ? boundsCache : default);
+            refit = SharedDynamicTreeRefit.Schedule(sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
+                boundsCacheBuilt ? boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
+            refitPending = true;
             JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
             JobHandle.ScheduleBatchedJobs();
 
@@ -867,16 +894,13 @@ namespace KSP.Retooled.Physics
 
             // The built world matches the motions written back during this step unless a body received a different pose
             // during write-back. In that case, queries need a rebuild. The store cannot otherwise change during a step.
-            using (BackendMarkers.StepWaitForTree.Auto())
-            {
-                tree.Complete();
-            }
-
+            // Otherwise the published world is current once the refit has finished, and a main-thread query finishes it
+            // through a build.
             using (BackendMarkers.StepPublishQueryWorld.Auto())
             {
                 snapshot.Complete();
                 FinishQuerySnapshot();
-                store->queryDirty = motionsMatchStore ? 0u : StoreOps.QueryStale;
+                store->queryDirty = !motionsMatchStore ? StoreOps.QueryStale : store->treeReady == 0 ? StoreOps.QueryTreePending : 0u;
                 PublishQueryWorld();
             }
 
@@ -894,6 +918,14 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal void BuildForQueries()
         {
+            FinishPendingRefit();
+
+            // The world that the last step published is current now that its refit has finished.
+            if (store->queryDirty == StoreOps.QueryTreePending && builtWhole)
+            {
+                return;
+            }
+
             store->queryWorld = null;
             BodyEntities.PrepareForJobs(store);
 
@@ -919,6 +951,84 @@ namespace KSP.Retooled.Physics
             }
             FinishQuerySnapshot();
             PublishQueryWorld();
+        }
+
+        /// <summary>
+        /// Waits for the refit of the dynamic tree that the last step left running, if there is one. Call it on the main
+        /// thread, outside a job, before anything reads or changes the built world, the dynamic tree or the bounds
+        /// cache: the next step, a build for queries, and disposal. While the main thread waits in JobHandle.Complete,
+        /// it runs the jobs in the refit's dependency chain that no worker has taken, and only those, so it helps with
+        /// the refit itself. A query job that the main thread picked up can't complete a job at all, so the queries use
+        /// <see cref="HelpPendingRefit"/> and the plugin's helpRefit instead.
+        /// </summary>
+        internal void FinishPendingRefit()
+        {
+            if (!refitPending)
+            {
+                return;
+            }
+
+            using (BackendMarkers.StepWaitForTree.Auto())
+            {
+                refit.Complete();
+
+                // The jobs have done all of the work unless a test told them to leave it.
+                WaitForRefit();
+            }
+
+            refit = default;
+            refitPending = false;
+        }
+
+        /// <summary>
+        /// Finishes the refit that the last step left running on this thread, without completing a job: for the main
+        /// thread inside a job that it picked up while it waited, where completing a job throws. The refit's jobs stay
+        /// pending until <see cref="FinishPendingRefit"/>, but they have no work left.
+        /// </summary>
+        internal void HelpPendingRefit()
+        {
+            if (refitPending)
+            {
+                WaitForRefit();
+            }
+        }
+
+        /// <summary>
+        /// Does the refit's remaining work on this thread, and then waits for the threads that run its last pieces, if
+        /// any.
+        /// </summary>
+        private void WaitForRefit()
+        {
+            sharedRefit->Help();
+            int* ready = &store->treeReady;
+            while (System.Threading.Interlocked.CompareExchange(ref *ready, 0, -1) == 0)
+            {
+                AddressWait.Wait(ready, 0);
+                Unity.Burst.Intrinsics.Common.Pause();
+            }
+        }
+
+        /// <summary>Whether a refit that the last step left running may still be running. Used by tests.</summary>
+        internal readonly bool RefitPending => refitPending;
+
+        /// <summary>
+        /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
+        /// has finished.
+        /// </summary>
+        internal readonly bool OnlyRefitPending => store->queryDirty == StoreOps.QueryTreePending && builtWhole && store->queryWorld != null;
+
+        /// <summary>
+        /// Sets the store's treeReady word after a step that threw, unless a refit is pending, whose jobs set it. A step
+        /// that throws after it cleared the word and before it scheduled the refit would otherwise leave every query
+        /// waiting.
+        /// </summary>
+        internal void ReleaseTreeAfterThrow()
+        {
+            if (!refitPending)
+            {
+                System.Threading.Interlocked.Exchange(ref store->treeReady, 1);
+                AddressWait.WakeAll(&store->treeReady);
+            }
         }
 
         /// <summary>

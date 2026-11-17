@@ -21,6 +21,7 @@ namespace Retooled
     ManagedCallbacks g_Managed{};
     std::thread::id g_MainThread;
     std::vector<World*> g_Worlds;
+    std::atomic<World*> g_ReadBackWorld{nullptr};
 
     static IUnityLog* s_Log;
     static bool s_Registered;
@@ -117,12 +118,54 @@ namespace Retooled
         BindExtensionCommands(s_Extension.data());
     }
 
+#ifdef RETOOLED_COMMAND_TRACE
+    // How many commands of each category and id arrived, on the main thread ([0]) and on other threads ([1]), since the
+    // last read. Tests read and reset the counts between the stages of a step to see which commands each stage sends.
+    static std::atomic<uint32_t> s_Trace[2][16][256];
+
+    void NoteForwardedPose()
+    {
+        const uint32_t thread = std::this_thread::get_id() == g_MainThread ? 0 : 1;
+        s_Trace[thread][15][static_cast<uint32_t>(BodyCmd::GetPose::command)].fetch_add(1, std::memory_order_relaxed);
+    }
+
+    extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API RetooledPhysics_ReadCommandTrace(uint32_t* counts)
+    {
+        for (uint32_t thread = 0; thread < 2; thread++)
+        {
+            for (uint32_t category = 0; category < 16; category++)
+            {
+                for (uint32_t id = 0; id < 256; id++)
+                {
+                    counts[(thread * 16 + category) * 256 + id] = s_Trace[thread][category][id].exchange(0, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+#endif
+
     static void ProcessCommand(void* object, const Context& ctx, const uint32_t function, Command& command)
     {
         const uint32_t id = function & kReverseFullMask;
         if (!s_Attached.load(std::memory_order_relaxed))
         {
             NoteDetachedCommand((function & kFullMask) >> kMaskOffsetSize, id);
+        }
+
+#ifdef RETOOLED_COMMAND_TRACE
+        if (id < 256)
+        {
+            const uint32_t thread = std::this_thread::get_id() == g_MainThread ? 0 : 1;
+            s_Trace[thread][(function & kFullMask) >> kMaskOffsetSize][id].fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
+
+        // The read-back after a step sends only these three commands per body. Any other command ends it.
+        if ((function & kFullMask) != kBodyFunctionMask
+            || (id != static_cast<uint32_t>(BodyCmd::GetPose::command) && id != static_cast<uint32_t>(BodyCmd::GetFlags::command)
+                && id != static_cast<uint32_t>(BodyCmd::GetIsSleeping::command)))
+        {
+            CloseReadBack();
         }
 
 #ifdef RETOOLED_VEHICLE_TRACE

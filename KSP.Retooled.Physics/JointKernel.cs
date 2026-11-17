@@ -103,8 +103,37 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.JointCommand.Auto();
+            // A span costs about as much as a read, so reads run without the category's span, as in BodyKernel.
+            if (IsRead((JointCommand)command))
+            {
+                Dispatch(command, handle, args);
+                return;
+            }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.JointCommand.Auto();
+            Dispatch(command, handle, args);
+        }
+
+        /// <summary>Whether the command only reads the joint. Reads run without the category's span.</summary>
+        internal static bool IsRead(JointCommand command)
+        {
+            switch (command)
+            {
+                case JointCommand.GetFlags:
+                case JointCommand.GetUserData:
+                case JointCommand.GetActorLocalPose:
+                case JointCommand.GetIsConstraintValid:
+                case JointCommand.GetForces:
+                case JointCommand.GetActors:
+                case JointCommand.Get6DofLimit:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args)
+        {
             bool ranInMono = false;
             RunInMono(command, handle, args, ref ranInMono);
             if (!ranInMono)

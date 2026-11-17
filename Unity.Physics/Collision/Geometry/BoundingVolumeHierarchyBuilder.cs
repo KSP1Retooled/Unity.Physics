@@ -784,8 +784,13 @@ namespace Unity.Physics
         /// </summary>
         internal unsafe void RefitSubtree(int root, NativeArray<Aabb> aabbs)
         {
+            RefitSubtree(root, (Aabb*)aabbs.GetUnsafeReadOnlyPtr());
+        }
+
+        /// <summary>As <see cref="RefitSubtree(int, NativeArray{Aabb})"/>, with the bounds of the leaves' elements.</summary>
+        internal unsafe void RefitSubtree(int root, Aabb* bounds)
+        {
             Node* baseNode = m_Nodes;
-            Aabb* bounds = (Aabb*)aabbs.GetUnsafeReadOnlyPtr();
 
             // The stack holds the nodes that still have to be visited, and the internal nodes whose children are
             // being visited, as the complement of their index. Node indices start at 1, so a complement is always

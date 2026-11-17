@@ -183,6 +183,13 @@ namespace KSP.Retooled.Physics
         internal const uint QueryStaticsMoved = 2;
 
         /// <summary>
+        /// Marks a query world that is current once the refit of the dynamic tree that the last step left running has
+        /// finished (kQueryTreePending in Store.h). A main-thread query then asks for a build, which finishes the refit.
+        /// Every build finishes a pending refit first, so the other marks can replace this one.
+        /// </summary>
+        internal const uint QueryTreePending = 3;
+
+        /// <summary>
         /// Marks the query world as stale. The write is atomic because worker threads read this flag.
         /// </summary>
         internal static void MarkQueryDirty(NativeStore.WorldData* world)
@@ -192,11 +199,17 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Marks the query world after a static body has only moved. If the world is already marked as stale, it
-        /// remains stale because a full rebuild will include this movement.
+        /// remains stale because a full rebuild will include this movement. A world that waits only for the refit
+        /// needs the static bodies posed as well.
         /// </summary>
         internal static void MarkStaticMoved(NativeStore.Body* body)
         {
-            Interlocked.CompareExchange(ref *(int*)&body->world->queryDirty, (int)QueryStaticsMoved, 0);
+            ref int dirty = ref *(int*)&body->world->queryDirty;
+            if (Interlocked.CompareExchange(ref dirty, (int)QueryStaticsMoved, 0) == (int)QueryTreePending)
+            {
+                Interlocked.CompareExchange(ref dirty, (int)QueryStaticsMoved, (int)QueryTreePending);
+            }
+
             body->world->staticsVersion++;
         }
 

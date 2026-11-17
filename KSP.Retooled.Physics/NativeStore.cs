@@ -70,8 +70,13 @@ namespace KSP.Retooled.Physics
             public BodyFlags flags;
             public uint shapeCount;
 
-            // The plugin uses only the fields above. The fields below can change without rebuilding the plugin.
+            /// <summary>
+            /// Points to the body's pose. The plugin reads the pose through this pointer to answer GetPose where this
+            /// code would read the same pointer without refreshing it first (see Body.cpp).
+            /// </summary>
             public LocalTransform* pose;
+
+            // The plugin uses only the fields above. The fields below can change without rebuilding the plugin.
             public PhysicsVelocity* velocity;
             public PhysicsMass* mass;
             public BodyMass* bodyMass;
@@ -651,6 +656,16 @@ namespace KSP.Retooled.Physics
             public VehicleData** vehicles;
             public uint vehicleCount;
             public uint vehicleCapacity;
+
+            /// <summary>
+            /// 0 while the refit of the dynamic tree that the last step left running is pending, and 1 otherwise. See
+            /// <see cref="StepState.FinishStep"/> and Query.cpp.
+            /// </summary>
+            public int treeReady;
+            private readonly uint reserved0;
+
+            /// <summary>The refit that a query helps to finish while <see cref="treeReady"/> is 0.</summary>
+            public SharedDynamicTreeRefit* refit;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -816,7 +831,12 @@ namespace KSP.Retooled.Physics
             public IntPtr worldCommand;
             public IntPtr jointCommand;
             public IntPtr vehicleCommand;
+            public IntPtr helpRefit;
         }
+
+        /// <summary>Matches ManagedCallbacks::helpRefit: does the work that is left of a pending refit.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void RefitFunction(void* refit);
 
         [DllImport(Library)]
         private static extern int RetooledPhysics_StructSize(int id);
@@ -881,7 +901,7 @@ namespace KSP.Retooled.Physics
         {
             int[] sizes =
             {
-                UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.pose))),
+                UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.velocity))),
                 sizeof(ShapeData),
                 sizeof(MaterialData),
                 sizeof(WorldData),
@@ -936,6 +956,12 @@ namespace KSP.Retooled.Physics
                 {
                     return $"{names[i]} is {sizes[i]} here and {native} in the plugin. Rebuild the plugin with `RetooledCli native build`";
                 }
+            }
+
+            // The plugin reads a pose as BodyPose in Store.h: the position, the scale and the rotation.
+            if (sizeof(LocalTransform) != 32 || UnsafeUtility.GetFieldOffset(typeof(LocalTransform).GetField(nameof(LocalTransform.Rotation))) != 16)
+            {
+                return $"{nameof(LocalTransform)} doesn't have the layout of BodyPose in the plugin";
             }
 
             StoreGlobals* globals = RetooledPhysics_Globals();

@@ -112,6 +112,24 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
+        public void AScriptReadsThePoseOfAnEntityThatAnotherChangeMoved()
+        {
+            // The plugin reads poses through the rows on the main thread only while Unity reads them back after a step.
+            // Unity's read-back ends before the script runs again, so this read goes to the kernel, which follows the
+            // entity to its new chunk first.
+            float3 position = new float3(440.0f, 0.0f, 0.0f);
+            Rigidbody body = WeightlessBox(position);
+            WeightlessBox(new float3(445.0f, 0.0f, 0.0f));
+            Simulate();
+            Entity entity = EntityAt(position);
+
+            Manager.AddComponentData(entity, new Moved { Value = 1 });
+            Manager.SetComponentData(entity, LocalTransform.FromPosition(new float3(450.0f, 1.0f, 2.0f)));
+
+            Assert.That(body.position, Is.EqualTo(new Vector3(450.0f, 1.0f, 2.0f)));
+        }
+
+        [Test]
         public void ABodyAnotherChangeShuffledKeepsItsEntityThroughACreate()
         {
             float3 movedAt = new float3(410.0f, 0.0f, 0.0f);

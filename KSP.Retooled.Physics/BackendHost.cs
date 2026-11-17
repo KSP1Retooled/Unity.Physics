@@ -44,6 +44,7 @@ namespace KSP.Retooled.Physics
         private static readonly NativeStore.CommandFunction MonoWorldCommand = WorldKernel.Run;
         private static readonly NativeStore.CommandFunction MonoJointCommand = JointKernel.Run;
         private static readonly NativeStore.CommandFunction MonoVehicleCommand = VehicleKernel.Run;
+        private static readonly NativeStore.RefitFunction MonoHelpRefit = StepKernel.HelpRefit;
 
         private static Kernels compiledKernels;
         private static volatile bool kernelsCompiled;
@@ -287,6 +288,7 @@ namespace KSP.Retooled.Physics
                 worldCommand = kernels.worldCommand,
                 jointCommand = kernels.jointCommand,
                 vehicleCommand = kernels.vehicleCommand,
+                helpRefit = kernels.helpRefit,
             };
 
             NativeStore.RetooledPhysics_Attach(&callbacks);
@@ -330,6 +332,7 @@ namespace KSP.Retooled.Physics
                 worldCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(WorldKernel.Run).Value,
                 jointCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(JointKernel.Run).Value,
                 vehicleCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(VehicleKernel.Run).Value,
+                helpRefit = BurstCompiler.CompileFunctionPointer<NativeStore.RefitFunction>(StepKernel.HelpRefit).Value,
                 compiled = true,
             };
         }
@@ -346,6 +349,7 @@ namespace KSP.Retooled.Physics
                 worldCommand = Marshal.GetFunctionPointerForDelegate(MonoWorldCommand),
                 jointCommand = Marshal.GetFunctionPointerForDelegate(MonoJointCommand),
                 vehicleCommand = Marshal.GetFunctionPointerForDelegate(MonoVehicleCommand),
+                helpRefit = Marshal.GetFunctionPointerForDelegate(MonoHelpRefit),
                 compiled = false,
             };
         }
@@ -425,6 +429,7 @@ namespace KSP.Retooled.Physics
             public IntPtr worldCommand;
             public IntPtr jointCommand;
             public IntPtr vehicleCommand;
+            public IntPtr helpRefit;
             public bool compiled;
         }
 
@@ -485,15 +490,18 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Step.Auto();
 
+            WorldState state = null;
             try
             {
                 NoteStep();
-                StateOf(world).Step(entityWorld?.GetExistingSystemManaged<PhysicsSystemGroup>(), deltaTime);
+                state = StateOf(world);
+                state.Step(entityWorld?.GetExistingSystemManaged<PhysicsSystemGroup>(), deltaTime);
             }
             catch (Exception e)
             {
                 world->queryWorld = null;
                 world->queryDirty = 1;
+                state?.AfterFailedStep();
                 Debug.LogException(e);
             }
         }

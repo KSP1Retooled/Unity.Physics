@@ -72,8 +72,33 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.WorldCommand.Auto();
+            // Reads run without the category's span, as in BodyKernel. The reads that count or collect have their own.
+            if (IsRead((WorldCommand)command))
+            {
+                Dispatch(command, handle, args, globals);
+                return;
+            }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.WorldCommand.Auto();
+            Dispatch(command, handle, args, globals);
+        }
+
+        /// <summary>Whether the command only reads the world. Reads run without the category's span.</summary>
+        internal static bool IsRead(WorldCommand command)
+        {
+            switch (command)
+            {
+                case WorldCommand.GetBasicStats:
+                case WorldCommand.GetLastSimulationStats:
+                case WorldCommand.GetAllShapesByLayerMask:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)

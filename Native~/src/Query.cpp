@@ -4,6 +4,11 @@
 // Only the main thread rebuilds that world: it does so after a step, on a main-thread query, and when managed asks. A
 // worker reads the world last published, because it can't build one, and waiting for the main thread could deadlock with
 // the main thread completing the worker's job. So a worker sees the scene as of the last rebuild.
+//
+// A step publishes its world while the refit of the dynamic tree to the solved poses still runs (WorldData::treeReady).
+// A query that finds the refit pending does the refit's remaining work itself, through helpRefit, and then waits for
+// the threads that run its last pieces. It never waits for a job that may not run, so it can't deadlock, also on the
+// main thread inside a job that it picked up while it waited, where managed can't complete a job.
 
 #include <cstdio>
 #include <mutex>
@@ -84,6 +89,29 @@ namespace Retooled
         LogInfo(text);
     }
 
+    // Finishes the refit of the dynamic tree that the last step left running, with queryLock held shared, so that no step
+    // or build can start a new refit meanwhile. The refit's last pieces may be running on other threads, so this thread
+    // then waits for the word. Without a managed core, which finishes every pending refit when it detaches, it only waits.
+    static void FinishRefit(World* world)
+    {
+        std::atomic_ref<uint32_t> ready(world->data.treeReady);
+        if (ready.load(std::memory_order_acquire) != 0)
+        {
+            return;
+        }
+
+        void (*help)(void*) = g_Managed.helpRefit;
+        if (help != nullptr && world->data.refit != nullptr)
+        {
+            help(world->data.refit);
+        }
+
+        while (ready.load(std::memory_order_acquire) == 0)
+        {
+            WaitWhileWordIs(reinterpret_cast<int32_t*>(&world->data.treeReady), 0, 1000);
+        }
+    }
+
     // Runs one query under the shared lock. It reports nothing found if the core is detached or no world is published.
     static bool Query(World* world, QueryKind kind, const QueryInput& input, QueryOutput& output)
     {
@@ -92,19 +120,21 @@ namespace Retooled
             return false;
         }
 
-        if (IsDirty(world))
+        const uint32_t dirty = std::atomic_ref<uint32_t>(world->data.queryDirty).load(std::memory_order_acquire);
+        if (dirty != 0)
         {
             if (std::this_thread::get_id() == g_MainThread)
             {
                 SyncQueryWorld(world);
             }
-            else
+            else if (dirty != kQueryTreePending)
             {
                 NoteStaleQuery();
             }
         }
 
         std::shared_lock lock(world->queryLock);
+        FinishRefit(world);
         return g_Managed.query != nullptr && world->data.queryWorld != nullptr
             && g_Managed.query(kind, world->data.queryWorld, &input, &output) != 0;
     }

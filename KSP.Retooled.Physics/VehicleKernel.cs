@@ -63,8 +63,46 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.VehicleCommand.Auto();
+            // A WheelCollider's state is read every frame, and a span costs about as much as such a read, so reads run
+            // without the category's span, as in BodyKernel.
+            if (IsRead((VehicleCommand)command))
+            {
+                Dispatch(command, handle, args, globals);
+                return;
+            }
 
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.VehicleCommand.Auto();
+            Dispatch(command, handle, args, globals);
+        }
+
+        /// <summary>Whether the command only reads a vehicle. Reads run without the category's span.</summary>
+        internal static bool IsRead(VehicleCommand command)
+        {
+            switch (command)
+            {
+                case VehicleCommand.GetFirstDisabledWheelFromVehicle:
+                case VehicleCommand.GetVehicleHasImplicitSprungMasses:
+                case VehicleCommand.GetVehicleWheelQueryResult:
+                case VehicleCommand.GetVehicleWheelFilterData:
+                case VehicleCommand.GetVehicleWheelCount:
+                case VehicleCommand.GetVehicleWheelsUserData:
+                case VehicleCommand.GetVehicleWheelComOffset:
+                case VehicleCommand.GetVehicleSuspensionExpansionLimitEnabled:
+                case VehicleCommand.GetVehicleWheelSuspensionData:
+                case VehicleCommand.GetVehicleWheelData:
+                case VehicleCommand.GetVehicleWheelLocalPose:
+                case VehicleCommand.GetVehicleWheelRotationSpeed:
+                case VehicleCommand.GetVehicleWheelMotorTorque:
+                case VehicleCommand.GetVehicleWheelBrakeTorque:
+                case VehicleCommand.GetVehicleWheelSteerAngle:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
