@@ -330,10 +330,19 @@ namespace Unity.Physics
         /// <returns>   The calculated aabb. </returns>
         public Aabb CalculateAabb(RigidTransform transform, float uniformScale = 1.0f)
         {
-            float3 v0 = math.transform(transform, m_Vertex0 * uniformScale);
-            float3 v1 = math.transform(transform, m_Vertex1 * uniformScale);
+            return CalculateAabb(m_Vertex0, m_Vertex1, Radius, transform, uniformScale);
+        }
 
-            float3 scaledRadius = new float3(Radius * math.abs(uniformScale));
+        /// <summary>
+        /// The bounds of a capsule with the given ends and radius at the transform. The bounds cache of the
+        /// broadphase keeps the ends and radius for each body, and computes the bounds without the collider.
+        /// </summary>
+        internal static Aabb CalculateAabb(float3 vertex0, float3 vertex1, float radius, RigidTransform transform, float uniformScale)
+        {
+            float3 v0 = math.transform(transform, vertex0 * uniformScale);
+            float3 v1 = math.transform(transform, vertex1 * uniformScale);
+
+            float3 scaledRadius = new float3(radius * math.abs(uniformScale));
 
             return new Aabb
             {

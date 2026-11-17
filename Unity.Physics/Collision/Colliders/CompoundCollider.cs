@@ -816,19 +816,8 @@ namespace Unity.Physics
         /// <returns>   The calculated aabb. </returns>
         public Aabb CalculateAabb(RigidTransform transform, float uniformScale = 1.0f)
         {
-            Aabb outAabb = Math.TransformAabb(BoundingVolumeHierarchy.Domain, transform, uniformScale);
-            float3 center = outAabb.Center;
-            float scaledBoundingRadius = m_BoundingRadius * math.abs(uniformScale);
-            Aabb sphereAabb = new Aabb
-            {
-                Min = new float3(center - scaledBoundingRadius),
-                Max = new float3(center + scaledBoundingRadius)
-            };
-            outAabb.Intersect(sphereAabb);
-
-            return outAabb;
+            return Math.TransformAabbInSphere(BoundingVolumeHierarchy.Domain, m_BoundingRadius, transform, uniformScale);
         }
-
         /// <summary>   Cast a ray against this collider. </summary>
         ///
         /// <param name="input">    The input. </param>

@@ -259,7 +259,9 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Reads the switches of the bounds cache from the environment: RETOOLED_BOUNDS_CACHE=0 turns the cache off, and
         /// RETOOLED_BOUNDS_CHECK=1 turns on the check of every body that takes its bounds from the cache
-        /// (DynamicBoundsCache.CheckEnabled), whose mismatches the step logs.
+        /// (DynamicBoundsCache.CheckEnabled), whose mismatches the step logs. RETOOLED_SHAPE_BOUNDS=0 turns off the
+        /// part of the cache that keeps what each body's collider needs to compute its bounds without reading the
+        /// collider (DynamicBoundsCache.ShapesEnabled).
         /// </summary>
         internal static void ReadBoundsCacheSwitches()
         {
@@ -267,9 +269,11 @@ namespace KSP.Retooled.Physics
             BoundsCacheEnabled = cache != "0";
             string check = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
             DynamicBoundsCache.CheckEnabled = check == "1";
-            if (cache == "0" || check == "1")
+            string shapes = Environment.GetEnvironmentVariable("RETOOLED_SHAPE_BOUNDS");
+            DynamicBoundsCache.ShapesEnabled = shapes != "0";
+            if (cache == "0" || check == "1" || shapes == "0")
             {
-                UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}");
+                UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
             }
         }
         private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
@@ -1160,13 +1164,15 @@ namespace KSP.Retooled.Physics
             DynamicBoundsCache.CheckCounts* counts = DynamicBoundsCache.Counts;
             if (++counts->Steps % 1000 == 0)
             {
+                // Burst compiles this method into the step, and it can't join strings, so each message is one string.
                 UnityEngine.Debug.Log($"[BoundsCheck] {counts->Steps} steps: {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache");
+                UnityEngine.Debug.Log($"[BoundsCheck] {counts->ShapeMismatches} mismatches in {counts->ShapeHits} bodies that computed their bounds from the shape that the cache held");
             }
 
             if (counts->Mismatches != counts->LoggedMismatches)
             {
                 counts->LoggedMismatches = counts->Mismatches;
-                UnityEngine.Debug.LogError($"[BoundsCheck] {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache; last at index {counts->LastIndex}, entity {counts->LastEntity}, computed min {counts->LastComputedMin}, cached min {counts->LastCachedMin}");
+                UnityEngine.Debug.LogError($"[BoundsCheck] {counts->Mismatches} mismatches, among the {counts->Hits} bodies that took their bounds from the cache and the bodies that computed them from its shapes; last at index {counts->LastIndex}, entity {counts->LastEntity}, computed min {counts->LastComputedMin}, cached min {counts->LastCachedMin}");
             }
         }
 

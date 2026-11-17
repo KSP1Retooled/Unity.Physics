@@ -465,18 +465,26 @@ namespace Unity.Physics
         /// <returns>   The calculated aabb. </returns>
         public Aabb CalculateAabb(RigidTransform transform, float uniformScale = 1.0f)
         {
+            return Math.TransformAabb(LocalAabb(), transform, uniformScale);
+        }
+
+        /// <summary>
+        /// The bounds of the box in the collider's own space, which <see cref="CalculateAabb(RigidTransform, float)"/>
+        /// moves to the transform. They don't depend on the transform, so the bounds cache of the broadphase keeps
+        /// them for each body (see DynamicBoundsCache.ShapeBounds).
+        /// </summary>
+        internal Aabb LocalAabb()
+        {
             float3 x = math.mul(m_Orientation, new float3(m_Size.x, 0.0f, 0.0f));
             float3 y = math.mul(m_Orientation, new float3(0.0f, m_Size.y, 0.0f));
             float3 z = math.mul(m_Orientation, new float3(0.0f, 0.0f, m_Size.z));
 
             float3 halfExtentsInB = (math.abs(x) + math.abs(y) + math.abs(z)) * 0.5f;
-            Aabb localAabb = new Aabb
+            return new Aabb
             {
                 Min = m_Center - halfExtentsInB,
                 Max = m_Center + halfExtentsInB
             };
-
-            return Math.TransformAabb(localAabb, transform, uniformScale);
         }
 
         /// <summary>   Cast a ray against this collider. </summary>

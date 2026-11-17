@@ -882,7 +882,7 @@ namespace Unity.Physics
                 RigidBody body = bodies[i];
                 body.WorldFromBody = math.mul(motionDatas[i].WorldFromMotion, math.inverse(motionDatas[i].BodyFromMotion));
                 bodies[i] = body;
-                Aabb bounds = body.CalculateAabb();
+                Aabb bounds = cache.IsCreated ? cache.ColliderBounds(i, &body) : body.CalculateAabb();
                 aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, aabbMargin, gravity, timeStep, motionVelocities[i]);
 
                 // The bounds in the cache go with the body that the world now holds at index i: its collider at its

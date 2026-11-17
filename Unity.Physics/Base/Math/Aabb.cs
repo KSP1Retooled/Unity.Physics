@@ -194,6 +194,27 @@ namespace Unity.Physics
             };
         }
 
+        /// <summary>
+        /// Moves the bounds of a compound or a mesh to the transform as <see cref="TransformAabb(Aabb, RigidTransform, float)"/>
+        /// does, and then clips them to a cube around their center whose half side is the collider's bounding radius.
+        /// A rotated box can be much larger than the collider, and the cube is the bounds of the sphere that holds
+        /// the collider.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static Aabb TransformAabbInSphere(Aabb aabb, float boundingRadius, RigidTransform transform, float uniformScale)
+        {
+            Aabb outAabb = TransformAabb(aabb, transform, uniformScale);
+            float3 center = outAabb.Center;
+            float scaledBoundingRadius = boundingRadius * math.abs(uniformScale);
+            Aabb sphereAabb = new Aabb
+            {
+                Min = new float3(center - scaledBoundingRadius),
+                Max = new float3(center + scaledBoundingRadius)
+            };
+            outAabb.Intersect(sphereAabb);
+            return outAabb;
+        }
+
         /// <summary>   Transform an AABB into another space, expanding it as needed. </summary>
         ///
         /// <param name="aabb">         The aabb. </param>

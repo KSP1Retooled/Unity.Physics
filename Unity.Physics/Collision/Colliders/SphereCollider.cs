@@ -257,8 +257,17 @@ namespace Unity.Physics
         /// <returns>   The calculated aabb. </returns>
         public Aabb CalculateAabb(RigidTransform transform, float uniformScale = 1.0f)
         {
-            float3 centerInWorld = math.transform(transform, Center * uniformScale);
-            float3 scaledRadius = new float3(Radius * math.abs(uniformScale));
+            return CalculateAabb(Center, Radius, transform, uniformScale);
+        }
+
+        /// <summary>
+        /// The bounds of a sphere with the given center and radius at the transform. The bounds cache of the
+        /// broadphase keeps the center and radius for each body, and computes the bounds without the collider.
+        /// </summary>
+        internal static Aabb CalculateAabb(float3 center, float radius, RigidTransform transform, float uniformScale)
+        {
+            float3 centerInWorld = math.transform(transform, center * uniformScale);
+            float3 scaledRadius = new float3(radius * math.abs(uniformScale));
 
             return new Aabb
             {
