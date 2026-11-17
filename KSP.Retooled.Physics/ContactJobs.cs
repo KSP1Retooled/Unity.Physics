@@ -1162,6 +1162,101 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
+    /// Counts the commands that changed whether a shape is a trigger, or changed the filter that decides which shapes
+    /// collide with it. While this version stays the same, <see cref="WakeRefilteredPairsJob"/> doesn't run. The plugin
+    /// mirrors the records in the store, so there is no space for this counter in a world's record. All worlds share it,
+    /// as they share <see cref="JointTopology"/>.
+    /// </summary>
+    internal static class PairFilterVersion
+    {
+        private readonly struct Key { }
+
+        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
+
+        internal static uint Version => (uint)Shared.Data;
+
+        /// <summary>Moves the version on and returns the new value.</summary>
+        internal static unsafe uint Changed()
+        {
+            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
+        }
+    }
+
+    /// <summary>
+    /// Wakes the bodies of touching pairs whose shapes no longer pair as they did: a shape became a trigger or stopped
+    /// being one, or its filter no longer lets the two shapes collide. The step runs this job before it applies forces,
+    /// so that the narrow phase of the same step sees the pair as it is now.
+    /// </summary>
+    /// <remarks>
+    /// A pair whose bodies are both at rest stays in the touching pairs without being seen again, as a sleeping island
+    /// does in PhysX. If a static trigger turned solid while a body slept inside it, nothing ended the pair, and Unity
+    /// kept sending OnTriggerStay for it. PhysX wakes the body when the pair is filtered again: the trigger pair then
+    /// sends OnTriggerExit, and the new contact pair sends OnCollisionEnter in the same step.
+    /// </remarks>
+    [BurstCompile]
+    internal unsafe struct WakeRefilteredPairsJob : IJob
+    {
+        [NativeDisableUnsafePtrRestriction]
+        public NativeStore.WorldData* World;
+
+        [ReadOnly]
+        public NativeHashMap<ShapePairKey, ShapePairState> Touching;
+
+        public void Execute()
+        {
+            // The touching pairs still hold the shapes that were removed since the last step, because
+            // ForgetRemovedShapesJob drops them only later in the step. The store may have freed the memory of such a
+            // shape, so this job must not read it.
+            var removed = new NativeHashSet<IntPtr>((int)World->removedShapeCount, Allocator.Temp);
+            for (uint i = 0; i < World->removedShapeCount; i++)
+            {
+                removed.Add((IntPtr)World->removedShapes[i]);
+            }
+
+            foreach (KVPair<ShapePairKey, ShapePairState> pair in Touching)
+            {
+                if (removed.Contains(pair.Key.First) || removed.Contains(pair.Key.Second))
+                {
+                    continue;
+                }
+
+                NativeStore.ShapeData* first = (NativeStore.ShapeData*)pair.Key.First;
+                NativeStore.ShapeData* second = (NativeStore.ShapeData*)pair.Key.Second;
+                bool trigger = ((first->flags | second->flags) & NativeStore.ShapeFlagTrigger) != 0;
+                if (trigger == pair.Value.Trigger && Collide(first, second))
+                {
+                    continue;
+                }
+
+                Wake((NativeStore.Shape*)first);
+                Wake((NativeStore.Shape*)second);
+            }
+        }
+
+        /// <summary>
+        /// Whether the filters of two shapes let them collide or trigger, by the rules that the collider build follows.
+        /// Pairs that a script ignores are left out, because ignoring a pair wakes its bodies.
+        /// </summary>
+        private static bool Collide(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        {
+            return Responds(a) && Responds(b) && (a->belongsTo & b->collidesWith) != 0 && (b->belongsTo & a->collidesWith) != 0;
+        }
+
+        private static bool Responds(NativeStore.ShapeData* shape)
+        {
+            return shape->collidesWith != 0 && ((shape->flags & NativeStore.ShapeFlagTrigger) != 0 || shape->collisionDisabled == 0);
+        }
+
+        private static void Wake(NativeStore.Shape* shape)
+        {
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            {
+                JointKernel.WakeRow(StoreOps.Hot(shape->body));
+            }
+        }
+    }
+
+    /// <summary>
     /// Removes touching pairs that involve shapes detached from their bodies. These shapes produce no exit event, and
     /// new shapes may reuse their addresses. PhysX wakes a body when the shape supporting it is removed. Do the same
     /// here before sleeping and contact reporting, since both depend on whether the body is awake.
@@ -1319,16 +1414,38 @@ namespace KSP.Retooled.Physics
 
                 ShapePairKey key = ShapePairKey.Of(record.ShapeA, record.ShapeB);
                 bool found = !Touching.TryGetValue(key, out ShapePairState state);
+                if (!found && state.Trigger != record.Trigger)
+                {
+                    // A shape of the pair became a trigger or stopped being one while the two shapes touched. PhysX
+                    // then ends the old pair and starts the new one in the same step: the trigger pair sends
+                    // OnTriggerExit and the contact pair sends OnCollisionEnter, or the contact pair sends
+                    // OnCollisionExit and the trigger pair sends OnTriggerEnter. Without the exit, Unity kept the
+                    // trigger pair and sent OnTriggerStay for it in every step.
+                    EndPair(key, state);
+                    found = true;
+
+                    // The lost contact may have started a body pair of its own, so the shape pairs that follow start
+                    // another one.
+                    bodyPair = null;
+                }
+
                 state.LastSeen = Step;
                 state.Trigger = record.Trigger;
-                state.FirstIsTrigger = (IntPtr)TriggerOf(record.ShapeA, record.ShapeB) == key.First;
+                NativeStore.ShapeData* trigger = TriggerOf(record.ShapeA, record.ShapeB);
+                if (found)
+                {
+                    // Only a new pair sets the order: when a shape of a trigger pair becomes a trigger too, the flags
+                    // can pick the other shape, and the exit must still name the shapes as the enter did.
+                    state.FirstIsTrigger = (IntPtr)trigger == key.First;
+                }
+
                 Touching[key] = state;
 
                 if (record.Trigger)
                 {
                     if (found)
                     {
-                        AddTrigger(record.ShapeA, record.ShapeB, NativeStore.TriggerEventEnter);
+                        AddTrigger(trigger, trigger == record.ShapeA ? record.ShapeB : record.ShapeA, NativeStore.TriggerEventEnter);
                     }
 
                     continue;
@@ -1482,10 +1599,12 @@ namespace KSP.Retooled.Physics
             return (a->flags & NativeStore.ShapeFlagTrigger) != 0 ? a : b;
         }
 
-        private void AddTrigger(NativeStore.ShapeData* a, NativeStore.ShapeData* b, uint type)
+        /// <summary>
+        /// Adds a trigger event that names the two shapes in the order given. The caller picks the order, because the
+        /// shapes' flags may have changed since the pair entered.
+        /// </summary>
+        private void AddTrigger(NativeStore.ShapeData* trigger, NativeStore.ShapeData* other, uint type)
         {
-            NativeStore.ShapeData* trigger = TriggerOf(a, b);
-            NativeStore.ShapeData* other = trigger == a ? b : a;
             World->triggers[World->triggerCount++] = new NativeStore.TriggerEvent
             {
                 triggerShape = trigger->owner,
@@ -1521,37 +1640,50 @@ namespace KSP.Retooled.Physics
                 }
 
                 Touching.Remove(key);
-                if (state.Trigger)
-                {
-                    // Name the trigger first, as the pair's enter event did. When both shapes are triggers, the order
-                    // of the key can differ from the order that the enter event used.
-                    if (state.FirstIsTrigger)
-                    {
-                        AddTrigger(first, second, NativeStore.TriggerEventExit);
-                    }
-                    else
-                    {
-                        AddTrigger(second, first, NativeStore.TriggerEventExit);
-                    }
+                EndPair(key, state);
+            }
+        }
 
-                    continue;
+        /// <summary>
+        /// Reports the end of a touching pair whose shapes both still exist: the exit of a trigger pair, or the lost
+        /// touch of a contact pair if a script asked for it.
+        /// </summary>
+        private void EndPair(ShapePairKey key, ShapePairState state)
+        {
+            NativeStore.ShapeData* first = (NativeStore.ShapeData*)key.First;
+            NativeStore.ShapeData* second = (NativeStore.ShapeData*)key.Second;
+            if (state.Trigger)
+            {
+                // Name the shapes in the order of the pair's enter event, which Unity keeps the pair by. The flags can't
+                // tell that order any more when a shape stopped being a trigger, or when both shapes are triggers.
+                if (state.FirstIsTrigger)
+                {
+                    AddTrigger(first, second, NativeStore.TriggerEventExit);
+                }
+                else
+                {
+                    AddTrigger(second, first, NativeStore.TriggerEventExit);
                 }
 
-                ushort events = (ushort)(Messages(first, second) & NotifyTouchLost);
-                if (events != 0)
-                {
-                    NativeStore.BodyData* a = World->bodies + rowFirst;
-                    NativeStore.BodyData* b = World->bodies + rowSecond;
-                    NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, StoreOps.WorldAngularVelocity(*a), b->velocity->Linear, StoreOps.WorldAngularVelocity(*b));
-                    World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
-                    {
-                        thisCollider = EngineId(first->userData),
-                        otherCollider = EngineId(second->userData),
-                        events = events,
-                    };
+                return;
+            }
 
-                    pair->shapeCount = 1;
-                }
+            ushort events = (ushort)(Messages(first, second) & NotifyTouchLost);
+            if (events != 0)
+            {
+                int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
+                int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
+                NativeStore.BodyData* a = World->bodies + rowFirst;
+                NativeStore.BodyData* b = World->bodies + rowSecond;
+                NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, StoreOps.WorldAngularVelocity(*a), b->velocity->Linear, StoreOps.WorldAngularVelocity(*b));
+                World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
+                {
+                    thisCollider = EngineId(first->userData),
+                    otherCollider = EngineId(second->userData),
+                    events = events,
+                };
+
+                pair->shapeCount = 1;
             }
         }
 
