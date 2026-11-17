@@ -247,7 +247,7 @@ namespace Unity.Physics
     }
 
     /// <summary>   Steps a physics world. </summary>
-    public struct Simulation : ISimulation
+    public partial struct Simulation : ISimulation
     {
         /// <summary>   Gets the simulation type. </summary>
         ///
@@ -263,12 +263,6 @@ namespace Unity.Physics
         ///
         /// <value> The final job handle. </value>
         public JobHandle FinalJobHandle => JobHandle.CombineDependencies(FinalSimulationJobHandle, m_StepHandles.FinalDisposeHandle);
-
-        /// <summary>
-        /// Handle completing when motions are final, possibly before solver cleanup and event export.
-        /// Consumers of events must still wait for FinalSimulationJobHandle.
-        /// </summary>
-        internal JobHandle MotionsSolvedHandle => StepContext.HasMotionsSolved ? StepContext.MotionsSolved : FinalSimulationJobHandle;
 
         internal SimulationScheduleStage m_SimulationScheduleStage;
 
@@ -531,27 +525,6 @@ namespace Unity.Physics
                 JobHandle.CombineDependencies(handles.FinalExecutionHandle, postOverlapsHandle) : handles.FinalExecutionHandle;
 
             return m_StepHandles;
-        }
-
-        /// <summary>
-        /// Group filtered pairs into islands when DirectIslandSubsteps is positive.
-        /// Remove unsolved pairs before calling so that they do not connect islands or occupy phases.
-        /// </summary>
-        internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps)
-        {
-            if (input.World.NumDynamicBodies == 0)
-            {
-                return inputDeps;
-            }
-
-            JobHandle handle = DispatchPairSequencer.ScheduleSortPairsByIsland(input, StepContext.PairsToSortByIsland,
-                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps, out JobHandle disposed);
-
-            StepContext.CreateDispatchPairsJobHandle = handle;
-            m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(m_StepHandles.FinalDisposeHandle,
-                StepContext.PairsToSortByIsland.Dispose(handle), disposed);
-            m_StepHandles.FinalExecutionHandle = handle;
-            return handle;
         }
 
         /// <summary>   Schedule narrowphase jobs. </summary>
