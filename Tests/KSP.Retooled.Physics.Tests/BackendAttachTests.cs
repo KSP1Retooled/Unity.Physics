@@ -29,6 +29,8 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
+                // The ten steps (2.9) and the ray (5.3) did nothing, which the plugin says when the core attaches again.
+                LogAssert.Expect(LogType.Warning, new Regex(@"lost because the managed core was detached.* 2\.9x10.* 5\.3x1"));
                 BackendHost.Attach();
             }
 
@@ -77,6 +79,9 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
+                // The plugin names the commands that it couldn't run in a warning when the core attaches again: here
+                // CreateBody (2.14), AddForce (3.16) and SetLinearVelocity (3.20), among others.
+                LogAssert.Expect(LogType.Warning, new Regex(@"lost because the managed core was detached.* 2\.14x.* 3\.16x1.* 3\.20x1"));
                 BackendHost.Attach();
             }
 

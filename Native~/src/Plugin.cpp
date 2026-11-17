@@ -44,6 +44,14 @@ namespace Retooled
         }
     }
 
+    static void LogWarning(const char* message)
+    {
+        if (s_Log != nullptr)
+        {
+            s_Log->Log(kUnityLogTypeWarning, message, __FILE__, __LINE__);
+        }
+    }
+
     void LogError(const char* message)
     {
         if (s_Log != nullptr)
@@ -75,15 +83,31 @@ namespace Retooled
         }
     }
 
-    static void LogDetachedCommands()
+    // Which of those commands did nothing because they needed the managed core, so that they were lost. Most commands
+    // that come before the first attach (the SDK's set-up, the materials, CreateWorld, SetGravity) run in the plugin and
+    // aren't lost. A domain reload, a play mode change and a scene load send no command while the core is away; only a
+    // test that detaches the core on purpose, or the teardown after the core detached at quitting, has been seen to.
+    // A command lost any other way, for example a DestroyBody, would leave the store out of step with Unity, so the
+    // plugin names the lost commands in a warning at the next attach.
+    static std::atomic<uint32_t> s_Dropped[16][256];
+
+    // Set by NoteDroppedCommand while ProcessCommand runs a command on this thread.
+    static thread_local bool t_Dropped;
+
+    void NoteDroppedCommand()
     {
-        std::string text = "[RetooledPhysics] commands while detached (category.id x count):";
+        t_Dropped = true;
+    }
+
+    // Appends "category.id x count" for every non-zero count, resets the counts, and returns whether there were any.
+    static bool TakeCounts(std::atomic<uint32_t> (&counts)[16][256], std::string& text)
+    {
         bool any = false;
         for (uint32_t category = 0; category < 16; category++)
         {
             for (uint32_t id = 0; id < 256; id++)
             {
-                const uint32_t count = s_Detached[category][id].exchange(0, std::memory_order_relaxed);
+                const uint32_t count = counts[category][id].exchange(0, std::memory_order_relaxed);
                 if (count != 0)
                 {
                     text += " " + std::to_string(category) + "." + std::to_string(id) + "x" + std::to_string(count);
@@ -92,9 +116,21 @@ namespace Retooled
             }
         }
 
-        if (any)
+        return any;
+    }
+
+    static void LogDetachedCommands()
+    {
+        std::string text = "[RetooledPhysics] commands while detached (category.id x count):";
+        if (TakeCounts(s_Detached, text))
         {
             LogInfo(text.c_str());
+        }
+
+        std::string dropped = "[RetooledPhysics] commands that were lost because the managed core was detached (category.id x count):";
+        if (TakeCounts(s_Dropped, dropped))
+        {
+            LogWarning(dropped.c_str());
         }
     }
 
@@ -147,10 +183,15 @@ namespace Retooled
     static void ProcessCommand(void* object, const Context& ctx, const uint32_t function, Command& command)
     {
         const uint32_t id = function & kReverseFullMask;
+        const uint32_t category = (function & kFullMask) >> kMaskOffsetSize;
         if (!s_Attached.load(std::memory_order_relaxed))
         {
-            NoteDetachedCommand((function & kFullMask) >> kMaskOffsetSize, id);
+            NoteDetachedCommand(category, id);
         }
+
+        // A command can come back in here from a callback that it makes, so keep the flag of the outer command.
+        const bool outerDropped = t_Dropped;
+        t_Dropped = false;
 
 #ifdef RETOOLED_COMMAND_TRACE
         if (id < 256)
@@ -203,6 +244,13 @@ namespace Retooled
             default:
                 break;
         }
+
+        if (t_Dropped && category < 16 && id < 256)
+        {
+            s_Dropped[category][id].fetch_add(1, std::memory_order_relaxed);
+        }
+
+        t_Dropped = outerDropped;
     }
 
     extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces* interfaces)

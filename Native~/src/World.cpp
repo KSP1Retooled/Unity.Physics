@@ -115,6 +115,7 @@ namespace Retooled
         World* world = AsWorld(object);
         if (g_Managed.simulate == nullptr)
         {
+            NoteDroppedCommand();
             command.ranSimulation = false;
             return;
         }
