@@ -394,6 +394,134 @@ namespace Unity.Physics
             return shouldDoWork.Dispose(handle);
         }
 
+        /// <summary>
+        /// Schedules jobs that do the work of <see cref="ScheduleDynamicTreeBuildJobs(ref PhysicsWorld, float, float3, int, JobHandle, DynamicBoundsCache, bool)"/>
+        /// without building the tree again: they compute every body's bounds, filter and response as the build does, and
+        /// then fit the bounds of the tree that the last build left to them. The tree keeps its shape, so each leaf
+        /// holds the same body indices as before. Use it only when the last build of the tree, or the last refit of
+        /// this kind, was for the same number of dynamic bodies; the caller should also make sure that the bodies are
+        /// mostly the bodies that the tree was built for, because the tree is only as good as the grouping of the
+        /// bodies that it was built for.
+        /// <para>
+        /// The leaves get exactly the bounds that a build would give them, and every node's bounds and filter hold
+        /// all of its children's, as in a built tree. So the tree finds exactly the pairs of bodies that a built tree
+        /// finds, though in another order, and queries find exactly the same hits. When a body's filter differs from
+        /// the filter that the tree held for its index, the refit builds the nodes' filters again from the bodies'.
+        /// </para>
+        /// <para>
+        /// The jobs leave in <paramref name="results"/> whether a filter changed, and two surface areas that tell how
+        /// good the tree still is (see <see cref="DynamicTreeRefitResults.Quality"/>). The caller keeps the results
+        /// at a fixed address and reads them only after the jobs have completed.
+        /// </para>
+        /// </summary>
+        internal unsafe JobHandle ScheduleDynamicTreeRefitBuildJobs(ref PhysicsWorld world, float timeStep, float3 gravity,
+            JobHandle inputDeps, DynamicBoundsCache boundsCache, DynamicTreeRefitResults* results)
+        {
+            using var scope = ScheduleDynamicBuildJobsMarker.Auto();
+
+            int count = world.NumDynamicBodies;
+            Assert.AreEqual(count, DynamicTree.NumBodies);
+            Assert.IsTrue(count > 0);
+
+            results->FiltersChanged = 0;
+            var aabbs = new NativeArray<Aabb>(count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            JobHandle handle = new PrepareDynamicBodyDataJob
+            {
+                RigidBodies = world.DynamicBodies,
+                MotionVelocities = world.MotionVelocities,
+                Aabbs = aabbs,
+                FiltersOut = DynamicTree.BodyFilters.AsArray(),
+                RespondsToCollisionOut = DynamicTree.RespondsToCollision.AsArray(),
+                BodySolverTypesOut = DynamicTree.BodySolverTypes.AsArray(),
+                AabbMargin = world.CollisionWorld.CollisionTolerance * 0.5f, // each body contributes half
+                TimeStep = timeStep,
+                Gravity = gravity,
+                Incremental = DynamicTree.IncrementalRef,
+                Cache = boundsCache.IsCreated ? boundsCache.Resize(count) : default,
+                FiltersChanged = &results->FiltersChanged,
+            }.Schedule(count, 32, inputDeps);
+
+            // As in CollisionWorld.ScheduleRefitDynamicTree, the subtrees below the cut are fitted in parallel, and then
+            // one job fits the few nodes above the cut.
+            handle = new RefitBuiltSubtreesJob
+            {
+                Tree = DynamicTree,
+                Aabbs = aabbs,
+                Results = results,
+            }.Schedule(BoundingVolumeHierarchy.RefitSubtreeCount, 1, handle);
+
+            return new RefitBuiltTreeTopJob
+            {
+                Tree = DynamicTree,
+                Aabbs = aabbs,
+                Results = results,
+            }.Schedule(handle);
+        }
+
+        /// <summary>
+        /// Fits one subtree below the cut of the dynamic tree in each iteration, for
+        /// <see cref="ScheduleDynamicTreeRefitBuildJobs"/>, and records the subtree's areas.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct RefitBuiltSubtreesJob : IJobParallelFor
+        {
+            [NativeDisableContainerSafetyRestriction]
+            public Tree Tree;
+
+            [ReadOnly]
+            public NativeArray<Aabb> Aabbs;
+
+            [NativeDisableUnsafePtrRestriction]
+            public DynamicTreeRefitResults* Results;
+
+            public void Execute(int slot)
+            {
+                BoundingVolumeHierarchy bvh = Tree.BoundingVolumeHierarchy;
+                BoundingVolumeHierarchy.MeasuringFitter fitter = Results->Fitter(Tree, (Aabb*)Aabbs.GetUnsafeReadOnlyPtr());
+                int root = bvh.FindRefitSubtree(slot);
+                if (root != 0)
+                {
+                    bvh.RefitSubtree(root, ref fitter);
+                }
+
+                Results->SlotNodeAreas[slot] = fitter.NodeArea;
+                Results->SlotLeafAreas[slot] = fitter.LeafArea;
+            }
+        }
+
+        /// <summary>
+        /// Fits the nodes above the cut of the dynamic tree after <see cref="RefitBuiltSubtreesJob"/>, and adds up the
+        /// areas of the whole tree.
+        /// </summary>
+        [BurstCompile]
+        unsafe struct RefitBuiltTreeTopJob : IJob
+        {
+            [NativeDisableContainerSafetyRestriction]
+            public Tree Tree;
+
+            [ReadOnly, DeallocateOnJobCompletion]
+            public NativeArray<Aabb> Aabbs;
+
+            [NativeDisableUnsafePtrRestriction]
+            public DynamicTreeRefitResults* Results;
+
+            public void Execute()
+            {
+                BoundingVolumeHierarchy.MeasuringFitter fitter = Results->Fitter(Tree, (Aabb*)Aabbs.GetUnsafeReadOnlyPtr());
+                Tree.BoundingVolumeHierarchy.RefitAboveCut(ref fitter);
+                float nodeArea = fitter.NodeArea;
+                float leafArea = 0.0f;
+                for (int slot = 0; slot < BoundingVolumeHierarchy.RefitSubtreeCount; slot++)
+                {
+                    nodeArea += Results->SlotNodeAreas[slot];
+                    leafArea += Results->SlotLeafAreas[slot];
+                }
+
+                Results->NodeArea = nodeArea;
+                Results->LeafArea = leafArea;
+            }
+        }
+
         #endregion
 
         #region Find overlaps
@@ -1400,7 +1528,7 @@ namespace Unity.Physics
 
         // Reads broadphase data from dynamic rigid bodies
         [BurstCompile]
-        internal struct PrepareDynamicBodyDataJob : IJobParallelFor
+        internal unsafe struct PrepareDynamicBodyDataJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<RigidBody> RigidBodies;
             [ReadOnly] public NativeArray<MotionVelocity> MotionVelocities;
@@ -1424,9 +1552,18 @@ namespace Unity.Physics
             /// <summary>The cache of the bodies' bounds, or a view that is not created.</summary>
             public DynamicBoundsCache.View Cache;
 
+            /// <summary>
+            /// Null for a build of the tree. For a refit of the tree that the last build left (see
+            /// <see cref="ScheduleDynamicTreeRefitBuildJobs"/>), the job sets this word to 1 when any body's filter
+            /// differs from the filter that the arrays held before, because the nodes' filters must then be built
+            /// again. A refit doesn't read <see cref="Points"/>, so the job writes them only when they are created.
+            /// </summary>
+            [NativeDisableUnsafePtrRestriction]
+            public int* FiltersChanged;
+
             public unsafe void Execute(int index)
             {
-                if (!Cache.IsCreated)
+                if (!Cache.IsCreated && FiltersChanged == null)
                 {
                     ExecuteImpl(index, AabbMargin, Gravity, TimeStep, RigidBodies, MotionVelocities, Aabbs, Points, FiltersOut, RespondsToCollisionOut, BodySolverTypesOut, Incremental);
                     return;
@@ -1442,7 +1579,7 @@ namespace Unity.Physics
                 Aabb bounds;
                 CollisionFilter filter;
                 bool responds;
-                if (Cache.Holds(index, body))
+                if (Cache.IsCreated && Cache.Holds(index, body))
                 {
                     if (Cache.Check != null)
                     {
@@ -1458,7 +1595,10 @@ namespace Unity.Physics
                     bounds = body.CalculateAabb();
                     filter = body.Collider.Value.GetCollisionFilter();
                     responds = body.Collider.Value.RespondsToCollision;
-                    Cache.Write(index, body, bounds);
+                    if (Cache.IsCreated)
+                    {
+                        Cache.Write(index, body, bounds);
+                    }
                 }
                 else
                 {
@@ -1467,16 +1607,30 @@ namespace Unity.Physics
                     responds = false;
                 }
 
+                // The filters that the last build left belong to the bodies at the same indices, and the nodes'
+                // filters were built from them.
+                if (FiltersChanged != null)
+                {
+                    var before = (CollisionFilter*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(FiltersOut);
+                    if (!before[index].Equals(filter))
+                    {
+                        *FiltersChanged = 1;
+                    }
+                }
+
                 var aabb = ExpandAabb(bounds, AabbMargin, Gravity, TimeStep, MotionVelocities[index]);
                 FiltersOut[index] = filter;
                 RespondsToCollisionOut[index] = responds;
                 BodySolverTypesOut[index] = body.Collider.IsCreated ? body.SolverType : Solver.kDefaultSolverType;
                 Aabbs[index] = aabb;
-                Points[index] = new PointAndIndex
+                if (Points.IsCreated)
                 {
-                    Position = aabb.Center,
-                    Index = index
-                };
+                    Points[index] = new PointAndIndex
+                    {
+                        Position = aabb.Center,
+                        Index = index
+                    };
+                }
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2184,6 +2338,46 @@ namespace Unity.Physics
                 same.Dispose();
                 heldVersion.Dispose();
             }
+        }
+    }
+
+    /// <summary>
+    /// What the jobs of <see cref="Broadphase.ScheduleDynamicTreeRefitBuildJobs"/> leave for the code that decides
+    /// whether the next build of the dynamic tree may refit the tree again. The owner keeps it at a fixed address, and
+    /// reads it on the main thread only after the jobs have completed.
+    /// </summary>
+    internal unsafe struct DynamicTreeRefitResults
+    {
+        /// <summary>1 when a body's filter differed from the filter that the tree held for its index, and 0 otherwise.</summary>
+        public int FiltersChanged;
+
+        /// <summary>The sum of the surface areas of the bounds of every node below the root.</summary>
+        public float NodeArea;
+
+        /// <summary>The sum of the surface areas of the bounds of every body in the tree.</summary>
+        public float LeafArea;
+
+        /// <summary>The two sums for each subtree below the cut, which the subtree's iteration writes.</summary>
+        public fixed float SlotNodeAreas[BoundingVolumeHierarchy.RefitSubtreeCount];
+        public fixed float SlotLeafAreas[BoundingVolumeHierarchy.RefitSubtreeCount];
+
+        /// <summary>
+        /// The node area for each unit of leaf area, or 0 when the tree has no area. A tree that groups bodies that
+        /// are close together has small nodes, so this number grows as the bodies of a node move apart. The bounds of
+        /// the bodies themselves grow or shrink with their speed, and dividing by the leaf area keeps such a change
+        /// from looking like a worse tree.
+        /// </summary>
+        public float Quality => LeafArea > 0.0f ? NodeArea / LeafArea : 0.0f;
+
+        /// <summary>The fitter for the refit's jobs, which builds the nodes' filters again when a body's filter changed.</summary>
+        internal BoundingVolumeHierarchy.MeasuringFitter Fitter(Broadphase.Tree tree, Aabb* bounds)
+        {
+            return new BoundingVolumeHierarchy.MeasuringFitter
+            {
+                Bounds = bounds,
+                LeafFilters = FiltersChanged != 0 ? tree.BodyFilters.GetUnsafeList()->Ptr : null,
+                NodeFilters = tree.NodeFilters.GetUnsafeList()->Ptr,
+            };
         }
     }
 }

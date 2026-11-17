@@ -90,6 +90,12 @@ namespace Unity.Physics.Tests.Collision.World
                 }
             }
 
+            /// <summary>Gives body i's collider the filter. Each body has a collider of its own, so no other body changes.</summary>
+            public void SetFilter(int i, CollisionFilter filter)
+            {
+                colliders[i].Value.SetCollisionFilter(filter);
+            }
+
             public void Dispose()
             {
                 World.Dispose();
@@ -484,6 +490,186 @@ namespace Unity.Physics.Tests.Collision.World
         {
             Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
             Assert.That(math.asuint(actual.Max), Is.EqualTo(math.asuint(expected.Max)), what);
+        }
+
+        /// <summary>
+        /// The pairs of bodies that the step's parallel search finds in the trees, each with the lower index first,
+        /// with the pair's solver type, sorted.
+        /// </summary>
+        static List<(int, int, int)> OverlapPairs(ref PhysicsWorld world)
+        {
+            SimulationJobHandles handles = world.CollisionWorld.Broadphase.ScheduleFindOverlapsJobs(
+                out NativeStream dynamicPairs, out NativeStream staticPairs, default, multiThreaded: true);
+            handles.FinalExecutionHandle.Complete();
+            handles.FinalDisposeHandle.Complete();
+            var pairs = new List<(int, int, int)>();
+            foreach (NativeStream stream in new[] { dynamicPairs, staticPairs })
+            {
+                NativeStream.Reader reader = stream.AsReader();
+                for (int i = 0; i < reader.ForEachCount; i++)
+                {
+                    int count = reader.BeginForEachIndex(i);
+                    for (int j = 0; j < count; j++)
+                    {
+                        Broadphase.OverlapResult pair = reader.Read<Broadphase.OverlapResult>();
+                        int a = pair.BodyPair.BodyIndexA, b = pair.BodyPair.BodyIndexB;
+                        pairs.Add((math.min(a, b), math.max(a, b), (int)pair.SolverType));
+                    }
+
+                    reader.EndForEachIndex();
+                }
+
+                stream.Dispose();
+            }
+
+            pairs.Sort();
+            return pairs;
+        }
+
+        /// <summary>
+        /// A build that refits the tree of the last build (<see cref="Broadphase.ScheduleDynamicTreeRefitBuildJobs"/>),
+        /// after the bodies have moved and some bodies' filters have changed, gives every body the bounds that a build
+        /// from scratch gives it, to the last bit, and the search finds exactly the pairs that it finds in the tree of
+        /// a build from scratch, though the two trees have different shapes. Some bodies first collide with nothing,
+        /// so that the nodes above them exclude everything, and then collide with everything, so that a pair is lost
+        /// unless the refit builds the nodes' filters again. Other bodies go the other way, or join a group that never
+        /// collides with itself.
+        /// </summary>
+        [Test]
+        public unsafe void ARefitBuildFindsThePairsOfABuildFromScratch([Values(1, 8)] int threads, [Values(false, true)] bool changeFilters)
+        {
+            const int count = 2000;
+            (float3[] positions, float[] sizes) = RandomScene(count, 21);
+            using var scene = new BoxWorld(positions, sizes, 21);
+            ref PhysicsWorld world = ref scene.World;
+            Broadphase.Tree tree = world.CollisionWorld.Broadphase.DynamicTree;
+            var none = new CollisionFilter { BelongsTo = 0u, CollidesWith = 0u };
+            var grouped = new CollisionFilter { BelongsTo = ~0u, CollidesWith = ~0u, GroupIndex = -3 };
+            for (int i = 0; i < count; i += 5)
+            {
+                scene.SetFilter(i, none);
+            }
+
+            var results = (DynamicTreeRefitResults*)UnsafeUtility.Malloc(sizeof(DynamicTreeRefitResults), 16, Allocator.Persistent);
+            UnsafeUtility.MemClear(results, sizeof(DynamicTreeRefitResults));
+            try
+            {
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default).Complete();
+                Node[] built = tree.Nodes.AsArray().ToArray();
+
+                // As at the end of a step and the start of the next.
+                scene.Move(22, 8.0f);
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default).Complete();
+                WriteBack(ref world, 23);
+                if (changeFilters)
+                {
+                    for (int i = 0; i < count; i += 5)
+                    {
+                        scene.SetFilter(i, CollisionFilter.Default);
+                        scene.SetFilter(i + 1, i % 2 == 0 ? none : grouped);
+                    }
+                }
+
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeRefitBuildJobs(ref world, TimeStep, Gravity, default, default, results).Complete();
+                Assert.That(results->FiltersChanged, Is.EqualTo(changeFilters ? 1 : 0), "the refit saw whether a filter changed");
+                Assert.That(results->Quality, Is.GreaterThan(1.0f), "the nodes hold more area than the bodies");
+                NativeArray<Node> refitted = tree.Nodes.AsArray();
+                for (int n = 0; n < refitted.Length; n++)
+                {
+                    Assert.That(refitted[n].Data, Is.EqualTo(built[n].Data), $"node {n} keeps the shape of the build");
+                }
+
+                Aabb[] refittedBounds = LeafBounds(tree, count);
+                CollisionFilter[] refittedFilters = tree.BodyFilters.AsArray().ToArray();
+                List<(int, int, int)> refittedPairs = OverlapPairs(ref world);
+
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, threads, default).Complete();
+                Aabb[] builtBounds = LeafBounds(tree, count);
+                List<(int, int, int)> builtPairs = OverlapPairs(ref world);
+                int moved = 0;
+                for (int n = 0; n < math.min(built.Length, tree.Nodes.Length); n++)
+                {
+                    moved += math.any(tree.Nodes[n].Data != built[n].Data) ? 1 : 0;
+                }
+
+                UnityEngine.Debug.Log($"[DynamicTreeRefitTests] {builtPairs.Count} pairs, {moved} nodes of the new build differ from the old one's, quality {results->Quality}");
+                Assert.That(moved, Is.GreaterThan(0), "the build from scratch made a tree of another shape");
+                Assert.That(builtPairs.Count, Is.GreaterThan(100), "the scene has pairs");
+                for (int i = 0; i < count; i++)
+                {
+                    AssertSameBounds(builtBounds[i], refittedBounds[i], $"body {i}'s bounds");
+                    Assert.That(refittedFilters[i], Is.EqualTo(tree.BodyFilters[i]), $"body {i}'s filter");
+                }
+
+                Assert.That(refittedPairs, Is.EqualTo(builtPairs));
+            }
+            finally
+            {
+                UnsafeUtility.Free(results, Allocator.Persistent);
+            }
+        }
+
+        /// <summary>
+        /// With the bounds cache, a refit build reads a body's filter from the cache only for the body that the cache
+        /// holds. A body at the same index whose collider keeps its address, but which is another body (another
+        /// entity) with another filter, as when the heap gives a new body's collider the address of a destroyed body's
+        /// collider, gets its own filter, and the refit builds the nodes' filters again. The search then finds exactly
+        /// the pairs of a build from scratch.
+        /// </summary>
+        [Test]
+        public unsafe void ARefitBuildWithTheCacheTellsANewBodyAtAnOldColliderAddress()
+        {
+            const int count = 1000;
+            (float3[] positions, float[] sizes) = RandomScene(count, 31);
+            using var scene = new BoxWorld(positions, sizes, 31);
+            ref PhysicsWorld world = ref scene.World;
+            var none = new CollisionFilter { BelongsTo = 0u, CollidesWith = 0u };
+            for (int i = 0; i < count; i += 4)
+            {
+                scene.SetFilter(i, none);
+            }
+
+            uint version = 1;
+            var cache = new DynamicBoundsCache(&version, Allocator.Persistent);
+            var results = (DynamicTreeRefitResults*)UnsafeUtility.Malloc(sizeof(DynamicTreeRefitResults), 16, Allocator.Persistent);
+            UnsafeUtility.MemClear(results, sizeof(DynamicTreeRefitResults));
+            try
+            {
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 8, default, cache).Complete();
+                cache.MarkCurrent();
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache).Complete();
+                Physics.RigidBody[] refitted = world.DynamicBodies.ToArray();
+
+                // Every fourth body becomes another body with the same collider memory and a filter that collides.
+                NativeArray<Physics.RigidBody> bodies = world.DynamicBodies;
+                for (int i = 0; i < count; i += 4)
+                {
+                    scene.SetFilter(i, CollisionFilter.Default);
+                    Physics.RigidBody body = bodies[i];
+                    body.Entity = new Entity { Index = body.Entity.Index, Version = 7 };
+                    bodies[i] = body;
+                }
+
+                MarkSame(bodies, refitted, cache);
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeRefitBuildJobs(ref world, TimeStep, Gravity, default, cache, results).Complete();
+                Assert.That(results->FiltersChanged, Is.EqualTo(1), "the refit saw the new bodies' filters");
+                Broadphase.Tree tree = world.CollisionWorld.Broadphase.DynamicTree;
+                for (int i = 0; i < count; i += 4)
+                {
+                    Assert.That(tree.BodyFilters[i], Is.EqualTo(CollisionFilter.Default), $"body {i}'s filter");
+                }
+
+                List<(int, int, int)> refittedPairs = OverlapPairs(ref world);
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 8, default).Complete();
+                List<(int, int, int)> builtPairs = OverlapPairs(ref world);
+                Assert.That(builtPairs.Count, Is.GreaterThan(100), "the scene has pairs");
+                Assert.That(refittedPairs, Is.EqualTo(builtPairs));
+            }
+            finally
+            {
+                UnsafeUtility.Free(results, Allocator.Persistent);
+                cache.Dispose();
+            }
         }
 
         /// <summary>
