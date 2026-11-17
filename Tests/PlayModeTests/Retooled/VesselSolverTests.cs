@@ -372,34 +372,88 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Compare locked motion and inverse-dynamics loads with increasingly stiff live constraints.
-        /// Use closures as stiff reference constraints so that subtree mass determines their stiffness.
+        /// Compare locked motion and the loads of the locked edges and of the closures inside the sections with increasingly
+        /// stiff live constraints. Closures stand in for the locked edges. On a bridge, an edge that no closure's loop
+        /// crosses, the stand-in's stiffness comes from the subtree's mass, so that the reference moves as one rigid body;
+        /// the load of a bridge doesn't depend on the stiffnesses. An edge on a closure's loop shares the load with the
+        /// closure, so its stand-in has the stiffness that the locked solve gives it: hard rows on the two parts' reduced
+        /// mass and inertia.
         /// </summary>
         [Test]
         public void LockedEdgesMatchVeryStiffYieldingOnes([Values("pegasus", "behemoth", "tu160")] string craft,
             [Values(VesselGraph.LockRule.LiveJointsOnly, VesselGraph.LockRule.StackLocked)] VesselGraph.LockRule rule)
         {
-            VesselGraph graph = VesselGraph.Load(craft);
-            var report = new System.Text.StringBuilder($"[VesselSolverTests] {craft} {rule}, locked against stiff, by hard period:");
-            double[] periods = { 1e-3, 1e-4, 1e-5 };
-            var velocityErrors = new double[periods.Length];
-            var loadErrors = new double[periods.Length];
-            for (int level = 0; level < periods.Length; level++)
+            bool wasOn = StrutLoads.Enabled;
+            StrutLoads.Enabled = true;
+            try
             {
-                Compare(graph, rule, periods[level], out velocityErrors[level], out loadErrors[level], report);
-            }
+                VesselGraph graph = VesselGraph.Load(craft);
+                var report = new System.Text.StringBuilder($"[VesselSolverTests] {craft} {rule}, locked against stiff, by hard period:");
+                double[] periods = { 1e-3, 1e-4, 1e-5 };
+                var velocityErrors = new double[periods.Length];
+                var loadErrors = new double[periods.Length];
+                for (int level = 0; level < periods.Length; level++)
+                {
+                    Compare(graph, rule, periods[level], out velocityErrors[level], out loadErrors[level], report);
+                }
 
-            Debug.Log(report.ToString());
-            int last = periods.Length - 1;
-            // The live edges' hard rows join parts in one solve and sections in the other, so they converge on each other
-            // only as both stiffen; where few edges are live (Pegasus, servos only) the loads agree to 1e-8 at 1e-5 s.
-            Assert.Less(velocityErrors[last], 5e-3);
-            Assert.Less(loadErrors[last], 5e-2);
-            Assert.Less(velocityErrors[last], 0.1 * velocityErrors[0]);
-            Assert.Less(loadErrors[last], 0.1 * loadErrors[0]);
+                Debug.Log(report.ToString());
+                int last = periods.Length - 1;
+                // The live edges' hard rows join parts in one solve and sections in the other, so they converge on each other
+                // only as both stiffen; where few edges are live (Pegasus, servos only) the loads agree to 1e-8 at 1e-5 s.
+                Assert.Less(velocityErrors[last], 5e-3);
+                Assert.Less(loadErrors[last], 5e-2);
+                Assert.Less(velocityErrors[last], 0.1 * velocityErrors[0]);
+                Assert.Less(loadErrors[last], 0.1 * loadErrors[0]);
+            }
+            finally
+            {
+                StrutLoads.Enabled = wasOn;
+            }
         }
 
         static double MeanInverse(double3 inertia) => (1.0 / inertia.x + 1.0 / inertia.y + 1.0 / inertia.z) / 3.0;
+
+        /// <summary>
+        /// Marks the tree edges on the loop of each closure whose two parts are in one section, by the label of each part's
+        /// section, and returns which closures those are.
+        /// </summary>
+        static bool[] MarkLoops(VesselGraph graph, int[] label, NativeArray<VesselClosure> closures, bool[] looped)
+        {
+            int count = graph.Count;
+            var depth = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                depth[i] = graph.Parent[i] >= 0 ? depth[graph.Parent[i]] + 1 : 0;
+            }
+
+            var inside = new bool[closures.Length];
+            for (int c = 0; c < closures.Length; c++)
+            {
+                int a = closures[c].PartA, b = closures[c].PartB;
+                if (label[a] != label[b] || a == b)
+                {
+                    continue;
+                }
+
+                inside[c] = true;
+                while (a != b)
+                {
+                    if (depth[a] >= depth[b])
+                    {
+                        looped[a] = true;
+                        a = graph.Parent[a];
+                    }
+                    else
+                    {
+                        looped[b] = true;
+                        b = graph.Parent[b];
+                    }
+                }
+            }
+
+            return inside;
+        }
 
         static void Compare(VesselGraph graph, VesselGraph.LockRule rule, double period, out double velocityError,
             out double loadError, System.Text.StringBuilder report)
@@ -407,13 +461,11 @@ namespace KSP.Retooled.Physics.Tests
             VesselSolverSettings settings = VesselSolverSettings.Default;
             settings.CentripetalLoads = false;
             settings.HardPeriod = period;
-            graph.Build(rule, TimeStep, 1.0, Allocator.Persistent, out var lockedParts, out var lockedEdges, out var allClosures);
+            graph.Build(rule, TimeStep, 1.0, Allocator.Persistent, out var lockedParts, out var lockedEdges, out var closures);
             graph.Build(VesselGraph.LockRule.AllYielding, TimeStep, 1.0, Allocator.Persistent, out var stiffParts,
                 out var stiffEdges, out var unused);
             unused.Dispose();
 
-            // A closure inside a locked section carries nothing in the locked solve, but with every edge live it would share
-            // the section's internal loads; keep only the closures between sections.
             var label = new int[graph.Count];
             for (int i = 0; i < graph.Count; i++)
             {
@@ -421,22 +473,40 @@ namespace KSP.Retooled.Physics.Tests
                 label[i] = p >= 0 && lockedEdges[i].State == VesselEdgeState.Locked ? label[p] : i;
             }
 
-            var kept = new System.Collections.Generic.List<VesselClosure>();
-            foreach (VesselClosure closure in allClosures)
+            // The closures inside the locked sections are hard, as the game builds its struts, and so are the locked edges on
+            // their loops, as the game builds its stack joints. The graphs' springs are finite: against them a section
+            // isn't rigid in the live reference, so no locked solve could match it.
+            int count = graph.Count;
+            var looped = new bool[count];
+            bool[] inside = MarkLoops(graph, label, closures, looped);
+            int insideCount = 0, loopedCount = 0;
+            for (int c = 0; c < closures.Length; c++)
             {
-                if (label[closure.PartA] != label[closure.PartB])
+                if (inside[c])
                 {
-                    kept.Add(closure);
+                    VesselClosure closure = closures[c];
+                    closure.LinearStiffness = double.PositiveInfinity;
+                    closure.AngularStiffness = double.PositiveInfinity;
+                    closures[c] = closure;
+                    insideCount++;
                 }
             }
 
-            allClosures.Dispose();
-            var closures = new NativeArray<VesselClosure>(kept.ToArray(), Allocator.Persistent);
+            for (int i = 0; i < count; i++)
+            {
+                if (looped[i])
+                {
+                    VesselEdge edge = lockedEdges[i];
+                    edge.TwistStiffness = double.PositiveInfinity;
+                    edge.SwingStiffness = double.PositiveInfinity;
+                    lockedEdges[i] = edge;
+                    loopedCount++;
+                }
+            }
 
-            // The stiff stand-ins for locked edges: the tree edge removed and a closure in its place, at the hard period
-            // on the lighter side's mass and second moment about the joint, critically damped.
+            // The stiff stand-ins for locked edges: the tree edge removed and a closure in its place. On a bridge it is at the
+            // hard period on the lighter side's mass and second moment about the joint, critically damped.
             double omega = 2.0 * math.PI_DBL / period;
-            int count = graph.Count;
             var mass = new double[count];
             var first = new double3[count];
             var second = new double[count];
@@ -455,6 +525,7 @@ namespace KSP.Retooled.Physics.Tests
                 second[p] += second[i];
             }
 
+            var kept = new System.Collections.Generic.List<VesselClosure>(closures);
             var stand = new System.Collections.Generic.List<VesselClosure>();
             var standIn = new int[count];
             for (int i = 0; i < count; i++)
@@ -470,8 +541,8 @@ namespace KSP.Retooled.Physics.Tests
                 double momentBelow = second[i] - 2.0 * math.dot(joint, first[i]) + math.lengthsq(joint) * mass[i];
                 double momentAbove = second[0] - second[i] - 2.0 * math.dot(joint, first[0] - first[i])
                     + math.lengthsq(joint) * above;
-                double linear = omega * omega * math.min(below, above);
-                double angular = omega * omega * math.min(momentBelow, momentAbove);
+                double linear = looped[i] ? double.PositiveInfinity : omega * omega * math.min(below, above);
+                double angular = looped[i] ? double.PositiveInfinity : omega * omega * math.min(momentBelow, momentAbove);
                 VesselEdge edge = stiffEdges[i];
                 standIn[i] = kept.Count + stand.Count;
                 stand.Add(new VesselClosure
@@ -525,6 +596,7 @@ namespace KSP.Retooled.Physics.Tests
             velocityError /= velocityScale;
             double forceError = 0.0, forceScale = 0.0, torqueError = 0.0, torqueScale = 0.0;
             double liveError = 0.0, liveScale = 0.0;
+            double strutError = 0.0, strutScale = 0.0;
             int lockedCount = 0;
             for (int i = 0; i < graph.Count; i++)
             {
@@ -550,16 +622,36 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
+            // The closures inside the sections count as locked loads: the locked solve takes them from the same static
+            // system as the edges on their loops.
+            for (int c = 0; c < closures.Length; c++)
+            {
+                if (!inside[c])
+                {
+                    continue;
+                }
+
+                VesselEdgeLoad a = locked.ClosureLoads[c];
+                VesselEdgeLoad b = stiff.ClosureLoads[c];
+                forceError = math.max(forceError, math.length(a.Force - b.Force));
+                forceScale = math.max(forceScale, math.length(b.Force));
+                torqueError = math.max(torqueError, math.length(a.Torque - b.Torque));
+                torqueScale = math.max(torqueScale, math.length(b.Torque));
+                strutError = math.max(strutError, math.max(math.length(a.Force - b.Force), math.length(a.Torque - b.Torque)));
+                strutScale = math.max(strutScale, math.max(math.length(b.Force), math.length(b.Torque)));
+            }
+
             loadError = math.max(forceError / forceScale, torqueError / torqueScale);
             if (!math.isfinite(velocityError) || !math.isfinite(loadError))
             {
                 velocityError = loadError = double.PositiveInfinity;
             }
 
-            report.Append($"\n  {period:G2} s: {locked.SectionCount} sections, {lockedCount} locked edges, {closures.Length} " +
-                $"live closures; velocity {velocityError:E2}, locked force {forceError / forceScale:E2} of {forceScale:G4} kN, " +
-                $"locked torque {torqueError / torqueScale:E2} of {torqueScale:G4} kN m, live loads " +
-                $"{liveError / math.max(liveScale, 1e-30):E2}, clamped pivots {locked.ClampedPivots} / {stiff.ClampedPivots}");
+            report.Append($"\n  {period:G2} s: {locked.SectionCount} sections, {lockedCount} locked edges ({loopedCount} on loops), " +
+                $"{closures.Length - insideCount} live closures, {insideCount} inside sections; velocity {velocityError:E2}, " +
+                $"locked force {forceError / forceScale:E2} of {forceScale:G4} kN, locked torque {torqueError / torqueScale:E2} " +
+                $"of {torqueScale:G4} kN m, closures inside {strutError / math.max(strutScale, 1e-30):E2} of {strutScale:G4}, " +
+                $"live loads {liveError / math.max(liveScale, 1e-30):E2}, clamped pivots {locked.ClampedPivots} / {stiff.ClampedPivots}");
             locked.Dispose();
             stiff.Dispose();
             lockedParts.Dispose();
@@ -568,6 +660,186 @@ namespace KSP.Retooled.Physics.Tests
             stiffEdges.Dispose();
             closures.Dispose();
             stiffClosures.Dispose();
+        }
+
+        /// <summary>
+        /// A cantilever of four parts held at its root, with a strut from the root to the third part that closes a
+        /// triangle, all locked into one section under gravity. The strut takes the share that the live stiff solve gives
+        /// it, and every part's momentum balances.
+        /// </summary>
+        [Test]
+        public void AStrutInALockedCantileverTakesItsShare([Values(1e-4, 1e-5)] double period)
+        {
+            bool wasOn = StrutLoads.Enabled;
+            StrutLoads.Enabled = true;
+            const int count = 4;
+            var mass = new double[] { 2.0, 1.0, 1.5, 0.8 };
+            var position = new double3[count];
+            for (int i = 0; i < count; i++)
+            {
+                position[i] = new double3(i, 0.0, 0.0);
+            }
+
+            // The strut is a weld between the root and part 2, at a point above the beam.
+            double3 strutPoint = new double3(1.0, 0.6, 0.0);
+            double total = 0.0;
+            double3 moment = 0.0;
+            for (int i = 0; i < count; i++)
+            {
+                total += mass[i];
+                moment += math.cross(position[i], new double3(0.0, -9.81 * mass[i], 0.0));
+            }
+
+            void Build(out NativeArray<VesselPart> parts, out NativeArray<VesselEdge> edges, out NativeArray<VesselClosure> closures,
+                bool standIns)
+            {
+                parts = new NativeArray<VesselPart>(count, Allocator.Persistent);
+                edges = new NativeArray<VesselEdge>(count, Allocator.Persistent);
+                closures = new NativeArray<VesselClosure>(standIns ? count : 1, Allocator.Persistent);
+                for (int i = 0; i < count; i++)
+                {
+                    var part = new VesselPart
+                    {
+                        Mass = mass[i],
+                        Inertia = new double3(0.1, 0.2 + 0.05 * i, 0.15) * mass[i],
+                        Position = position[i],
+                        Orientation = new double4(0, 0, 0, 1),
+                        LinearImpulse = new double3(0.0, -9.81 * mass[i] * TimeStep, 0.0),
+                    };
+
+                    // The root holds the cantilever up: it takes the weight and the moment of the weight, so nothing moves.
+                    if (i == 0)
+                    {
+                        part.LinearImpulse += new double3(0.0, 9.81 * total * TimeStep, 0.0);
+                        part.AngularImpulse = -moment * TimeStep;
+                    }
+
+                    parts[i] = part;
+                    double3 joint = new double3(i - 0.5, 0.0, 0.0);
+                    edges[i] = i == 0
+                        ? new VesselEdge { Parent = -1, State = VesselEdgeState.Locked, Rest = new double4(0, 0, 0, 1) }
+                        : new VesselEdge
+                        {
+                            Parent = i - 1,
+                            State = standIns ? VesselEdgeState.Broken : VesselEdgeState.Locked,
+                            MayLock = true,
+                            ParentAnchor = joint - position[i - 1],
+                            ChildAnchor = joint - position[i],
+                            Frame = double3x3.identity,
+                            Rest = new double4(0, 0, 0, 1),
+                            TwistStiffness = double.PositiveInfinity,
+                            SwingStiffness = double.PositiveInfinity,
+                            BreakForce = 1e15,
+                            BreakTorque = 1e15,
+                            YieldFraction = 0.5,
+                            RelockFraction = 0.5,
+                        };
+                    if (standIns && i > 0)
+                    {
+                        closures[i] = new VesselClosure
+                        {
+                            PartA = i - 1,
+                            PartB = i,
+                            AnchorA = joint - position[i - 1],
+                            AnchorB = joint - position[i],
+                            Frame = double3x3.identity,
+                            Rest = new double4(0, 0, 0, 1),
+                            LinearStiffness = double.PositiveInfinity,
+                            AngularStiffness = double.PositiveInfinity,
+                        };
+                    }
+                }
+
+                closures[0] = new VesselClosure
+                {
+                    PartA = 0,
+                    PartB = 2,
+                    AnchorA = strutPoint - position[0],
+                    AnchorB = strutPoint - position[2],
+                    Frame = double3x3.identity,
+                    Rest = new double4(0, 0, 0, 1),
+                    LinearStiffness = double.PositiveInfinity,
+                    AngularStiffness = double.PositiveInfinity,
+                };
+            }
+
+            VesselSolverSettings settings = VesselSolverSettings.Default;
+            settings.CentripetalLoads = false;
+            settings.HardPeriod = period;
+            Build(out var lockedParts, out var lockedEdges, out var lockedClosures, false);
+            Build(out var stiffParts, out var stiffEdges, out var stiffClosures, true);
+            var locked = new VesselSolver(lockedParts, lockedEdges, lockedClosures, settings);
+            var stiff = new VesselSolver(stiffParts, stiffEdges, stiffClosures, settings);
+            try
+            {
+                locked.Step(false);
+                stiff.Step(false);
+                Assert.AreEqual(1, locked.SectionCount, "every edge is locked, so the cantilever is one section");
+
+                // The loads against the stiff solve: the strut, and each edge, whose stand-in is closure i there.
+                double error = 0.0, scale = 0.0;
+                void Against(VesselEdgeLoad a, VesselEdgeLoad b)
+                {
+                    error = math.max(error, math.max(math.length(a.Force - b.Force), math.length(a.Torque - b.Torque)));
+                    scale = math.max(scale, math.max(math.length(b.Force), math.length(b.Torque)));
+                }
+
+                Against(locked.ClosureLoads[0], stiff.ClosureLoads[0]);
+                for (int i = 1; i < count; i++)
+                {
+                    Against(locked.EdgeLoads[i], stiff.ClosureLoads[i]);
+                }
+
+                // Each part's momentum: the loads on it from its edges and the strut, about its centre, against what it
+                // needs to stay with the section. Nothing moves, so it needs to cancel its own weight, and the root its
+                // holding impulse as well.
+                double imbalance = 0.0, weight = 9.81 * total;
+                var force = new double3[count];
+                var torque = new double3[count];
+                void Act(int part, double3 point, VesselEdgeLoad load, double sign)
+                {
+                    force[part] += sign * load.Force;
+                    torque[part] += sign * (math.cross(point - position[part], load.Force) + load.Torque);
+                }
+
+                for (int i = 1; i < count; i++)
+                {
+                    double3 joint = new double3(i - 0.5, 0.0, 0.0);
+                    Act(i, joint, locked.EdgeLoads[i], 1.0);
+                    Act(i - 1, joint, locked.EdgeLoads[i], -1.0);
+                }
+
+                Act(2, strutPoint, locked.ClosureLoads[0], 1.0);
+                Act(0, strutPoint, locked.ClosureLoads[0], -1.0);
+                for (int i = 0; i < count; i++)
+                {
+                    double3 needForce = -lockedParts[i].LinearImpulse / TimeStep;
+                    double3 needTorque = -lockedParts[i].AngularImpulse / TimeStep;
+                    imbalance = math.max(imbalance, math.max(math.length(force[i] - needForce), math.length(torque[i] - needTorque)));
+                }
+
+                VesselEdgeLoad strut = locked.ClosureLoads[0];
+                VesselEdgeLoad cantilever = locked.EdgeLoads[1];
+                Debug.Log($"[VesselSolverTests] strut in a cantilever, {period:G2} s: strut force {strut.Force} torque {strut.Torque}, " +
+                    $"stiff solve's {stiff.ClosureLoads[0].Force} / {stiff.ClosureLoads[0].Torque}; first edge torque {cantilever.Torque} " +
+                    $"(the weight's moment about the root {math.length(moment):G4} kN m); against stiff {error / scale:E2} " +
+                    $"of {scale:G4}, largest part imbalance {imbalance:E2} kN against a weight of {weight:G4} kN");
+                Assert.That(math.length(strut.Force), Is.GreaterThan(0.1 * weight), "the strut carries a real share");
+                Assert.Less(error / scale, period < 5e-5 ? 1e-4 : 1e-3, "the strut and the edges share the load as in the stiff solve");
+                Assert.Less(imbalance / weight, 1e-9, "every part's momentum balances");
+            }
+            finally
+            {
+                locked.Dispose();
+                stiff.Dispose();
+                lockedParts.Dispose();
+                lockedEdges.Dispose();
+                lockedClosures.Dispose();
+                stiffParts.Dispose();
+                stiffEdges.Dispose();
+                stiffClosures.Dispose();
+                StrutLoads.Enabled = wasOn;
+            }
         }
 
         /// <summary>

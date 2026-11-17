@@ -115,6 +115,12 @@ namespace Unity.Physics
         /// <summary>Extra right-hand side terms, one 6-vector per section, as rows on one moving body give it.</summary>
         public double* ExtraRhs;
 
+        /// <summary>
+        /// The static systems of the sections that have closures inside them, or null. With them, the edges on a closure's
+        /// loop and the closure share the section's loads, see <see cref="SectionStatics"/>.
+        /// </summary>
+        public VesselStatics* Statics;
+
         public int SectionCount;
         public int OffDiagonalCount;
         public int ChunkCount;
@@ -842,6 +848,18 @@ namespace Unity.Physics
             }
         }
 
+        /// <summary>
+        /// After the tree method has stored section s's loads: when the section has closures inside it, takes the loads of
+        /// the edges on their loops and of the closures from the section's static system.
+        /// </summary>
+        public void ApplyStrutLoads(int s)
+        {
+            if (Statics != null && s < Statics->SectionEntry.Length)
+            {
+                Statics->Apply(ref this, s);
+            }
+        }
+
         /// <summary>lambda = -E^-1 (J v' + (gamma / h) phi) for one link's rows, and a closure's load.</summary>
         public void LinkImpulses(int k)
         {
@@ -911,6 +929,7 @@ namespace Unity.Physics
             }
 
             StoreRootLoad(s, PartForce[SectionParts[start]]);
+            ApplyStrutLoads(s);
 
             if (LoadsOnly)
             {

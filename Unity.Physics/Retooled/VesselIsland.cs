@@ -1240,6 +1240,7 @@ namespace Unity.Physics
                 HardDampingRatio = settings.HardDampingRatio,
                 Centripetal = settings.CentripetalLoads,
                 LoadsOnly = true,
+                Statics = &forest->Statics,
             };
 
             int locked = 0;
@@ -1397,6 +1398,7 @@ namespace Unity.Physics
         static unsafe void FinishVesselSections(ref ForestRun run)
         {
             ForestIsland* forest = run.Forest;
+            PrepareStatics(ref run);
             if (forest->SharedSections.Length == 0)
             {
                 RunVesselStage(ref run, VesselTasks.FinishSections, forest->SectionCount);
@@ -1457,8 +1459,59 @@ namespace Unity.Physics
                 tasks.Phase = VesselTasks.SharedEdgeLoads;
                 SparseSolveTeam.RunAll(run.Team, &tasks, SparseSolveTeam.ForestVesselKind, chunks, null);
                 kernel.StoreRootLoad(s, prefixForce[end - 1]);
+                kernel.ApplyStrutLoads(s);
                 sums.Dispose();
             }
+        }
+
+        /// <summary>
+        /// Matches the sections that have closures inside them with their static systems after each structure build, and
+        /// factors the systems of new sections. A system is kept while its vessel's Id and structure version, the time
+        /// step and the section's parts stay the same.
+        /// </summary>
+        static unsafe void PrepareStatics(ref ForestRun run)
+        {
+            ForestIsland* forest = run.Forest;
+            bool enabled = StrutLoads.Enabled;
+            if (forest->Statics.BuiltFor == forest->StructureBuilds && forest->StaticsTimeStep == run.Timestep
+                && forest->StaticsEnabled == enabled)
+            {
+                return;
+            }
+
+            long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            int parts = forest->Parts.Length;
+            var id = new NativeArray<ulong>(math.max(1, parts), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var version = new NativeArray<uint>(math.max(1, parts), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var index = new NativeArray<int>(math.max(1, parts), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+
+            // A body outside the vessels is a section of its own, which never holds a closure.
+            for (int part = 0; part < parts; part++)
+            {
+                id[part] = ulong.MaxValue;
+                version[part] = 0;
+                index[part] = part;
+            }
+
+            int vessels = forest->VesselSignature.Length > 0 ? (int)forest->VesselSignature[0] : 0;
+            for (int v = 0; v < vessels && v < forest->VesselPartStart.Length; v++)
+            {
+                int start = forest->VesselPartStart[v];
+                int count = (int)(forest->VesselSignature[3 + 3 * v] >> 32);
+                for (int k = 0; k < count && start + k < parts; k++)
+                {
+                    id[start + k] = forest->VesselSignature[1 + 3 * v];
+                    version[start + k] = (uint)forest->VesselSignature[2 + 3 * v];
+                    index[start + k] = k;
+                }
+            }
+
+            forest->Statics.Prepare(forest->Context, parts, forest->Closures.Length, (ulong*)id.GetUnsafePtr(),
+                (uint*)version.GetUnsafePtr(), (int*)index.GetUnsafePtr(), run.Timestep);
+            forest->Statics.BuiltFor = forest->StructureBuilds;
+            forest->Statics.PrepareTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
+            forest->StaticsTimeStep = run.Timestep;
+            forest->StaticsEnabled = enabled;
         }
 
         /// <summary>

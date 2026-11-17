@@ -81,6 +81,13 @@ namespace KSP.Retooled.Physics
                 UnityEngine.Debug.Log($"[VesselPipeline] RETOOLED_VESSEL_MIN_PARTS={minimum}: vessels have at least {MinimumParts} parts");
             }
 
+            // RETOOLED_STRUT_LOADS=0 brings back the tree method for the loads inside a locked section.
+            Unity.Physics.StrutLoads.Initialize();
+            if (!Unity.Physics.StrutLoads.Enabled)
+            {
+                UnityEngine.Debug.Log("[VesselPipeline] RETOOLED_STRUT_LOADS=0: each locked edge carries its whole subtree, and closures inside a section carry nothing");
+            }
+
             string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
             Unity.Physics.Solver.VesselFused = fused != "0";
             string fold = Environment.GetEnvironmentVariable("RETOOLED_SUBSTEP_FOLD");

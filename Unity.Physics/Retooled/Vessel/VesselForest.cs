@@ -212,6 +212,17 @@ namespace Unity.Physics
         // Write its inverse into the shared compact index only while solving.
         public UnsafeList<int> FusedWorldBodies;
 
+        /// <summary>
+        /// The static systems of the sections that have closures inside them, kept while a section keeps its parts. The
+        /// vessel kernel's context points here.
+        /// </summary>
+        public VesselStatics Statics;
+
+        /// <summary>The time step and the switch that <see cref="Statics"/> were last prepared with.</summary>
+        public double StaticsTimeStep;
+
+        public bool StaticsEnabled;
+
         // Imported vessel IDs, structure versions and lock states. On the next layout, prefer imported states
         // over this forest's older copies when TakesStates is set.
         public UnsafeList<ulong> TakenIds;
@@ -297,6 +308,7 @@ namespace Unity.Physics
                 PrefixForce = new UnsafeList<double3>(16, Allocator.Persistent),
                 PrefixTorque = new UnsafeList<double3>(16, Allocator.Persistent),
                 FusedWorldBodies = new UnsafeList<int>(16, Allocator.Persistent),
+                Statics = VesselStatics.Create(Allocator.Persistent),
                 TakenIds = new UnsafeList<ulong>(4, Allocator.Persistent),
                 TakenVersions = new UnsafeList<uint>(4, Allocator.Persistent),
                 TakenStarts = new UnsafeList<int>(4, Allocator.Persistent),
@@ -378,6 +390,7 @@ namespace Unity.Physics
             forest->PrefixForce.Dispose();
             forest->PrefixTorque.Dispose();
             forest->FusedWorldBodies.Dispose();
+            forest->Statics.Dispose();
             forest->TakenIds.Dispose();
             forest->TakenVersions.Dispose();
             forest->TakenStarts.Dispose();

@@ -58,6 +58,12 @@ namespace Unity.Physics
 
         internal ref VesselContext Context => ref *m_Context;
 
+        // The static systems of the sections that have closures inside them. A rebuild factors them again.
+        VesselStatics* m_Statics;
+        uint m_StaticsVersion;
+
+        internal ref VesselStatics Statics => ref *m_Statics;
+
         public VesselSolver(NativeArray<VesselPart> parts, NativeArray<VesselEdge> edges, NativeArray<VesselClosure> closures,
             VesselSolverSettings settings)
         {
@@ -69,6 +75,9 @@ namespace Unity.Physics
             *m_Context = default;
             m_Structure = (VesselStructure*)UnsafeUtility.Malloc(sizeof(VesselStructure), 16, Allocator.Persistent);
             *m_Structure = new VesselStructure(Allocator.Persistent);
+            StrutLoads.Initialize();
+            m_Statics = (VesselStatics*)UnsafeUtility.Malloc(sizeof(VesselStatics), 16, Allocator.Persistent);
+            *m_Statics = VesselStatics.Create(Allocator.Persistent);
             Sections = new NativeList<VesselSection>(Allocator.Persistent);
             Blocks = new NativeList<double>(Allocator.Persistent);
             Inverse = new NativeList<double>(Allocator.Persistent);
@@ -91,6 +100,8 @@ namespace Unity.Physics
             UnsafeUtility.Free(m_Context, Allocator.Persistent);
             Structure.Dispose();
             UnsafeUtility.Free(m_Structure, Allocator.Persistent);
+            m_Statics->Dispose();
+            UnsafeUtility.Free(m_Statics, Allocator.Persistent);
             Sections.Dispose();
             Blocks.Dispose();
             Inverse.Dispose();
@@ -182,6 +193,20 @@ namespace Unity.Physics
 
             Context = MakeContext();
             m_NeedsRebuild = false;
+
+            // A solver holds one vessel, whose parts and closures may be anything after a rebuild, so the systems of its
+            // sections are never used again: each rebuild has a version of its own.
+            m_StaticsVersion++;
+            new PrepareStaticsJob
+            {
+                Context = m_Context,
+                Statics = m_Statics,
+                PartCount = m_Parts.Length,
+                ClosureCount = m_Closures.Length,
+                Version = m_StaticsVersion,
+                TimeStep = Settings.TimeStep,
+            }.Run();
+            Context.Statics = m_Statics;
         }
 
         VesselContext MakeContext()
@@ -353,6 +378,32 @@ namespace Unity.Physics
         public void SolveWithFactor(NativeArray<double> rhs)
         {
             new SolveJob { Context = m_Context, Rhs = (double*)rhs.GetUnsafePtr() }.Run();
+        }
+
+        [BurstCompile(DisableSafetyChecks = true, CompileSynchronously = true)]
+        struct PrepareStaticsJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction] public VesselContext* Context;
+            [NativeDisableUnsafePtrRestriction] public VesselStatics* Statics;
+            public int PartCount;
+            public int ClosureCount;
+            public uint Version;
+            public double TimeStep;
+
+            public void Execute()
+            {
+                var id = new NativeArray<ulong>(math.max(1, PartCount), Allocator.Temp);
+                var version = new NativeArray<uint>(math.max(1, PartCount), Allocator.Temp);
+                var index = new NativeArray<int>(math.max(1, PartCount), Allocator.Temp);
+                for (int i = 0; i < PartCount; i++)
+                {
+                    version[i] = Version;
+                    index[i] = i;
+                }
+
+                Statics->Prepare(*Context, PartCount, ClosureCount, (ulong*)id.GetUnsafePtr(), (uint*)version.GetUnsafePtr(),
+                    (int*)index.GetUnsafePtr(), TimeStep);
+            }
         }
 
         [BurstCompile(DisableSafetyChecks = true, CompileSynchronously = true)]
