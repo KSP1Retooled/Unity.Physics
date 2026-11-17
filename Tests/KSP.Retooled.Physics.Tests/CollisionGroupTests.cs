@@ -2,6 +2,7 @@ using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.World;
+using Unity.Physics.Collision.Filter.Groups;
 
 namespace KSP.Retooled.Physics.Tests
 {

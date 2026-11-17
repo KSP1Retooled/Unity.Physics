@@ -8,6 +8,7 @@ using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Collision.Queries.Snapshot;
 
 namespace KSP.Retooled.Physics
 {

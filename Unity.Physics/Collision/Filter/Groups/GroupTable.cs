@@ -3,7 +3,7 @@ using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 
-namespace KSP.Retooled.Physics
+namespace Unity.Physics.Collision.Filter.Groups
 {
     /// <summary>
     /// Store collider group membership and member-pair exceptions for CollisionGroups.

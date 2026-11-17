@@ -12,6 +12,7 @@ using UnityEngine;
 using UnityEditor;
 using Unity.Physics.Store.World;
 #endif
+using Unity.Physics.Collision.Filter.Groups;
 
 namespace KSP.Retooled.Physics
 {

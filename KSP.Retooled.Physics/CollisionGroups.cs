@@ -4,6 +4,7 @@ using UnityEngine;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
+using Unity.Physics.Collision.Filter.Groups;
 
 namespace KSP.Retooled.Physics
 {

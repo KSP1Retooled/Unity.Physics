@@ -11,6 +11,7 @@ using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
+using Unity.Physics.Collision.Filter.Groups;
 
 namespace KSP.Retooled.Physics
 {

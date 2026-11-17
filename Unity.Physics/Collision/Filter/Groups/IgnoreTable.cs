@@ -3,8 +3,9 @@ using UnityEngine;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
+using Unity.Profiling;
 
-namespace KSP.Retooled.Physics
+namespace Unity.Physics.Collision.Filter.Groups
 {
     /// <summary>
     /// Store collider pairs disabled by Physics.IgnoreCollision, keyed by persistent 16-bit ignore IDs.
@@ -12,6 +13,9 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal unsafe struct IgnoreTable
     {
+        private static readonly ProfilerMarker ForgetIgnoredCollisions = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.ForgetIgnoredCollisions");
+        private static readonly ProfilerMarker IgnoreCollision = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.IgnoreCollision");
+
         private const uint IdCount = 1u << 16;
         private const uint InitialSlots = 1024;
         private const uint EmptySlot = 0;
@@ -90,7 +94,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static void Set(StoreGlobals* globals, ref uint first, ref uint second, bool ignored)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.IgnoreCollision.Auto();
+            using Unity.Profiling.ProfilerMarker.AutoScope span = IgnoreCollision.Auto();
 
             globals->ignoreVersion++;
             if (!ignored)
@@ -146,7 +150,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal static void Forget(StoreGlobals* globals, uint id)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetIgnoredCollisions.Auto();
+            using Unity.Profiling.ProfilerMarker.AutoScope span = ForgetIgnoredCollisions.Auto();
 
             globals->ignoreVersion++;
             IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;

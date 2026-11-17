@@ -20,6 +20,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Configuration;
+using Unity.Physics.Collision.Queries.Snapshot;
 
 namespace KSP.Retooled.Physics
 {
@@ -1453,7 +1454,7 @@ namespace KSP.Retooled.Physics
             snapshotStatic.CopyFrom(staticIndices.AsArray());
             queryBodies.ResizeUninitialized(world.NumBodies);
             queryFirstShapes.ResizeUninitialized(world.NumBodies);
-            JobHandle found = new FindFirstShapesJob
+            JobHandle found = new QuerySnapshot.FindFirstShapesJob
             {
                 Store = store->bodies,
                 DynamicIndices = dynamicIndices.AsArray(),
@@ -1462,7 +1463,7 @@ namespace KSP.Retooled.Physics
                 QueryShapes = queryShapes,
             }.Schedule(dependency);
 
-            return new SnapshotQueryDataJob
+            return new QuerySnapshot.SnapshotQueryDataJob
             {
                 Store = store->bodies,
                 DynamicIndices = dynamicIndices.AsArray(),

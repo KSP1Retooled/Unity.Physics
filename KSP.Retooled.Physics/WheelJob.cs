@@ -14,6 +14,8 @@ using Unity.Physics.Store.Vehicles;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
+using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Collision.Queries.Collectors;
 
 namespace KSP.Retooled.Physics
 {

@@ -14,58 +14,11 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Collision.Queries.Collectors;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>
-    /// Published collision world and body/shape snapshot for queries on any thread, protected by the world's query
-    /// lock.
-    /// Workers must not follow snapshot pointers into the mutable store.
-    /// </summary>
-    internal unsafe struct QueryWorld
-    {
-        public CollisionWorld Collision;
-
-        // One entry for each body in Collision.
-        [NativeDisableUnsafePtrRestriction]
-        public QueryBody* Bodies;
-
-        // Stores each body's shapes in store order, starting at QueryBody.FirstShape.
-        [NativeDisableUnsafePtrRestriction]
-        public QueryShape* Shapes;
-
-        public int ShapeCount;
-    }
-
-    /// <summary>Describes a body in the built world for use by queries.</summary>
-    internal unsafe struct QueryBody
-    {
-        // This pointer is used for comparisons or passed to Unity. Never dereference it: the body record may have been
-        // destroyed by the time a worker reads this snapshot.
-        [NativeDisableUnsafePtrRestriction]
-        public Body* Owner;
-
-        public int FirstShape;
-        public int SingleShape;     // Index of the shape for a noncompound collider, relative to FirstShape.
-        public int IsStatic;
-        private readonly int reserved0;
-    }
-
-    /// <summary>Describes a shape for use by queries.</summary>
-    internal unsafe struct QueryShape
-    {
-        public ulong EngineObjectId;
-
-        // Passed to Unity without dereferencing it, like QueryBody.Owner.
-        [NativeDisableUnsafePtrRestriction]
-        public void* UserData;
-
-        [NativeDisableUnsafePtrRestriction]
-        public void* Handle;
-
-        public uint Flags;
-        public uint GeometryType;
-    }
 
     /// <summary>
     /// Execute plugin queries using Unity Physics geometry and convert results to PhysX conventions.
@@ -229,7 +182,7 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            output->hit = QueryCollectors.Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
+            output->hit = Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
             return 1;
         }
 
@@ -284,7 +237,7 @@ namespace KSP.Retooled.Physics
             {
                 point = math.transform(worldFromCollider, hit.Position),
                 normal = collector.Backface ? -normal : normal,
-                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
+                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : NoFace,
                 distance = hit.Fraction * distance,
             };
 
@@ -430,7 +383,7 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            output->hit = QueryCollectors.Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
+            output->hit = Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
             return 1;
         }
 
@@ -532,7 +485,7 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            output->hit = QueryCollectors.Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
+            output->hit = Record(sink.Hit.Position, sink.Hit.SurfaceNormal, sink.Hit.Fraction * distance, sink.Shape, sink.Backface);
             return 1;
         }
 
@@ -606,7 +559,7 @@ namespace KSP.Retooled.Physics
             {
                 point = math.transform(worldFromTarget, point),
                 normal = math.rotate(worldFromTarget.rot, normal),
-                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
+                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : NoFace,
                 distance = reported,
             };
 
@@ -775,6 +728,27 @@ namespace KSP.Retooled.Physics
             }
 
             return null;
+        }
+
+        // RaycastHit.triangleIndex interprets this value as -1.
+        internal const uint NoFace = uint.MaxValue;
+
+        /// <summary>
+        /// Convert a hit to the plugin format and restore the polygon normal for backface hits.
+        /// Report face zero for triangle meshes and no face for other geometry; source triangle mapping is not
+        /// retained.
+        /// </summary>
+        internal static RayCastHit Record(float3 position, float3 normal, float distance, QueryShape* shape, bool backface)
+        {
+            return new RayCastHit
+            {
+                point = position,
+                normal = backface ? -normal : normal,
+                faceId = shape->GeometryType == StoreConstants.GeometryTriangleMesh ? 0u : NoFace,
+                distance = distance,
+                uv = float2.zero,
+                engineObjectId = shape->EngineObjectId,
+            };
         }
     }
 }

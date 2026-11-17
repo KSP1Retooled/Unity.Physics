@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Systems;
 using Unity.Physics.Store.World;
+using Unity.Physics.Collision.Queries.Snapshot;
 
 namespace KSP.Retooled.Physics
 {

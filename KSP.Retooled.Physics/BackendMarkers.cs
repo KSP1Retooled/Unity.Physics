@@ -34,8 +34,6 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker CreateShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.CreateShape");
         internal static readonly ProfilerMarker DestroyShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.DestroyShape");
         internal static readonly ProfilerMarker SetGeometry = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.SetGeometry");
-        internal static readonly ProfilerMarker IgnoreCollision = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.IgnoreCollision");
-        internal static readonly ProfilerMarker ForgetIgnoredCollisions = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.ForgetIgnoredCollisions");
         internal static readonly ProfilerMarker CreateHeightField = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.CreateHeightField");
         internal static readonly ProfilerMarker UpdateHeightField = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.UpdateHeightField");
         internal static readonly ProfilerMarker AdoptBody = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyEntities.Adopt");
