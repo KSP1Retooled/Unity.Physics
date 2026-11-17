@@ -193,7 +193,8 @@ def main():
         pending = set(chosen)
         running = {}
         while pending or running:
-            ready = [a for a in pending if not (deps[a] & (pending | set(running)))]
+            # running maps futures to assembly names, so the names are its values.
+            ready = [a for a in pending if not (deps[a] & (pending | set(running.values())))]
             for assembly in ready:
                 pending.discard(assembly)
                 if deps[assembly] & failed:
