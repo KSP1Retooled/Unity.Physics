@@ -308,9 +308,134 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
+            // TRACE_STATICS=1 adds a third scene after the others, so that the first two stay comparable with a trace that
+            // doesn't have it.
+            if (Environment.GetEnvironmentVariable("TRACE_STATICS") == "1")
+            {
+                WriteStatics(trace, breakForce);
+            }
+
             // The counts go to the log, not to the trace, so that the trace of a commit without them can be compared.
             Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepKernel.Current->TreeBuildCount} times and refitted {StepKernel.Current->TreeRefitCount} times");
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"JointLoadTrace-{tag}.txt"), trace.ToString());
+        }
+
+        /// <summary>
+        /// The bench's scene with many static colliders (VesselForestBench.StaticsScene): the Tu-160 dropped 2 m onto the
+        /// ground among 5,000 static boxes and hulls, and two boxes that fall onto a static box and a static hull. Between
+        /// steps, the scene changes static bodies in every way that the build has to notice: a static box moves, gets a
+        /// larger collider, moves to another layer, gets another material, is turned off and on again, and is destroyed;
+        /// a static box is added; the friction of a static's material changes; a falling box is destroyed, which changes
+        /// the number of dynamic bodies, and a new one is added.
+        /// </summary>
+        private void WriteStatics(StringBuilder trace, float breakForce)
+        {
+            var bench = new VesselForestBench();
+            MethodInfo build = typeof(VesselForestBench).GetMethod("Build", BindingFlags.NonPublic | BindingFlags.Instance);
+            bench.SetUpScene();
+            bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(30, 30);
+            UnityEngine.Physics.IgnoreLayerCollision(30, 30, true);
+            var extras = new List<GameObject>();
+            PhysicsMaterial material = new PhysicsMaterial("trace static") { dynamicFriction = 0.6f, staticFriction = 0.6f };
+            try
+            {
+                VesselForestBench.Graph graph = VesselForestBench.Load("tu160");
+                var bodies = (List<Rigidbody>)build.Invoke(bench, new object[] { graph, true, true });
+                List<Collider> statics = VesselForestBench.StaticField(graph, VesselForestBench.GroundTop(graph), o =>
+                {
+                    extras.Add(o);
+                    return o;
+                });
+
+                var joints = new List<ConfigurableJoint>();
+                foreach (Rigidbody body in bodies)
+                {
+                    body.position += new Vector3(0.0f, 2.0f, 0.0f);
+                    body.transform.position = body.position;
+                    body.gameObject.AddComponent<ContactHash>();
+                    foreach (ConfigurableJoint joint in body.GetComponents<ConfigurableJoint>())
+                    {
+                        joint.breakForce = breakForce;
+                        joints.Add(joint);
+                    }
+                }
+
+                Rigidbody Drop(Collider below)
+                {
+                    GameObject box = new GameObject("trace box");
+                    extras.Add(box);
+                    box.transform.position = below.transform.position + new Vector3(0.2f, 3.0f, 0.1f);
+                    box.AddComponent<BoxCollider>();
+                    box.AddComponent<ContactHash>();
+                    Rigidbody body = box.AddComponent<Rigidbody>();
+                    bodies.Add(body);
+                    return body;
+                }
+
+                Rigidbody onBox = Drop(statics[0]);
+                Drop(statics[1]);
+                trace.Append($"statics: {bodies.Count} bodies, {statics.Count} static colliders, {joints.Count} joints, break force {breakForce}\n");
+                for (int step = 0; step < Steps; step++)
+                {
+                    switch (step)
+                    {
+                        case 40:
+                            statics[10].transform.position += new Vector3(0.5f, 0.0f, 0.0f);
+                            break;
+                        case 50:
+                            ((BoxCollider)statics[12]).size = new Vector3(3.0f, 2.0f, 3.0f);
+                            break;
+                        case 60:
+                            statics[14].gameObject.layer = 2;
+                            break;
+                        case 70:
+                            statics[0].sharedMaterial = material;
+                            break;
+                        case 80:
+                            statics[16].enabled = false;
+                            break;
+                        case 90:
+                            statics[16].enabled = true;
+                            break;
+                        case 100:
+                            material.dynamicFriction = 0.3f;
+                            break;
+                        case 110:
+                            Object.DestroyImmediate(statics[18].gameObject);
+                            break;
+                        case 120:
+                            GameObject added = new GameObject("trace static box");
+                            extras.Add(added);
+                            added.transform.position = statics[20].transform.position + new Vector3(0.0f, 0.0f, 2.5f);
+                            added.AddComponent<BoxCollider>().size = new Vector3(1.0f, 2.0f, 1.0f);
+                            break;
+                        case 130:
+                            bodies.Remove(onBox);
+                            Object.DestroyImmediate(onBox.gameObject);
+                            break;
+                        case 140:
+                            Drop(statics[2]);
+                            break;
+                    }
+
+                    Simulate(1);
+                    Record(trace, step, joints, bodies);
+                }
+            }
+            finally
+            {
+                foreach (GameObject extra in extras)
+                {
+                    if (extra != null)
+                    {
+                        Object.DestroyImmediate(extra);
+                    }
+                }
+
+                bench.TearDownScene();
+                Object.DestroyImmediate(material);
+                UnityEngine.Physics.IgnoreLayerCollision(30, 30, !collided);
+            }
         }
     }
 }
