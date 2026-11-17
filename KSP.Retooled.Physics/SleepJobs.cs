@@ -4,6 +4,11 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -15,7 +20,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct WakeTouchedBodiesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>Counts the buckets filled during this step.</summary>
         [ReadOnly]
@@ -84,16 +89,16 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Returns whether a contact can wake either body, using their states when the contacts were read.
         /// </summary>
-        internal static bool Wakes(NativeStore.BodyData* a, NativeStore.BodyData* b)
+        internal static bool Wakes(BodyData* a, BodyData* b)
         {
-            bool sleepingA = (a->flags & NativeStore.BodyFlags.Sleeping) != 0;
-            bool sleepingB = (b->flags & NativeStore.BodyFlags.Sleeping) != 0;
+            bool sleepingA = (a->flags & BodyFlags.Sleeping) != 0;
+            bool sleepingB = (b->flags & BodyFlags.Sleeping) != 0;
             return (sleepingB && Moves(a)) || (sleepingA && Moves(b));
         }
 
-        private static bool WakeFrom(NativeStore.BodyData* source, NativeStore.BodyData* target)
+        private static bool WakeFrom(BodyData* source, BodyData* target)
         {
-            if ((target->flags & NativeStore.BodyFlags.Sleeping) == 0 || !Moves(source))
+            if ((target->flags & BodyFlags.Sleeping) == 0 || !Moves(source))
             {
                 return false;
             }
@@ -102,15 +107,15 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
-        private static bool Moves(NativeStore.BodyData* body)
+        private static bool Moves(BodyData* body)
         {
-            const NativeStore.BodyFlags resting = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Sleeping;
+            const BodyFlags resting = BodyFlags.Static | BodyFlags.Sleeping;
             if ((body->flags & resting) != 0)
             {
                 return false;
             }
 
-            return (body->flags & NativeStore.BodyFlags.Kinematic) == 0 || (body->flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
+            return (body->flags & BodyFlags.Kinematic) == 0 || (body->flags & BodyFlags.HasKinematicTarget) != 0;
         }
 
         /// <summary>
@@ -121,12 +126,12 @@ namespace KSP.Retooled.Physics
         {
             for (int i = 0; i < DynamicIndices.Length; i++)
             {
-                NativeStore.BodyData* body = World->bodies + DynamicIndices[i];
-                const NativeStore.BodyFlags held = NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
+                BodyData* body = World->bodies + DynamicIndices[i];
+                const BodyFlags held = BodyFlags.Kinematic | BodyFlags.Sleeping;
                 if ((body->flags & held) == 0)
                 {
-                    Motions[i].InverseMass = body->mass->InverseMass;
-                    Motions[i].InverseInertia = body->mass->InverseInertia;
+                    Motions[i].InverseMass = (*body).Mass()->InverseMass;
+                    Motions[i].InverseInertia = (*body).Mass()->InverseInertia;
                 }
             }
         }
@@ -140,7 +145,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct SleepJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public NativeList<int> Parents;
 
@@ -166,7 +171,7 @@ namespace KSP.Retooled.Physics
             NativeArray<int> parents = Parents.AsArray();
             for (uint i = 0; i < World->jointCount; i++)
             {
-                NativeStore.JointData* joint = World->joints[i];
+                JointData* joint = World->joints[i];
                 if (joint->body0 != null && joint->body1 != null && (joint->state & JointConstraints.Inactive) == 0
                     && Solved(StoreOps.Hot(joint->body0)) && Solved(StoreOps.Hot(joint->body1)))
                 {
@@ -177,27 +182,27 @@ namespace KSP.Retooled.Physics
             var islandAwake = new NativeArray<bool>(count, Allocator.Temp);
             for (int i = 0; i < count; i++)
             {
-                NativeStore.BodyData* body = World->bodies + i;
-                if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
+                BodyData* body = World->bodies + i;
+                if (Solved(body) && (body->flags & BodyFlags.Sleeping) == 0)
                 {
-                    islandAwake[Find(parents, i)] |= body->sleep->WakeCounter > 0.0f;
+                    islandAwake[Find(parents, i)] |= (*body).Sleep()->WakeCounter > 0.0f;
                 }
             }
 
             for (int i = 0; i < count; i++)
             {
-                NativeStore.BodyData* body = World->bodies + i;
-                if (Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0 && !islandAwake[Find(parents, i)])
+                BodyData* body = World->bodies + i;
+                if (Solved(body) && (body->flags & BodyFlags.Sleeping) == 0 && !islandAwake[Find(parents, i)])
                 {
                     Falling.Add(i);
                 }
             }
         }
 
-        internal static bool Solved(NativeStore.BodyData* body)
+        internal static bool Solved(BodyData* body)
         {
-            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
-            return (body->flags & immobile) == 0 && (body->flags & NativeStore.BodyFlags.Simulated) != 0;
+            const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
+            return (body->flags & immobile) == 0 && (body->flags & BodyFlags.Simulated) != 0;
         }
 
         internal static int Find(NativeArray<int> parents, int index)
@@ -227,7 +232,7 @@ namespace KSP.Retooled.Physics
         private const int MaximumCountedContacts = 10;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeList<int> Contacts;
@@ -242,11 +247,11 @@ namespace KSP.Retooled.Physics
 
         public void Execute(int i)
         {
-            NativeStore.BodyData* body = World->bodies + i;
-            if (SleepJob.Solved(body) && (body->flags & NativeStore.BodyFlags.Sleeping) == 0)
+            BodyData* body = World->bodies + i;
+            if (SleepJob.Solved(body) && (body->flags & BodyFlags.Sleeping) == 0)
             {
                 UpdateWakeCounter(body, TouchesStill[i] ? Contacts[i] : 0);
-                if (!(body->sleep->WakeCounter > 0.0f))
+                if (!((*body).Sleep()->WakeCounter > 0.0f))
                 {
                     *RunOut = 1;
                 }
@@ -259,36 +264,36 @@ namespace KSP.Retooled.Physics
         /// Delay energy checks after wakeup and raise the sleep threshold for contacts with immovable bodies,
         /// matching PhysX.
         /// </summary>
-        private void UpdateWakeCounter(NativeStore.BodyData* body, int contacts)
+        private void UpdateWakeCounter(BodyData* body, int contacts)
         {
-            float counter = body->sleep->WakeCounter;
-            if (counter < StoreOps.WakeCounterReset * 0.5f || counter < DeltaTime)
+            float counter = (*body).Sleep()->WakeCounter;
+            if (counter < StoreMemory.WakeCounterReset * 0.5f || counter < DeltaTime)
             {
-                body->sleep->LinearSum += body->velocity->Linear;
-                body->sleep->AngularSum += body->velocity->Angular;
+                (*body).Sleep()->LinearSum += (*body).Velocity()->Linear;
+                (*body).Sleep()->AngularSum += (*body).Velocity()->Angular;
 
                 float cluster = 1.0f + math.min(contacts, MaximumCountedContacts);
-                float threshold = cluster * body->sleep->Threshold;
+                float threshold = cluster * (*body).Sleep()->Threshold;
                 float energy = NormalizedEnergy(body);
                 if (energy >= threshold)
                 {
                     float factor = threshold == 0.0f ? 2.0f : math.min(energy / threshold, 2.0f);
-                    body->sleep->WakeCounter = factor * 0.5f * StoreOps.WakeCounterReset + DeltaTime * (cluster - 1.0f);
-                    body->sleep->LinearSum = float3.zero;
-                    body->sleep->AngularSum = float3.zero;
+                    (*body).Sleep()->WakeCounter = factor * 0.5f * StoreMemory.WakeCounterReset + DeltaTime * (cluster - 1.0f);
+                    (*body).Sleep()->LinearSum = float3.zero;
+                    (*body).Sleep()->AngularSum = float3.zero;
                     return;
                 }
             }
 
-            body->sleep->WakeCounter = math.max(counter - DeltaTime, 0.0f);
+            (*body).Sleep()->WakeCounter = math.max(counter - DeltaTime, 0.0f);
         }
 
-        private static float NormalizedEnergy(NativeStore.BodyData* body)
+        private static float NormalizedEnergy(BodyData* body)
         {
-            float3 angular = body->sleep->AngularSum;
-            float inverseMass = body->mass->InverseMass != 0.0f ? body->mass->InverseMass : 1.0f;
-            float rotational = math.dot(angular * angular, body->bodyMass->Inertia) * inverseMass;
-            return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
+            float3 angular = (*body).Sleep()->AngularSum;
+            float inverseMass = (*body).Mass()->InverseMass != 0.0f ? (*body).Mass()->InverseMass : 1.0f;
+            float rotational = math.dot(angular * angular, (*body).BodyMass()->Inertia) * inverseMass;
+            return 0.5f * (rotational + math.lengthsq((*body).Sleep()->LinearSum));
         }
     }
 
@@ -301,7 +306,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct SleepContactsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>
         /// This list is read while <see cref="ReadImpulsesJob"/> runs. That job writes only the impulse fields, which
@@ -360,7 +365,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct FallAsleepJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeList<int> Falling;
@@ -369,13 +374,13 @@ namespace KSP.Retooled.Physics
         {
             for (int i = 0; i < Falling.Length; i++)
             {
-                NativeStore.BodyData* body = World->bodies + Falling[i];
-                body->flags |= NativeStore.BodyFlags.Sleeping;
-                body->sleep->WakeCounter = 0.0f;
-                body->velocity->Linear = float3.zero;
-                body->velocity->Angular = float3.zero;
-                body->sleep->LinearSum = float3.zero;
-                body->sleep->AngularSum = float3.zero;
+                BodyData* body = World->bodies + Falling[i];
+                body->flags |= BodyFlags.Sleeping;
+                (*body).Sleep()->WakeCounter = 0.0f;
+                (*body).Velocity()->Linear = float3.zero;
+                (*body).Velocity()->Angular = float3.zero;
+                (*body).Sleep()->LinearSum = float3.zero;
+                (*body).Sleep()->AngularSum = float3.zero;
             }
         }
     }

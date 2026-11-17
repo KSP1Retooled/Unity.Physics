@@ -5,6 +5,11 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -16,14 +21,14 @@ namespace KSP.Retooled.Physics
     internal unsafe struct PartitionBodiesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public NativeList<int> DynamicIndices;
         public NativeList<int> StaticIndices;
         public NativeList<int> BuiltIndices;
 
         /// <summary>The flags of a dynamic body that receives its pose during write-back instead of from its motion.</summary>
-        public NativeStore.BodyFlags PosedByWriteBack;
+        public BodyFlags PosedByWriteBack;
 
         /// <summary>Set to 1 if no dynamic body has a flag in <see cref="PosedByWriteBack"/>, and to 0 otherwise.</summary>
         public NativeReference<int> MotionsMatchStore;
@@ -37,14 +42,14 @@ namespace KSP.Retooled.Physics
             int matches = 1;
             for (int i = 0; i < count; i++)
             {
-                NativeStore.BodyFlags flags = World->bodies[i].flags;
+                BodyFlags flags = World->bodies[i].flags;
                 BuiltIndices[i] = -1;
-                if ((flags & NativeStore.BodyFlags.Simulated) == 0)
+                if ((flags & BodyFlags.Simulated) == 0)
                 {
                     continue;
                 }
 
-                if ((flags & NativeStore.BodyFlags.Static) != 0)
+                if ((flags & BodyFlags.Static) != 0)
                 {
                     BuiltIndices[i] = StaticIndices.Length;
                     StaticIndices.Add(i);
@@ -78,7 +83,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct ApplyForcesJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Bodies;
+        public BodyData* Bodies;
 
         public float3 Gravity;
         public float DeltaTime;
@@ -87,38 +92,38 @@ namespace KSP.Retooled.Physics
         {
             NoteManagedRun();
 
-            ref NativeStore.BodyData body = ref Bodies[index];
-            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
-            if ((body.flags & immobile) != 0 || (body.flags & NativeStore.BodyFlags.Simulated) == 0)
+            ref BodyData body = ref Bodies[index];
+            const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
+            if ((body.flags & immobile) != 0 || (body.flags & BodyFlags.Simulated) == 0)
             {
                 ClearAccumulators(ref body);
                 return;
             }
 
-            if ((body.flags & NativeStore.BodyFlags.Sleeping) != 0)
+            if ((body.flags & BodyFlags.Sleeping) != 0)
             {
                 return;
             }
 
-            float3 linear = body.velocity->Linear;
-            linear += (body.forces->Force * body.mass->InverseMass + body.forces->Acceleration) * DeltaTime;
-            linear += body.forces->Impulse * body.mass->InverseMass + body.forces->VelocityChange;
-            if ((body.flags & NativeStore.BodyFlags.Gravity) != 0)
+            float3 linear = body.Velocity()->Linear;
+            linear += (body.Forces()->Force * body.Mass()->InverseMass + body.Forces()->Acceleration) * DeltaTime;
+            linear += body.Forces()->Impulse * body.Mass()->InverseMass + body.Forces()->VelocityChange;
+            if ((body.flags & BodyFlags.Gravity) != 0)
             {
                 linear += Gravity * DeltaTime;
             }
 
-            quaternion inertiaFromWorld = math.conjugate(math.mul(body.pose->Rotation, body.mass->Transform.rot));
-            float3 torqueImpulse = body.forces->Torque * DeltaTime + body.forces->AngularImpulse;
-            float3 acceleration = body.forces->AngularAcceleration * DeltaTime + body.forces->AngularVelocityChange;
-            float3 angular = body.velocity->Angular + math.rotate(inertiaFromWorld, acceleration);
-            angular += math.rotate(inertiaFromWorld, torqueImpulse) * body.mass->InverseInertia;
+            quaternion inertiaFromWorld = math.conjugate(math.mul(body.Pose()->Rotation, body.Mass()->Transform.rot));
+            float3 torqueImpulse = body.Forces()->Torque * DeltaTime + body.Forces()->AngularImpulse;
+            float3 acceleration = body.Forces()->AngularAcceleration * DeltaTime + body.Forces()->AngularVelocityChange;
+            float3 angular = body.Velocity()->Angular + math.rotate(inertiaFromWorld, acceleration);
+            angular += math.rotate(inertiaFromWorld, torqueImpulse) * body.Mass()->InverseInertia;
 
-            linear *= math.max(1.0f - body.damping->Linear * DeltaTime, 0.0f);
-            angular *= math.max(1.0f - body.damping->Angular * DeltaTime, 0.0f);
+            linear *= math.max(1.0f - body.Damping()->Linear * DeltaTime, 0.0f);
+            angular *= math.max(1.0f - body.Damping()->Angular * DeltaTime, 0.0f);
 
-            body.velocity->Linear = ClampLength(linear, body.limits->MaxLinearVelocity);
-            body.velocity->Angular = ClampLength(angular, body.limits->MaxAngularVelocity);
+            body.Velocity()->Linear = ClampLength(linear, body.Limits()->MaxLinearVelocity);
+            body.Velocity()->Angular = ClampLength(angular, body.Limits()->MaxAngularVelocity);
             ClearAccumulators(ref body);
         }
 
@@ -135,16 +140,16 @@ namespace KSP.Retooled.Physics
             return squared > limit * limit ? value * (limit / math.sqrt(squared)) : value;
         }
 
-        private static void ClearAccumulators(ref NativeStore.BodyData body)
+        private static void ClearAccumulators(ref BodyData body)
         {
-            body.forces->Force = float3.zero;
-            body.forces->Torque = float3.zero;
-            body.forces->Acceleration = float3.zero;
-            body.forces->AngularAcceleration = float3.zero;
-            body.forces->Impulse = float3.zero;
-            body.forces->AngularImpulse = float3.zero;
-            body.forces->VelocityChange = float3.zero;
-            body.forces->AngularVelocityChange = float3.zero;
+            body.Forces()->Force = float3.zero;
+            body.Forces()->Torque = float3.zero;
+            body.Forces()->Acceleration = float3.zero;
+            body.Forces()->AngularAcceleration = float3.zero;
+            body.Forces()->Impulse = float3.zero;
+            body.Forces()->AngularImpulse = float3.zero;
+            body.Forces()->VelocityChange = float3.zero;
+            body.Forces()->AngularVelocityChange = float3.zero;
         }
     }
 
@@ -156,7 +161,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct BuildBodiesJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [ReadOnly]
         public NativeArray<int> DynamicIndices;
@@ -201,7 +206,7 @@ namespace KSP.Retooled.Physics
             if (builtIndex < DynamicIndices.Length)
             {
                 int index = DynamicIndices[builtIndex];
-                ref NativeStore.BodyData body = ref Store[index];
+                ref BodyData body = ref Store[index];
                 RigidBody built = RigidBodyOf(ref body, index, ReadSources);
                 if (Same != null)
                 {
@@ -224,11 +229,11 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Builds the Unity Physics body for a store row. See <see cref="EntityVersion"/> for its entity.</summary>
-        private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index, bool readSources)
+        private static RigidBody RigidBodyOf(ref BodyData body, int index, bool readSources)
         {
             return new RigidBody
             {
-                Collider = body.collider->Value,
+                Collider = body.Collider()->Value,
                 WorldFromBody = WorldFromBody(ref body),
                 Entity = new Entity { Index = index, Version = EntityVersion(ref body, index, readSources) },
                 Scale = 1.0f,
@@ -240,7 +245,7 @@ namespace KSP.Retooled.Physics
         /// Ownerless test rows use negative identities derived from their indices. Read the cached serial unless
         /// readSources is true.
         /// </summary>
-        private static int EntityVersion(ref NativeStore.BodyData body, int index, bool readSources)
+        private static int EntityVersion(ref BodyData body, int index, bool readSources)
         {
             uint serial = body.serial;
             if (readSources)
@@ -251,10 +256,10 @@ namespace KSP.Retooled.Physics
             return serial != 0 ? (int)serial : -(index + 1);
         }
 
-        internal static RigidTransform WorldFromBody(ref NativeStore.BodyData body)
+        internal static RigidTransform WorldFromBody(ref BodyData body)
         {
-            RigidTransform worldFromBody = new RigidTransform(body.pose->Rotation, body.pose->Position);
-            NativeStore.ShapeData* posed = ColliderBuilder.PosedShape((NativeStore.BodyData*)UnsafeUtility.AddressOf(ref body));
+            RigidTransform worldFromBody = new RigidTransform(body.Pose()->Rotation, body.Pose()->Position);
+            ShapeData* posed = ColliderBuilder.PosedShape((BodyData*)UnsafeUtility.AddressOf(ref body));
             if (posed != null)
             {
                 worldFromBody = math.mul(worldFromBody, new RigidTransform(posed->localRotation, posed->localPosition));
@@ -263,28 +268,28 @@ namespace KSP.Retooled.Physics
             return worldFromBody;
         }
 
-        private void WriteMotion(int motionIndex, ref NativeStore.BodyData body)
+        private void WriteMotion(int motionIndex, ref BodyData body)
         {
-            RigidTransform bodyFromMotion = body.mass->Transform;
-            RigidTransform worldFromMotion = math.mul(new RigidTransform(body.pose->Rotation, body.pose->Position), bodyFromMotion);
+            RigidTransform bodyFromMotion = body.Mass()->Transform;
+            RigidTransform worldFromMotion = math.mul(new RigidTransform(body.Pose()->Rotation, body.Pose()->Position), bodyFromMotion);
 
-            bool kinematic = (body.flags & NativeStore.BodyFlags.Kinematic) != 0;
-            bool sleeping = (body.flags & NativeStore.BodyFlags.Sleeping) != 0;
+            bool kinematic = (body.flags & BodyFlags.Kinematic) != 0;
+            bool sleeping = (body.flags & BodyFlags.Sleeping) != 0;
             bool heldInPlace = kinematic || sleeping;
 
-            float3 linear = body.velocity->Linear;
-            float3 angular = body.velocity->Angular;
+            float3 linear = body.Velocity()->Linear;
+            float3 angular = body.Velocity()->Angular;
             if (kinematic)
             {
                 linear = float3.zero;
                 angular = float3.zero;
-                if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0 && DeltaTime > 0.0f)
+                if ((body.flags & BodyFlags.HasKinematicTarget) != 0 && DeltaTime > 0.0f)
                 {
                     // Motion velocities describe movement of the centre of mass. Rotating around the body origin also
                     // moves the centre of mass.
-                    float3 targetCenter = body.target->Position + math.rotate(body.target->Rotation, body.mass->Transform.pos);
+                    float3 targetCenter = body.Target()->Position + math.rotate(body.Target()->Rotation, body.Mass()->Transform.pos);
                     linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
-                    quaternion turn = math.normalize(math.mul(body.target->Rotation, math.conjugate(body.pose->Rotation)));
+                    quaternion turn = math.normalize(math.mul(body.Target()->Rotation, math.conjugate(body.Pose()->Rotation)));
                     angular = math.rotate(math.conjugate(worldFromMotion.rot), JointConstraints.AngleAxis(turn) / DeltaTime);
                 }
             }
@@ -294,12 +299,12 @@ namespace KSP.Retooled.Physics
             float colliderExpansion = body.colliderExpansion;
             if (ReadSources)
             {
-                colliderExpansion = body.collider->Value.IsCreated ? body.collider->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
+                colliderExpansion = body.Collider()->Value.IsCreated ? body.Collider()->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
             }
 
             // The build doesn't write the result back into the body's PhysicsMass, because no code in this package reads it
             // there.
-            float expansion = math.length(body.mass->Transform.pos) + colliderExpansion;
+            float expansion = math.length(body.Mass()->Transform.pos) + colliderExpansion;
 
             MotionDatas[motionIndex] = new MotionData
             {
@@ -313,8 +318,8 @@ namespace KSP.Retooled.Physics
             {
                 LinearVelocity = linear,
                 AngularVelocity = angular,
-                InverseInertia = heldInPlace ? float3.zero : body.mass->InverseInertia,
-                InverseMass = heldInPlace ? 0.0f : body.mass->InverseMass,
+                InverseInertia = heldInPlace ? float3.zero : body.Mass()->InverseInertia,
+                InverseMass = heldInPlace ? 0.0f : body.Mass()->InverseMass,
                 AngularExpansionFactor = expansion,
                 GravityFactor = 0.0f,
             };
@@ -328,7 +333,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct PoseStaticsJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [ReadOnly]
         public NativeArray<int> StaticIndices;
@@ -352,7 +357,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct FindFirstShapesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [ReadOnly]
         public NativeArray<int> DynamicIndices;
@@ -404,7 +409,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct SnapshotQueryDataJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [ReadOnly]
         public NativeArray<int> DynamicIndices;
@@ -432,18 +437,18 @@ namespace KSP.Retooled.Physics
             }
 
             int nextShape = FirstShapes[i];
-            NativeStore.BodyData* body = Store + row;
+            BodyData* body = Store + row;
             QueryBodies[i] = new QueryBody
             {
                 Owner = body->owner,
                 FirstShape = nextShape,
                 SingleShape = ColliderBuilder.FirstSupported(body),
-                IsStatic = (body->flags & NativeStore.BodyFlags.Static) != 0 ? 1 : 0,
+                IsStatic = (body->flags & BodyFlags.Static) != 0 ? 1 : 0,
             };
 
             for (int s = 0; s < body->shapeCount; s++)
             {
-                NativeStore.ShapeData* shape = body->shapes[s];
+                ShapeData* shape = body->shapes[s];
                 shape->owner->querySlot = (uint)nextShape + 1;
                 QueryShapes[nextShape++] = new QueryShape
                 {
@@ -465,7 +470,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct WriteBackJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [ReadOnly]
         public NativeArray<int> DynamicIndices;
@@ -478,28 +483,28 @@ namespace KSP.Retooled.Physics
 
         public void Execute(int index)
         {
-            ref NativeStore.BodyData body = ref Store[DynamicIndices[index]];
-            if ((body.flags & NativeStore.BodyFlags.Sleeping) != 0)
+            ref BodyData body = ref Store[DynamicIndices[index]];
+            if ((body.flags & BodyFlags.Sleeping) != 0)
             {
                 return;
             }
 
-            if ((body.flags & NativeStore.BodyFlags.Kinematic) != 0)
+            if ((body.flags & BodyFlags.Kinematic) != 0)
             {
-                if ((body.flags & NativeStore.BodyFlags.HasKinematicTarget) != 0)
+                if ((body.flags & BodyFlags.HasKinematicTarget) != 0)
                 {
-                    body.pose->Position = body.target->Position;
-                    StoreOps.SetRotation(body, body.target->Rotation);
-                    body.flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
+                    body.Pose()->Position = body.Target()->Position;
+                    BodyKinematics.SetRotation(body, body.Target()->Rotation);
+                    body.flags &= ~BodyFlags.HasKinematicTarget;
                 }
 
                 return;
             }
 
             MotionVelocity velocity = MotionVelocities[index];
-            SolvedPose(MotionDatas[index], out body.pose->Position, out body.pose->Rotation);
-            body.velocity->Linear = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.limits->MaxLinearVelocity);
-            body.velocity->Angular = ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.limits->MaxAngularVelocity);
+            SolvedPose(MotionDatas[index], out body.Pose()->Position, out body.Pose()->Rotation);
+            body.Velocity()->Linear = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.Limits()->MaxLinearVelocity);
+            body.Velocity()->Angular = ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.Limits()->MaxAngularVelocity);
         }
 
         /// <summary>

@@ -1,5 +1,9 @@
 using Unity.Collections;
 using Unity.Mathematics;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Reports;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -21,23 +25,23 @@ namespace KSP.Retooled.Physics
         private const int KinematicShift = 2;
 
         /// <summary>Keeps the touching pairs of a world whose step state is about to be discarded.</summary>
-        internal static void Save(NativeStore.WorldData* world, NativeStore.StoreGlobals* globals, NativeHashMap<ShapePairKey, ShapePairState> touching)
+        internal static void Save(WorldData* world, StoreGlobals* globals, NativeHashMap<ShapePairKey, ShapePairState> touching)
         {
             uint count = (uint)touching.Count;
             if (count > world->triggerCapacity)
             {
-                world->triggerCapacity = math.max(count, StoreOps.Grown(world->triggerCapacity));
-                world->triggers = (NativeStore.TriggerEvent*)StoreOps.Reallocate(globals, world->triggers, world->triggerCapacity * (ulong)sizeof(NativeStore.TriggerEvent));
+                world->triggerCapacity = math.max(count, StoreMemory.Grown(world->triggerCapacity));
+                world->triggers = (TriggerEvent*)StoreMemory.Reallocate(globals, world->triggers, world->triggerCapacity * (ulong)sizeof(TriggerEvent));
             }
 
             uint i = 0;
             foreach (KVPair<ShapePairKey, ShapePairState> pair in touching)
             {
                 ShapePairState state = pair.Value;
-                world->triggers[i++] = new NativeStore.TriggerEvent
+                world->triggers[i++] = new TriggerEvent
                 {
-                    triggerShape = (NativeStore.Shape*)pair.Key.First,
-                    colliderShape = (NativeStore.Shape*)pair.Key.Second,
+                    triggerShape = (Shape*)pair.Key.First,
+                    colliderShape = (Shape*)pair.Key.Second,
                     type = PairType | (state.Trigger ? TriggerBit : 0) | (state.FirstIsTrigger ? FirstIsTriggerBit : 0) | ((uint)state.Kinematic << KinematicShift),
                 };
             }
@@ -49,7 +53,7 @@ namespace KSP.Retooled.Physics
         /// Restore saved touching pairs and clear the temporary trigger array.
         /// Pairs count as seen before the first step and end if absent, unless both bodies are asleep.
         /// </summary>
-        internal static void Restore(NativeStore.WorldData* world, NativeHashMap<ShapePairKey, ShapePairState> touching)
+        internal static void Restore(WorldData* world, NativeHashMap<ShapePairKey, ShapePairState> touching)
         {
             // Without a detach, the array holds the events of the last step, or nothing.
             for (uint i = 0; i < world->triggerCount; i++)
@@ -62,7 +66,7 @@ namespace KSP.Retooled.Physics
 
             for (uint i = 0; i < world->triggerCount; i++)
             {
-                NativeStore.TriggerEvent entry = world->triggers[i];
+                TriggerEvent entry = world->triggers[i];
                 var key = new ShapePairKey { First = (System.IntPtr)entry.triggerShape, Second = (System.IntPtr)entry.colliderShape };
                 touching[key] = new ShapePairState
                 {

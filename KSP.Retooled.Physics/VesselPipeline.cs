@@ -8,6 +8,10 @@ using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -394,7 +398,7 @@ namespace KSP.Retooled.Physics
         /// Select vessels whose bodies are all built as awake moving bodies and resize step lists.
         /// Call on the main thread. Exclude sleeping vessels.
         /// </summary>
-        public void ChooseStepVessels(NativeStore.WorldData* store, NativeArray<int> builtIndices, int dynamicCount)
+        public void ChooseStepVessels(WorldData* store, NativeArray<int> builtIndices, int dynamicCount)
         {
             // The job that finds islands reads the parts' bodies, so the job below fills them now. Only the solve waits
             // for the jobs that fill the edges and closures. Burst runs the loops over the parts much faster than C#.
@@ -459,7 +463,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct ChooseStepVesselsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly] public NativeArray<int> BuiltIndices;
         public int DynamicCount;
@@ -471,7 +475,7 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
-            const NativeStore.BodyFlags held = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
+            const BodyFlags held = BodyFlags.Sleeping | BodyFlags.Static | BodyFlags.Kinematic;
             StepVessels.Clear();
             for (int v = 0; v < Vessels.Length; v++)
             {
@@ -512,7 +516,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct CompileVesselsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeArray<JointUnit> Units;
@@ -556,7 +560,7 @@ namespace KSP.Retooled.Physics
         /// <summary>The work of the job, with the temporary lists that it shares between its stages.</summary>
         private struct Compiler
         {
-            public NativeStore.WorldData* World;
+            public WorldData* World;
             public NativeArray<JointUnit> Units;
             public NativeArray<JointForestRole> Roles;
             public NativeArray<JointGroup> Groups;
@@ -618,7 +622,7 @@ namespace KSP.Retooled.Physics
                 var unitsByBodies = new NativeParallelMultiHashMap<ulong, int>(math.max(1, unitCount), Allocator.Temp);
                 for (int u = 0; u < unitCount; u++)
                 {
-                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    JointData* joint = World->joints[Units[u].Joint];
                     eligible[u] = Roles[u] != JointForestRole.None && Moving(joint->body0) && Moving(joint->body1);
                     if (eligible[u])
                     {
@@ -665,7 +669,7 @@ namespace KSP.Retooled.Physics
                 {
                     if (Build.UnitVessels[u] >= 0)
                     {
-                        NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                        JointData* joint = World->joints[Units[u].Joint];
                         Build.PairUnits.Add(VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index), u);
                     }
                 }
@@ -712,7 +716,7 @@ namespace KSP.Retooled.Physics
                         continue;
                     }
 
-                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    JointData* joint = World->joints[Units[u].Joint];
                     int first = keptBy[(int)joint->body0->index];
                     int second = keptBy[(int)joint->body1->index];
                     if (first >= 0)
@@ -830,7 +834,7 @@ namespace KSP.Retooled.Physics
                     return false;
                 }
 
-                var joint = (NativeStore.JointData*)record;
+                var joint = (JointData*)record;
                 return joint->serial == serial && (joint->state & JointConstraints.Inactive) == 0 && joint->body0 != null && joint->body1 != null
                     && VesselBuild.PairKey((int)joint->body0->index, (int)joint->body1->index) == VesselBuild.PairKey(bodyA, bodyB);
             }
@@ -856,7 +860,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            private static bool Is(NativeStore.JointData* joint, IntPtr record, uint serial)
+            private static bool Is(JointData* joint, IntPtr record, uint serial)
             {
                 return (IntPtr)joint == record && joint->serial == serial;
             }
@@ -931,7 +935,7 @@ namespace KSP.Retooled.Physics
                     int tombstone = -1;
                     if (unit >= 0)
                     {
-                        NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                        JointData* joint = World->joints[Units[unit].Joint];
                         isBody0 = (int)joint->body0->index == partBody[old] ? (byte)1 : (byte)0;
                         Build.UnitVessels[unit] = index;
 
@@ -958,7 +962,7 @@ namespace KSP.Retooled.Physics
                     IntPtr record = IntPtr.Zero;
                     if (unit >= 0)
                     {
-                        NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                        JointData* joint = World->joints[Units[unit].Joint];
                         a = partOf[(int)joint->body0->index] - firstPart;
                         b = partOf[(int)joint->body1->index] - firstPart;
                         record = (IntPtr)joint;
@@ -1008,7 +1012,7 @@ namespace KSP.Retooled.Physics
                         continue;
                     }
 
-                    NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                    JointData* joint = World->joints[Units[u].Joint];
                     int a = (int)joint->body0->index;
                     int b = (int)joint->body1->index;
                     if (partOf[a] >= 0 || partOf[b] >= 0)
@@ -1109,7 +1113,7 @@ namespace KSP.Retooled.Physics
                         byte isBody0 = 0;
                         if (orderUnit[k] >= 0)
                         {
-                            NativeStore.JointData* joint = World->joints[Units[orderUnit[k]].Joint];
+                            JointData* joint = World->joints[Units[orderUnit[k]].Joint];
                             isBody0 = joint->body0 != null && (int)joint->body0->index == order[k] ? (byte)1 : (byte)0;
                             Build.UnitVessels[orderUnit[k]] = vessel;
                         }
@@ -1187,7 +1191,7 @@ namespace KSP.Retooled.Physics
                     return false;
                 }
 
-                NativeStore.JointData* joint = World->joints[Units[unit].Joint];
+                JointData* joint = World->joints[Units[unit].Joint];
                 a = (int)joint->body0->index;
                 b = (int)joint->body1->index;
                 return true;
@@ -1197,16 +1201,16 @@ namespace KSP.Retooled.Physics
             /// Returns whether a body is simulated and is neither static nor kinematic, so it can be built as a moving
             /// body.
             /// </summary>
-            private static bool Moving(NativeStore.Body* body)
+            private static bool Moving(Body* body)
             {
                 return body != null && Moving(StoreOps.Hot(body));
             }
 
-            private static bool Moving(NativeStore.BodyData* body)
+            private static bool Moving(BodyData* body)
             {
-                NativeStore.BodyFlags flags = body->flags;
-                return (flags & NativeStore.BodyFlags.Simulated) != 0
-                    && (flags & (NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic)) == 0;
+                BodyFlags flags = body->flags;
+                return (flags & BodyFlags.Simulated) != 0
+                    && (flags & (BodyFlags.Static | BodyFlags.Kinematic)) == 0;
             }
 
             /// <summary>
@@ -1233,7 +1237,7 @@ namespace KSP.Retooled.Physics
                 Build.ClosurePartA.Add(partA);
                 Build.ClosurePartB.Add(partB);
                 Build.ClosureJointRecords.Add(record);
-                Build.ClosureJointSerials.Add(record != IntPtr.Zero ? ((NativeStore.JointData*)record)->serial : 0u);
+                Build.ClosureJointSerials.Add(record != IntPtr.Zero ? ((JointData*)record)->serial : 0u);
                 Build.ClosureTombstones.Add(tombstone);
             }
 
@@ -1346,18 +1350,18 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private const float SpreadSquared = 1e-8f;
 
-        public static UnitParameters Of(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
+        public static UnitParameters Of(WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
             NativeArray<JointGroupMember> members)
         {
             var parameters = new UnitParameters();
-            NativeStore.JointData* leader = world->joints[unit.Joint];
+            JointData* leader = world->joints[unit.Joint];
             parameters.Rotation0 = leader->rotation0;
             parameters.Rotation1 = leader->rotation1;
             int count = unit.Group < 0 ? 1 : groups[unit.Group].MemberCount;
             int firstMember = unit.Group < 0 ? 0 : groups[unit.Group].FirstMember;
             for (int i = 0; i < count; i++)
             {
-                NativeStore.JointData* joint = unit.Group < 0 ? leader : world->joints[members[firstMember + i].Joint];
+                JointData* joint = unit.Group < 0 ? leader : world->joints[members[firstMember + i].Joint];
                 parameters.Anchor0 += joint->position0;
                 parameters.Anchor1 += joint->position1;
                 parameters.BreakForce += joint->breakForce;
@@ -1372,12 +1376,12 @@ namespace KSP.Retooled.Physics
             bool3 hard = false;
             for (int i = 0; i < count; i++)
             {
-                NativeStore.JointData* joint = unit.Group < 0 ? leader : world->joints[members[firstMember + i].Joint];
-                NativeStore.JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+                JointData* joint = unit.Group < 0 ? leader : world->joints[members[firstMember + i].Joint];
+                JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
                 for (int axis = 0; axis < 3; axis++)
                 {
-                    NativeStore.JointAxis* drive = wholeRotation != null ? wholeRotation : BuildJointsJob.AngularDrive(joint, axis);
-                    if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + axis)->dofLock == NativeStore.DofLocked)
+                    JointAxis* drive = wholeRotation != null ? wholeRotation : BuildJointsJob.AngularDrive(joint, axis);
+                    if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + axis)->dofLock == StoreConstants.DofLocked)
                     {
                         hard[axis] = true;
                     }
@@ -1419,25 +1423,25 @@ namespace KSP.Retooled.Physics
         /// Converts a point from the body's local frame to its motion frame, whose origin is the centre of mass and
         /// whose axes are the principal inertia axes.
         /// </summary>
-        public static double3 InMotionFrame(NativeStore.BodyData* body, float3 point)
+        public static double3 InMotionFrame(BodyData* body, float3 point)
         {
-            RigidTransform bodyFromMotion = body->mass->Transform;
+            RigidTransform bodyFromMotion = (*body).Mass()->Transform;
             return math.rotate(math.conjugate(bodyFromMotion.rot), point - bodyFromMotion.pos);
         }
 
         /// <summary>Converts a rotation from the body's local frame to its motion frame.</summary>
-        public static quaternion InMotionFrame(NativeStore.BodyData* body, quaternion rotation)
+        public static quaternion InMotionFrame(BodyData* body, quaternion rotation)
         {
-            return math.mul(math.conjugate(body->mass->Transform.rot), rotation);
+            return math.mul(math.conjugate((*body).Mass()->Transform.rot), rotation);
         }
 
         /// <summary>
         /// Rotation from part B's motion frame to part A's at joint rest, when the two joint frames align in world
         /// space.
         /// </summary>
-        public static double4 Rest(NativeStore.BodyData* bodyA, quaternion frameA, NativeStore.BodyData* bodyB, quaternion frameB)
+        public static double4 Rest(BodyData* bodyA, quaternion frameA, BodyData* bodyB, quaternion frameB)
         {
-            quaternion rest = math.mul(math.mul(InMotionFrame(bodyA, frameA), math.conjugate(frameB)), bodyB->mass->Transform.rot);
+            quaternion rest = math.mul(math.mul(InMotionFrame(bodyA, frameA), math.conjugate(frameB)), (*bodyB).Mass()->Transform.rot);
             return math.normalize(rest).value;
         }
 
@@ -1453,7 +1457,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Return the highest joint settings stamp in a unit, changing whenever any member's settings change.
         /// </summary>
-        public static uint Stamp(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
+        public static uint Stamp(WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
             NativeArray<JointGroupMember> members)
         {
             if (unit.Group < 0)
@@ -1472,7 +1476,7 @@ namespace KSP.Retooled.Physics
             return stamp;
         }
 
-        public static double3x3 Frame(NativeStore.BodyData* body, quaternion frame)
+        public static double3x3 Frame(BodyData* body, quaternion frame)
         {
             return new double3x3(new float3x3(InMotionFrame(body, frame)));
         }
@@ -1485,7 +1489,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct FillVesselEdgesJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeArray<JointUnit> Units;
@@ -1584,10 +1588,10 @@ namespace KSP.Retooled.Physics
             }
 
             BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
-            NativeStore.BodyData* child = World->bodies + storeBody;
-            NativeStore.BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
-            RigidTransform childMotion = child->mass->Transform;
-            RigidTransform parentMotion = parent->mass->Transform;
+            BodyData* child = World->bodies + storeBody;
+            BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
+            RigidTransform childMotion = (*child).Mass()->Transform;
+            RigidTransform parentMotion = (*parent).Mass()->Transform;
             uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, Units[unit], Groups, Members) : EdgeCacheStamps[part];
             if (!RefillAll && stamp == EdgeCacheStamps[part] && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
                 && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))
@@ -1637,7 +1641,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct FillVesselClosuresJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeArray<JointUnit> Units;
@@ -1725,10 +1729,10 @@ namespace KSP.Retooled.Physics
             // Find bodies through vessel parts so that cache reuse avoids reading the leading joint record.
             BuildJointsJob.PrepareVesselGroup(World, unit, Groups, Members);
             int firstPart = Vessels[UnitVessels[ClosureUnits[closure]]].FirstPart;
-            NativeStore.BodyData* bodyA = World->bodies + PartStoreBodies[firstPart + ClosurePartA[closure]];
-            NativeStore.BodyData* bodyB = World->bodies + PartStoreBodies[firstPart + ClosurePartB[closure]];
-            RigidTransform motionA = bodyA->mass->Transform;
-            RigidTransform motionB = bodyB->mass->Transform;
+            BodyData* bodyA = World->bodies + PartStoreBodies[firstPart + ClosurePartA[closure]];
+            BodyData* bodyB = World->bodies + PartStoreBodies[firstPart + ClosurePartB[closure]];
+            RigidTransform motionA = (*bodyA).Mass()->Transform;
+            RigidTransform motionB = (*bodyB).Mass()->Transform;
             uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, unit, Groups, Members) : ClosureCacheStamps[closure];
             if (!RefillAll && stamp == ClosureCacheStamps[closure] && UnitParameters.Same(ClosureCacheFrames[2 * closure], motionA)
                 && UnitParameters.Same(ClosureCacheFrames[2 * closure + 1], motionB))
@@ -1774,7 +1778,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct VesselLoadsJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>
         /// Joint load states indexed by the world list. Other joint jobs concurrently write disjoint entries.
@@ -1903,7 +1907,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Return the leader body0 rotation from solved motion, matching its pose after write-back.
         /// </summary>
-        internal static quaternion LeaderFrame(NativeStore.JointData* leader, NativeArray<MotionData> motionDatas, NativeArray<int> builtIndices)
+        internal static quaternion LeaderFrame(JointData* leader, NativeArray<MotionData> motionDatas, NativeArray<int> builtIndices)
         {
             if (leader->body0 == null)
             {

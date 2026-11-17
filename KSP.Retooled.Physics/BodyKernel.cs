@@ -3,6 +3,13 @@ using AOT;
 using Unity.Burst;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -84,11 +91,11 @@ namespace KSP.Retooled.Physics
         private const uint ForceModeVelocityChange = 2;
         private const uint ForceModeAcceleration = 5;
 
-        private const NativeStore.BodyFlags Immobile = NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Static;
+        private const BodyFlags Immobile = BodyFlags.Kinematic | BodyFlags.Static;
 
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
-        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // Skip category markers for frequent reads; their overhead is comparable to the read itself.
             if (IsRead((BodyCommand)command))
@@ -139,13 +146,13 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        private static void Dispatch(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
             {
-                Execute((BodyCommand)command, (NativeStore.Body*)handle, args, globals);
+                Execute((BodyCommand)command, (Body*)handle, args, globals);
             }
         }
 
@@ -153,13 +160,13 @@ namespace KSP.Retooled.Physics
         /// Run the Mono fallback and catch exceptions before returning to native code. Omitted by Burst.
         /// </summary>
         [BurstDiscard]
-        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
+        private static void RunInMono(uint command, void* handle, CommandArgs* args, StoreGlobals* globals, ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCommand();
             try
             {
-                Execute((BodyCommand)command, (NativeStore.Body*)handle, args, globals);
+                Execute((BodyCommand)command, (Body*)handle, args, globals);
             }
             catch (Exception e)
             {
@@ -167,35 +174,35 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Execute(BodyCommand command, NativeStore.Body* body, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void Execute(BodyCommand command, Body* body, CommandArgs* a, StoreGlobals* globals)
         {
-            NativeStore.BodyData* hot = StoreOps.Hot(body);
+            BodyData* hot = StoreOps.Hot(body);
             switch (command)
             {
                 case BodyCommand.SetFlags:
                     SetFlags(body, hot, a);
                     break;
                 case BodyCommand.SetMass:
-                    hot->bodyMass->Mass = a->scalar;
-                    hot->mass->InverseMass = InverseOrZero(a->scalar);
+                    (*hot).BodyMass()->Mass = a->scalar;
+                    (*hot).Mass()->InverseMass = InverseOrZero(a->scalar);
                     break;
                 case BodyCommand.GetMass:
-                    a->scalar = hot->bodyMass->Mass;
+                    a->scalar = (*hot).BodyMass()->Mass;
                     break;
                 case BodyCommand.SetDamping:
-                    hot->damping->Linear = a->scalar;
-                    hot->damping->Angular = a->scalar2;
+                    (*hot).Damping()->Linear = a->scalar;
+                    (*hot).Damping()->Angular = a->scalar2;
                     break;
                 case BodyCommand.GetDamping:
-                    a->scalar = hot->damping->Linear;
-                    a->scalar2 = hot->damping->Angular;
+                    a->scalar = (*hot).Damping()->Linear;
+                    a->scalar2 = (*hot).Damping()->Angular;
                     break;
                 case BodyCommand.SetPose:
                     SetPose(body, hot, a);
                     break;
                 case BodyCommand.GetPose:
-                    a->position = hot->pose->Position;
-                    a->rotation = hot->pose->Rotation;
+                    a->position = (*hot).Pose()->Position;
+                    a->rotation = (*hot).Pose()->Rotation;
                     break;
                 case BodyCommand.AttachShape:
                     AttachShape(body, a, globals);
@@ -204,7 +211,7 @@ namespace KSP.Retooled.Physics
                     if (a->pointer != null)
                     {
                         using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DetachShape.Auto();
-                        StoreOps.RemoveShape(body, (NativeStore.Shape*)a->pointer, globals);
+                        StoreOps.RemoveShape(body, (Shape*)a->pointer, globals);
                     }
 
                     break;
@@ -240,66 +247,66 @@ namespace KSP.Retooled.Physics
                     AddTorque(hot, a);
                     break;
                 case BodyCommand.ClearForce:
-                    hot->forces->Force = float3.zero;
-                    hot->forces->Acceleration = float3.zero;
-                    hot->forces->Impulse = float3.zero;
-                    hot->forces->VelocityChange = float3.zero;
+                    (*hot).Forces()->Force = float3.zero;
+                    (*hot).Forces()->Acceleration = float3.zero;
+                    (*hot).Forces()->Impulse = float3.zero;
+                    (*hot).Forces()->VelocityChange = float3.zero;
                     break;
                 case BodyCommand.ClearTorque:
-                    hot->forces->Torque = float3.zero;
-                    hot->forces->AngularAcceleration = float3.zero;
-                    hot->forces->AngularImpulse = float3.zero;
-                    hot->forces->AngularVelocityChange = float3.zero;
+                    (*hot).Forces()->Torque = float3.zero;
+                    (*hot).Forces()->AngularAcceleration = float3.zero;
+                    (*hot).Forces()->AngularImpulse = float3.zero;
+                    (*hot).Forces()->AngularVelocityChange = float3.zero;
                     break;
                 case BodyCommand.SetLinearVelocity:
-                    hot->velocity->Linear = a->vector;
+                    (*hot).Velocity()->Linear = a->vector;
                     WakeIfAsked(hot, a);
                     break;
                 case BodyCommand.GetLinearVelocity:
-                    a->vector = hot->velocity->Linear;
+                    a->vector = (*hot).Velocity()->Linear;
                     break;
                 case BodyCommand.SetAngularVelocity:
-                    StoreOps.SetWorldAngularVelocity(*hot, a->vector);
+                    BodyKinematics.SetWorldAngularVelocity(*hot, a->vector);
                     WakeIfAsked(hot, a);
                     break;
                 case BodyCommand.GetAngularVelocity:
-                    a->vector = StoreOps.WorldAngularVelocity(*hot);
+                    a->vector = BodyKinematics.WorldAngularVelocity(*hot);
                     break;
                 case BodyCommand.SetMaxLinearVelocity:
-                    hot->limits->MaxLinearVelocity = a->scalar;
+                    (*hot).Limits()->MaxLinearVelocity = a->scalar;
                     break;
                 case BodyCommand.GetMaxLinearVelocity:
-                    a->scalar = hot->limits->MaxLinearVelocity;
+                    a->scalar = (*hot).Limits()->MaxLinearVelocity;
                     break;
                 case BodyCommand.SetMaxAngularVelocity:
-                    hot->limits->MaxAngularVelocity = a->scalar;
+                    (*hot).Limits()->MaxAngularVelocity = a->scalar;
                     break;
                 case BodyCommand.GetMaxAngularVelocity:
-                    a->scalar = hot->limits->MaxAngularVelocity;
+                    a->scalar = (*hot).Limits()->MaxAngularVelocity;
                     break;
                 case BodyCommand.SetMaxDepenetrationVelocity:
-                    hot->limits->MaxDepenetrationVelocity = a->scalar;
+                    (*hot).Limits()->MaxDepenetrationVelocity = a->scalar;
                     break;
                 case BodyCommand.GetMaxDepenetrationVelocity:
-                    a->scalar = hot->limits->MaxDepenetrationVelocity;
+                    a->scalar = (*hot).Limits()->MaxDepenetrationVelocity;
                     break;
                 case BodyCommand.SetInertiaTensor:
                     SetInertia(hot, a->vector);
                     break;
                 case BodyCommand.GetInertiaTensor:
-                    a->vector = hot->bodyMass->Inertia;
+                    a->vector = (*hot).BodyMass()->Inertia;
                     break;
                 case BodyCommand.SetInertiaTensorRotation:
-                    StoreOps.SetInertiaRotation(*hot, a->rotation);
+                    BodyKinematics.SetInertiaRotation(*hot, a->rotation);
                     break;
                 case BodyCommand.GetInertiaTensorRotation:
-                    a->rotation = hot->mass->Transform.rot;
+                    a->rotation = (*hot).Mass()->Transform.rot;
                     break;
                 case BodyCommand.SetLocalCenterOfMass:
-                    hot->mass->Transform.pos = a->vector;
+                    (*hot).Mass()->Transform.pos = a->vector;
                     break;
                 case BodyCommand.GetLocalCenterOfMass:
-                    a->vector = hot->mass->Transform.pos;
+                    a->vector = (*hot).Mass()->Transform.pos;
                     break;
                 case BodyCommand.GetWorldInertiaTensorMatrix:
                     WorldInertiaTensor(hot, (float*)a->pointer);
@@ -314,7 +321,7 @@ namespace KSP.Retooled.Physics
                     a->vector = AccumulatedTorque(hot, a->scalar);
                     break;
                 case BodyCommand.GetLocalPointVelocity:
-                    a->vector = VelocityAt(hot, hot->pose->Position + math.rotate(hot->pose->Rotation, a->vector));
+                    a->vector = VelocityAt(hot, (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, a->vector));
                     break;
                 case BodyCommand.GetWorldPointVelocity:
                     a->vector = VelocityAt(hot, a->vector);
@@ -326,38 +333,38 @@ namespace KSP.Retooled.Physics
                     SetKinematicTarget(hot, a);
                     break;
                 case BodyCommand.GetKinematicTarget:
-                    bool hasTarget = (hot->flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
-                    a->position = hasTarget ? hot->target->Position : hot->pose->Position;
-                    a->rotation = hasTarget ? hot->target->Rotation : hot->pose->Rotation;
+                    bool hasTarget = (hot->flags & BodyFlags.HasKinematicTarget) != 0;
+                    a->position = hasTarget ? (*hot).Target()->Position : (*hot).Pose()->Position;
+                    a->rotation = hasTarget ? (*hot).Target()->Rotation : (*hot).Pose()->Rotation;
                     break;
                 case BodyCommand.Sleep:
                     // Sleeping bodies are not stepped. Clear the target here so that it is not applied when the body
                     // next wakes.
-                    hot->flags |= NativeStore.BodyFlags.Sleeping;
-                    hot->flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
-                    hot->sleep->WakeCounter = 0.0f;
-                    hot->velocity->Linear = float3.zero;
-                    hot->velocity->Angular = float3.zero;
+                    hot->flags |= BodyFlags.Sleeping;
+                    hot->flags &= ~BodyFlags.HasKinematicTarget;
+                    (*hot).Sleep()->WakeCounter = 0.0f;
+                    (*hot).Velocity()->Linear = float3.zero;
+                    (*hot).Velocity()->Angular = float3.zero;
                     break;
                 case BodyCommand.WakeUp:
                     Wake(hot);
                     break;
                 case BodyCommand.SetWakeCounter:
-                    hot->sleep->WakeCounter = a->scalar;
+                    (*hot).Sleep()->WakeCounter = a->scalar;
                     if (a->scalar > 0.0f)
                     {
-                        hot->flags &= ~NativeStore.BodyFlags.Sleeping;
+                        hot->flags &= ~BodyFlags.Sleeping;
                     }
 
                     break;
                 case BodyCommand.GetWakeCounter:
-                    a->scalar = hot->sleep->WakeCounter;
+                    a->scalar = (*hot).Sleep()->WakeCounter;
                     break;
                 case BodyCommand.SetSleepThresholdOverride:
-                    hot->sleep->Threshold = a->scalar;
+                    (*hot).Sleep()->Threshold = a->scalar;
                     break;
                 case BodyCommand.GetSleepThresholdOverride:
-                    a->scalar = hot->sleep->Threshold;
+                    a->scalar = (*hot).Sleep()->Threshold;
                     break;
                 case BodyCommand.SetSolverIterationsOverride:
                     body->positionIterations = a->value;
@@ -375,13 +382,13 @@ namespace KSP.Retooled.Physics
             return value > 0.0f ? 1.0f / value : 0.0f;
         }
 
-        private static void Wake(NativeStore.BodyData* hot)
+        private static void Wake(BodyData* hot)
         {
-            hot->flags &= ~NativeStore.BodyFlags.Sleeping;
-            hot->sleep->WakeCounter = math.max(hot->sleep->WakeCounter, StoreOps.WakeCounterReset);
+            hot->flags &= ~BodyFlags.Sleeping;
+            (*hot).Sleep()->WakeCounter = math.max((*hot).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
         }
 
-        private static void WakeIfAsked(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void WakeIfAsked(BodyData* hot, CommandArgs* a)
         {
             if (a->enabled != 0)
             {
@@ -389,19 +396,19 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void SetInertia(NativeStore.BodyData* hot, float3 inertia)
+        private static void SetInertia(BodyData* hot, float3 inertia)
         {
-            hot->bodyMass->Inertia = inertia;
-            hot->mass->InverseInertia = new float3(InverseOrZero(inertia.x), InverseOrZero(inertia.y), InverseOrZero(inertia.z));
+            (*hot).BodyMass()->Inertia = inertia;
+            (*hot).Mass()->InverseInertia = new float3(InverseOrZero(inertia.x), InverseOrZero(inertia.y), InverseOrZero(inertia.z));
         }
 
         /// <summary>
         /// Set a body's pose and mark the static tree dirty when a static body moves.
         /// </summary>
-        private static void SetPose(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void SetPose(Body* body, BodyData* hot, CommandArgs* a)
         {
-            float3 position = hot->pose->Position;
-            quaternion rotation = hot->pose->Rotation;
+            float3 position = (*hot).Pose()->Position;
+            quaternion rotation = (*hot).Pose()->Rotation;
 
             // Preserve the exact state when pose bits match, avoiding rounding from angular velocity
             // conversions.
@@ -412,12 +419,12 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            hot->pose->Position = a->position;
-            StoreOps.SetRotation(*hot, a->rotation);
+            (*hot).Pose()->Position = a->position;
+            BodyKinematics.SetRotation(*hot, a->rotation);
             WakeIfAsked(hot, a);
-            if (math.any(hot->pose->Position != position) || math.any(hot->pose->Rotation.value != rotation.value))
+            if (math.any((*hot).Pose()->Position != position) || math.any((*hot).Pose()->Rotation.value != rotation.value))
             {
-                if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
+                if ((hot->flags & BodyFlags.Static) != 0)
                 {
                     StoreOps.MarkStaticMoved(body);
                 }
@@ -428,10 +435,10 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void SetFlags(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void SetFlags(Body* body, BodyData* hot, CommandArgs* a)
         {
-            NativeStore.BodyFlags bits = (NativeStore.BodyFlags)a->flags & NativeStore.BodyFlags.PublicMask;
-            NativeStore.BodyFlags before = hot->flags;
+            BodyFlags bits = (BodyFlags)a->flags & BodyFlags.PublicMask;
+            BodyFlags before = hot->flags;
             if (a->enabled != 0)
             {
                 hot->flags |= bits;
@@ -443,10 +450,10 @@ namespace KSP.Retooled.Physics
 
             // Only simulated kinematic bodies move to their targets during a step. Clear the target for other bodies so
             // that it is not applied later.
-            const NativeStore.BodyFlags followsTargets = NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Simulated;
+            const BodyFlags followsTargets = BodyFlags.Kinematic | BodyFlags.Simulated;
             if ((hot->flags & followsTargets) != followsTargets)
             {
-                hot->flags &= ~NativeStore.BodyFlags.HasKinematicTarget;
+                hot->flags &= ~BodyFlags.HasKinematicTarget;
             }
 
             // Unity sets flags far more often than their values change. The static tree needs to be updated both when a
@@ -458,14 +465,14 @@ namespace KSP.Retooled.Physics
 
             // Whether a body moves determines the position of its joints in the vessel forest. Whether it is simulated
             // determines where the bodies for its joints are built.
-            if (((hot->flags ^ before) & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Simulated)) != 0)
+            if (((hot->flags ^ before) & (BodyFlags.Kinematic | BodyFlags.Simulated)) != 0)
             {
                 JointTopology.Changed();
             }
 
             // Match PhysX: changing isKinematic restarts touching pairs, even for sleeping bodies.
             // WakeRefilteredPairsJob reevaluates the pairs on the next step.
-            if (((hot->flags ^ before) & NativeStore.BodyFlags.Kinematic) != 0)
+            if (((hot->flags ^ before) & BodyFlags.Kinematic) != 0)
             {
                 PairFilterVersion.Changed();
             }
@@ -475,20 +482,20 @@ namespace KSP.Retooled.Physics
         /// Convert a static shape's world-space pose to body-local storage.
         /// Unity supplies local shape poses for dynamic bodies, despite the plugin API comments.
         /// </summary>
-        internal static void StoreStaticShapePose(NativeStore.ShapeData* shape, NativeStore.BodyData* body, float3 worldPosition, quaternion worldRotation)
+        internal static void StoreStaticShapePose(ShapeData* shape, BodyData* body, float3 worldPosition, quaternion worldRotation)
         {
-            quaternion inverse = math.conjugate(body->pose->Rotation);
-            shape->localPosition = math.rotate(inverse, worldPosition - body->pose->Position);
+            quaternion inverse = math.conjugate((*body).Pose()->Rotation);
+            shape->localPosition = math.rotate(inverse, worldPosition - (*body).Pose()->Position);
             shape->localRotation = math.mul(inverse, worldRotation);
         }
 
-        private static void AttachShape(NativeStore.Body* body, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void AttachShape(Body* body, CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AttachShape.Auto();
 
             // A shape has one owner. If its entry remained with the old owner, that entry would point to freed memory
             // after the shape was destroyed.
-            NativeStore.Shape* shape = (NativeStore.Shape*)a->pointer;
+            Shape* shape = (Shape*)a->pointer;
             if (shape == null)
             {
                 return;
@@ -499,8 +506,8 @@ namespace KSP.Retooled.Physics
                 StoreOps.RemoveShape(shape->body, shape, globals);
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(body);
-            if ((hot->flags & NativeStore.BodyFlags.Static) != 0 && a->enabled == 0)
+            BodyData* hot = StoreOps.Hot(body);
+            if ((hot->flags & BodyFlags.Static) != 0 && a->enabled == 0)
             {
                 StoreStaticShapePose(&shape->data, hot, a->position, a->rotation);
             }
@@ -513,7 +520,7 @@ namespace KSP.Retooled.Physics
             StoreOps.AddShape(body, shape, globals);
         }
 
-        private static void AddForce(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void AddForce(BodyData* hot, CommandArgs* a)
         {
             if ((hot->flags & Immobile) != 0)
             {
@@ -523,23 +530,23 @@ namespace KSP.Retooled.Physics
             switch (a->mode)
             {
                 case ForceModeForce:
-                    hot->forces->Force += a->vector;
+                    (*hot).Forces()->Force += a->vector;
                     break;
                 case ForceModeImpulse:
-                    hot->forces->Impulse += a->vector;
+                    (*hot).Forces()->Impulse += a->vector;
                     break;
                 case ForceModeVelocityChange:
-                    hot->forces->VelocityChange += a->vector;
+                    (*hot).Forces()->VelocityChange += a->vector;
                     break;
                 case ForceModeAcceleration:
-                    hot->forces->Acceleration += a->vector;
+                    (*hot).Forces()->Acceleration += a->vector;
                     break;
             }
 
             WakeIfAsked(hot, a);
         }
 
-        private static void AddTorque(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void AddTorque(BodyData* hot, CommandArgs* a)
         {
             if ((hot->flags & Immobile) != 0)
             {
@@ -549,27 +556,27 @@ namespace KSP.Retooled.Physics
             switch (a->mode)
             {
                 case ForceModeForce:
-                    hot->forces->Torque += a->vector;
+                    (*hot).Forces()->Torque += a->vector;
                     break;
                 case ForceModeImpulse:
-                    hot->forces->AngularImpulse += a->vector;
+                    (*hot).Forces()->AngularImpulse += a->vector;
                     break;
                 case ForceModeVelocityChange:
-                    hot->forces->AngularVelocityChange += a->vector;
+                    (*hot).Forces()->AngularVelocityChange += a->vector;
                     break;
                 case ForceModeAcceleration:
-                    hot->forces->AngularAcceleration += a->vector;
+                    (*hot).Forces()->AngularAcceleration += a->vector;
                     break;
             }
 
             WakeIfAsked(hot, a);
         }
 
-        private static void WorldInertiaTensor(NativeStore.BodyData* hot, float* matrix)
+        private static void WorldInertiaTensor(BodyData* hot, float* matrix)
         {
-            quaternion rotation = math.mul(hot->pose->Rotation, hot->mass->Transform.rot);
+            quaternion rotation = math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot);
             float3x3 axes = new float3x3(rotation);
-            float3 moments = hot->bodyMass->Inertia;
+            float3 moments = (*hot).BodyMass()->Inertia;
             for (int row = 0; row < 3; row++)
             {
                 for (int column = 0; column < 3; column++)
@@ -687,7 +694,7 @@ namespace KSP.Retooled.Physics
             return new quaternion((float)x, (float)y, (float)z, (float)w);
         }
 
-        private static float3 ShapeCenterInBody(NativeStore.ShapeData* shape, float3 localCenter)
+        private static float3 ShapeCenterInBody(ShapeData* shape, float3 localCenter)
         {
             return shape->localPosition + math.rotate(shape->localRotation, localCenter);
         }
@@ -695,7 +702,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Distribute mass among non-trigger shapes by volume, following PhysX updateMassAndInertia.
         /// </summary>
-        private static void RecomputeMassProperties(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void RecomputeMassProperties(Body* body, BodyData* hot, CommandArgs* a)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.RecomputeMassProperties.Auto();
 
@@ -706,11 +713,11 @@ namespace KSP.Retooled.Physics
             float3 weightedCenter = float3.zero;
             for (uint i = 0; i < body->shapeCount; i++)
             {
-                NativeStore.ShapeData* shape = body->shapes[i];
+                ShapeData* shape = body->shapes[i];
 
                 // PhysX cannot calculate mass properties for a triangle mesh and rejects the calculation for the whole
                 // body. A moving body with a triangle mesh must be kinematic.
-                if (shape->geometryType == NativeStore.GeometryTriangleMesh)
+                if (shape->geometryType == StoreConstants.GeometryTriangleMesh)
                 {
                     totalVolume = 0.0f;
                     break;
@@ -725,18 +732,18 @@ namespace KSP.Retooled.Physics
 
             if (totalVolume <= 0.0f)
             {
-                hot->mass->Transform.pos = overrideCenter ? a->vector : float3.zero;
+                (*hot).Mass()->Transform.pos = overrideCenter ? a->vector : float3.zero;
                 SetInertia(hot, overrideInertia ? a->vector2 : new float3(1.0f));
-                StoreOps.SetInertiaRotation(*hot, overrideInertia ? a->rotation : quaternion.identity);
+                BodyKinematics.SetInertiaRotation(*hot, overrideInertia ? a->rotation : quaternion.identity);
                 return;
             }
 
             float3 center = overrideCenter ? a->vector : weightedCenter / totalVolume;
-            hot->mass->Transform.pos = center;
+            (*hot).Mass()->Transform.pos = center;
             if (overrideInertia)
             {
                 SetInertia(hot, a->vector2);
-                StoreOps.SetInertiaRotation(*hot, a->rotation);
+                BodyKinematics.SetInertiaRotation(*hot, a->rotation);
     return;
             }
 
@@ -749,10 +756,10 @@ namespace KSP.Retooled.Physics
 
             for (uint i = 0; i < body->shapeCount; i++)
             {
-                NativeStore.ShapeData* shape = body->shapes[i];
+                ShapeData* shape = body->shapes[i];
                 if (TakesMass(shape, out float volume, out float3 localCenter, out float3x3 inertiaPerUnitMass))
                 {
-                    AddToTensor(tensor, shape, hot->bodyMass->Mass * (double)volume / totalVolume, ShapeCenterInBody(shape, localCenter) - center, inertiaPerUnitMass);
+                    AddToTensor(tensor, shape, (*hot).BodyMass()->Mass * (double)volume / totalVolume, ShapeCenterInBody(shape, localCenter) - center, inertiaPerUnitMass);
                 }
             }
 
@@ -771,12 +778,12 @@ namespace KSP.Retooled.Physics
             }
 
             SetInertia(hot, new float3((float)tensor[0], (float)tensor[4], (float)tensor[8]));
-            StoreOps.SetInertiaRotation(*hot, QuaternionFromAxes(principalAxes));
+            BodyKinematics.SetInertiaRotation(*hot, QuaternionFromAxes(principalAxes));
         }
 
-        private static bool TakesMass(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        private static bool TakesMass(ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
-            bool isTrigger = (shape->flags & NativeStore.ShapeFlagTrigger) != 0;
+            bool isTrigger = (shape->flags & StoreConstants.ShapeFlagTrigger) != 0;
             bool hasMass = ShapeMath.MassProperties(shape, out volume, out center, out inertiaPerUnitMass);
             return !isTrigger && hasMass;
         }
@@ -784,7 +791,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Add a shape's rotated inertia and parallel axis contribution to the body's inertia tensor.
         /// </summary>
-        private static void AddToTensor(double* tensor, NativeStore.ShapeData* shape, double mass, float3 offset, float3x3 inertiaPerUnitMass)
+        private static void AddToTensor(double* tensor, ShapeData* shape, double mass, float3 offset, float3x3 inertiaPerUnitMass)
         {
             float3x3 axes = new float3x3(shape->localRotation);
             double offsetSquared = math.dot(offset, offset);
@@ -806,37 +813,37 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static float3 AccumulatedForce(NativeStore.BodyData* hot, float deltaTime)
+        private static float3 AccumulatedForce(BodyData* hot, float deltaTime)
         {
             float perStep = deltaTime > 0.0f ? 1.0f / deltaTime : 0.0f;
-            return hot->forces->Force + hot->forces->Acceleration * hot->bodyMass->Mass + hot->forces->Impulse * perStep + hot->forces->VelocityChange * hot->bodyMass->Mass * perStep;
+            return (*hot).Forces()->Force + (*hot).Forces()->Acceleration * (*hot).BodyMass()->Mass + (*hot).Forces()->Impulse * perStep + (*hot).Forces()->VelocityChange * (*hot).BodyMass()->Mass * perStep;
         }
 
         /// <summary>
         /// Apply the principal moments and axes of inertia to an angular acceleration or velocity change.
         /// </summary>
-        private static float3 ApplyInertia(NativeStore.BodyData* hot, float3 angular)
+        private static float3 ApplyInertia(BodyData* hot, float3 angular)
         {
-            quaternion rotation = math.mul(hot->pose->Rotation, hot->mass->Transform.rot);
-            return math.rotate(rotation, math.rotate(math.conjugate(rotation), angular) * hot->bodyMass->Inertia);
+            quaternion rotation = math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot);
+            return math.rotate(rotation, math.rotate(math.conjugate(rotation), angular) * (*hot).BodyMass()->Inertia);
         }
 
-        private static float3 AccumulatedTorque(NativeStore.BodyData* hot, float deltaTime)
+        private static float3 AccumulatedTorque(BodyData* hot, float deltaTime)
         {
             float perStep = deltaTime > 0.0f ? 1.0f / deltaTime : 0.0f;
-            return hot->forces->Torque
-                + ApplyInertia(hot, hot->forces->AngularAcceleration)
-                + hot->forces->AngularImpulse * perStep
-                + ApplyInertia(hot, hot->forces->AngularVelocityChange) * perStep;
+            return (*hot).Forces()->Torque
+                + ApplyInertia(hot, (*hot).Forces()->AngularAcceleration)
+                + (*hot).Forces()->AngularImpulse * perStep
+                + ApplyInertia(hot, (*hot).Forces()->AngularVelocityChange) * perStep;
         }
 
-        private static float3 VelocityAt(NativeStore.BodyData* hot, float3 worldPoint)
+        private static float3 VelocityAt(BodyData* hot, float3 worldPoint)
         {
-            float3 worldCenter = hot->pose->Position + math.rotate(hot->pose->Rotation, hot->mass->Transform.pos);
-            return hot->velocity->Linear + math.cross(StoreOps.WorldAngularVelocity(*hot), worldPoint - worldCenter);
+            float3 worldCenter = (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, (*hot).Mass()->Transform.pos);
+            return (*hot).Velocity()->Linear + math.cross(BodyKinematics.WorldAngularVelocity(*hot), worldPoint - worldCenter);
         }
 
-        private static void ClosestPointOnBounds(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void ClosestPointOnBounds(Body* body, BodyData* hot, CommandArgs* a)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ClosestPointOnBounds.Auto();
 
@@ -848,8 +855,8 @@ namespace KSP.Retooled.Physics
                 float3 upper = new float3(float.NegativeInfinity);
                 for (uint i = 0; i < body->shapeCount; i++)
                 {
-                    NativeStore.ShapeData* shape = body->shapes[i];
-                    ShapeMath.WorldBounds(shape, shape->localPosition, shape->localRotation, hot->pose->Position, hot->pose->Rotation, out float3 shapeLower, out float3 shapeUpper);
+                    ShapeData* shape = body->shapes[i];
+                    ShapeMath.WorldBounds(shape, shape->localPosition, shape->localRotation, (*hot).Pose()->Position, (*hot).Pose()->Rotation, out float3 shapeLower, out float3 shapeUpper);
                     lower = math.min(lower, shapeLower);
                     upper = math.max(upper, shapeUpper);
                 }
@@ -861,15 +868,15 @@ namespace KSP.Retooled.Physics
             a->scalar = math.lengthsq(closest - position);
         }
 
-        private static void SetKinematicTarget(NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
+        private static void SetKinematicTarget(BodyData* hot, CommandArgs* a)
         {
             // Bodies that are not simulated are skipped during the step. Ignore their targets here so that a stored
             // target cannot cause a teleport later.
-            if ((hot->flags & NativeStore.BodyFlags.Simulated) != 0)
+            if ((hot->flags & BodyFlags.Simulated) != 0)
             {
-                hot->target->Position = a->position;
-                hot->target->Rotation = a->rotation;
-                hot->flags |= NativeStore.BodyFlags.HasKinematicTarget;
+                (*hot).Target()->Position = a->position;
+                (*hot).Target()->Rotation = a->rotation;
+                hot->flags |= BodyFlags.HasKinematicTarget;
             }
 
             Wake(hot);

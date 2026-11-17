@@ -10,6 +10,7 @@ using Unity.Physics.Systems;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
+using Unity.Physics.Store.World;
 #endif
 
 namespace KSP.Retooled.Physics
@@ -188,7 +189,7 @@ namespace KSP.Retooled.Physics
             int worldCount = NativeStore.RetooledPhysics_WorldCount();
             for (int i = 0; i < worldCount; i++)
             {
-                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(i);
+                WorldData* world = NativeStore.RetooledPhysics_GetWorld(i);
                 lock (Worlds)
                 {
                     // Unity keeps the trigger pairs that it holds, so the world's next state needs the touching pairs.
@@ -463,7 +464,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static WorldState StateOf(NativeStore.WorldData* world)
+        private static WorldState StateOf(WorldData* world)
         {
             // The caller holds the lock for this world. Queries on different worlds can still run concurrently.
             lock (Worlds)
@@ -479,7 +480,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void ReleaseWorld(NativeStore.WorldData* world)
+        private static void ReleaseWorld(WorldData* world)
         {
             lock (Worlds)
             {
@@ -493,7 +494,7 @@ namespace KSP.Retooled.Physics
         }
 
         [MonoPInvokeCallback(typeof(NativeStore.SimulateCallback))]
-        private static void OnSimulate(NativeStore.WorldData* world, float deltaTime)
+        private static void OnSimulate(WorldData* world, float deltaTime)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Step.Auto();
 
@@ -514,7 +515,7 @@ namespace KSP.Retooled.Physics
         }
 
         [MonoPInvokeCallback(typeof(NativeStore.BuildQueryWorldCallback))]
-        private static int OnBuildQueryWorld(NativeStore.WorldData* world)
+        private static int OnBuildQueryWorld(WorldData* world)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildQueryWorld.Auto();
 
@@ -526,12 +527,12 @@ namespace KSP.Retooled.Physics
             {
                 world->queryWorld = null;
                 Debug.LogException(e);
-                return NativeStore.QueryWorldFailed;
+                return StoreConstants.QueryWorldFailed;
             }
         }
 
         [MonoPInvokeCallback(typeof(NativeStore.DestroyWorldCallback))]
-        private static void OnDestroyWorld(NativeStore.WorldData* world)
+        private static void OnDestroyWorld(WorldData* world)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyWorld.Auto();
 

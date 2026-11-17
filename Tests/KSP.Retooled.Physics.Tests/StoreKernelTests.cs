@@ -1,9 +1,13 @@
-using KSP.Retooled.Components.Physics;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Transforms;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -12,18 +16,18 @@ namespace KSP.Retooled.Physics.Tests
     /// </summary>
     public unsafe class StoreKernelTests
     {
-        private const NativeStore.BodyFlags Dynamic = NativeStore.BodyFlags.Simulated;
-        private const NativeStore.BodyFlags Kinematic = NativeStore.BodyFlags.Simulated | NativeStore.BodyFlags.Kinematic;
+        private const BodyFlags Dynamic = BodyFlags.Simulated;
+        private const BodyFlags Kinematic = BodyFlags.Simulated | BodyFlags.Kinematic;
 
-        private NativeStore.StoreGlobals* globals;
-        private NativeStore.WorldData* world;
+        private StoreGlobals* globals;
+        private WorldData* world;
 
         [SetUp]
         public void CreateWorld()
         {
             Assume.That(BackendInfo.IsRetooled, "needs --backend retooled");
             globals = NativeStore.RetooledPhysics_Globals();
-            world = StoreOps.Allocate<NativeStore.WorldData>(globals);
+            world = StoreMemory.Allocate<WorldData>(globals);
         }
 
         [TearDown]
@@ -32,66 +36,66 @@ namespace KSP.Retooled.Physics.Tests
             if (world != null)
             {
                 WorldKernel.FreeBodies(world, globals);
-                StoreOps.Release(globals, world->bodies);
-                StoreOps.Release(globals, world);
+                StoreMemory.Release(globals, world->bodies);
+                StoreMemory.Release(globals, world);
                 world = null;
             }
         }
 
-        private NativeStore.Body* CreateBody(NativeStore.BodyFlags flags, bool isStatic = false)
+        private Body* CreateBody(BodyFlags flags, bool isStatic = false)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.rotation = quaternion.identity;
             args.flags = (uint)flags;
             args.enabled = isStatic ? 1u : 0u;
             args.scalar = 1.0f;
             WorldKernel.Run((uint)WorldCommand.CreateBody, world, &args, globals);
-            return (NativeStore.Body*)args.pointer;
+            return (Body*)args.pointer;
         }
 
-        private NativeStore.Shape* CreateShape(uint geometryType, float3 extents)
+        private Shape* CreateShape(uint geometryType, float3 extents)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.mode = geometryType;
             args.vector = extents;
             ShapeKernel.Run((uint)ShapeCommand.CreateShape, null, &args, globals);
-            return (NativeStore.Shape*)args.pointer;
+            return (Shape*)args.pointer;
         }
 
-        private void DestroyShape(NativeStore.Shape* shape)
+        private void DestroyShape(Shape* shape)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             ShapeKernel.Run((uint)ShapeCommand.DestroyShape, shape, &args, globals);
         }
 
-        private void Attach(NativeStore.Body* body, NativeStore.Shape* shape)
+        private void Attach(Body* body, Shape* shape)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.rotation = quaternion.identity;
             args.pointer = shape;
             args.enabled = 1;
             BodyKernel.Run((uint)BodyCommand.AttachShape, body, &args, globals);
         }
 
-        private void SetTarget(NativeStore.Body* body, float3 position)
+        private void SetTarget(Body* body, float3 position)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.rotation = quaternion.identity;
             args.position = position;
             BodyKernel.Run((uint)BodyCommand.SetKinematicTarget, body, &args, globals);
         }
 
-        private bool HasTarget(NativeStore.Body* body)
+        private bool HasTarget(Body* body)
         {
-            return (StoreOps.Hot(body)->flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
+            return (StoreOps.Hot(body)->flags & BodyFlags.HasKinematicTarget) != 0;
         }
 
         [Test]
         public void AttachingAShapeTakesItOffItsPreviousBody()
         {
-            NativeStore.Body* first = CreateBody(Dynamic);
-            NativeStore.Body* second = CreateBody(Dynamic);
-            NativeStore.Shape* shape = CreateShape(NativeStore.GeometryBox, new float3(0.5f));
+            Body* first = CreateBody(Dynamic);
+            Body* second = CreateBody(Dynamic);
+            Shape* shape = CreateShape(StoreConstants.GeometryBox, new float3(0.5f));
 
             Attach(first, shape);
             Attach(second, shape);
@@ -108,8 +112,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void AttachingAShapeTwiceListsItOnce()
         {
-            NativeStore.Body* body = CreateBody(Dynamic);
-            NativeStore.Shape* shape = CreateShape(NativeStore.GeometryBox, new float3(0.5f));
+            Body* body = CreateBody(Dynamic);
+            Shape* shape = CreateShape(StoreConstants.GeometryBox, new float3(0.5f));
 
             Attach(body, shape);
             Attach(body, shape);
@@ -121,16 +125,16 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void AZeroVolumeCapsuleTakesNoMassAndLeavesInertiaFinite()
         {
-            NativeStore.Body* body = CreateBody(Dynamic);
-            NativeStore.Shape* box = CreateShape(NativeStore.GeometryBox, new float3(0.5f));
-            NativeStore.Shape* capsule = CreateShape(NativeStore.GeometryCapsule, float3.zero);
+            Body* body = CreateBody(Dynamic);
+            Shape* box = CreateShape(StoreConstants.GeometryBox, new float3(0.5f));
+            Shape* capsule = CreateShape(StoreConstants.GeometryCapsule, float3.zero);
             Attach(body, box);
             Attach(body, capsule);
 
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             BodyKernel.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
 
-            float3 inertia = StoreOps.Hot(body)->bodyMass->Inertia;
+            float3 inertia = (*StoreOps.Hot(body)).BodyMass()->Inertia;
             Assert.That(math.all(math.isfinite(inertia)), Is.True, $"inertia {inertia}");
             Assert.That(inertia.x, Is.EqualTo(1.0f / 6.0f).Within(1e-5f), "the box alone");
 
@@ -141,8 +145,8 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ATargetIsNotKeptForABodyThatWontStep()
         {
-            NativeStore.Body* body = CreateBody(Kinematic);
-            NativeStore.CommandArgs args = default;
+            Body* body = CreateBody(Kinematic);
+            CommandArgs args = default;
 
             SetTarget(body, new float3(1.0f, 0.0f, 0.0f));
             Assert.That(HasTarget(body), Is.True);
@@ -150,7 +154,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(HasTarget(body), Is.False, "asleep");
 
             SetTarget(body, new float3(1.0f, 0.0f, 0.0f));
-            args.flags = (uint)NativeStore.BodyFlags.Simulated;
+            args.flags = (uint)BodyFlags.Simulated;
             BodyKernel.Run((uint)BodyCommand.SetFlags, body, &args, globals);
             Assert.That(HasTarget(body), Is.False, "taken out of the simulation");
 
@@ -160,7 +164,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private bool IsIgnored(uint first, uint second)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.value = first;
             args.value2 = second;
             ShapeKernel.Run((uint)ShapeCommand.ShouldIgnoreCollision, null, &args, globals);
@@ -169,7 +173,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private void SetIgnored(uint first, uint second, bool ignored)
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.value = first;
             args.value2 = second;
             args.enabled = ignored ? 1u : 0u;
@@ -183,7 +187,7 @@ namespace KSP.Retooled.Physics.Tests
             uint[] ids = new uint[count];
             for (int i = 0; i < count; i += 2)
             {
-                NativeStore.CommandArgs args = default;
+                CommandArgs args = default;
                 args.enabled = 1;
                 ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
                 ids[i] = args.value;
@@ -200,7 +204,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private void Destroyed(uint id)
         {
-            NativeStore.CommandArgs cleanup = default;
+            CommandArgs cleanup = default;
             cleanup.value = id;
             ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
         }
@@ -244,7 +248,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void IgnoringWithoutIdsHandsOutOnesThatDestroyingFreesAgain()
         {
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.enabled = 1;
             ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &args, globals);
             uint first = args.value;
@@ -254,12 +258,12 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(second, Is.Not.Zero.And.Not.EqualTo(first));
             Assert.That(IsIgnored(first, second), Is.True);
 
-            NativeStore.CommandArgs cleanup = default;
+            CommandArgs cleanup = default;
             cleanup.value = second;
             ShapeKernel.Run((uint)ShapeCommand.CleanupIgnoredColliders, null, &cleanup, globals);
             Assert.That(IsIgnored(first, second), Is.False);
 
-            NativeStore.CommandArgs another = default;
+            CommandArgs another = default;
             another.value = first;
             another.enabled = 1;
             ShapeKernel.Run((uint)ShapeCommand.IgnoreCollision, null, &another, globals);
@@ -314,11 +318,11 @@ namespace KSP.Retooled.Physics.Tests
             CreateBody(Dynamic, true);
             CreateBody(Dynamic, true);
 
-            NativeStore.CommandArgs sleep = default;
+            CommandArgs sleep = default;
             BodyKernel.Run((uint)BodyCommand.Sleep, world->bodies[1].owner, &sleep, globals);
 
             WorldKernel.BodyCounts counts = default;
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.pointer = &counts;
             WorldKernel.Run((uint)WorldCommand.GetLastSimulationStats, world, &args, globals);
 
@@ -332,10 +336,10 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void DestroyingABodyMovesTheLastIntoItsRow()
         {
-            NativeStore.Body* first = CreateBody(Dynamic);
-            NativeStore.Body* last = CreateBody(Dynamic);
+            Body* first = CreateBody(Dynamic);
+            Body* last = CreateBody(Dynamic);
 
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.pointer = first;
             WorldKernel.Run((uint)WorldCommand.DestroyBody, world, &args, globals);
 
@@ -347,23 +351,23 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ShapesByLayerMaskListOnlyTheLayer()
         {
-            NativeStore.Body* body = CreateBody(Dynamic);
-            NativeStore.Shape* wanted = CreateShape(NativeStore.GeometryBox, new float3(0.5f));
-            NativeStore.Shape* other = CreateShape(NativeStore.GeometryBox, new float3(0.5f));
+            Body* body = CreateBody(Dynamic);
+            Shape* wanted = CreateShape(StoreConstants.GeometryBox, new float3(0.5f));
+            Shape* other = CreateShape(StoreConstants.GeometryBox, new float3(0.5f));
             wanted->data.belongsTo = 1;
             wanted->data.userData = wanted;
             other->data.belongsTo = 2;
             Attach(body, wanted);
             Attach(body, other);
 
-            NativeStore.CommandArgs args = default;
+            CommandArgs args = default;
             args.value = 1;
             WorldKernel.Run((uint)WorldCommand.GetAllShapesByLayerMask, world, &args, globals);
 
             Assert.That(args.size, Is.EqualTo(1ul));
             Assert.That(((void**)args.pointer)[0] == wanted, Is.True);
 
-            StoreOps.Release(globals, args.pointer);
+            StoreMemory.Release(globals, args.pointer);
             DestroyShape(wanted);
             DestroyShape(other);
         }
@@ -387,18 +391,18 @@ namespace KSP.Retooled.Physics.Tests
             BodyTarget target = new BodyTarget { Position = targetPosition, Rotation = targetRotation };
             PhysicsCollider collider = default;
 
-            NativeStore.BodyData body = default;
-            body.pose = &pose;
-            body.velocity = &bodyVelocity;
-            body.mass = &mass;
-            body.bodyMass = &bodyMass;
-            body.damping = &damping;
-            body.limits = &limits;
-            body.sleep = &sleep;
-            body.forces = &forces;
-            body.target = &target;
-            body.collider = &collider;
-            body.flags = Kinematic | NativeStore.BodyFlags.HasKinematicTarget;
+            BodyData body = default;
+            body.SetPosePointer(&pose);
+            body.SetVelocityPointer(&bodyVelocity);
+            body.SetMassPointer(&mass);
+            body.SetBodyMassPointer(&bodyMass);
+            body.SetDampingPointer(&damping);
+            body.SetLimitsPointer(&limits);
+            body.SetSleepPointer(&sleep);
+            body.SetForcesPointer(&forces);
+            body.SetTargetPointer(&target);
+            body.SetColliderPointer(&collider);
+            body.flags = Kinematic | BodyFlags.HasKinematicTarget;
 
             using NativeArray<int> dynamicIndices = new NativeArray<int>(new[] { 0 }, Allocator.TempJob);
             using NativeArray<int> staticIndices = new NativeArray<int>(0, Allocator.TempJob);

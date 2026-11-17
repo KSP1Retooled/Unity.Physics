@@ -7,6 +7,9 @@ using BoxCollider = UnityEngine.BoxCollider;
 using Collider = UnityEngine.Collider;
 using MeshCollider = UnityEngine.MeshCollider;
 using RaycastHit = UnityEngine.RaycastHit;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -44,13 +47,13 @@ namespace KSP.Retooled.Physics.Tests
         {
             StepKernel.Current->FinishPendingRefit();
             PhysicsWorld world = StepKernel.Current->World;
-            NativeStore.WorldData* store = StepKernel.Current->Store;
+            WorldData* store = StepKernel.Current->Store;
             Unity.Collections.NativeList<int> built = StepKernel.Current->BuiltIndices;
             int statics = 0;
             for (int row = 0; row < (int)store->bodyCount; row++)
             {
-                ref NativeStore.BodyData body = ref store->bodies[row];
-                if ((body.flags & NativeStore.BodyFlags.Static) == 0 || (body.flags & NativeStore.BodyFlags.Simulated) == 0)
+                ref BodyData body = ref store->bodies[row];
+                if ((body.flags & BodyFlags.Static) == 0 || (body.flags & BodyFlags.Simulated) == 0)
                 {
                     continue;
                 }
@@ -60,7 +63,7 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.That(index, Is.GreaterThanOrEqualTo(world.NumDynamicBodies), $"step {step}: row {row} is among the static bodies");
                 RigidBody rigidBody = world.Bodies[index];
                 RigidTransform expected = BuildBodiesJob.WorldFromBody(ref body);
-                Assert.That((long)rigidBody.Collider.GetUnsafePtr(), Is.EqualTo((long)body.collider->Value.GetUnsafePtr()), $"step {step}: the collider of row {row}");
+                Assert.That((long)rigidBody.Collider.GetUnsafePtr(), Is.EqualTo((long)body.Collider()->Value.GetUnsafePtr()), $"step {step}: the collider of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.pos), Is.EqualTo(math.asuint(expected.pos)), $"step {step}: the position of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.rot.value), Is.EqualTo(math.asuint(expected.rot.value)), $"step {step}: the rotation of row {row}");
                 Assert.That(rigidBody.Entity.Index, Is.EqualTo(row), $"step {step}: the entity of row {row}");

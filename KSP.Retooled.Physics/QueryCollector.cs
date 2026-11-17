@@ -3,6 +3,9 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Queries;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -135,7 +138,7 @@ namespace KSP.Retooled.Physics
 
         public bool Add(in RaycastHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
-            NativeStore.RayCastHit record = QueryCollectors.Record(hit.Position, hit.SurfaceNormal, hit.Fraction * Distance, shape, backface);
+            RayCastHit record = QueryCollectors.Record(hit.Position, hit.SurfaceNormal, hit.Fraction * Distance, shape, backface);
             NumHits++;
             return Collector.Invoke(Context, &record, 1) != 0;
         }
@@ -157,7 +160,7 @@ namespace KSP.Retooled.Physics
 
         public bool Add(in ColliderCastHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
-            NativeStore.RayCastHit record = overlappedAtStart
+            RayCastHit record = overlappedAtStart
                 ? QueryCollectors.Record(float3.zero, -Direction, 0.0f, shape, false)
                 : QueryCollectors.Record(hit.Position, hit.SurfaceNormal, hit.Fraction * Distance, shape, backface);
 
@@ -196,7 +199,7 @@ namespace KSP.Retooled.Physics
         private readonly NativeArray<RigidBody> bodies;
         private readonly QueryBody* queryBodies;
         private readonly QueryShape* queryShapes;
-        private readonly NativeStore.Body* ignoredBody;
+        private readonly Body* ignoredBody;
         private readonly uint filterOptions;
         private readonly float3 direction;
         private readonly QueryHitRules rules;
@@ -218,7 +221,7 @@ namespace KSP.Retooled.Physics
             QueryHitRules rules,
             bool groupByShape,
             bool keepInitialOverlaps = false,
-            NativeStore.Body* ignoredBody = null)
+            Body* ignoredBody = null)
         {
             Sink = sink;
             bodies = world->Collision.Bodies;
@@ -263,20 +266,20 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            uint wanted = body->IsStatic != 0 ? NativeStore.QueryUseStaticBodies : NativeStore.QueryUseDynamicBodies;
+            uint wanted = body->IsStatic != 0 ? StoreConstants.QueryUseStaticBodies : StoreConstants.QueryUseDynamicBodies;
             if ((filterOptions & wanted) == 0)
             {
                 return false;
             }
 
             QueryShape* shape = queryShapes + body->FirstShape + ColliderBuilder.ShapeIndexOf(rigidBody.Collider, hit.ColliderKey, body->SingleShape);
-            if ((shape->Flags & NativeStore.ShapeFlagSceneQuery) == 0)
+            if ((shape->Flags & StoreConstants.ShapeFlagSceneQuery) == 0)
             {
                 return false;
             }
 
-            bool trigger = (shape->Flags & NativeStore.ShapeFlagTrigger) != 0;
-            if (trigger && (filterOptions & NativeStore.QueryUseTriggerShapes) == 0)
+            bool trigger = (shape->Flags & StoreConstants.ShapeFlagTrigger) != 0;
+            if (trigger && (filterOptions & StoreConstants.QueryUseTriggerShapes) == 0)
             {
                 return false;
             }
@@ -290,7 +293,7 @@ namespace KSP.Retooled.Physics
             if (rules != QueryHitRules.Overlap)
             {
                 backface = QueryCollectors.IsBackface((Collider*)rigidBody.Collider.GetUnsafePtr(), hit.ColliderKey, rigidBody.WorldFromBody, direction);
-                if (backface && (filterOptions & NativeStore.QueryAllowBackfaces) == 0)
+                if (backface && (filterOptions & StoreConstants.QueryAllowBackfaces) == 0)
                 {
                     return false;
                 }
@@ -471,7 +474,7 @@ namespace KSP.Retooled.Physics
             }
 
             bool backface = QueryCollectors.IsBackface(root, hit.ColliderKey, RigidTransform.identity, direction);
-            if (backface && (filterOptions & NativeStore.QueryAllowBackfaces) == 0)
+            if (backface && (filterOptions & StoreConstants.QueryAllowBackfaces) == 0)
             {
                 return false;
             }
@@ -577,13 +580,13 @@ namespace KSP.Retooled.Physics
         /// Report face zero for triangle meshes and no face for other geometry; source triangle mapping is not
         /// retained.
         /// </summary>
-        internal static NativeStore.RayCastHit Record(float3 position, float3 normal, float distance, QueryShape* shape, bool backface)
+        internal static RayCastHit Record(float3 position, float3 normal, float distance, QueryShape* shape, bool backface)
         {
-            return new NativeStore.RayCastHit
+            return new RayCastHit
             {
                 point = position,
                 normal = backface ? -normal : normal,
-                faceId = shape->GeometryType == NativeStore.GeometryTriangleMesh ? 0u : NoFace,
+                faceId = shape->GeometryType == StoreConstants.GeometryTriangleMesh ? 0u : NoFace,
                 distance = distance,
                 uv = float2.zero,
                 engineObjectId = shape->EngineObjectId,

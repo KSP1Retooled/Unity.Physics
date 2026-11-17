@@ -2,6 +2,7 @@ using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Systems;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -20,9 +21,9 @@ namespace KSP.Retooled.Physics
 
         private readonly StepState* state;
         private readonly QueryWorld* query;
-        private readonly NativeStore.WorldData* store;
+        private readonly WorldData* store;
 
-        internal WorldState(NativeStore.WorldData* store)
+        internal WorldState(WorldData* store)
         {
             this.store = store;
             VesselForest.Initialize();
@@ -89,17 +90,17 @@ namespace KSP.Retooled.Physics
             if (Unity.Jobs.LowLevel.Unsafe.JobsUtility.IsExecutingJob)
             {
                 state->HelpPendingRefit();
-                return state->OnlyRefitPending ? NativeStore.QueryWorldBuilt : NativeStore.QueryWorldDeferred;
+                return state->OnlyRefitPending ? StoreConstants.QueryWorldBuilt : StoreConstants.QueryWorldDeferred;
             }
 
             if (!state->CanWriteContainers())
             {
                 state->HelpPendingRefit();
-                return NativeStore.QueryWorldDeferred;
+                return StoreConstants.QueryWorldDeferred;
             }
 
             StepKernel.BuildForQueries(state);
-            return NativeStore.QueryWorldBuilt;
+            return StoreConstants.QueryWorldBuilt;
         }
 
         /// <summary>

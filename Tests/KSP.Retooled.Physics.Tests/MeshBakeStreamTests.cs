@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using Unity.Mathematics;
+using Unity.Physics.Store.Shapes;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -20,7 +21,7 @@ namespace KSP.Retooled.Physics.Tests
             fixed (float3* v = vertices)
             fixed (int* t = triangles)
             {
-                NativeStore.CookInput input = new NativeStore.CookInput
+                CookInput input = new CookInput
                 {
                     vertices = v,
                     indices = t,
@@ -31,7 +32,7 @@ namespace KSP.Retooled.Physics.Tests
                     convex = convex ? 1u : 0u,
                 };
 
-                NativeStore.CookOutput output = default;
+                CookOutput output = default;
                 MeshCook.Cook(&input, &output);
 
                 byte[] buffer = new byte[output.size];
@@ -61,11 +62,11 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        private static NativeStore.MeshData Header(byte[] stream)
+        private static MeshData Header(byte[] stream)
         {
             fixed (byte* s = stream)
             {
-                return *(NativeStore.MeshData*)s;
+                return *(MeshData*)s;
             }
         }
 
@@ -83,7 +84,7 @@ namespace KSP.Retooled.Physics.Tests
             byte[] stream = Cook(Tetrahedron, TetrahedronTriangles, convex);
 
             Assert.That(Accepted(stream, convex), Is.True);
-            NativeStore.MeshData mesh = Header(stream);
+            MeshData mesh = Header(stream);
             Assert.That(mesh.vertexCount, Is.EqualTo(4));
             Assert.That(mesh.triangleCount, Is.EqualTo(4));
             Assert.That(mesh.lower, Is.EqualTo(float3.zero));
@@ -98,7 +99,7 @@ namespace KSP.Retooled.Physics.Tests
                 new float3(0.0f, 0.0f, 0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(0.0f, 1.0f, 0.0f), new float3(50.0f, 0.0f, 0.0f),
             };
 
-            NativeStore.MeshData mesh = Header(Cook(vertices, new[] { 0, 2, 1 }, false));
+            MeshData mesh = Header(Cook(vertices, new[] { 0, 2, 1 }, false));
 
             Assert.That(mesh.upper, Is.EqualTo(new float3(1.0f, 1.0f, 0.0f)));
         }
@@ -112,7 +113,7 @@ namespace KSP.Retooled.Physics.Tests
                 new float3(50.0f, 0.0f, 0.0f),
             };
 
-            NativeStore.MeshData mesh = Header(Cook(vertices, new[] { 0, 1, 2 }, true));
+            MeshData mesh = Header(Cook(vertices, new[] { 0, 1, 2 }, true));
 
             Assert.That(mesh.upper, Is.EqualTo(new float3(50.0f, 1.0f, 1.0f)));
         }
@@ -122,7 +123,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             fixed (float3* v = Tetrahedron)
             {
-                NativeStore.CookInput input = new NativeStore.CookInput
+                CookInput input = new CookInput
                 {
                     vertices = v,
                     vertexCount = (uint)Tetrahedron.Length,
@@ -130,7 +131,7 @@ namespace KSP.Retooled.Physics.Tests
                     convex = 1u,
                 };
 
-                NativeStore.CookOutput output = default;
+                CookOutput output = default;
                 MeshCook.Cook(&input, &output);
                 byte[] buffer = new byte[output.size];
                 fixed (byte* b = buffer)
@@ -139,8 +140,8 @@ namespace KSP.Retooled.Physics.Tests
                     MeshCook.Cook(&input, &output);
                 }
 
-                Assert.That(output.status, Is.EqualTo(MeshCook.StatusOk));
-                NativeStore.MeshData mesh = Header(buffer);
+                Assert.That(output.status, Is.EqualTo((int)MeshCookStatus.Ok));
+                MeshData mesh = Header(buffer);
                 Assert.That(mesh.vertexCount, Is.EqualTo(4));
                 Assert.That(mesh.triangleCount, Is.EqualTo(0));
             }
@@ -188,19 +189,19 @@ namespace KSP.Retooled.Physics.Tests
         {
             float3[] vertices = { new float3(float.NaN, 0.0f, 0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(0.0f, 1.0f, 0.0f) };
 
-            Assert.That(CookStatus(vertices, new[] { 0, 1, 2 }, false, out _), Is.EqualTo(MeshCook.StatusBadVertices));
+            Assert.That(CookStatus(vertices, new[] { 0, 1, 2 }, false, out _), Is.EqualTo((int)MeshCookStatus.BadVertices));
         }
 
         [Test]
         public void AnIndexPastTheSourceVerticesFailsTheCook()
         {
-            Assert.That(CookStatus(Tetrahedron, new[] { 0, 1, 9 }, false, out _), Is.EqualTo(MeshCook.StatusBadIndices));
+            Assert.That(CookStatus(Tetrahedron, new[] { 0, 1, 9 }, false, out _), Is.EqualTo((int)MeshCookStatus.BadIndices));
         }
 
         [Test]
         public void AMeshWithNoUsableTrianglesCooksEmpty()
         {
-            Assert.That(CookStatus(Tetrahedron, new[] { 0, 0, 1 }, false, out byte[] stream), Is.EqualTo(MeshCook.StatusEmpty));
+            Assert.That(CookStatus(Tetrahedron, new[] { 0, 0, 1 }, false, out byte[] stream), Is.EqualTo((int)MeshCookStatus.Empty));
             Assert.That(Header(stream).triangleCount, Is.EqualTo(0));
             Assert.That(Accepted(stream, false), Is.True);
         }
@@ -213,7 +214,7 @@ namespace KSP.Retooled.Physics.Tests
                 new float3(-2.0f, 0.0f, -2.0f), new float3(-2.0f, 0.0f, 2.0f), new float3(2.0f, 0.0f, 2.0f), new float3(2.0f, 0.0f, -2.0f),
             };
 
-            NativeStore.MeshData mesh = Header(Cook(vertices, new[] { 0, 1, 2, 0, 2, 3 }, true));
+            MeshData mesh = Header(Cook(vertices, new[] { 0, 1, 2, 0, 2, 3 }, true));
 
             Assert.That(mesh.vertexCount, Is.EqualTo(8));
             Assert.That(mesh.upper.y, Is.EqualTo(0.2f).Within(1e-5f));
@@ -241,7 +242,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             float3[] vertices = { new float3(0.0f), new float3(1.0f, 0.0f, 0.0f), new float3(2.0f, 0.0f, 0.0f) };
 
-            Assert.That(CookStatus(vertices, new[] { 0, 1, 2 }, true, out _), Is.EqualTo(MeshCook.StatusEmpty));
+            Assert.That(CookStatus(vertices, new[] { 0, 1, 2 }, true, out _), Is.EqualTo((int)MeshCookStatus.Empty));
         }
     }
 }

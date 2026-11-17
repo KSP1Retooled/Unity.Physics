@@ -4,6 +4,12 @@ using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -57,7 +63,7 @@ namespace KSP.Retooled.Physics
     {
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
-        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // A span costs about as much as a read, so reads run without the category's span, as in BodyKernel.
             if (IsRead((ShapeCommand)command))
@@ -92,13 +98,13 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        private static void Dispatch(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
             {
-                Execute((ShapeCommand)command, (NativeStore.Shape*)handle, args, globals);
+                Execute((ShapeCommand)command, (Shape*)handle, args, globals);
             }
         }
 
@@ -107,13 +113,13 @@ namespace KSP.Retooled.Physics
         /// managed callback.
         /// </summary>
         [BurstDiscard]
-        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
+        private static void RunInMono(uint command, void* handle, CommandArgs* args, StoreGlobals* globals, ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCommand();
             try
             {
-                Execute((ShapeCommand)command, (NativeStore.Shape*)handle, args, globals);
+                Execute((ShapeCommand)command, (Shape*)handle, args, globals);
             }
             catch (Exception e)
             {
@@ -121,7 +127,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Execute(ShapeCommand command, NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void Execute(ShapeCommand command, Shape* shape, CommandArgs* a, StoreGlobals* globals)
         {
             switch (command)
             {
@@ -138,7 +144,7 @@ namespace KSP.Retooled.Physics
                     a->flags = shape->data.flags;
                     break;
                 case ShapeCommand.SetFlags:
-                    if (((shape->data.flags ^ a->flags) & NativeStore.ShapeFlagTrigger) != 0)
+                    if (((shape->data.flags ^ a->flags) & StoreConstants.ShapeFlagTrigger) != 0)
                     {
                         PairFilterVersion.Changed();
                     }
@@ -150,7 +156,7 @@ namespace KSP.Retooled.Physics
                     SetFilter(shape, a);
                     break;
                 case ShapeCommand.SetMaterial:
-                    SetMaterial(shape, (NativeStore.MaterialData*)a->pointer, globals);
+                    SetMaterial(shape, (MaterialData*)a->pointer, globals);
                     TouchBody(shape);
                     break;
                 case ShapeCommand.GetLocalPose:
@@ -202,7 +208,7 @@ namespace KSP.Retooled.Physics
                     HeightFields.Update(a, globals);
                     break;
                 case ShapeCommand.DestroyHeightField:
-                    HeightFields.Release((NativeStore.HeightField*)a->pointer, globals);
+                    HeightFields.Release((HeightField*)a->pointer, globals);
                     break;
             }
         }
@@ -211,7 +217,7 @@ namespace KSP.Retooled.Physics
         /// Apply shape filter changes and wake the body to reevaluate touching pairs.
         /// Rebuild only when filter data baked into the collider changes.
         /// </summary>
-        private static void SetFilter(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        private static void SetFilter(Shape* shape, CommandArgs* a)
         {
             bool baked = shape->data.belongsTo != a->value || shape->data.collidesWith != a->value2 || shape->data.collisionDisabled != a->enabled;
             shape->data.belongsTo = a->value;
@@ -225,13 +231,13 @@ namespace KSP.Retooled.Physics
                 PairFilterVersion.Changed();
             }
 
-            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
                 JointKernel.WakeRow(StoreOps.Hot(shape->body));
             }
         }
 
-        private static void TouchBody(NativeStore.Shape* shape)
+        private static void TouchBody(Shape* shape)
         {
             if (shape->body != null)
             {
@@ -239,20 +245,20 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void SetMaterial(NativeStore.Shape* shape, NativeStore.MaterialData* material, NativeStore.StoreGlobals* globals)
+        private static void SetMaterial(Shape* shape, MaterialData* material, StoreGlobals* globals)
         {
-            NativeStore.MaterialData* next = material != null ? material : globals->defaultMaterial;
-            StoreOps.RetainMaterial(globals, next);
-            StoreOps.ReleaseMaterial(globals, shape->data.material);
+            MaterialData* next = material != null ? material : globals->defaultMaterial;
+            StoreMemory.RetainMaterial(globals, next);
+            StoreMemory.ReleaseMaterial(globals, shape->data.material);
             shape->data.material = next;
         }
 
-        private static void StoreGeometry(NativeStore.Shape* shape, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void StoreGeometry(Shape* shape, CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.SetGeometry.Auto();
 
             void* previousMesh = ShapeMath.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
-            if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            if (shape->data.geometryType == StoreConstants.GeometryHeightField)
             {
                 HeightFields.Release(shape, globals);
             }
@@ -262,32 +268,32 @@ namespace KSP.Retooled.Physics
             shape->data.mesh = a->pointer;
             if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
             {
-                StoreOps.RetainMesh(globals, shape->data.mesh);
+                StoreMemory.RetainMesh(globals, shape->data.mesh);
             }
-            else if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            else if (shape->data.geometryType == StoreConstants.GeometryHeightField)
             {
                 HeightFields.Retain(shape);
             }
 
-            StoreOps.ReleaseMesh(globals, previousMesh);
+            StoreMemory.ReleaseMesh(globals, previousMesh);
         }
 
-        private static NativeStore.Shape* Create(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static Shape* Create(CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateShape.Auto();
 
-            NativeStore.Shape* shape = StoreOps.Allocate<NativeStore.Shape>(globals);
+            Shape* shape = StoreMemory.Allocate<Shape>(globals);
             shape->data.owner = shape;
             shape->data.localRotation = quaternion.identity;
             shape->data.flags = a->flags;
             shape->data.userData = a->pointer3;
-            SetMaterial(shape, (NativeStore.MaterialData*)a->pointer2, globals);
+            SetMaterial(shape, (MaterialData*)a->pointer2, globals);
             StoreGeometry(shape, a, globals);
             GroupTable.AddShape(globals, shape);
             return shape;
         }
 
-        private static void Destroy(NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
+        private static void Destroy(Shape* shape, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyShape.Auto();
 
@@ -299,32 +305,32 @@ namespace KSP.Retooled.Physics
 
             if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
             {
-                StoreOps.ReleaseMesh(globals, shape->data.mesh);
+                StoreMemory.ReleaseMesh(globals, shape->data.mesh);
             }
-            else if (shape->data.geometryType == NativeStore.GeometryHeightField)
+            else if (shape->data.geometryType == StoreConstants.GeometryHeightField)
             {
                 HeightFields.Release(shape, globals);
             }
 
-            StoreOps.ReleaseMaterial(globals, shape->data.material);
-            StoreOps.Release(globals, shape);
+            StoreMemory.ReleaseMaterial(globals, shape->data.material);
+            StoreMemory.Release(globals, shape);
         }
 
         /// <summary>
         /// Return the shape pose in SetPose coordinates: world space for static shapes, body-local space otherwise.
         /// </summary>
-        private static void GetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        private static void GetPose(Shape* shape, CommandArgs* a)
         {
-            if (shape->body == null || (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) == 0)
+            if (shape->body == null || (StoreOps.Hot(shape->body)->flags & BodyFlags.Static) == 0)
             {
                 a->position = shape->data.localPosition;
                 a->rotation = shape->data.localRotation;
                 return;
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
-            a->position = hot->pose->Position + math.rotate(hot->pose->Rotation, shape->data.localPosition);
-            a->rotation = math.mul(hot->pose->Rotation, shape->data.localRotation);
+            BodyData* hot = StoreOps.Hot(shape->body);
+            a->position = (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, shape->data.localPosition);
+            a->rotation = math.mul((*hot).Pose()->Rotation, shape->data.localRotation);
         }
 
         /// <summary>
@@ -348,11 +354,11 @@ namespace KSP.Retooled.Physics
             return math.all(math.abs(change) <= RotationTolerance);
         }
 
-        private static void SetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        private static void SetPose(Shape* shape, CommandArgs* a)
         {
             float3 position = shape->data.localPosition;
             quaternion rotation = shape->data.localRotation;
-            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Static) != 0)
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Static) != 0)
             {
                 BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
 
@@ -390,22 +396,22 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void GetWorldBounds(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
+        private static void GetWorldBounds(Shape* shape, CommandArgs* a)
         {
             float3 position = float3.zero;
             quaternion rotation = quaternion.identity;
             if (shape->body != null)
             {
-                NativeStore.BodyData* hot = StoreOps.Hot(shape->body);
-                position = hot->pose->Position;
-                rotation = hot->pose->Rotation;
+                BodyData* hot = StoreOps.Hot(shape->body);
+                position = (*hot).Pose()->Position;
+                rotation = (*hot).Pose()->Rotation;
             }
 
             ShapeMath.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);
             WriteBounds(a, lower, upper);
         }
 
-        private static void WriteBounds(NativeStore.CommandArgs* a, float3 lower, float3 upper)
+        private static void WriteBounds(CommandArgs* a, float3 lower, float3 upper)
         {
             a->vector = (lower + upper) * 0.5f;
             a->vector2 = (upper - lower) * 0.5f;

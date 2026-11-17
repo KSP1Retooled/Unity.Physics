@@ -1,7 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 
-namespace KSP.Retooled.Components.Physics;
+namespace Unity.Physics;
 
 // Components for Rigidbody state not represented by Unity.Physics and Unity.Transforms.
 // Vectors use world space unless their names specify local space.
@@ -10,7 +10,7 @@ namespace KSP.Retooled.Components.Physics;
 /// Original Rigidbody mass and inertia values. These cannot always be recovered from inverse PhysicsMass
 /// values.
 /// </summary>
-public struct BodyMass : IComponentData
+internal struct BodyMass : IComponentData
 {
     public float Mass;
 
@@ -19,7 +19,7 @@ public struct BodyMass : IComponentData
 }
 
 /// <summary>Defines the limits on the velocity of a rigid body.</summary>
-public struct BodyLimits : IComponentData
+internal struct BodyLimits : IComponentData
 {
     public float MaxLinearVelocity;
     public float MaxAngularVelocity;
@@ -27,7 +27,7 @@ public struct BodyLimits : IComponentData
 }
 
 /// <summary>Tracks how close a rigid body is to falling asleep.</summary>
-public struct BodySleep : IComponentData
+internal struct BodySleep : IComponentData
 {
     public float WakeCounter;
     public float Threshold;
@@ -45,7 +45,7 @@ public struct BodySleep : IComponentData
 /// Accumulate forces, torques and velocity changes between steps, separately for each ForceMode.
 /// Cleared during the step.
 /// </summary>
-public struct BodyForces : IComponentData
+internal struct BodyForces : IComponentData
 {
     /// <summary>Stores ForceMode.Force in newtons. During the step, it is scaled by dt / mass.</summary>
     public float3 Force;
@@ -75,7 +75,7 @@ public struct BodyForces : IComponentData
 }
 
 /// <summary>Stores the pose that a kinematic rigid body should reach by the next step.</summary>
-public struct BodyTarget : IComponentData
+internal struct BodyTarget : IComponentData
 {
     public quaternion Rotation;
     public float3 Position;

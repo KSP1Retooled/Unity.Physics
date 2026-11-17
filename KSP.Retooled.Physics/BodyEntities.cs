@@ -1,9 +1,12 @@
-using KSP.Retooled.Components.Physics;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Physics;
 using Unity.Transforms;
+using KSP.Retooled.Physics.Entities;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -58,7 +61,7 @@ namespace KSP.Retooled.Physics
             int worlds = NativeStore.RetooledPhysics_WorldCount();
             for (int w = 0; w < worlds; w++)
             {
-                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
                 for (uint i = 0; i < world->bodyCount; i++)
                 {
                     Place(world->bodies + i);
@@ -81,7 +84,7 @@ namespace KSP.Retooled.Physics
             {
                 for (int w = 0; w < worlds; w++)
                 {
-                    NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
                     for (uint i = 0; i < world->bodyCount; i++)
                     {
                         Release(world->bodies + i);
@@ -92,7 +95,7 @@ namespace KSP.Retooled.Physics
             {
                 for (int w = 0; w < worlds; w++)
                 {
-                    NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
                     for (uint i = 0; i < world->bodyCount; i++)
                     {
                         Abandon(world->bodies + i);
@@ -104,7 +107,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Moves a body's components to an entity if an Entities world is bound.</summary>
-        internal static void Adopt(NativeStore.BodyData* hot)
+        internal static void Adopt(BodyData* hot)
         {
             if (!Current.Data.Bound)
             {
@@ -123,29 +126,29 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Place(NativeStore.BodyData* hot)
+        private static void Place(BodyData* hot)
         {
-            NativeStore.BodyHome* home = &hot->owner->home;
+            BodyHome* home = BodyHome.Of(hot->owner);
             ref EntityManager manager = ref Current.Data.Manager;
-            hot->entity = manager.CreateEntity(Current.Data.Archetype);
-            manager.SetComponentData(hot->entity, new BodyOwner { Body = hot->owner });
+            EntityOf(hot) = manager.CreateEntity(Current.Data.Archetype);
+            manager.SetComponentData(EntityOf(hot), new BodyOwner { Body = hot->owner });
             Resolve(hot);
-            *hot->pose = home->pose;
-            *hot->velocity = home->velocity;
-            *hot->mass = home->mass;
-            *hot->bodyMass = home->bodyMass;
-            *hot->damping = home->damping;
-            *hot->limits = home->limits;
-            *hot->sleep = home->sleep;
-            *hot->forces = home->forces;
-            *hot->target = home->target;
-            *hot->collider = home->collider;
+            *(*hot).Pose() = home->pose;
+            *(*hot).Velocity() = home->velocity;
+            *(*hot).Mass() = home->mass;
+            *(*hot).BodyMass() = home->bodyMass;
+            *(*hot).Damping() = home->damping;
+            *(*hot).Limits() = home->limits;
+            *(*hot).Sleep() = home->sleep;
+            *(*hot).Forces() = home->forces;
+            *(*hot).Target() = home->target;
+            *(*hot).Collider() = home->collider;
         }
 
         /// <summary>Copies a body's state back to its body record and destroys its entity, if it has one.</summary>
-        internal static void Release(NativeStore.BodyData* hot)
+        internal static void Release(BodyData* hot)
         {
-            if (hot->entity == Entity.Null)
+            if (EntityOf(hot) == Entity.Null)
             {
                 return;
             }
@@ -154,24 +157,24 @@ namespace KSP.Retooled.Physics
 
             Refresh(hot);
             bool clean = Clean();
-            NativeStore.BodyHome* home = &hot->owner->home;
-            home->pose = *hot->pose;
-            home->velocity = *hot->velocity;
-            home->mass = *hot->mass;
-            home->bodyMass = *hot->bodyMass;
-            home->damping = *hot->damping;
-            home->limits = *hot->limits;
-            home->sleep = *hot->sleep;
-            home->forces = *hot->forces;
-            home->target = *hot->target;
-            home->collider = *hot->collider;
+            BodyHome* home = BodyHome.Of(hot->owner);
+            home->pose = *(*hot).Pose();
+            home->velocity = *(*hot).Velocity();
+            home->mass = *(*hot).Mass();
+            home->bodyMass = *(*hot).BodyMass();
+            home->damping = *(*hot).Damping();
+            home->limits = *(*hot).Limits();
+            home->sleep = *(*hot).Sleep();
+            home->forces = *(*hot).Forces();
+            home->target = *(*hot).Target();
+            home->collider = *(*hot).Collider();
 
             ref EntityManager manager = ref Current.Data.Manager;
-            EntityStorageInfo slot = manager.GetStorageInfo(hot->entity);
+            EntityStorageInfo slot = manager.GetStorageInfo(EntityOf(hot));
             bool refilled = slot.IndexInChunk != slot.Chunk.Count - 1;
-            NativeStore.BodyData vacated = *hot;
-            manager.DestroyEntity(hot->entity);
-            hot->entity = Entity.Null;
+            BodyData vacated = *hot;
+            manager.DestroyEntity(EntityOf(hot));
+            EntityOf(hot) = Entity.Null;
             StoreOps.PointAtHome(hot, hot->owner);
             if (refilled)
             {
@@ -188,38 +191,38 @@ namespace KSP.Retooled.Physics
         /// Point a row at native component storage without copying from its entity. Use when the Entities world
         /// is unavailable.
         /// </summary>
-        private static void Abandon(NativeStore.BodyData* hot)
+        private static void Abandon(BodyData* hot)
         {
-            if (hot->entity == Entity.Null)
+            if (EntityOf(hot) == Entity.Null)
             {
                 return;
             }
 
-            hot->entity = Entity.Null;
+            EntityOf(hot) = Entity.Null;
             StoreOps.PointAtHome(hot, hot->owner);
         }
 
         /// <summary>
         /// Refresh the row for the entity moved into a destroyed entity's chunk slot.
         /// </summary>
-        private static void HandOver(EntityStorageInfo slot, NativeStore.BodyData* vacated)
+        private static void HandOver(EntityStorageInfo slot, BodyData* vacated)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.HandOverRow.Auto();
 
             ref EntityManager manager = ref Current.Data.Manager;
             ComponentTypeHandle<BodyOwner> owners = manager.GetComponentTypeHandle<BodyOwner>(true);
-            NativeStore.Body* body = slot.Chunk.GetNativeArray(ref owners)[slot.IndexInChunk].Body;
-            NativeStore.BodyData* hot = body->world->bodies + body->index;
-            hot->pose = vacated->pose;
-            hot->velocity = vacated->velocity;
-            hot->mass = vacated->mass;
-            hot->bodyMass = vacated->bodyMass;
-            hot->damping = vacated->damping;
-            hot->limits = vacated->limits;
-            hot->sleep = vacated->sleep;
-            hot->forces = vacated->forces;
-            hot->target = vacated->target;
-            hot->collider = vacated->collider;
+            Body* body = slot.Chunk.GetNativeArray(ref owners)[slot.IndexInChunk].Body;
+            BodyData* hot = body->world->bodies + body->index;
+            (*hot).SetPosePointer((*vacated).Pose());
+            (*hot).SetVelocityPointer((*vacated).Velocity());
+            (*hot).SetMassPointer((*vacated).Mass());
+            (*hot).SetBodyMassPointer((*vacated).BodyMass());
+            (*hot).SetDampingPointer((*vacated).Damping());
+            (*hot).SetLimitsPointer((*vacated).Limits());
+            (*hot).SetSleepPointer((*vacated).Sleep());
+            (*hot).SetForcesPointer((*vacated).Forces());
+            (*hot).SetTargetPointer((*vacated).Target());
+            (*hot).SetColliderPointer((*vacated).Collider());
             hot->orderVersion = Version();
         }
 
@@ -237,13 +240,15 @@ namespace KSP.Retooled.Physics
             return Current.Data.Manager.GetComponentOrderVersion<BodyTarget>();
         }
 
+        private static ref Entity EntityOf(BodyData* body) => ref *(Entity*)&body->entity;
+
         /// <summary>
         /// Refresh a body's entity component pointers on the main thread.
         /// </summary>
-        internal static void Refresh(NativeStore.BodyData* hot)
+        internal static void Refresh(BodyData* hot)
         {
             // Rows in native storage need no pointer refresh.
-            if (hot->entity == Entity.Null)
+            if (EntityOf(hot) == Entity.Null)
             {
                 return;
             }
@@ -266,7 +271,7 @@ namespace KSP.Retooled.Physics
         /// Refresh row pointers before scheduling jobs. The step blocks the main thread until those jobs
         /// finish.
         /// </summary>
-        internal static void PrepareForJobs(NativeStore.WorldData* world)
+        internal static void PrepareForJobs(WorldData* world)
         {
             ref Binding binding = ref Current.Data;
             if (!binding.Bound)
@@ -292,28 +297,28 @@ namespace KSP.Retooled.Physics
 
             for (uint i = 0; i < world->bodyCount; i++)
             {
-                NativeStore.BodyData* hot = world->bodies + i;
-                if (hot->entity != Entity.Null && hot->orderVersion != version)
+                BodyData* hot = world->bodies + i;
+                if (EntityOf(hot) != Entity.Null && hot->orderVersion != version)
                 {
                     Refresh(hot);
                 }
             }
         }
 
-        private static void Resolve(NativeStore.BodyData* hot)
+        private static void Resolve(BodyData* hot)
         {
             EntityManager manager = Current.Data.Manager;
-            Entity entity = hot->entity;
-            hot->pose = Pointer(manager.GetComponentDataRW<LocalTransform>(entity));
-            hot->velocity = Pointer(manager.GetComponentDataRW<PhysicsVelocity>(entity));
-            hot->mass = Pointer(manager.GetComponentDataRW<PhysicsMass>(entity));
-            hot->bodyMass = Pointer(manager.GetComponentDataRW<BodyMass>(entity));
-            hot->damping = Pointer(manager.GetComponentDataRW<PhysicsDamping>(entity));
-            hot->limits = Pointer(manager.GetComponentDataRW<BodyLimits>(entity));
-            hot->sleep = Pointer(manager.GetComponentDataRW<BodySleep>(entity));
-            hot->forces = Pointer(manager.GetComponentDataRW<BodyForces>(entity));
-            hot->target = Pointer(manager.GetComponentDataRW<BodyTarget>(entity));
-            hot->collider = Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity));
+            Entity entity = EntityOf(hot);
+            (*hot).SetPosePointer(Pointer(manager.GetComponentDataRW<LocalTransform>(entity)));
+            (*hot).SetVelocityPointer(Pointer(manager.GetComponentDataRW<PhysicsVelocity>(entity)));
+            (*hot).SetMassPointer(Pointer(manager.GetComponentDataRW<PhysicsMass>(entity)));
+            (*hot).SetBodyMassPointer(Pointer(manager.GetComponentDataRW<BodyMass>(entity)));
+            (*hot).SetDampingPointer(Pointer(manager.GetComponentDataRW<PhysicsDamping>(entity)));
+            (*hot).SetLimitsPointer(Pointer(manager.GetComponentDataRW<BodyLimits>(entity)));
+            (*hot).SetSleepPointer(Pointer(manager.GetComponentDataRW<BodySleep>(entity)));
+            (*hot).SetForcesPointer(Pointer(manager.GetComponentDataRW<BodyForces>(entity)));
+            (*hot).SetTargetPointer(Pointer(manager.GetComponentDataRW<BodyTarget>(entity)));
+            (*hot).SetColliderPointer(Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity)));
 
             // Publish the version after the pointers so that workers cannot observe partially refreshed state.
             hot->orderVersion = Version();
@@ -331,6 +336,6 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal unsafe struct BodyOwner : IComponentData
     {
-        public NativeStore.Body* Body;
+        public Body* Body;
     }
 }

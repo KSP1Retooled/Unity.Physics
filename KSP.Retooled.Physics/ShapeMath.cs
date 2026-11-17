@@ -1,4 +1,6 @@
 using Unity.Mathematics;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -11,28 +13,28 @@ namespace KSP.Retooled.Physics
         /// Return the capsule's straight length. The API's height field stores half this length, like
         /// PxCapsuleGeometry::halfHeight.
         /// </summary>
-        internal static float CapsuleCylinderLength(NativeStore.ShapeData* shape)
+        internal static float CapsuleCylinderLength(ShapeData* shape)
         {
             return 2.0f * shape->extents.y;
         }
 
         internal static bool IsMeshGeometry(uint geometryType)
         {
-            return geometryType == NativeStore.GeometryConvexMesh || geometryType == NativeStore.GeometryTriangleMesh;
+            return geometryType == StoreConstants.GeometryConvexMesh || geometryType == StoreConstants.GeometryTriangleMesh;
         }
 
         /// <summary>
         /// Calculate volume, centre of mass and inertia per unit mass in the shape's frame.
         /// Return false for skipped or zero-volume shapes; their inertia output is undefined.
         /// </summary>
-        internal static bool MassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        internal static bool MassProperties(ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
             volume = 0.0f;
             center = float3.zero;
             inertiaPerUnitMass = default;
             switch (shape->geometryType)
             {
-                case NativeStore.GeometryBox:
+                case StoreConstants.GeometryBox:
                 {
                     float3 h = shape->extents;
                     volume = 8.0f * h.x * h.y * h.z;
@@ -42,14 +44,14 @@ namespace KSP.Retooled.Physics
                         (h.x * h.x + h.y * h.y) / 3.0f);
                     break;
                 }
-                case NativeStore.GeometrySphere:
+                case StoreConstants.GeometrySphere:
                 {
                     float r = shape->extents.x;
                     volume = 4.0f / 3.0f * math.PI * r * r * r;
                     inertiaPerUnitMass = float3x3.Scale(0.4f * r * r);
                     break;
                 }
-                case NativeStore.GeometryCapsule:
+                case StoreConstants.GeometryCapsule:
                 {
                     // The capsule's axis is local X, as in PhysX. It consists of a cylinder of length h between two
                     // hemispheres.
@@ -69,7 +71,7 @@ namespace KSP.Retooled.Physics
                     inertiaPerUnitMass = float3x3.Scale(axial / volume, transverse / volume, transverse / volume);
                     break;
                 }
-                case NativeStore.GeometryConvexMesh:
+                case StoreConstants.GeometryConvexMesh:
                     return ConvexMassProperties(shape, out volume, out center, out inertiaPerUnitMass);
                 default:
                     return false;
@@ -82,13 +84,13 @@ namespace KSP.Retooled.Physics
         /// Compute scaled convex mass properties from cached mesh covariance.
         /// Scale covariance entry (i, j) by s_i*s_j, then use I = trace(C)*identity - C.
         /// </summary>
-        private static bool ConvexMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
+        private static bool ConvexMassProperties(ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
             volume = 0.0f;
             center = float3.zero;
             inertiaPerUnitMass = default;
 
-            NativeStore.Mesh* mesh = (NativeStore.Mesh*)shape->mesh;
+            Mesh* mesh = (Mesh*)shape->mesh;
             if (mesh == null || mesh->data == null || mesh->data->vertexCount == 0)
             {
                 return false;
@@ -136,7 +138,7 @@ namespace KSP.Retooled.Physics
         /// Calculates the shape's axis-aligned bounds in world space from the given local pose and body pose.
         /// </summary>
         internal static void WorldBounds(
-            NativeStore.ShapeData* shape,
+            ShapeData* shape,
             float3 localPosition,
             quaternion localRotation,
             float3 bodyPosition,
@@ -150,22 +152,22 @@ namespace KSP.Retooled.Physics
             float3 half = float3.zero;
             switch (shape->geometryType)
             {
-                case NativeStore.GeometryBox:
+                case StoreConstants.GeometryBox:
                     half = RotatedHalfExtents(rotation, shape->extents);
                     break;
-                case NativeStore.GeometrySphere:
+                case StoreConstants.GeometrySphere:
                     half = new float3(shape->extents.x);
                     break;
-                case NativeStore.GeometryCapsule:
+                case StoreConstants.GeometryCapsule:
                 {
                     float3 axis = math.rotate(rotation, new float3(CapsuleCylinderLength(shape) / 2.0f, 0.0f, 0.0f));
                     half = math.abs(axis) + shape->extents.x;
                     break;
                 }
-                case NativeStore.GeometryConvexMesh:
-                case NativeStore.GeometryTriangleMesh:
+                case StoreConstants.GeometryConvexMesh:
+                case StoreConstants.GeometryTriangleMesh:
                 {
-                    NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
+                    MeshData* mesh = Mesh.MeshOf(shape);
                     if (mesh == null)
                     {
                         break;
@@ -176,9 +178,9 @@ namespace KSP.Retooled.Physics
                     half = RotatedHalfExtents(rotation, (mesh->upper - mesh->lower) * 0.5f * math.abs(s));
                     break;
                 }
-                case NativeStore.GeometryHeightField:
+                case StoreConstants.GeometryHeightField:
                 {
-                    NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+                    HeightField* field = (HeightField*)shape->mesh;
                     if (field == null)
                     {
                         break;

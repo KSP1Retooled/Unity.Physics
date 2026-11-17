@@ -4,6 +4,11 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -23,7 +28,7 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal struct JointLoadState
     {
-        // The force and torque that the joint applied during the last step, as in NativeStore.JointData.
+        // The force and torque that the joint applied during the last step, as in JointData.
         public float3 Force;
 
         // The smoothed magnitude of the force, used to decide whether the joint breaks.
@@ -39,7 +44,7 @@ namespace KSP.Retooled.Physics
         // 1 when the joint is broken or has lost a body (JointConstraints.Inactive), otherwise 0.
         public uint Inactive;
 
-        internal static unsafe JointLoadState Of(NativeStore.JointData* joint)
+        internal static unsafe JointLoadState Of(JointData* joint)
         {
             return new JointLoadState
             {
@@ -77,7 +82,7 @@ namespace KSP.Retooled.Physics
         /// Fills a world's array from its joint records and adds it to the table. Until now, the records held the
         /// loads.
         /// </summary>
-        internal static void Register(NativeStore.WorldData* world, UnsafeList<JointLoadState>* states)
+        internal static void Register(WorldData* world, UnsafeList<JointLoadState>* states)
         {
             ref Table table = ref Shared.Data;
             if (table.Count == Capacity)
@@ -99,7 +104,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Copy dense loads back to native joint records and unregister the world's array.
         /// </summary>
-        internal static void Unregister(NativeStore.WorldData* world)
+        internal static void Unregister(WorldData* world)
         {
             ref Table table = ref Shared.Data;
             for (int e = 0; e < table.Count; e++)
@@ -112,7 +117,7 @@ namespace KSP.Retooled.Physics
                 var states = (UnsafeList<JointLoadState>*)table.States[e];
                 for (uint i = 0; i < world->jointCount && i < (uint)states->Length; i++)
                 {
-                    NativeStore.JointData* joint = world->joints[i];
+                    JointData* joint = world->joints[i];
                     JointLoadState state = (*states)[(int)i];
                     if (state.Serial == joint->serial)
                     {
@@ -131,7 +136,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Returns the array of a world, or null if the world has no step state.</summary>
-        internal static UnsafeList<JointLoadState>* Of(NativeStore.WorldData* world)
+        internal static UnsafeList<JointLoadState>* Of(WorldData* world)
         {
             ref Table table = ref Shared.Data;
             for (int e = 0; e < table.Count; e++)
@@ -148,12 +153,12 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Return the joint's load slot, or null when its world has no StepState.
         /// </summary>
-        internal static JointLoadState* Find(NativeStore.JointData* joint)
+        internal static JointLoadState* Find(JointData* joint)
         {
             ref Table table = ref Shared.Data;
             for (int e = 0; e < table.Count; e++)
             {
-                var world = (NativeStore.WorldData*)table.Worlds[e];
+                var world = (WorldData*)table.Worlds[e];
                 var states = (UnsafeList<JointLoadState>*)table.States[e];
                 uint index = joint->index;
                 if (index < world->jointCount && world->joints[index] == joint && index < (uint)states->Length
@@ -167,7 +172,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Gives a joint that was just added to the end of its world's list a slot at the end of the array.</summary>
-        internal static void Created(NativeStore.WorldData* world, NativeStore.JointData* joint)
+        internal static void Created(WorldData* world, JointData* joint)
         {
             UnsafeList<JointLoadState>* states = Of(world);
             if (states == null)
@@ -182,7 +187,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Move the last load slot into a removed joint's slot. Call before changing the world's joint list.
         /// </summary>
-        internal static void Destroying(NativeStore.WorldData* world, NativeStore.JointData* joint)
+        internal static void Destroying(WorldData* world, JointData* joint)
         {
             UnsafeList<JointLoadState>* states = Of(world);
             if (states == null)
@@ -196,7 +201,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Copies a joint's break limits and whether it is inactive from its record into its slot.</summary>
-        internal static void Refresh(NativeStore.JointData* joint)
+        internal static void Refresh(JointData* joint)
         {
             JointLoadState* state = Find(joint);
             if (state != null)
@@ -205,7 +210,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static void Refresh(JointLoadState* state, NativeStore.JointData* joint)
+        internal static void Refresh(JointLoadState* state, JointData* joint)
         {
             state->BreakForce = joint->breakForce;
             state->BreakTorque = joint->breakTorque;
@@ -220,13 +225,13 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal static unsafe class JointForceJobs
     {
-        internal static bool IsAsleep(NativeStore.Body* body)
+        internal static bool IsAsleep(Body* body)
         {
-            const NativeStore.BodyFlags resting = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
+            const BodyFlags resting = BodyFlags.Static | BodyFlags.Kinematic | BodyFlags.Sleeping;
             return body == null || (StoreOps.Hot(body)->flags & resting) != 0;
         }
 
-        internal static bool IsAsleep(NativeStore.JointData* joint)
+        internal static bool IsAsleep(JointData* joint)
         {
             return IsAsleep(joint->body0) && IsAsleep(joint->body1);
         }
@@ -240,7 +245,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct SeedJointLoadsJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
         [NativeDisableUnsafePtrRestriction]
@@ -275,7 +280,7 @@ namespace KSP.Retooled.Physics
         public NativeStream.Reader Events;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeArray<JointGroup> Groups;
@@ -291,7 +296,7 @@ namespace KSP.Retooled.Physics
             {
                 ImpulseEventData* impulse = (ImpulseEventData*)reader.ReadUnsafePtr(sizeof(ImpulseEventData));
                 bool grouped = impulse->JointEntity.Version == JointGroup.EntityVersion;
-                NativeStore.JointData* joint = World->joints[grouped ? Groups[impulse->JointEntity.Index].Leader : impulse->JointEntity.Index];
+                JointData* joint = World->joints[grouped ? Groups[impulse->JointEntity.Index].Leader : impulse->JointEntity.Index];
                 quaternion frame = impulse->Type == ConstraintType.Linear ? JointConstraints.WorldRotation0(joint) : JointConstraints.WorldRotation1(joint);
                 impulse->Impulse = math.rotate(frame, impulse->Impulse) * scale;
             }
@@ -347,7 +352,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct ShareGroupLoadsJob : IJobParallelFor
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeArray<JointGroup> Groups;
@@ -407,7 +412,7 @@ namespace KSP.Retooled.Physics
         private const float BreakingTimeConstant = 0.1f;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
         [NativeDisableUnsafePtrRestriction]
@@ -437,7 +442,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Store and smooth one joint's load. Return whether the active joint exceeds a break limit.
         /// </summary>
-        internal static bool Settle(NativeStore.JointData* joint, JointLoadState* state, in JointLoad load, float deltaTime)
+        internal static bool Settle(JointData* joint, JointLoadState* state, in JointLoad load, float deltaTime)
         {
             if (JointForceJobs.IsAsleep(joint))
             {
@@ -471,10 +476,10 @@ namespace KSP.Retooled.Physics
     internal unsafe struct BreakJointsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.StoreGlobals* Globals;
+        public StoreGlobals* Globals;
 
         /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
         [NativeDisableUnsafePtrRestriction]
@@ -519,18 +524,18 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void Break(NativeStore.JointData* joint, JointLoadState* state)
+        private void Break(JointData* joint, JointLoadState* state)
         {
-            joint->state |= NativeStore.JointState.Broken;
+            joint->state |= JointState.Broken;
             state->Inactive = 1;
             JointTopology.Changed();
             if (World->jointBreakCount == World->jointBreakCapacity)
             {
-                World->jointBreakCapacity = StoreOps.Grown(World->jointBreakCapacity);
-                World->jointBreaks = (NativeStore.JointBreak*)StoreOps.Reallocate(Globals, World->jointBreaks, World->jointBreakCapacity * (ulong)sizeof(NativeStore.JointBreak));
+                World->jointBreakCapacity = StoreMemory.Grown(World->jointBreakCapacity);
+                World->jointBreaks = (JointBreak*)StoreMemory.Reallocate(Globals, World->jointBreaks, World->jointBreakCapacity * (ulong)sizeof(JointBreak));
             }
 
-            World->jointBreaks[World->jointBreakCount++] = new NativeStore.JointBreak
+            World->jointBreaks[World->jointBreakCount++] = new JointBreak
             {
                 engineObjectId = joint->userData != null ? *(ulong*)((byte*)joint->userData + EngineObjectIdOffset) : 0,
                 linearMagnitude = state->BreakingForce,

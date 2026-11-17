@@ -5,6 +5,11 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Shapes;
+using Mesh = Unity.Physics.Store.Shapes.Mesh;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -35,7 +40,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private const NativeStore.BodyFlags NeedsBuild = NativeStore.BodyFlags.ColliderDirty | NativeStore.BodyFlags.CollidersMoved;
+        private const BodyFlags NeedsBuild = BodyFlags.ColliderDirty | BodyFlags.CollidersMoved;
 
         // The result value left when building a collider throws an exception.
         private const long Failed = -1;
@@ -56,7 +61,7 @@ namespace KSP.Retooled.Physics
         /// Increment wholeBuilds if any body needs a full rebuild, and changes if any collider is replaced.
         /// </summary>
         internal static JobHandle ScheduleRefresh(
-            NativeStore.WorldData* world,
+            WorldData* world,
             bool all,
             NativeList<Work> work,
             NativeList<long> results,
@@ -104,14 +109,14 @@ namespace KSP.Retooled.Physics
         /// Call on the main thread after refresh completes. Invalidate the static tree for affected static
         /// bodies.
         /// </summary>
-        internal static void AskAgainForFailed(NativeStore.WorldData* world, NativeList<Work> work, NativeList<long> results)
+        internal static void AskAgainForFailed(WorldData* world, NativeList<Work> work, NativeList<long> results)
         {
             for (int i = 0; i < results.Length; i++)
             {
                 if (results[i] == Failed && work[i].Body < world->bodyCount)
                 {
-                    world->bodies[work[i].Body].flags |= NativeStore.BodyFlags.ColliderDirty;
-                    if ((world->bodies[work[i].Body].flags & NativeStore.BodyFlags.Static) != 0)
+                    world->bodies[work[i].Body].flags |= BodyFlags.ColliderDirty;
+                    if ((world->bodies[work[i].Body].flags & BodyFlags.Static) != 0)
                     {
                         world->staticsVersion++;
                     }
@@ -126,7 +131,7 @@ namespace KSP.Retooled.Physics
         {
             [NoAlias]
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.WorldData* World;
+            public WorldData* World;
 
             public NativeList<Work>.ParallelWriter Work;
             public bool All;
@@ -147,7 +152,7 @@ namespace KSP.Retooled.Physics
                     chunk.Add(new()
                     {
                         Body = i,
-                        Whole = All || (body.flags & NativeStore.BodyFlags.ColliderDirty) != 0
+                        Whole = All || (body.flags & BodyFlags.ColliderDirty) != 0
                     });
                     body.flags &= ~NeedsBuild;
                 }
@@ -198,7 +203,7 @@ namespace KSP.Retooled.Physics
         private struct BuildCollidersJob : IJobParallelForDefer
         {
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.BodyData* Bodies;
+            public BodyData* Bodies;
 
             [ReadOnly]
             public NativeArray<Work> Work;
@@ -207,7 +212,7 @@ namespace KSP.Retooled.Physics
 
             public void Execute(int index)
             {
-                NativeStore.BodyData* body = Bodies + Work[index].Body;
+                BodyData* body = Bodies + Work[index].Body;
                 void* collider = Work[index].Whole ? null : Repose(body);
                 Results[index] = (long)(collider != null ? collider : Build(body));
             }
@@ -220,7 +225,7 @@ namespace KSP.Retooled.Physics
         private struct SwapCollidersJob : IJob
         {
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.BodyData* Bodies;
+            public BodyData* Bodies;
 
             [ReadOnly]
             public NativeArray<Work> Work;
@@ -237,8 +242,8 @@ namespace KSP.Retooled.Physics
                         continue;
                     }
 
-                    NativeStore.BodyData* body = Bodies + Work[i].Body;
-                    Release(body->collider->Value.GetUnsafePtr());
+                    BodyData* body = Bodies + Work[i].Body;
+                    Release((*body).Collider()->Value.GetUnsafePtr());
                     SetCollider(body, FromPointer((void*)Results[i]));
                 }
             }
@@ -247,9 +252,9 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Assign a collider and update the row's cached expansion factor. An uncreated collider clears both.
         /// </summary>
-        internal static void SetCollider(NativeStore.BodyData* body, BlobAssetReference<Collider> collider)
+        internal static void SetCollider(BodyData* body, BlobAssetReference<Collider> collider)
         {
-            body->collider->Value = collider;
+            (*body).Collider()->Value = collider;
             body->colliderExpansion = collider.IsCreated ? collider.Value.MassProperties.AngularExpansionFactor : 0.0f;
         }
 
@@ -257,9 +262,9 @@ namespace KSP.Retooled.Physics
         /// Copy a compound collider with updated child poses, reusing child geometry.
         /// Return null if the existing collider is absent or is not a compound.
         /// </summary>
-        private static void* Repose(NativeStore.BodyData* body)
+        private static void* Repose(BodyData* body)
         {
-            BlobAssetReference<Collider> built = body->collider->Value;
+            BlobAssetReference<Collider> built = (*body).Collider()->Value;
             if (!built.IsCreated || built.Value.Type != ColliderType.Compound)
             {
                 return null;
@@ -272,9 +277,9 @@ namespace KSP.Retooled.Physics
                 for (int i = 0; i < compound.NumChildren; i++)
                 {
                     ref CompoundCollider.Child child = ref compound.Children[i];
-                    NativeStore.ShapeData* shape = body->shapes[child.Entity.Index];
+                    ShapeData* shape = body->shapes[child.Entity.Index];
                     RigidTransform compoundFromShape = new RigidTransform(shape->localRotation, shape->localPosition);
-                    bool heightField = shape->geometryType == NativeStore.GeometryHeightField;
+                    bool heightField = shape->geometryType == StoreConstants.GeometryHeightField;
                     children[i] = new CompoundCollider.ColliderBlobInstance
                     {
                         Collider = BlobAssetReference<Collider>.Create(child.Collider, child.Collider->MemorySize),
@@ -299,7 +304,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void* Build(NativeStore.BodyData* body)
+        private static void* Build(BodyData* body)
         {
             int usable = 0;
             int lastUsable = -1;
@@ -317,9 +322,9 @@ namespace KSP.Retooled.Physics
                 return null;
             }
 
-            if (usable == 1 && body->shapes[lastUsable]->geometryType != NativeStore.GeometryHeightField)
+            if (usable == 1 && body->shapes[lastUsable]->geometryType != StoreConstants.GeometryHeightField)
             {
-                NativeStore.ShapeData* shape = body->shapes[lastUsable];
+                ShapeData* shape = body->shapes[lastUsable];
                 if (PosedShape(body) != null)
                 {
                     return Create(shape, float3.zero, quaternion.identity).GetUnsafePtr();
@@ -339,14 +344,14 @@ namespace KSP.Retooled.Physics
                 int next = 0;
                 for (int i = 0; i < body->shapeCount; i++)
                 {
-                    NativeStore.ShapeData* shape = body->shapes[i];
+                    ShapeData* shape = body->shapes[i];
                     if (!IsSupported(shape))
                     {
                         continue;
                     }
 
                     RigidTransform compoundFromShape = new RigidTransform(shape->localRotation, shape->localPosition);
-                    bool heightField = shape->geometryType == NativeStore.GeometryHeightField;
+                    bool heightField = shape->geometryType == StoreConstants.GeometryHeightField;
                     children[next++] = new CompoundCollider.ColliderBlobInstance
                     {
                         Collider = Create(shape, float3.zero, quaternion.identity),
@@ -390,14 +395,14 @@ namespace KSP.Retooled.Physics
         /// Return the shape whose pose is applied to the built body rather than baked into its collider, or
         /// null.
         /// </summary>
-        internal static NativeStore.ShapeData* PosedShape(NativeStore.BodyData* body)
+        internal static ShapeData* PosedShape(BodyData* body)
         {
-            if ((body->flags & NativeStore.BodyFlags.Static) == 0)
+            if ((body->flags & BodyFlags.Static) == 0)
             {
                 return null;
             }
 
-            NativeStore.ShapeData* posed = null;
+            ShapeData* posed = null;
             for (int i = 0; i < body->shapeCount; i++)
             {
                 if (!IsSupported(body->shapes[i]))
@@ -413,10 +418,10 @@ namespace KSP.Retooled.Physics
                 posed = body->shapes[i];
             }
 
-            return posed != null && posed->geometryType != NativeStore.GeometryHeightField ? posed : null;
+            return posed != null && posed->geometryType != StoreConstants.GeometryHeightField ? posed : null;
         }
 
-        private static bool IsAtOrigin(NativeStore.ShapeData* shape)
+        private static bool IsAtOrigin(ShapeData* shape)
         {
             return math.all(shape->localPosition == float3.zero) && math.all(shape->localRotation.value == quaternion.identity.value);
         }
@@ -424,7 +429,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Returns the index of the shape that a body's collider represents when the collider is not a compound.
         /// </summary>
-        internal static int FirstSupported(NativeStore.BodyData* body)
+        internal static int FirstSupported(BodyData* body)
         {
             for (int i = 0; i < body->shapeCount; i++)
             {
@@ -437,24 +442,24 @@ namespace KSP.Retooled.Physics
             return 0;
         }
 
-        internal static bool IsSupported(NativeStore.ShapeData* shape)
+        internal static bool IsSupported(ShapeData* shape)
         {
             switch (shape->geometryType)
             {
-                case NativeStore.GeometryBox:
-                case NativeStore.GeometrySphere:
-                case NativeStore.GeometryCapsule:
+                case StoreConstants.GeometryBox:
+                case StoreConstants.GeometrySphere:
+                case StoreConstants.GeometryCapsule:
                     return true;
-                case NativeStore.GeometryConvexMesh:
-                case NativeStore.GeometryTriangleMesh:
+                case StoreConstants.GeometryConvexMesh:
+                case StoreConstants.GeometryTriangleMesh:
                 {
-                    NativeStore.MeshData* mesh = NativeStore.MeshOf(shape);
+                    MeshData* mesh = Mesh.MeshOf(shape);
                     return mesh != null && mesh->vertexCount != 0 && math.all(shape->extents != 0.0f);
                 }
 
-                case NativeStore.GeometryHeightField:
+                case StoreConstants.GeometryHeightField:
                 {
-                    NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+                    HeightField* field = (HeightField*)shape->mesh;
                     if (field == null || !math.all(shape->extents > 0.0f))
                     {
                         return false;
@@ -469,7 +474,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static BlobAssetReference<Collider> Create(NativeStore.ShapeData* shape, float3 center, quaternion orientation)
+        private static BlobAssetReference<Collider> Create(ShapeData* shape, float3 center, quaternion orientation)
         {
             // Permit queries on all layers. MaterialOf disables contacts for shapes that collide with nothing.
             CollisionFilter filter = new CollisionFilter
@@ -482,14 +487,14 @@ namespace KSP.Retooled.Physics
             Material material = MaterialOf(shape);
             switch (shape->geometryType)
             {
-                case NativeStore.GeometryBox:
+                case StoreConstants.GeometryBox:
                     return BoxCollider.Create(BoxOf(shape->extents, center, orientation), filter, material);
-                case NativeStore.GeometrySphere:
+                case StoreConstants.GeometrySphere:
                     return SphereCollider.Create(SphereOf(shape->extents, center), filter, material);
-                case NativeStore.GeometryConvexMesh:
-                case NativeStore.GeometryTriangleMesh:
+                case StoreConstants.GeometryConvexMesh:
+                case StoreConstants.GeometryTriangleMesh:
                     return CreateMesh(shape, center, orientation, filter, material);
-                case NativeStore.GeometryHeightField:
+                case StoreConstants.GeometryHeightField:
                     return CreateHeightField(shape, filter, material);
                 default:
                     return CapsuleCollider.Create(CapsuleOf(shape->extents, center, orientation), filter, material);
@@ -500,18 +505,18 @@ namespace KSP.Retooled.Physics
         /// Rotate the height field grid a quarter turn about Y so that Unity Physics and PhysX split cells
         /// along the same diagonal.
         /// </summary>
-        internal static RigidTransform ShapeFromGrid(NativeStore.ShapeData* shape)
+        internal static RigidTransform ShapeFromGrid(ShapeData* shape)
         {
-            NativeStore.HeightField* field = (NativeStore.HeightField*)shape->mesh;
+            HeightField* field = (HeightField*)shape->mesh;
             return new RigidTransform(quaternion.RotateY(math.PI / 2.0f), new float3(0.0f, 0.0f, (field->resolution - 1) * shape->extents.z));
         }
 
-        private static BlobAssetReference<Collider> CreateHeightField(NativeStore.ShapeData* shape, CollisionFilter filter, Material material)
+        private static BlobAssetReference<Collider> CreateHeightField(ShapeData* shape, CollisionFilter filter, Material material)
         {
             void* collider = null;
             new HeightFieldColliderJob
             {
-                Field = (NativeStore.HeightField*)shape->mesh,
+                Field = (HeightField*)shape->mesh,
                 Scale = shape->extents.zyx,
                 Filter = filter,
                 Material = material,
@@ -552,7 +557,7 @@ namespace KSP.Retooled.Physics
         }
 
         private static BlobAssetReference<Collider> CreateMesh(
-            NativeStore.ShapeData* shape,
+            ShapeData* shape,
             float3 center,
             quaternion orientation,
             CollisionFilter filter,
@@ -563,7 +568,7 @@ namespace KSP.Retooled.Physics
             void* collider = null;
             new MeshColliderJob
             {
-                Mesh = NativeStore.MeshOf(shape),
+                Mesh = Mesh.MeshOf(shape),
                 Scale = shape->extents,
                 Center = center,
                 Orientation = orientation,
@@ -651,11 +656,11 @@ namespace KSP.Retooled.Physics
         /// Compute volume and mass moments of an unscaled convex hull.
         /// </summary>
         [BurstCompile]
-        internal static void ConvexMoments(NativeStore.MeshData* mesh, NativeStore.MeshMoments* moments)
+        internal static void ConvexMoments(MeshData* mesh, MeshMoments* moments)
         {
             int vertexCount = (int)mesh->vertexCount;
             var vertices = new NativeArray<float3>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            UnsafeUtility.MemCpy(vertices.GetUnsafePtr(), NativeStore.VerticesOf(mesh), vertexCount * (long)sizeof(float3));
+            UnsafeUtility.MemCpy(vertices.GetUnsafePtr(), MeshData.VerticesOf(mesh), vertexCount * (long)sizeof(float3));
 
             BlobAssetReference<Collider> hull = CreateConvex(vertices, default, default);
             MassProperties mass = hull.Value.MassProperties;
@@ -681,7 +686,7 @@ namespace KSP.Retooled.Physics
         private struct MeshColliderJob : IJob
         {
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.MeshData* Mesh;
+            public MeshData* Mesh;
 
             public float3 Scale;
             public float3 Center;
@@ -696,7 +701,7 @@ namespace KSP.Retooled.Physics
             {
                 int vertexCount = (int)Mesh->vertexCount;
                 var vertices = new NativeArray<float3>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                float3* source = NativeStore.VerticesOf(Mesh);
+                float3* source = MeshData.VerticesOf(Mesh);
                 for (int i = 0; i < vertexCount; i++)
                 {
                     vertices[i] = Center + math.rotate(Orientation, source[i] * Scale);
@@ -713,7 +718,7 @@ namespace KSP.Retooled.Physics
                     bool mirrored = Scale.x * Scale.y * Scale.z < 0.0f;
                     int triangleCount = (int)Mesh->triangleCount;
                     var triangles = new NativeArray<int3>(triangleCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                    int3* sourceTriangles = NativeStore.TrianglesOf(Mesh);
+                    int3* sourceTriangles = MeshData.TrianglesOf(Mesh);
                     for (int i = 0; i < triangleCount; i++)
                     {
                         int3 triangle = sourceTriangles[i];
@@ -739,7 +744,7 @@ namespace KSP.Retooled.Physics
             private const float FlatFieldRise = 1.0f / 1024.0f;
 
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.HeightField* Field;
+            public HeightField* Field;
 
             public float3 Scale;
             public CollisionFilter Filter;
@@ -808,7 +813,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static Material MaterialOf(NativeStore.ShapeData* shape)
+        private static Material MaterialOf(ShapeData* shape)
         {
             // ReadContactsJob sets friction and restitution for each manifold using both shapes.
             Material material = default;
@@ -816,7 +821,7 @@ namespace KSP.Retooled.Physics
             {
                 material.CollisionResponse = CollisionResponsePolicy.None;
             }
-            else if ((shape->flags & NativeStore.ShapeFlagTrigger) != 0)
+            else if ((shape->flags & StoreConstants.ShapeFlagTrigger) != 0)
             {
                 material.CollisionResponse = CollisionResponsePolicy.RaiseTriggerEvents;
             }

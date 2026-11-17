@@ -4,6 +4,12 @@ using AOT;
 using Unity.Burst;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -67,7 +73,7 @@ namespace KSP.Retooled.Physics
 
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
-        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // Reads run without the category's span, as in BodyKernel. The reads that count or collect have their own.
             if (IsRead((WorldCommand)command))
@@ -94,13 +100,13 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        private static void Dispatch(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
             {
-                Execute((WorldCommand)command, (NativeStore.WorldData*)handle, args, globals);
+                Execute((WorldCommand)command, (WorldData*)handle, args, globals);
             }
         }
 
@@ -109,13 +115,13 @@ namespace KSP.Retooled.Physics
         /// code.
         /// </summary>
         [BurstDiscard]
-        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
+        private static void RunInMono(uint command, void* handle, CommandArgs* args, StoreGlobals* globals, ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCommand();
             try
             {
-                Execute((WorldCommand)command, (NativeStore.WorldData*)handle, args, globals);
+                Execute((WorldCommand)command, (WorldData*)handle, args, globals);
             }
             catch (Exception e)
             {
@@ -123,7 +129,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Execute(WorldCommand command, NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void Execute(WorldCommand command, WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             switch (command)
             {
@@ -137,13 +143,13 @@ namespace KSP.Retooled.Physics
                     a->pointer = CreateBody(world, a, globals);
                     break;
                 case WorldCommand.DestroyBody:
-                    DestroyBody(world, (NativeStore.Body*)a->pointer, globals);
+                    DestroyBody(world, (Body*)a->pointer, globals);
                     break;
                 case WorldCommand.CreateJoint:
                     a->pointer = JointKernel.Create(world, a, globals);
                     break;
                 case WorldCommand.DestroyJoint:
-                    JointKernel.Destroy(world, (NativeStore.JointData*)a->pointer, globals);
+                    JointKernel.Destroy(world, (JointData*)a->pointer, globals);
                     break;
                 case WorldCommand.GetAllShapesByLayerMask:
                     CollectShapesByLayerMask(world, a, globals);
@@ -151,24 +157,24 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void CountBodies(NativeStore.WorldData* world, BodyCounts* counts)
+        private static void CountBodies(WorldData* world, BodyCounts* counts)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CountBodies.Auto();
 
             for (uint i = 0; i < world->bodyCount; i++)
             {
-                NativeStore.BodyFlags flags = world->bodies[i].flags;
-                if ((flags & NativeStore.BodyFlags.Simulated) == 0)
+                BodyFlags flags = world->bodies[i].flags;
+                if ((flags & BodyFlags.Simulated) == 0)
                 {
                     continue;
                 }
 
-                uint active = (flags & NativeStore.BodyFlags.Sleeping) == 0 ? 1u : 0u;
-                if ((flags & NativeStore.BodyFlags.Static) != 0)
+                uint active = (flags & BodyFlags.Sleeping) == 0 ? 1u : 0u;
+                if ((flags & BodyFlags.Static) != 0)
                 {
                     counts->StaticBodies++;
                 }
-                else if ((flags & NativeStore.BodyFlags.Kinematic) != 0)
+                else if ((flags & BodyFlags.Kinematic) != 0)
                 {
                     counts->KinematicBodies++;
                     counts->ActiveKinematicBodies += active;
@@ -181,67 +187,67 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static NativeStore.Body* CreateBody(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static Body* CreateBody(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateBody.Auto();
 
             if (world->bodyCount == world->bodyCapacity)
             {
-                world->bodyCapacity = StoreOps.Grown(world->bodyCapacity);
-                world->bodies = (NativeStore.BodyData*)StoreOps.Reallocate(globals, world->bodies, world->bodyCapacity * (ulong)sizeof(NativeStore.BodyData));
+                world->bodyCapacity = StoreMemory.Grown(world->bodyCapacity);
+                world->bodies = (BodyData*)StoreMemory.Reallocate(globals, world->bodies, world->bodyCapacity * (ulong)sizeof(BodyData));
             }
 
-            NativeStore.Body* body = StoreOps.Allocate<NativeStore.Body>(globals);
+            Body* body = StoreMemory.Allocate<Body>(globals);
             body->world = world;
             body->index = world->bodyCount++;
             body->userData = a->pointer;
 
-            NativeStore.BodyData* hot = world->bodies + body->index;
+            BodyData* hot = world->bodies + body->index;
             *hot = default;
             hot->owner = body;
             StoreOps.PointAtHome(hot, body);
-            hot->pose->Rotation = a->rotation;
-            hot->pose->Position = a->position;
-            hot->pose->Scale = 1.0f;
-            hot->flags = (NativeStore.BodyFlags)a->flags | NativeStore.BodyFlags.ColliderDirty;
+            (*hot).Pose()->Rotation = a->rotation;
+            (*hot).Pose()->Position = a->position;
+            (*hot).Pose()->Scale = 1.0f;
+            hot->flags = (BodyFlags)a->flags | BodyFlags.ColliderDirty;
             if (a->enabled != 0)
             {
-                hot->flags |= NativeStore.BodyFlags.Static;
+                hot->flags |= BodyFlags.Static;
             }
 
-            hot->bodyMass->Mass = a->scalar;
-            hot->mass->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
-            hot->bodyMass->Inertia = new float3(1.0f);
-            hot->mass->InverseInertia = new float3(1.0f);
-            hot->mass->Transform.rot = quaternion.identity;
-            hot->damping->Linear = a->scalar2;
-            hot->damping->Angular = a->scalar3;
-            hot->limits->MaxLinearVelocity = DefaultMaxLinearVelocity;
-            hot->limits->MaxAngularVelocity = DefaultMaxAngularVelocity;
-            hot->limits->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
-            hot->sleep->WakeCounter = StoreOps.WakeCounterReset;
-            hot->sleep->Threshold = DefaultSleepThreshold;
-            hot->target->Rotation = a->rotation;
-            hot->target->Position = a->position;
+            (*hot).BodyMass()->Mass = a->scalar;
+            (*hot).Mass()->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
+            (*hot).BodyMass()->Inertia = new float3(1.0f);
+            (*hot).Mass()->InverseInertia = new float3(1.0f);
+            (*hot).Mass()->Transform.rot = quaternion.identity;
+            (*hot).Damping()->Linear = a->scalar2;
+            (*hot).Damping()->Angular = a->scalar3;
+            (*hot).Limits()->MaxLinearVelocity = DefaultMaxLinearVelocity;
+            (*hot).Limits()->MaxAngularVelocity = DefaultMaxAngularVelocity;
+            (*hot).Limits()->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
+            (*hot).Sleep()->WakeCounter = StoreMemory.WakeCounterReset;
+            (*hot).Sleep()->Threshold = DefaultSleepThreshold;
+            (*hot).Target()->Rotation = a->rotation;
+            (*hot).Target()->Position = a->position;
             BodyEntities.Adopt(hot);
 
             // Every new body moves the topology version, so the new value is a number that no other body or joint
             // received.
-            body->serial = JointTopology.Changed();
+            body->serial = Serials.Next();
             hot->serial = body->serial;
 
             // Append the new body to the array. The sequence of static bodies changes only if the new body is static.
-            if ((hot->flags & NativeStore.BodyFlags.Static) != 0)
+            if ((hot->flags & BodyFlags.Static) != 0)
             {
                 world->staticsVersion++;
             }
 
             QuerySnapshotVersion.Changed();
-            StoreOps.MarkQueryDirty(world);
+            StoreMemory.MarkQueryDirty(world);
             return body;
         }
 
-        private static void DestroyBody(NativeStore.WorldData* world, NativeStore.Body* body, NativeStore.StoreGlobals* globals)
+        private static void DestroyBody(WorldData* world, Body* body, StoreGlobals* globals)
         {
             if (body == null)
             {
@@ -254,31 +260,31 @@ namespace KSP.Retooled.Physics
             JointKernel.ForgetBody(world, body);
             VehicleKernel.ForgetBody(world, body);
 
-            NativeStore.BodyData* hot = world->bodies + body->index;
+            BodyData* hot = world->bodies + body->index;
             BodyEntities.Release(hot);
-            if (hot->collider->Value.IsCreated)
+            if ((*hot).Collider()->Value.IsCreated)
             {
                 if (world->deadColliderCount == world->deadColliderCapacity)
                 {
-                    world->deadColliderCapacity = StoreOps.Grown(world->deadColliderCapacity);
-                    world->deadColliders = (void**)StoreOps.Reallocate(globals, world->deadColliders, world->deadColliderCapacity * (ulong)sizeof(void*));
+                    world->deadColliderCapacity = StoreMemory.Grown(world->deadColliderCapacity);
+                    world->deadColliders = (void**)StoreMemory.Reallocate(globals, world->deadColliders, world->deadColliderCapacity * (ulong)sizeof(void*));
                 }
 
-                world->deadColliders[world->deadColliderCount++] = hot->collider->Value.GetUnsafePtr();
+                world->deadColliders[world->deadColliderCount++] = (*hot).Collider()->Value.GetUnsafePtr();
             }
 
             // Replace the destroyed body with the last body in the array. The sequence of static bodies changes only if
             // either body is static.
-            bool staticsMove = (hot->flags & NativeStore.BodyFlags.Static) != 0;
+            bool staticsMove = (hot->flags & BodyFlags.Static) != 0;
             uint last = --world->bodyCount;
             if (body->index != last)
             {
-                staticsMove |= (world->bodies[last].flags & NativeStore.BodyFlags.Static) != 0;
+                staticsMove |= (world->bodies[last].flags & BodyFlags.Static) != 0;
                 *hot = world->bodies[last];
                 hot->owner->index = body->index;
             }
 
-            StoreOps.Release(globals, body);
+            StoreMemory.Release(globals, body);
             JointTopology.Changed();
             if (staticsMove)
             {
@@ -287,28 +293,28 @@ namespace KSP.Retooled.Physics
 
             // The last body moved into the destroyed body's row, so the snapshot's rows no longer match the store.
             QuerySnapshotVersion.Changed();
-            StoreOps.MarkQueryDirty(world);
+            StoreMemory.MarkQueryDirty(world);
         }
 
         /// <summary>
         /// Release entities, detach shapes and free bodies remaining when the world is destroyed. Shapes may
         /// outlive their bodies.
         /// </summary>
-        internal static void FreeBodies(NativeStore.WorldData* world, NativeStore.StoreGlobals* globals)
+        internal static void FreeBodies(WorldData* world, StoreGlobals* globals)
         {
             for (uint i = 0; i < world->bodyCount; i++)
             {
-                NativeStore.Body* body = world->bodies[i].owner;
+                Body* body = world->bodies[i].owner;
                 BodyEntities.Release(world->bodies + i);
                 StoreOps.DetachAllShapes(body, globals);
-                StoreOps.Release(globals, body);
+                StoreMemory.Release(globals, body);
             }
 
             world->bodyCount = 0;
         }
 
         /// <summary>Builds a list that the plugin passes to Unity's callback and then frees.</summary>
-        private static void CollectShapesByLayerMask(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void CollectShapesByLayerMask(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ShapesByLayerMask.Auto();
 
@@ -318,11 +324,11 @@ namespace KSP.Retooled.Physics
                 capacity += world->bodies[i].shapeCount;
             }
 
-            void** found = (void**)StoreOps.Reallocate(globals, null, math.max(capacity, 1u) * (ulong)sizeof(void*));
+            void** found = (void**)StoreMemory.Reallocate(globals, null, math.max(capacity, 1u) * (ulong)sizeof(void*));
             ulong count = 0;
             for (uint i = 0; i < world->bodyCount; i++)
             {
-                NativeStore.BodyData* hot = world->bodies + i;
+                BodyData* hot = world->bodies + i;
                 for (uint s = 0; s < hot->shapeCount; s++)
                 {
                     if ((hot->shapes[s]->belongsTo & a->value) != 0)

@@ -11,6 +11,13 @@ using Unity.Physics.Dynamics.Simulation.Islands;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Reports;
+using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -28,10 +35,10 @@ namespace KSP.Retooled.Physics
         private const int CopyBatchSize = 64;
 
         // WriteBackJob assigns these bodies a pose that differs from the result of integrating their solved motion.
-        private const NativeStore.BodyFlags PosedByWriteBack = NativeStore.BodyFlags.Sleeping | NativeStore.BodyFlags.HasKinematicTarget;
+        private const BodyFlags PosedByWriteBack = BodyFlags.Sleeping | BodyFlags.HasKinematicTarget;
 
-        private readonly NativeStore.WorldData* store;
-        private readonly NativeStore.StoreGlobals* globals;
+        private readonly WorldData* store;
+        private readonly StoreGlobals* globals;
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
@@ -121,7 +128,7 @@ namespace KSP.Retooled.Physics
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
 
         // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
-        private NativeList<NativeStore.TriggerEvent> removedTriggerPairs;
+        private NativeList<TriggerEvent> removedTriggerPairs;
 
         // The version of PairFilterVersion that the last step checked the touching pairs against.
         private uint seenPairFilterVersion;
@@ -312,7 +319,7 @@ namespace KSP.Retooled.Physics
         private bool builtWhole;
         private bool motionsMatchStore;
 
-        internal StepState(NativeStore.WorldData* store, NativeStore.StoreGlobals* globals, QueryWorld* query)
+        internal StepState(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
             tombstoneExpiry = -1;
@@ -354,7 +361,7 @@ namespace KSP.Retooled.Physics
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             TouchingHandOff.Restore(store, touching);
-            removedTriggerPairs = new NativeList<NativeStore.TriggerEvent>(Allocator.Persistent);
+            removedTriggerPairs = new NativeList<TriggerEvent>(Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
             sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
@@ -396,10 +403,10 @@ namespace KSP.Retooled.Physics
             ReleaseDeadColliders();
             for (uint i = 0; i < store->bodyCount; i++)
             {
-                NativeStore.BodyData* body = store->bodies + i;
-                ColliderBuilder.Release(body->collider->Value.GetUnsafePtr());
+                BodyData* body = store->bodies + i;
+                ColliderBuilder.Release((*body).Collider()->Value.GetUnsafePtr());
                 ColliderBuilder.SetCollider(body, default);
-                body->flags |= NativeStore.BodyFlags.ColliderDirty;
+                body->flags |= BodyFlags.ColliderDirty;
             }
 
             store->queryDirty = 1;
@@ -510,7 +517,7 @@ namespace KSP.Retooled.Physics
             // A step that threw after this stage last time can have left the job running.
             forcesApplied.Complete();
             store->queryWorld = null;
-            store->queryDirty = StoreOps.QueryStale;
+            store->queryDirty = StoreMemory.QueryStale;
             BodyEntities.PrepareForJobs(store);
             VehicleKernel.RecordStartVelocities(store);
 
@@ -587,7 +594,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>The store updated by this simulation state. Used by tests.</summary>
-        internal readonly NativeStore.WorldData* Store => store;
+        internal readonly WorldData* Store => store;
 
         /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
         internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
@@ -1034,8 +1041,8 @@ namespace KSP.Retooled.Physics
                 FinishQuerySnapshot();
                 // A refit that failed has set the ready word too, and leaves the world stale.
                 bool treeReady = store->treeReady != 0;
-                store->queryDirty = !motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreOps.QueryStale
-                    : !treeReady ? StoreOps.QueryTreePending : 0u;
+                store->queryDirty = !motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreMemory.QueryStale
+                    : !treeReady ? StoreMemory.QueryTreePending : 0u;
                 PublishQueryWorld();
             }
 
@@ -1056,7 +1063,7 @@ namespace KSP.Retooled.Physics
             FinishPendingRefit();
 
             // The world that the last step published is current now that its refit has finished.
-            if (store->queryDirty == StoreOps.QueryTreePending && builtWhole)
+            if (store->queryDirty == StoreMemory.QueryTreePending && builtWhole)
             {
                 return;
             }
@@ -1066,7 +1073,7 @@ namespace KSP.Retooled.Physics
 
             // The last build is still valid except for the poses of static bodies. The query snapshot contains no data
             // that depends on a pose.
-            if (store->queryDirty == StoreOps.QueryStaticsMoved && builtWhole && globals->materialVersion == builtMaterialVersion)
+            if (store->queryDirty == StoreMemory.QueryStaticsMoved && builtWhole && globals->materialVersion == builtMaterialVersion)
             {
                 PoseStatics();
                 PublishQueryWorld();
@@ -1133,9 +1140,9 @@ namespace KSP.Retooled.Physics
                 boundsCache.Resize(0);
             }
 
-            if (store->queryDirty == StoreOps.QueryTreePending)
+            if (store->queryDirty == StoreMemory.QueryTreePending)
             {
-                store->queryDirty = StoreOps.QueryStale;
+                store->queryDirty = StoreMemory.QueryStale;
                 UnityEngine.Debug.LogError("[StepState] the refit of the dynamic tree after the step failed; the next query on the main thread builds the world again");
             }
         }
@@ -1237,7 +1244,7 @@ namespace KSP.Retooled.Physics
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
         /// has finished.
         /// </summary>
-        internal readonly bool OnlyRefitPending => store->queryDirty == StoreOps.QueryTreePending && builtWhole && store->queryWorld != null;
+        internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
 
         /// <summary>
         /// Set treeReady after a failed step unless a pending refit owns completion, preventing queries from

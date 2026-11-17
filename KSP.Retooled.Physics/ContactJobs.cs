@@ -7,6 +7,15 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Reports;
+using StoreContactPoint = Unity.Physics.Store.Reports.ContactPoint;
+using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -16,8 +25,8 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal unsafe struct ManifoldRecord
     {
-        public NativeStore.ShapeData* ShapeA;
-        public NativeStore.ShapeData* ShapeB;
+        public ShapeData* ShapeA;
+        public ShapeData* ShapeB;
         public int RowA;
         public int RowB;
 
@@ -86,8 +95,8 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal unsafe struct PersistentManifoldKey : IEquatable<PersistentManifoldKey>
     {
-        public NativeStore.ShapeData* ShapeA;
-        public NativeStore.ShapeData* ShapeB;
+        public ShapeData* ShapeA;
+        public ShapeData* ShapeB;
         public uint KeyA;
         public uint KeyB;
 
@@ -143,7 +152,7 @@ namespace KSP.Retooled.Physics
         public IntPtr First;
         public IntPtr Second;
 
-        internal static unsafe ShapePairKey Of(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        internal static unsafe ShapePairKey Of(ShapeData* a, ShapeData* b)
         {
             bool ordered = a < b;
             return new ShapePairKey { First = (IntPtr)(ordered ? a : b), Second = (IntPtr)(ordered ? b : a) };
@@ -190,8 +199,8 @@ namespace KSP.Retooled.Physics
         internal static unsafe byte KinematicOf(ShapePairKey key)
         {
             return (byte)(KinematicKnown
-                | (IsKinematic((NativeStore.Shape*)key.First) ? FirstKinematic : 0)
-                | (IsKinematic((NativeStore.Shape*)key.Second) ? SecondKinematic : 0));
+                | (IsKinematic((Shape*)key.First) ? FirstKinematic : 0)
+                | (IsKinematic((Shape*)key.Second) ? SecondKinematic : 0));
         }
 
         /// <summary>
@@ -202,9 +211,9 @@ namespace KSP.Retooled.Physics
             return (Kinematic & KinematicKnown) != 0 && Kinematic != now;
         }
 
-        private static unsafe bool IsKinematic(NativeStore.Shape* shape)
+        private static unsafe bool IsKinematic(Shape* shape)
         {
-            return shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Kinematic) != 0;
+            return shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Kinematic) != 0;
         }
     }
 
@@ -233,10 +242,10 @@ namespace KSP.Retooled.Physics
         public NativeArray<DispatchPairSequencer.DispatchPair> Pairs;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.StoreGlobals* Globals;
+        public StoreGlobals* Globals;
 
         [NativeDisableUnsafePtrRestriction]
         public RigidBody* Bodies;
@@ -253,7 +262,7 @@ namespace KSP.Retooled.Physics
         public NativeQueue<KeyValue>.ParallelWriter Learned;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>The joint units, to find the leading joint of a vessel's edge or closure.</summary>
         [ReadOnly]
@@ -321,7 +330,7 @@ namespace KSP.Retooled.Physics
             bool disabled = false;
             do
             {
-                disabled |= (World->joints[Units[unit].Joint]->flags & NativeStore.JointFlagCollisionEnabled) == 0;
+                disabled |= (World->joints[Units[unit].Joint]->flags & StoreConstants.JointFlagCollisionEnabled) == 0;
             }
             while (!disabled && VesselPairUnits.TryGetNextValue(out unit, ref iterator));
 
@@ -379,7 +388,7 @@ namespace KSP.Retooled.Physics
             return ignored;
         }
 
-        private static bool HasIgnoreIds(NativeStore.BodyData* row)
+        private static bool HasIgnoreIds(BodyData* row)
         {
             for (int i = 0; i < row->shapeCount; i++)
             {
@@ -392,11 +401,11 @@ namespace KSP.Retooled.Physics
             return false;
         }
 
-        private bool IsIgnored(NativeStore.BodyData* rowA, NativeStore.BodyData* rowB)
+        private bool IsIgnored(BodyData* rowA, BodyData* rowB)
         {
             for (int a = 0; a < rowA->shapeCount; a++)
             {
-                NativeStore.ShapeData* shapeA = rowA->shapes[a];
+                ShapeData* shapeA = rowA->shapes[a];
                 if (!ColliderBuilder.IsSupported(shapeA))
                 {
                     continue;
@@ -404,7 +413,7 @@ namespace KSP.Retooled.Physics
 
                 for (int b = 0; b < rowB->shapeCount; b++)
                 {
-                    NativeStore.ShapeData* shapeB = rowB->shapes[b];
+                    ShapeData* shapeB = rowB->shapes[b];
                     if (ColliderBuilder.IsSupported(shapeB) && !IgnoreTable.Ignores(Globals, shapeA, shapeB))
                     {
                         return false;
@@ -484,10 +493,10 @@ namespace KSP.Retooled.Physics
         public NativeList<ContactBucket> Buckets;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.StoreGlobals* Globals;
+        public StoreGlobals* Globals;
 
         [NativeDisableUnsafePtrRestriction]
         public RigidBody* Bodies;
@@ -515,7 +524,7 @@ namespace KSP.Retooled.Physics
                     out MeshFace face);
                 for (int i = 0; i < header->NumContacts; i++)
                 {
-                    ContactPoint* point = (ContactPoint*)reader.ReadUnsafePtr(sizeof(ContactPoint));
+                    var point = (Unity.Physics.ContactPoint*)reader.ReadUnsafePtr(sizeof(Unity.Physics.ContactPoint));
                     if (!kept)
                     {
                         continue;
@@ -558,8 +567,8 @@ namespace KSP.Retooled.Physics
             RigidBody bodyB = Bodies[header.BodyPair.BodyIndexB];
             ColliderKey keyA = header.ColliderKeys.ColliderKeyA;
             ColliderKey keyB = header.ColliderKeys.ColliderKeyB;
-            NativeStore.ShapeData* shapeA = ShapeOf(bodyA, keyA, out int indexA);
-            NativeStore.ShapeData* shapeB = ShapeOf(bodyB, keyB, out int indexB);
+            ShapeData* shapeA = ShapeOf(bodyA, keyA, out int indexA);
+            ShapeData* shapeB = ShapeOf(bodyB, keyB, out int indexB);
             if (IgnoreTable.Ignores(Globals, shapeA, shapeB))
             {
                 header.JacobianFlags |= JacobianFlags.Disabled;
@@ -580,8 +589,8 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            bool staticA = (Store[rowA].flags & NativeStore.BodyFlags.Static) != 0;
-            bool staticB = (Store[rowB].flags & NativeStore.BodyFlags.Static) != 0;
+            bool staticA = (Store[rowA].flags & BodyFlags.Static) != 0;
+            bool staticB = (Store[rowB].flags & BodyFlags.Static) != 0;
             if (!trigger && staticA != staticB)
             {
                 face = staticB ? FaceOf(bodyB, keyB, Store[rowA], true) : FaceOf(bodyA, keyA, Store[rowB], false);
@@ -589,12 +598,12 @@ namespace KSP.Retooled.Physics
 
             bool swapped = staticA != staticB ? staticA : rowA > rowB;
             float3 normal = swapped ? -header.Normal : header.Normal;
-            ref NativeStore.BodyData first = ref Store[swapped ? rowB : rowA];
-            ref NativeStore.BodyData second = ref Store[swapped ? rowA : rowB];
+            ref BodyData first = ref Store[swapped ? rowB : rowA];
+            ref BodyData second = ref Store[swapped ? rowA : rowB];
 
             // Triggers require actual overlap. Solid pairs follow PhysX's rule and may touch within the sum of their
             // contact offsets.
-            touchDistance = trigger ? 0.0f : ((NativeStore.Shape*)shapeA)->contactOffset + ((NativeStore.Shape*)shapeB)->contactOffset;
+            touchDistance = trigger ? 0.0f : ((Shape*)shapeA)->contactOffset + ((Shape*)shapeB)->contactOffset;
             records.Add(new ManifoldRecord
             {
                 ShapeA = swapped ? shapeB : shapeA,
@@ -608,10 +617,10 @@ namespace KSP.Retooled.Physics
                 FirstPoint = firstPoint,
                 Normal = normal,
                 BuiltNormal = header.Normal,
-                LinearVelocityA = first.velocity->Linear,
-                AngularVelocityA = StoreOps.WorldAngularVelocity(first),
-                LinearVelocityB = second.velocity->Linear,
-                AngularVelocityB = StoreOps.WorldAngularVelocity(second),
+                LinearVelocityA = first.Velocity()->Linear,
+                AngularVelocityA = BodyKinematics.WorldAngularVelocity(first),
+                LinearVelocityB = second.Velocity()->Linear,
+                AngularVelocityB = BodyKinematics.WorldAngularVelocity(second),
                 Trigger = trigger,
             });
 
@@ -634,7 +643,7 @@ namespace KSP.Retooled.Physics
         /// Return a static mesh contact polygon in world space and the other body's motion.
         /// Return an invalid face for other leaf types.
         /// </summary>
-        private MeshFace FaceOf(RigidBody mesh, ColliderKey key, in NativeStore.BodyData moving, bool movingIsA)
+        private MeshFace FaceOf(RigidBody mesh, ColliderKey key, in BodyData moving, bool movingIsA)
         {
             var root = (Collider*)mesh.Collider.GetUnsafePtr();
             if (!Collider.GetLeafCollider(out ChildCollider leaf, root, key, mesh.WorldFromBody))
@@ -659,9 +668,9 @@ namespace KSP.Retooled.Physics
                 V1 = math.transform(leaf.TransformFromChild, vertices[1]),
                 V2 = math.transform(leaf.TransformFromChild, vertices[2]),
                 V3 = quad ? math.transform(leaf.TransformFromChild, vertices[3]) : float3.zero,
-                Linear = moving.velocity->Linear,
-                Angular = StoreOps.WorldAngularVelocity(moving),
-                CentreOfMass = moving.pose->Position + math.rotate(moving.pose->Rotation, moving.mass->Transform.pos),
+                Linear = moving.Velocity()->Linear,
+                Angular = BodyKinematics.WorldAngularVelocity(moving),
+                CentreOfMass = moving.Pose()->Position + math.rotate(moving.Pose()->Rotation, moving.Mass()->Transform.pos),
             };
         }
 
@@ -698,8 +707,8 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            NativeStore.MaterialData* a = record.ShapeA->material;
-            NativeStore.MaterialData* b = record.ShapeB->material;
+            MaterialData* a = record.ShapeA->material;
+            MaterialData* b = record.ShapeB->material;
             float anchors = FrictionAnchors(ref record, ref points);
             float dynamicFriction = Combine(a->dynamicFriction, b->dynamicFriction, a->frictionCombine, b->frictionCombine);
             float staticFriction = Combine(a->staticFriction, b->staticFriction, a->frictionCombine, b->frictionCombine);
@@ -768,11 +777,11 @@ namespace KSP.Retooled.Physics
         {
             switch (CombineRank(modeA) >= CombineRank(modeB) ? modeA : modeB)
             {
-                case NativeStore.CombineMaximum:
+                case StoreConstants.CombineMaximum:
                     return math.max(a, b);
-                case NativeStore.CombineMultiply:
+                case StoreConstants.CombineMultiply:
                     return a * b;
-                case NativeStore.CombineMinimum:
+                case StoreConstants.CombineMinimum:
                     return math.min(a, b);
                 default:
                     return (a + b) * 0.5f;
@@ -783,11 +792,11 @@ namespace KSP.Retooled.Physics
         {
             switch (mode)
             {
-                case NativeStore.CombineMaximum:
+                case StoreConstants.CombineMaximum:
                     return 3;
-                case NativeStore.CombineMultiply:
+                case StoreConstants.CombineMultiply:
                     return 2;
-                case NativeStore.CombineMinimum:
+                case StoreConstants.CombineMinimum:
                     return 1;
                 default:
                     return 0;
@@ -801,9 +810,9 @@ namespace KSP.Retooled.Physics
             return math.dot(velocityB - velocityA, record.Normal);
         }
 
-        private static float3 PointVelocity(ref NativeStore.BodyData body, float3 linear, float3 angular, float3 position)
+        private static float3 PointVelocity(ref BodyData body, float3 linear, float3 angular, float3 position)
         {
-            float3 center = (float3)body.pose->Position + math.rotate(body.pose->Rotation, body.mass->Transform.pos);
+            float3 center = (float3)body.Pose()->Position + math.rotate(body.Pose()->Rotation, body.Mass()->Transform.pos);
             return linear + math.cross(angular, position - center);
         }
 
@@ -811,12 +820,12 @@ namespace KSP.Retooled.Physics
         /// Match PhysX contact reporting: exclude static-static pairs, and report kinematic-static or
         /// kinematic-kinematic pairs only for triggers.
         /// </summary>
-        private static bool CanReport(NativeStore.BodyFlags a, NativeStore.BodyFlags b, bool trigger)
+        private static bool CanReport(BodyFlags a, BodyFlags b, bool trigger)
         {
-            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
+            const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
             if (trigger)
             {
-                return ((a & b) & NativeStore.BodyFlags.Static) == 0;
+                return ((a & b) & BodyFlags.Static) == 0;
             }
 
             return (a & immobile) == 0 || (b & immobile) == 0;
@@ -825,22 +834,22 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Cull height field contacts when the other shape's centre lies below the surface, matching PhysX.
         /// </summary>
-        private bool IsBehindField(RigidBody field, ColliderKey key, NativeStore.ShapeData* fieldShape, RigidBody other, NativeStore.ShapeData* otherShape)
+        private bool IsBehindField(RigidBody field, ColliderKey key, ShapeData* fieldShape, RigidBody other, ShapeData* otherShape)
         {
-            if (fieldShape->geometryType != NativeStore.GeometryHeightField)
+            if (fieldShape->geometryType != StoreConstants.GeometryHeightField)
             {
                 return false;
             }
 
-            ref NativeStore.BodyData row = ref Store[other.Entity.Index];
-            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.pose->Position, row.pose->Rotation, out float3 lower, out float3 upper);
+            ref BodyData row = ref Store[other.Entity.Index];
+            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.Pose()->Position, row.Pose()->Rotation, out float3 lower, out float3 upper);
             float3 centre = math.transform(math.inverse(field.WorldFromBody), (lower + upper) * 0.5f);
             return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
         }
 
-        private NativeStore.ShapeData* ShapeOf(RigidBody body, ColliderKey key, out int index)
+        private ShapeData* ShapeOf(RigidBody body, ColliderKey key, out int index)
         {
-            NativeStore.BodyData* row = Store + body.Entity.Index;
+            BodyData* row = Store + body.Entity.Index;
             index = ColliderBuilder.ShapeIndexOf(body.Collider, key, ColliderBuilder.FirstSupported(row));
             return row->shapes[index];
         }
@@ -1118,7 +1127,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct ForgetRemovedImpulsesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public NativeHashMap<PersistentManifoldKey, float> LastImpulses;
 
@@ -1142,25 +1151,6 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Shared version for trigger, collision filter and kinematic changes that require touching pairs to be
-    /// reevaluated.
-    /// </summary>
-    internal static class PairFilterVersion
-    {
-        private readonly struct Key { }
-
-        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
-
-        internal static uint Version => (uint)Shared.Data;
-
-        /// <summary>Moves the version on and returns the new value.</summary>
-        internal static unsafe uint Changed()
-        {
-            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
-        }
-    }
-
-    /// <summary>
     /// Wake bodies whose touching pairs changed because of filters, trigger flags or kinematic state.
     /// Run before applying forces so that the narrow phase sees the changes in the same step.
     /// </summary>
@@ -1168,7 +1158,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct WakeRefilteredPairsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [ReadOnly]
         public NativeHashMap<ShapePairKey, ShapePairState> Touching;
@@ -1190,16 +1180,16 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                NativeStore.ShapeData* first = (NativeStore.ShapeData*)pair.Key.First;
-                NativeStore.ShapeData* second = (NativeStore.ShapeData*)pair.Key.Second;
-                bool trigger = ((first->flags | second->flags) & NativeStore.ShapeFlagTrigger) != 0;
+                ShapeData* first = (ShapeData*)pair.Key.First;
+                ShapeData* second = (ShapeData*)pair.Key.Second;
+                bool trigger = ((first->flags | second->flags) & StoreConstants.ShapeFlagTrigger) != 0;
                 if (trigger == pair.Value.Trigger && Collide(first, second) && !pair.Value.KinematicChanged(ShapePairState.KinematicOf(pair.Key)))
                 {
                     continue;
                 }
 
-                Wake((NativeStore.Shape*)first);
-                Wake((NativeStore.Shape*)second);
+                Wake((Shape*)first);
+                Wake((Shape*)second);
             }
         }
 
@@ -1207,19 +1197,19 @@ namespace KSP.Retooled.Physics
         /// Return whether shape filters permit contact or triggering. Explicit ignored pairs are handled
         /// separately.
         /// </summary>
-        private static bool Collide(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        private static bool Collide(ShapeData* a, ShapeData* b)
         {
             return Responds(a) && Responds(b) && (a->belongsTo & b->collidesWith) != 0 && (b->belongsTo & a->collidesWith) != 0;
         }
 
-        private static bool Responds(NativeStore.ShapeData* shape)
+        private static bool Responds(ShapeData* shape)
         {
-            return shape->collidesWith != 0 && ((shape->flags & NativeStore.ShapeFlagTrigger) != 0 || shape->collisionDisabled == 0);
+            return shape->collidesWith != 0 && ((shape->flags & StoreConstants.ShapeFlagTrigger) != 0 || shape->collisionDisabled == 0);
         }
 
-        private static void Wake(NativeStore.Shape* shape)
+        private static void Wake(Shape* shape)
         {
-            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            if (shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
                 JointKernel.WakeRow(StoreOps.Hot(shape->body));
             }
@@ -1235,12 +1225,12 @@ namespace KSP.Retooled.Physics
     internal unsafe struct ForgetRemovedShapesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public NativeHashMap<ShapePairKey, ShapePairState> Touching;
 
         /// <summary>The events that end the trigger pairs that this job removes, which the next contact report sends.</summary>
-        public NativeList<NativeStore.TriggerEvent> RemovedTriggerPairs;
+        public NativeList<TriggerEvent> RemovedTriggerPairs;
 
         public void Execute()
         {
@@ -1268,11 +1258,11 @@ namespace KSP.Retooled.Physics
                     {
                         // The removed shape's memory may already hold a new shape, so this code reads only the
                         // addresses. The ids stay zero, which tells Unity that the pair ended without a message.
-                        RemovedTriggerPairs.Add(new NativeStore.TriggerEvent
+                        RemovedTriggerPairs.Add(new TriggerEvent
                         {
-                            triggerShape = (NativeStore.Shape*)(state.FirstIsTrigger ? key.First : key.Second),
-                            colliderShape = (NativeStore.Shape*)(state.FirstIsTrigger ? key.Second : key.First),
-                            type = NativeStore.TriggerEventShapeRemoved,
+                            triggerShape = (Shape*)(state.FirstIsTrigger ? key.First : key.Second),
+                            colliderShape = (Shape*)(state.FirstIsTrigger ? key.Second : key.First),
+                            type = StoreConstants.TriggerEventShapeRemoved,
                         });
                     }
 
@@ -1284,7 +1274,7 @@ namespace KSP.Retooled.Physics
 
         private static void WakeOwner(IntPtr shape, bool gone)
         {
-            NativeStore.Shape* left = (NativeStore.Shape*)shape;
+            Shape* left = (Shape*)shape;
             if (!gone && left->body != null)
             {
                 JointKernel.WakeRow(StoreOps.Hot(left->body));
@@ -1309,10 +1299,10 @@ namespace KSP.Retooled.Physics
         private const uint NoFace = uint.MaxValue;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.StoreGlobals* Globals;
+        public StoreGlobals* Globals;
 
         public NativeList<ManifoldRecord> Records;
 
@@ -1324,7 +1314,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Removal events for trigger pairs. Report before current trigger events, then clear the list.
         /// </summary>
-        public NativeList<NativeStore.TriggerEvent> RemovedTriggerPairs;
+        public NativeList<TriggerEvent> RemovedTriggerPairs;
 
         public uint Step;
 
@@ -1349,7 +1339,7 @@ namespace KSP.Retooled.Physics
 
             int rowA = -1;
             int rowB = -1;
-            NativeStore.ContactBodyPair* bodyPair = null;
+            ContactBodyPair* bodyPair = null;
             int index = 0;
             while (index < Records.Length)
             {
@@ -1386,7 +1376,7 @@ namespace KSP.Retooled.Physics
                 state.LastSeen = Step;
                 state.Trigger = record.Trigger;
                 state.Kinematic = kinematic;
-                NativeStore.ShapeData* trigger = TriggerOf(record.ShapeA, record.ShapeB);
+                ShapeData* trigger = TriggerOf(record.ShapeA, record.ShapeB);
                 if (found)
                 {
                     // Only a new pair sets the order: when a shape of a trigger pair becomes a trigger too, the flags
@@ -1400,7 +1390,7 @@ namespace KSP.Retooled.Physics
                 {
                     if (found)
                     {
-                        AddTrigger(trigger, trigger == record.ShapeA ? record.ShapeB : record.ShapeA, NativeStore.TriggerEventEnter);
+                        AddTrigger(trigger, trigger == record.ShapeA ? record.ShapeB : record.ShapeA, StoreConstants.TriggerEventEnter);
                     }
 
                     continue;
@@ -1453,8 +1443,8 @@ namespace KSP.Retooled.Physics
         {
             if (needed > capacity)
             {
-                capacity = math.max(needed, StoreOps.Grown(capacity));
-                array = (T*)StoreOps.Reallocate(Globals, array, capacity * (ulong)sizeof(T));
+                capacity = math.max(needed, StoreMemory.Grown(capacity));
+                array = (T*)StoreMemory.Reallocate(Globals, array, capacity * (ulong)sizeof(T));
             }
         }
 
@@ -1463,33 +1453,33 @@ namespace KSP.Retooled.Physics
             return userData != null ? *(ulong*)((byte*)userData + Globals->engineObjectIdOffset) : 0;
         }
 
-        private ushort Messages(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        private ushort Messages(ShapeData* a, ShapeData* b)
         {
-            return (ushort)(((NativeStore.Shape*)a)->messages | ((NativeStore.Shape*)b)->messages);
+            return (ushort)(((Shape*)a)->messages | ((Shape*)b)->messages);
         }
 
         private bool IsAwake(int row)
         {
-            const NativeStore.BodyFlags resting = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Sleeping;
-            NativeStore.BodyFlags flags = World->bodies[row].flags;
+            const BodyFlags resting = BodyFlags.Static | BodyFlags.Sleeping;
+            BodyFlags flags = World->bodies[row].flags;
             if ((flags & resting) != 0)
             {
                 return false;
             }
 
-            return (flags & NativeStore.BodyFlags.Kinematic) == 0 || (flags & NativeStore.BodyFlags.HasKinematicTarget) != 0;
+            return (flags & BodyFlags.Kinematic) == 0 || (flags & BodyFlags.HasKinematicTarget) != 0;
         }
 
         private ulong BodyId(int row)
         {
-            NativeStore.BodyData* body = World->bodies + row;
-            return (body->flags & NativeStore.BodyFlags.Static) != 0 ? 0 : EngineId(body->owner->userData);
+            BodyData* body = World->bodies + row;
+            return (body->flags & BodyFlags.Static) != 0 ? 0 : EngineId(body->owner->userData);
         }
 
-        private NativeStore.ContactBodyPair* AddBodyPair(int rowA, int rowB, float3 linearA, float3 angularA, float3 linearB, float3 angularB)
+        private ContactBodyPair* AddBodyPair(int rowA, int rowB, float3 linearA, float3 angularA, float3 linearB, float3 angularB)
         {
-            NativeStore.ContactBodyPair* pair = World->contactBodies + World->contactBodyCount++;
-            *pair = new NativeStore.ContactBodyPair
+            ContactBodyPair* pair = World->contactBodies + World->contactBodyCount++;
+            *pair = new ContactBodyPair
             {
                 thisBody = BodyId(rowA),
                 otherBody = BodyId(rowB),
@@ -1503,10 +1493,10 @@ namespace KSP.Retooled.Physics
             return pair;
         }
 
-        private void AddShapePair(NativeStore.ContactBodyPair* bodyPair, int first, int end, ushort events)
+        private void AddShapePair(ContactBodyPair* bodyPair, int first, int end, ushort events)
         {
             ref ManifoldRecord record = ref Records.ElementAt(first);
-            NativeStore.ContactPoint* points = World->contactPoints + World->contactPointCount;
+            StoreContactPoint* points = World->contactPoints + World->contactPointCount;
             uint pointCount = 0;
             float3 impulseSum = float3.zero;
             for (int i = first; i < end; i++)
@@ -1516,7 +1506,7 @@ namespace KSP.Retooled.Physics
                 for (int p = 0; p < manifold.PointCount; p++)
                 {
                     ManifoldPoint point = Points[manifold.FirstPoint + p];
-                    points[pointCount++] = new NativeStore.ContactPoint
+                    points[pointCount++] = new StoreContactPoint
                     {
                         position = point.Position,
                         separation = point.Distance,
@@ -1531,7 +1521,7 @@ namespace KSP.Retooled.Physics
             }
 
             World->contactPointCount += pointCount;
-            World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
+            World->contactShapes[World->contactShapeCount++] = new ContactShapePair
             {
                 thisCollider = EngineId(record.ShapeA->userData),
                 otherCollider = EngineId(record.ShapeB->userData),
@@ -1548,18 +1538,18 @@ namespace KSP.Retooled.Physics
         /// Select the first trigger shape, or the second if only it is a trigger.
         /// Use the same shape order for enter, exit and removal events to match Unity's pair cache.
         /// </summary>
-        private static NativeStore.ShapeData* TriggerOf(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
+        private static ShapeData* TriggerOf(ShapeData* a, ShapeData* b)
         {
-            return (a->flags & NativeStore.ShapeFlagTrigger) != 0 ? a : b;
+            return (a->flags & StoreConstants.ShapeFlagTrigger) != 0 ? a : b;
         }
 
         /// <summary>
         /// Add a trigger event in the supplied shape order. Do not infer order from flags that may have changed
         /// since entry.
         /// </summary>
-        private void AddTrigger(NativeStore.ShapeData* trigger, NativeStore.ShapeData* other, uint type)
+        private void AddTrigger(ShapeData* trigger, ShapeData* other, uint type)
         {
-            World->triggers[World->triggerCount++] = new NativeStore.TriggerEvent
+            World->triggers[World->triggerCount++] = new TriggerEvent
             {
                 triggerShape = trigger->owner,
                 colliderShape = other->owner,
@@ -1585,10 +1575,10 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                NativeStore.ShapeData* first = (NativeStore.ShapeData*)key.First;
-                NativeStore.ShapeData* second = (NativeStore.ShapeData*)key.Second;
-                int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
-                int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
+                ShapeData* first = (ShapeData*)key.First;
+                ShapeData* second = (ShapeData*)key.Second;
+                int rowFirst = (int)((Shape*)first)->body->index;
+                int rowSecond = (int)((Shape*)second)->body->index;
 
                 // Kinematic changes restart touching pairs even when both bodies are asleep.
                 if (!IsAwake(rowFirst) && !IsAwake(rowSecond) && !state.KinematicChanged(ShapePairState.KinematicOf(key)))
@@ -1620,19 +1610,19 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private void EndPair(ShapePairKey key, ShapePairState state)
         {
-            NativeStore.ShapeData* first = (NativeStore.ShapeData*)key.First;
-            NativeStore.ShapeData* second = (NativeStore.ShapeData*)key.Second;
+            ShapeData* first = (ShapeData*)key.First;
+            ShapeData* second = (ShapeData*)key.Second;
             if (state.Trigger)
             {
                 // Name the shapes in the order of the pair's enter event, which Unity keeps the pair by. The flags can't
                 // tell that order any more when a shape stopped being a trigger, or when both shapes are triggers.
                 if (state.FirstIsTrigger)
                 {
-                    AddTrigger(first, second, NativeStore.TriggerEventExit);
+                    AddTrigger(first, second, StoreConstants.TriggerEventExit);
                 }
                 else
                 {
-                    AddTrigger(second, first, NativeStore.TriggerEventExit);
+                    AddTrigger(second, first, StoreConstants.TriggerEventExit);
                 }
 
                 return;
@@ -1643,13 +1633,13 @@ namespace KSP.Retooled.Physics
             {
                 // Preserve enter-event order: static body second, otherwise lower body row first. Shape
                 // addresses are not deterministic.
-                int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
-                int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
-                bool staticFirst = (World->bodies[rowFirst].flags & NativeStore.BodyFlags.Static) != 0;
-                bool staticSecond = (World->bodies[rowSecond].flags & NativeStore.BodyFlags.Static) != 0;
+                int rowFirst = (int)((Shape*)first)->body->index;
+                int rowSecond = (int)((Shape*)second)->body->index;
+                bool staticFirst = (World->bodies[rowFirst].flags & BodyFlags.Static) != 0;
+                bool staticSecond = (World->bodies[rowSecond].flags & BodyFlags.Static) != 0;
                 if (staticFirst != staticSecond ? staticFirst : rowFirst > rowSecond)
                 {
-                    NativeStore.ShapeData* shape = first;
+                    ShapeData* shape = first;
                     first = second;
                     second = shape;
                     int row = rowFirst;
@@ -1657,10 +1647,10 @@ namespace KSP.Retooled.Physics
                     rowSecond = row;
                 }
 
-                NativeStore.BodyData* a = World->bodies + rowFirst;
-                NativeStore.BodyData* b = World->bodies + rowSecond;
-                NativeStore.ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, StoreOps.WorldAngularVelocity(*a), b->velocity->Linear, StoreOps.WorldAngularVelocity(*b));
-                World->contactShapes[World->contactShapeCount++] = new NativeStore.ContactShapePair
+                BodyData* a = World->bodies + rowFirst;
+                BodyData* b = World->bodies + rowSecond;
+                ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, (*a).Velocity()->Linear, BodyKinematics.WorldAngularVelocity(*a), (*b).Velocity()->Linear, BodyKinematics.WorldAngularVelocity(*b));
+                World->contactShapes[World->contactShapeCount++] = new ContactShapePair
                 {
                     thisCollider = EngineId(first->userData),
                     otherCollider = EngineId(second->userData),
@@ -1705,10 +1695,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>The place of a shape in the store, as one number: its body's row, then its position in the body.</summary>
-        private long PlaceOf(NativeStore.ShapeData* shape)
+        private long PlaceOf(ShapeData* shape)
         {
-            NativeStore.Body* body = ((NativeStore.Shape*)shape)->body;
-            NativeStore.BodyData* row = World->bodies + body->index;
+            Body* body = ((Shape*)shape)->body;
+            BodyData* row = World->bodies + body->index;
             int index = 0;
             while (index < row->shapeCount && row->shapes[index] != shape)
             {

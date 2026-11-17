@@ -4,6 +4,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
 
 namespace KSP.Retooled.Physics
 {
@@ -41,7 +42,7 @@ namespace KSP.Retooled.Physics
         public ShiftState State;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.BodyData* Store;
+        public BodyData* Store;
 
         /// <summary>
         /// Bodies whose colliders were rebuilt. Treat these as changed even when pose and pointer match,
@@ -173,7 +174,7 @@ namespace KSP.Retooled.Physics
         {
             for (int i = 0; i < Refreshed.Length; i++)
             {
-                if ((Store[Refreshed[i].Body].flags & NativeStore.BodyFlags.Static) != 0)
+                if ((Store[Refreshed[i].Body].flags & BodyFlags.Static) != 0)
                 {
                     return true;
                 }

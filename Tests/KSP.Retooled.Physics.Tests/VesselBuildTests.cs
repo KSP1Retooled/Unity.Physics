@@ -4,6 +4,9 @@ using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -855,11 +858,11 @@ namespace KSP.Retooled.Physics.Tests
         /// <summary>How many of the store's joints are broken.</summary>
         private static int BrokenJoints()
         {
-            NativeStore.WorldData* store = State->Store;
+            WorldData* store = State->Store;
             int broken = 0;
             for (uint i = 0; i < store->jointCount; i++)
             {
-                broken += (store->joints[i]->state & NativeStore.JointState.Broken) != 0 ? 1 : 0;
+                broken += (store->joints[i]->state & JointState.Broken) != 0 ? 1 : 0;
             }
 
             return broken;
@@ -932,11 +935,11 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(State->Store->jointBreakCount, Is.EqualTo(6), "the breaks are reported");
 
             // Each broken joint holds the third part or the fifth part to the part above it.
-            NativeStore.WorldData* store = State->Store;
+            WorldData* store = State->Store;
             for (uint i = 0; i < store->jointCount; i++)
             {
-                NativeStore.JointData* joint = store->joints[i];
-                bool broken = (joint->state & NativeStore.JointState.Broken) != 0;
+                JointData* joint = store->joints[i];
+                bool broken = (joint->state & JointState.Broken) != 0;
                 ulong lower = joint->body0->index == joint->body1->index ? 0 : math.max(joint->body0->index, joint->body1->index);
                 Assert.That(broken, Is.EqualTo(lower == 2 || lower == 4), $"joint {i} between store bodies {joint->body0->index} and {joint->body1->index}");
             }
@@ -958,12 +961,12 @@ namespace KSP.Retooled.Physics.Tests
             OnlyVessel();
 
             // The leader frame read from solved motion must match the written-back pose bit for bit.
-            NativeStore.WorldData* store = State->Store;
+            WorldData* store = State->Store;
             PhysicsWorld world = State->World;
             int checkedJoints = 0;
             for (uint i = 0; i < store->jointCount; i++)
             {
-                NativeStore.JointData* joint = store->joints[i];
+                JointData* joint = store->joints[i];
                 quaternion fromMotion = VesselLoadsJob.LeaderFrame(joint, world.MotionDatas, State->BuiltIndices.AsArray());
                 quaternion writtenBack = JointConstraints.WorldRotation0(joint);
                 Assert.That(fromMotion.value.Equals(writtenBack.value), Is.True, $"joint {i}: {fromMotion} and {writtenBack}");

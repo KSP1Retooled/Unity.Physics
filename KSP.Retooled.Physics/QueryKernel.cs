@@ -7,6 +7,11 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Queries;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -36,7 +41,7 @@ namespace KSP.Retooled.Physics
         // This pointer is used for comparisons or passed to Unity. Never dereference it: the body record may have been
         // destroyed by the time a worker reads this snapshot.
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.Body* Owner;
+        public Body* Owner;
 
         public int FirstShape;
         public int SingleShape;     // Index of the shape for a noncompound collider, relative to FirstShape.
@@ -84,13 +89,13 @@ namespace KSP.Retooled.Physics
         {
             switch (geometryType)
             {
-                case NativeStore.GeometrySphere:
+                case StoreConstants.GeometrySphere:
                     sphere.Initialize(ColliderBuilder.SphereOf(extents, float3.zero), filter, Material.Default);
                     return (Collider*)UnsafeUtility.AddressOf(ref sphere);
-                case NativeStore.GeometryBox:
+                case StoreConstants.GeometryBox:
                     box.Initialize(ColliderBuilder.BoxOf(extents, float3.zero, quaternion.identity), filter, Material.Default);
                     return (Collider*)UnsafeUtility.AddressOf(ref box);
-                case NativeStore.GeometryCapsule:
+                case StoreConstants.GeometryCapsule:
                     capsule.Initialize(ColliderBuilder.CapsuleOf(extents, float3.zero, quaternion.identity), filter, Material.Default);
                     return (Collider*)UnsafeUtility.AddressOf(ref capsule);
                 default:
@@ -111,18 +116,18 @@ namespace KSP.Retooled.Physics
         private const float TouchDistance = 1e-4f;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        internal delegate int QueryFunction(uint kind, QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output);
+        internal delegate int QueryFunction(uint kind, QueryWorld* world, QueryInput* input, QueryOutput* output);
 
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(QueryFunction))]
-        internal static int Run(uint kind, QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        internal static int Run(uint kind, QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Query.Auto();
 
             int result = 0;
             bool ranInMono = false;
             RunInMono(kind, world, input, output, ref result, ref ranInMono);
-            return ranInMono ? result : Execute((NativeStore.QueryKind)kind, world, input, output);
+            return ranInMono ? result : Execute((QueryKind)kind, world, input, output);
         }
 
         /// <summary>
@@ -133,8 +138,8 @@ namespace KSP.Retooled.Physics
         private static void RunInMono(
             uint kind,
             QueryWorld* world,
-            NativeStore.QueryInput* input,
-            NativeStore.QueryOutput* output,
+            QueryInput* input,
+            QueryOutput* output,
             ref int result,
             ref bool ranInMono)
         {
@@ -161,61 +166,61 @@ namespace KSP.Retooled.Physics
             public QueryWorld World;
 
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.QueryInput* Input;
+            public QueryInput* Input;
 
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.QueryOutput* Output;
+            public QueryOutput* Output;
 
             [NativeDisableUnsafePtrRestriction]
             public int* Result;
 
             public void Execute()
             {
-                *Result = QueryKernel.Execute((NativeStore.QueryKind)Kind, (QueryWorld*)UnsafeUtility.AddressOf(ref World), Input, Output);
+                *Result = QueryKernel.Execute((QueryKind)Kind, (QueryWorld*)UnsafeUtility.AddressOf(ref World), Input, Output);
             }
         }
 
-        private static int Execute(NativeStore.QueryKind kind, QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int Execute(QueryKind kind, QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             switch (kind)
             {
-                case NativeStore.QueryKind.Ray:
+                case QueryKind.Ray:
                     return CastRay(world, input, output);
-                case NativeStore.QueryKind.RayAll:
+                case QueryKind.RayAll:
                     CastRayAll(world, input);
                     return 0;
-                case NativeStore.QueryKind.RayAgainstShape:
+                case QueryKind.RayAgainstShape:
                     return CastRayAgainstShape(input, output);
-                case NativeStore.QueryKind.OverlapAny:
+                case QueryKind.OverlapAny:
                     return OverlapAny(world, input, output);
-                case NativeStore.QueryKind.OverlapAll:
+                case QueryKind.OverlapAll:
                     OverlapAll(world, input);
                     return 0;
-                case NativeStore.QueryKind.OverlapBroadphase:
+                case QueryKind.OverlapBroadphase:
                     OverlapBroadphase(world, input);
                     return 0;
-                case NativeStore.QueryKind.Cast:
+                case QueryKind.Cast:
                     return CastGeometry(world, input, output);
-                case NativeStore.QueryKind.CastAll:
+                case QueryKind.CastAll:
                     CastGeometryAll(world, input);
                     return 0;
-                case NativeStore.QueryKind.BodyCast:
+                case QueryKind.BodyCast:
                     return CastBody(world, input, output);
-                case NativeStore.QueryKind.BodyCastAll:
+                case QueryKind.BodyCastAll:
                     CastBodyAll(world, input);
                     return 0;
-                case NativeStore.QueryKind.ClosestPoint:
+                case QueryKind.ClosestPoint:
                     return ClosestPoint(input, output);
-                case NativeStore.QueryKind.Penetration:
+                case QueryKind.Penetration:
                     return Penetration(input, output);
-                case NativeStore.QueryKind.CastAgainstShape:
+                case QueryKind.CastAgainstShape:
                     return CastAgainstShape(input, output);
                 default:
                     return 0;
             }
         }
 
-        private static CollisionFilter FilterOf(NativeStore.QueryInput* input)
+        private static CollisionFilter FilterOf(QueryInput* input)
         {
             return new CollisionFilter
             {
@@ -224,12 +229,12 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        private static float LengthOf(NativeStore.QueryInput* input)
+        private static float LengthOf(QueryInput* input)
         {
             return math.min(input->maxDistance, QueryCollectors.MaxQueryLength);
         }
 
-        private static RaycastInput RayOf(NativeStore.QueryInput* input, float3 direction, float distance)
+        private static RaycastInput RayOf(QueryInput* input, float3 direction, float distance)
         {
             return new RaycastInput
             {
@@ -239,7 +244,7 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        private static int CastRay(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int CastRay(QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -265,7 +270,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static void CastRayAll(QueryWorld* world, NativeStore.QueryInput* input)
+        private static void CastRayAll(QueryWorld* world, QueryInput* input)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -281,13 +286,13 @@ namespace KSP.Retooled.Physics
                 input->filterOptions,
                 direction,
                 QueryHitRules.Ray,
-                groupByShape: (input->filterOptions & NativeStore.QueryAllowMultipleMeshHits) == 0);
+                groupByShape: (input->filterOptions & StoreConstants.QueryAllowMultipleMeshHits) == 0);
 
             world->Collision.CastRay(RayOf(input, direction, distance), ref collector);
             collector.Finish();
         }
 
-        private static int CastRayAgainstShape(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int CastRayAgainstShape(QueryInput* input, QueryOutput* output)
         {
             float3 worldDirection = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -312,18 +317,18 @@ namespace KSP.Retooled.Physics
 
             RaycastHit hit = collector.Hit;
             float3 normal = math.rotate(worldFromCollider.rot, hit.SurfaceNormal);
-            output->hit = new NativeStore.RayCastHit
+            output->hit = new RayCastHit
             {
                 point = math.transform(worldFromCollider, hit.Position),
                 normal = collector.Backface ? -normal : normal,
-                faceId = input->shape->data.geometryType == NativeStore.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
+                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
                 distance = hit.Fraction * distance,
             };
 
             return 1;
         }
 
-        private static ColliderDistanceInput OverlapInput(Collider* collider, NativeStore.QueryInput* input)
+        private static ColliderDistanceInput OverlapInput(Collider* collider, QueryInput* input)
         {
             return new ColliderDistanceInput
             {
@@ -334,7 +339,7 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        private static int OverlapAny(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int OverlapAny(QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             PrimitiveCollider primitive = default;
             Collider* collider = primitive.Initialize(input->geometryType, input->extents, FilterOf(input));
@@ -362,7 +367,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static void OverlapAll(QueryWorld* world, NativeStore.QueryInput* input)
+        private static void OverlapAll(QueryWorld* world, QueryInput* input)
         {
             PrimitiveCollider primitive = default;
             Collider* collider = primitive.Initialize(input->geometryType, input->extents, FilterOf(input));
@@ -388,7 +393,7 @@ namespace KSP.Retooled.Physics
             collector.Finish();
         }
 
-        private static void OverlapBroadphase(QueryWorld* world, NativeStore.QueryInput* input)
+        private static void OverlapBroadphase(QueryWorld* world, QueryInput* input)
         {
             PrimitiveCollider primitive = default;
             Collider* collider = primitive.Initialize(input->geometryType, input->extents, FilterOf(input));
@@ -426,12 +431,12 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        private static bool IsCast(NativeStore.QueryInput* input, float3 direction)
+        private static bool IsCast(QueryInput* input, float3 direction)
         {
             return math.any(direction != 0.0f) && input->maxDistance > 0.0f;
         }
 
-        private static int CastGeometry(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int CastGeometry(QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -466,7 +471,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static void CastGeometryAll(QueryWorld* world, NativeStore.QueryInput* input)
+        private static void CastGeometryAll(QueryWorld* world, QueryInput* input)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -492,7 +497,7 @@ namespace KSP.Retooled.Physics
             refined.Inner.Finish();
         }
 
-        private static CastListSink ListSink(NativeStore.QueryInput* input, float3 direction, float distance)
+        private static CastListSink ListSink(QueryInput* input, float3 direction, float distance)
         {
             return new CastListSink
             {
@@ -508,7 +513,7 @@ namespace KSP.Retooled.Physics
         /// Sweep a body's convex shapes, including triggers, against filtered targets. Triangle meshes cannot be
         /// swept.
         /// </summary>
-        private static void CastShape<S>(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.Shape* shape, ref S sink, float3 direction, float distance)
+        private static void CastShape<S>(QueryWorld* world, QueryInput* input, Shape* shape, ref S sink, float3 direction, float distance)
             where S : struct, IQuerySink<ColliderCastHit>
         {
             RigidTransform worldFromShape = WorldPose(&shape->data);
@@ -543,7 +548,7 @@ namespace KSP.Retooled.Physics
             sink = refined.Inner.Sink;
         }
 
-        private static int CastBody(QueryWorld* world, NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int CastBody(QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -553,10 +558,10 @@ namespace KSP.Retooled.Physics
             }
 
             var sink = new ClosestSink<ColliderCastHit> { MaxFraction = 1.0f };
-            NativeStore.BodyData* body = StoreOps.Hot(input->body);
+            BodyData* body = StoreOps.Hot(input->body);
             for (int i = 0; i < body->shapeCount; i++)
             {
-                CastShape(world, input, (NativeStore.Shape*)body->shapes[i], ref sink, direction, distance);
+                CastShape(world, input, (Shape*)body->shapes[i], ref sink, direction, distance);
             }
 
             if (sink.Shape == null)
@@ -568,7 +573,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static void CastBodyAll(QueryWorld* world, NativeStore.QueryInput* input)
+        private static void CastBodyAll(QueryWorld* world, QueryInput* input)
         {
             float3 direction = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -578,10 +583,10 @@ namespace KSP.Retooled.Physics
             }
 
             CastListSink sink = ListSink(input, direction, distance);
-            NativeStore.BodyData* body = StoreOps.Hot(input->body);
+            BodyData* body = StoreOps.Hot(input->body);
             for (int i = 0; i < body->shapeCount; i++)
             {
-                CastShape(world, input, (NativeStore.Shape*)body->shapes[i], ref sink, direction, distance);
+                CastShape(world, input, (Shape*)body->shapes[i], ref sink, direction, distance);
             }
         }
 
@@ -589,7 +594,7 @@ namespace KSP.Retooled.Physics
         /// Sweep against one shape. When initial overlaps are requested, report the minimum translation normal and
         /// negative penetration depth.
         /// </summary>
-        private static int CastAgainstShape(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int CastAgainstShape(QueryInput* input, QueryOutput* output)
         {
             float3 worldDirection = math.normalizesafe(input->direction);
             float distance = LengthOf(input);
@@ -634,18 +639,18 @@ namespace KSP.Retooled.Physics
                 reported = math.min(deepest.ClosestHit.Fraction, 0.0f);
             }
 
-            output->hit = new NativeStore.RayCastHit
+            output->hit = new RayCastHit
             {
                 point = math.transform(worldFromTarget, point),
                 normal = math.rotate(worldFromTarget.rot, normal),
-                faceId = input->shape->data.geometryType == NativeStore.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
+                faceId = input->shape->data.geometryType == StoreConstants.GeometryTriangleMesh ? 0u : QueryCollectors.NoFace,
                 distance = reported,
             };
 
             return 1;
         }
 
-        private static int ClosestPoint(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int ClosestPoint(QueryInput* input, QueryOutput* output)
         {
             PrimitiveCollider primitive = default;
             RigidTransform worldFromShape = new RigidTransform(input->rotation, input->position);
@@ -677,7 +682,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static int Penetration(NativeStore.QueryInput* input, NativeStore.QueryOutput* output)
+        private static int Penetration(QueryInput* input, QueryOutput* output)
         {
             PrimitiveCollider primitiveA = default;
             PrimitiveCollider primitiveB = default;
@@ -733,20 +738,20 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static RigidTransform WorldPose(NativeStore.Shape* shape)
+        private static RigidTransform WorldPose(Shape* shape)
         {
             return WorldPose(&shape->data, shape->body);
         }
 
-        private static RigidTransform WorldPose(NativeStore.ShapeData* shape)
+        private static RigidTransform WorldPose(ShapeData* shape)
         {
             return WorldPose(shape, shape->owner->body);
         }
 
-        private static RigidTransform WorldPose(NativeStore.ShapeData* shape, NativeStore.Body* owner)
+        private static RigidTransform WorldPose(ShapeData* shape, Body* owner)
         {
-            NativeStore.BodyData* body = StoreOps.Hot(owner);
-            return math.mul(new RigidTransform(body->pose->Rotation, body->pose->Position), new RigidTransform(shape->localRotation, shape->localPosition));
+            BodyData* body = StoreOps.Hot(owner);
+            return math.mul(new RigidTransform((*body).Pose()->Rotation, (*body).Pose()->Position), new RigidTransform(shape->localRotation, shape->localPosition));
         }
 
         /// <summary>
@@ -755,7 +760,7 @@ namespace KSP.Retooled.Physics
         /// Detached shapes can supply primitives but not mesh leaves.
         /// </summary>
         private static Collider* ColliderOf(
-            NativeStore.Shape* shape,
+            Shape* shape,
             ref PrimitiveCollider primitive,
             RigidTransform worldFromShape,
             out RigidTransform worldFromCollider)
@@ -767,8 +772,8 @@ namespace KSP.Retooled.Physics
                 return collider;
             }
 
-            NativeStore.BodyData* body = StoreOps.Hot(shape->body);
-            Collider* root = (Collider*)body->collider->Value.GetUnsafePtr();
+            BodyData* body = StoreOps.Hot(shape->body);
+            Collider* root = (Collider*)(*body).Collider()->Value.GetUnsafePtr();
             if (root == null)
             {
                 return null;
@@ -797,7 +802,7 @@ namespace KSP.Retooled.Physics
                 ref CompoundCollider.Child child = ref compound->Children[i];
                 if (child.Entity.Index == index)
                 {
-                    if (shape->data.geometryType == NativeStore.GeometryHeightField)
+                    if (shape->data.geometryType == StoreConstants.GeometryHeightField)
                     {
                         worldFromCollider = math.mul(worldFromShape, ColliderBuilder.ShapeFromGrid(&shape->data));
                     }

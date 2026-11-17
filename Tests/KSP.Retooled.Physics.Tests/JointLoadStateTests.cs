@@ -1,6 +1,10 @@
 using NUnit.Framework;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -18,7 +22,7 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        private static NativeStore.WorldData* Store => StepKernel.Current->Store;
+        private static WorldData* Store => StepKernel.Current->Store;
 
         /// <summary>A body that hangs from the world by one locked joint at its centre.</summary>
         private ConfigurableJoint Hang(Vector3 position, float mass)
@@ -37,14 +41,14 @@ namespace KSP.Retooled.Physics.Tests
         /// The store's record of the joint that holds a body, found by the position of its body. The bodies in these
         /// tests hang at least 4 m apart.
         /// </summary>
-        private static NativeStore.JointData* RecordOf(NativeStore.WorldData* store, ConfigurableJoint joint, out int index)
+        private static JointData* RecordOf(WorldData* store, ConfigurableJoint joint, out int index)
         {
             Vector3 position = joint.GetComponent<Rigidbody>().position;
             for (int i = 0; i < (int)store->jointCount; i++)
             {
-                NativeStore.JointData* record = store->joints[i];
-                NativeStore.Body* body = record->body0 != null ? record->body0 : record->body1;
-                if (body != null && math.distance(store->bodies[body->index].pose->Position, position) < 0.5f)
+                JointData* record = store->joints[i];
+                Body* body = record->body0 != null ? record->body0 : record->body1;
+                if (body != null && math.distance(store->bodies[body->index].Pose()->Position, position) < 0.5f)
                 {
                     index = i;
                     return record;
@@ -74,7 +78,7 @@ namespace KSP.Retooled.Physics.Tests
             ConfigurableJoint heavy = Hang(new Vector3(4.0f, 5.0f, 0.0f), 3.0f);
             Simulate(3);
 
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             Assert.That(store->jointCount, Is.EqualTo(3u), "the three joints");
             RecordOf(store, heavy, out int heavyIndex);
             Assert.That(heavyIndex, Is.EqualTo(2), "the heavy body's joint is last");
@@ -85,7 +89,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Object.DestroyImmediate(victim);
             Assert.That(store->jointCount, Is.EqualTo(2u), "the victim is gone");
-            NativeStore.JointData* heavyRecord = RecordOf(store, heavy, out heavyIndex);
+            JointData* heavyRecord = RecordOf(store, heavy, out heavyIndex);
             Assert.That(heavyIndex, Is.EqualTo(0), "the last joint took the victim's place");
             AssertSame(heavyBefore, *JointLoadStates.Find(heavyRecord), "the moved joint");
             AssertSame(lightBefore, *JointLoadStates.Find(RecordOf(store, light, out _)), "the joint that stayed");
@@ -120,7 +124,7 @@ namespace KSP.Retooled.Physics.Tests
             // The body falls asleep after about twenty steps at rest, and a joint whose bodies sleep doesn't break.
             // After twelve steps, the smoothed force is about 26 N.
             Simulate(12);
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             JointLoadState held = *JointLoadStates.Find(RecordOf(store, joint, out _));
             Assert.That(held.BreakingForce, Is.InRange(22.0f, 3.0f * 9.81f), "the smoothed weight");
             Assert.That(held.BreakForce, Is.EqualTo(1e6f), "the first limit");
@@ -138,7 +142,7 @@ namespace KSP.Retooled.Physics.Tests
             ConfigurableJoint joint = Hang(new Vector3(0.0f, 5.0f, 0.0f), 3.0f);
             joint.breakForce = 25.0f;
             Simulate(2);
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             Assert.That(store->jointBreakCount, Is.Zero, "the smoothed force is still under the limit");
 
             joint.breakForce = 1e6f;
@@ -152,7 +156,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             ConfigurableJoint joint = Hang(new Vector3(0.0f, 5.0f, 0.0f), 3.0f);
             Simulate(1);
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             for (int step = 0; step < 5; step++)
             {
                 Simulate(1);
@@ -169,8 +173,8 @@ namespace KSP.Retooled.Physics.Tests
         {
             ConfigurableJoint joint = Hang(new Vector3(0.0f, 5.0f, 0.0f), 3.0f);
             Simulate(3);
-            NativeStore.WorldData* store = Store;
-            NativeStore.JointData* record = RecordOf(store, joint, out _);
+            WorldData* store = Store;
+            JointData* record = RecordOf(store, joint, out _);
             JointLoadState before = *JointLoadStates.Find(record);
             Assert.That(before.BreakingForce, Is.GreaterThan(0.0f), "the smoothed force has started to rise");
 

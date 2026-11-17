@@ -1,4 +1,7 @@
 using Unity.Mathematics;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -29,7 +32,7 @@ namespace KSP.Retooled.Physics
         private struct Entry
         {
             public ulong Key;
-            public NativeStore.Shape* Shape;
+            public Shape* Shape;
 
             /// <summary>The index of the collider's group record plus one, or zero if it has no group.</summary>
             public uint Record;
@@ -59,37 +62,37 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Returns whether the group rule stops two shapes from colliding. The ignore table is checked separately.
         /// </summary>
-        internal static bool Ignores(NativeStore.StoreGlobals* globals, NativeStore.ShapeData* first, NativeStore.ShapeData* second)
+        internal static bool Ignores(StoreGlobals* globals, ShapeData* first, ShapeData* second)
         {
-            uint recordA = ((NativeStore.Shape*)first)->groupRecord;
-            uint recordB = ((NativeStore.Shape*)second)->groupRecord;
+            uint recordA = ((Shape*)first)->groupRecord;
+            uint recordB = ((Shape*)second)->groupRecord;
             if (recordA == 0 || recordB == 0)
             {
                 return false;
             }
 
-            return globals->ignoreTable->Groups->IgnoresRecords(recordA, recordB);
+            return ((IgnoreTable*)globals->ignoreTable)->Groups->IgnoresRecords(recordA, recordB);
         }
 
         /// <summary>
         /// Returns whether the group rule stops a wheel from touching a shape. The wheel's record comes from <see
         /// cref="RecordOfCollider"/>.
         /// </summary>
-        internal static bool Ignores(NativeStore.StoreGlobals* globals, uint wheelRecord, NativeStore.ShapeData* shape)
+        internal static bool Ignores(StoreGlobals* globals, uint wheelRecord, ShapeData* shape)
         {
-            uint shapeRecord = ((NativeStore.Shape*)shape)->groupRecord;
+            uint shapeRecord = ((Shape*)shape)->groupRecord;
             if (wheelRecord == 0 || shapeRecord == 0)
             {
                 return false;
             }
 
-            return globals->ignoreTable->Groups->IgnoresRecords(wheelRecord, shapeRecord);
+            return ((IgnoreTable*)globals->ignoreTable)->Groups->IgnoresRecords(wheelRecord, shapeRecord);
         }
 
         /// <summary>
         /// Return one plus the group record index for a collider without a shape, or zero if ungrouped.
         /// </summary>
-        internal static uint RecordOfCollider(NativeStore.StoreGlobals* globals, ulong engineId)
+        internal static uint RecordOfCollider(StoreGlobals* globals, ulong engineId)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null || engineId == EmptyKey || !table->FindEntry(engineId, out uint slot))
@@ -104,7 +107,7 @@ namespace KSP.Retooled.Physics
         /// Enters a new shape in the map, and gives it the group record of its collider if the game has already set
         /// one.
         /// </summary>
-        internal static void AddShape(NativeStore.StoreGlobals* globals, NativeStore.Shape* shape)
+        internal static void AddShape(StoreGlobals* globals, Shape* shape)
         {
             ulong key = EngineIdOf(globals, shape);
             if (key == EmptyKey)
@@ -131,7 +134,7 @@ namespace KSP.Retooled.Physics
         /// Removes a destroyed shape from the map. The collider keeps its group record in case Unity creates a new shape
         /// for it.
         /// </summary>
-        internal static void RemoveShape(NativeStore.StoreGlobals* globals, NativeStore.Shape* shape)
+        internal static void RemoveShape(StoreGlobals* globals, Shape* shape)
         {
             ulong key = EngineIdOf(globals, shape);
             GroupTable* table = IgnoreTable.GroupsOf(globals);
@@ -161,7 +164,7 @@ namespace KSP.Retooled.Physics
         /// Sets a collider's group, or removes its group when <paramref name="group"/> is zero. Returns the collider's
         /// shape so that the caller can wake its body, or null if the collider has no shape.
         /// </summary>
-        internal static NativeStore.Shape* Set(NativeStore.StoreGlobals* globals, ulong engineId, uint group, uint member, uint flags)
+        internal static Shape* Set(StoreGlobals* globals, ulong engineId, uint group, uint member, uint flags)
         {
             if (engineId == EmptyKey)
             {
@@ -180,7 +183,7 @@ namespace KSP.Retooled.Physics
                 ref Entry cleared = ref table->entries[found];
                 table->FreeRecord(cleared.Record);
                 cleared.Record = 0;
-                NativeStore.Shape* shape = cleared.Shape;
+                Shape* shape = cleared.Shape;
                 if (shape == null)
                 {
                     table->Orphans--;
@@ -212,7 +215,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Returns a collider's group record, or false if the collider has no group.</summary>
-        internal static bool TryGet(NativeStore.StoreGlobals* globals, ulong engineId, out Record record)
+        internal static bool TryGet(StoreGlobals* globals, ulong engineId, out Record record)
         {
             record = default;
             uint index = RecordOfCollider(globals, engineId);
@@ -226,7 +229,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Returns the shape of a collider, or null if the collider has no shape.</summary>
-        internal static NativeStore.Shape* ShapeOf(NativeStore.StoreGlobals* globals, ulong engineId)
+        internal static Shape* ShapeOf(StoreGlobals* globals, ulong engineId)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null || engineId == EmptyKey || !table->FindEntry(engineId, out uint slot))
@@ -240,7 +243,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Returns the number of bytes that the group table holds on the store's heap. Used by benchmarks.
         /// </summary>
-        internal static ulong Bytes(NativeStore.StoreGlobals* globals)
+        internal static ulong Bytes(StoreGlobals* globals)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
             if (table == null)
@@ -253,7 +256,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Lists the engine ids of colliders that have a group record but no shape.</summary>
-        internal static int ListOrphans(NativeStore.StoreGlobals* globals, ulong* ids, int capacity)
+        internal static int ListOrphans(StoreGlobals* globals, ulong* ids, int capacity)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
             int count = 0;
@@ -270,7 +273,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Lets two members of one group collide, or stops them again.</summary>
-        internal static void SetPair(NativeStore.StoreGlobals* globals, uint first, uint second, bool collides)
+        internal static void SetPair(StoreGlobals* globals, uint first, uint second, bool collides)
         {
             if (first == second)
             {
@@ -308,7 +311,7 @@ namespace KSP.Retooled.Physics
             table->pairsLive++;
         }
 
-        internal static bool HasPair(NativeStore.StoreGlobals* globals, uint first, uint second)
+        internal static bool HasPair(StoreGlobals* globals, uint first, uint second)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
             return table != null && table->pairsLive != 0 && table->FindPair(PairKey(first, second), out _);
@@ -318,7 +321,7 @@ namespace KSP.Retooled.Physics
         /// Places every entry again with the current hash function, for the same reason as <see
         /// cref="IgnoreTable.Reslot"/>.
         /// </summary>
-        internal void Reslot(NativeStore.StoreGlobals* globals)
+        internal void Reslot(StoreGlobals* globals)
         {
             if (entryCount != 0)
             {
@@ -353,18 +356,18 @@ namespace KSP.Retooled.Physics
             return pairsLive == 0 || !FindPair(PairKey(a.Member, b.Member), out _);
         }
 
-        private static ulong EngineIdOf(NativeStore.StoreGlobals* globals, NativeStore.Shape* shape)
+        private static ulong EngineIdOf(StoreGlobals* globals, Shape* shape)
         {
             void* userData = shape->data.userData;
             return userData != null ? *(ulong*)((byte*)userData + globals->engineObjectIdOffset) : EmptyKey;
         }
 
-        private static GroupTable* TableOf(NativeStore.StoreGlobals* globals)
+        private static GroupTable* TableOf(StoreGlobals* globals)
         {
             IgnoreTable* ignored = IgnoreTable.TableOf(globals);
             if (ignored->Groups == null)
             {
-                GroupTable* table = StoreOps.Allocate<GroupTable>(globals);
+                GroupTable* table = StoreMemory.Allocate<GroupTable>(globals);
                 ignored->Groups = table;
             }
 
@@ -418,7 +421,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Returns the slot of the entry for a key, and adds an empty entry if there is none.</summary>
-        private uint TakeEntry(NativeStore.StoreGlobals* globals, ulong key)
+        private uint TakeEntry(StoreGlobals* globals, ulong key)
         {
             if (FindEntry(key, out uint slot))
             {
@@ -436,7 +439,7 @@ namespace KSP.Retooled.Physics
             return slot;
         }
 
-        private uint TakeRecord(NativeStore.StoreGlobals* globals)
+        private uint TakeRecord(StoreGlobals* globals)
         {
             if (freeRecord != 0)
             {
@@ -447,8 +450,8 @@ namespace KSP.Retooled.Physics
 
             if (recordsUsed == recordCapacity)
             {
-                recordCapacity = StoreOps.Grown(recordCapacity);
-                records = (Record*)StoreOps.Reallocate(globals, records, recordCapacity * (ulong)sizeof(Record));
+                recordCapacity = StoreMemory.Grown(recordCapacity);
+                records = (Record*)StoreMemory.Reallocate(globals, records, recordCapacity * (ulong)sizeof(Record));
             }
 
             return ++recordsUsed;
@@ -495,7 +498,7 @@ namespace KSP.Retooled.Physics
         }
 
         // Move every live entry to a clean array. This also removes the deleted slots.
-        private void RehashEntries(NativeStore.StoreGlobals* globals)
+        private void RehashEntries(StoreGlobals* globals)
         {
             uint live = 0;
             for (uint i = 0; i < entryCount; i++)
@@ -508,7 +511,7 @@ namespace KSP.Retooled.Physics
 
             Entry* oldEntries = entries;
             uint oldCount = entryCount;
-            entries = (Entry*)StoreOps.Reallocate(globals, null, newCount * (ulong)sizeof(Entry));
+            entries = (Entry*)StoreMemory.Reallocate(globals, null, newCount * (ulong)sizeof(Entry));
             entryCount = newCount;
             entriesTaken = live;
             uint mask = newCount - 1;
@@ -536,18 +539,18 @@ namespace KSP.Retooled.Physics
 
             if (oldEntries != null)
             {
-                StoreOps.Release(globals, oldEntries);
+                StoreMemory.Release(globals, oldEntries);
             }
         }
 
-        private void RehashPairs(NativeStore.StoreGlobals* globals)
+        private void RehashPairs(StoreGlobals* globals)
         {
             uint newCount = math.max(InitialSlots, pairCount);
             newCount = (pairsLive + 1) * 2 >= newCount ? newCount * 2 : newCount;
 
             ulong* oldPairs = pairs;
             uint oldCount = pairCount;
-            pairs = (ulong*)StoreOps.Reallocate(globals, null, newCount * (ulong)sizeof(ulong));
+            pairs = (ulong*)StoreMemory.Reallocate(globals, null, newCount * (ulong)sizeof(ulong));
             pairCount = newCount;
             pairsTaken = pairsLive;
             uint mask = newCount - 1;
@@ -575,7 +578,7 @@ namespace KSP.Retooled.Physics
 
             if (oldPairs != null)
             {
-                StoreOps.Release(globals, oldPairs);
+                StoreMemory.Release(globals, oldPairs);
             }
         }
     }

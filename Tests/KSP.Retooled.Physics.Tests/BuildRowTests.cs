@@ -6,6 +6,9 @@ using UnityEngine;
 using MotionData = Unity.Physics.MotionData;
 using MotionVelocity = Unity.Physics.MotionVelocity;
 using PhysicsRigidBody = Unity.Physics.RigidBody;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -24,19 +27,19 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
-        private static NativeStore.WorldData* Store => StepKernel.Current->Store;
+        private static WorldData* Store => StepKernel.Current->Store;
 
         /// <summary>Checks the copies in every row of the store against the owner's serial number and the collider.</summary>
         private static void AssertRowsHoldTheirSources(string when)
         {
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             for (int i = 0; i < (int)store->bodyCount; i++)
             {
-                NativeStore.BodyData* row = store->bodies + i;
+                BodyData* row = store->bodies + i;
                 Assert.That(row->owner != null, Is.True, $"{when}: row {i} has an owner");
                 Assert.That(row->serial, Is.EqualTo(row->owner->serial), $"{when}: the serial number in row {i}");
                 Assert.That(row->serial, Is.Not.EqualTo(0u), $"{when}: row {i} has a serial number");
-                float expected = row->collider->Value.IsCreated ? row->collider->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
+                float expected = (*row).Collider()->Value.IsCreated ? (*row).Collider()->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
                 Assert.That(math.asuint(row->colliderExpansion), Is.EqualTo(math.asuint(expected)), $"{when}: the collider's expansion factor in row {i}");
             }
         }
@@ -47,7 +50,7 @@ namespace KSP.Retooled.Physics.Tests
         /// </summary>
         private static int AssertBuildsAgree(string when, float deltaTime = Step)
         {
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             using var dynamicIndices = new NativeList<int>(Allocator.TempJob);
             using var staticIndices = new NativeList<int>(Allocator.TempJob);
             using var builtIndices = new NativeList<int>(Allocator.TempJob);
@@ -137,7 +140,7 @@ namespace KSP.Retooled.Physics.Tests
             AssertAgree("after two steps");
 
             // The store moves the last body into the row of the destroyed body.
-            NativeStore.WorldData* store = Store;
+            WorldData* store = Store;
             uint lastSerial = store->bodies[store->bodyCount - 1].serial;
             uint count = store->bodyCount;
             Object.DestroyImmediate(first.gameObject);
@@ -156,7 +159,7 @@ namespace KSP.Retooled.Physics.Tests
             AssertAgree("after the new body's first step");
         }
 
-        private static bool FindSerial(NativeStore.WorldData* store, uint serial)
+        private static bool FindSerial(WorldData* store, uint serial)
         {
             for (int i = 0; i < (int)store->bodyCount; i++)
             {

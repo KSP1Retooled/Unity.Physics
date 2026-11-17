@@ -1,5 +1,8 @@
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -9,7 +12,7 @@ namespace KSP.Retooled.Physics
     /// </summary>
     internal static unsafe class HeightFields
     {
-        internal static NativeStore.HeightField* Create(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        internal static HeightField* Create(CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateHeightField.Auto();
 
@@ -21,10 +24,10 @@ namespace KSP.Retooled.Physics
                 return null;
             }
 
-            NativeStore.HeightField* field = StoreOps.Allocate<NativeStore.HeightField>(globals);
+            HeightField* field = StoreMemory.Allocate<HeightField>(globals);
             field->resolution = resolution;
             field->references = 1;
-            field->heights = (short*)StoreOps.Reallocate(globals, null, (ulong)(sampleCount * sizeof(short)));
+            field->heights = (short*)StoreMemory.Reallocate(globals, null, (ulong)(sampleCount * sizeof(short)));
             UnsafeUtility.MemCpy(field->heights, a->pointer, sampleCount * sizeof(short));
 
             field->lowest = short.MaxValue;
@@ -38,11 +41,11 @@ namespace KSP.Retooled.Physics
         /// Update height field samples and mark every attached body's collider for rebuilding.
         /// Unity supplies the entire edited grid, even for a partial update.
         /// </summary>
-        internal static void Update(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        internal static void Update(CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.UpdateHeightField.Auto();
 
-            NativeStore.HeightField* field = (NativeStore.HeightField*)a->pointer3;
+            HeightField* field = (HeightField*)a->pointer3;
             if (field == null || a->pointer == null || a->value != field->resolution)
             {
                 return;
@@ -55,7 +58,7 @@ namespace KSP.Retooled.Physics
                 StoreHoles(field, (byte*)a->pointer2, a->mode, globals);
             }
 
-            for (NativeStore.Shape* shape = field->firstShape; shape != null; shape = shape->nextOnField)
+            for (Shape* shape = field->firstShape; shape != null; shape = shape->nextOnField)
             {
                 if (shape->body != null)
                 {
@@ -64,9 +67,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static void Retain(NativeStore.Shape* shape)
+        internal static void Retain(Shape* shape)
         {
-            NativeStore.HeightField* field = (NativeStore.HeightField*)shape->data.mesh;
+            HeightField* field = (HeightField*)shape->data.mesh;
             if (field != null)
             {
                 field->references++;
@@ -75,15 +78,15 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static void Release(NativeStore.Shape* shape, NativeStore.StoreGlobals* globals)
+        internal static void Release(Shape* shape, StoreGlobals* globals)
         {
-            NativeStore.HeightField* field = (NativeStore.HeightField*)shape->data.mesh;
+            HeightField* field = (HeightField*)shape->data.mesh;
             if (field == null)
             {
                 return;
             }
 
-            NativeStore.Shape** link = &field->firstShape;
+            Shape** link = &field->firstShape;
             while (*link != shape)
             {
                 link = &(*link)->nextOnField;
@@ -94,17 +97,17 @@ namespace KSP.Retooled.Physics
             Release(field, globals);
         }
 
-        internal static void Release(NativeStore.HeightField* field, NativeStore.StoreGlobals* globals)
+        internal static void Release(HeightField* field, StoreGlobals* globals)
         {
             if (field != null && --field->references == 0)
             {
-                StoreOps.Release(globals, field->heights);
-                StoreOps.Release(globals, field->cells);
-                StoreOps.Release(globals, field);
+                StoreMemory.Release(globals, field->heights);
+                StoreMemory.Release(globals, field->cells);
+                StoreMemory.Release(globals, field);
             }
         }
 
-        private static void WidenBounds(NativeStore.HeightField* field)
+        private static void WidenBounds(HeightField* field)
         {
             long sampleCount = field->resolution * (long)field->resolution;
             int lowest = field->lowest;
@@ -124,7 +127,7 @@ namespace KSP.Retooled.Physics
         /// Stores the cell data only when at least one cell is a hole. The presence of holes determines which kind of
         /// collider to build.
         /// </summary>
-        private static void StoreHoles(NativeStore.HeightField* field, byte* cells, uint cellCount, NativeStore.StoreGlobals* globals)
+        private static void StoreHoles(HeightField* field, byte* cells, uint cellCount, StoreGlobals* globals)
         {
             long expected = (field->resolution - 1L) * (field->resolution - 1L);
             uint holes = 0;
@@ -139,12 +142,12 @@ namespace KSP.Retooled.Physics
             field->holeCount = holes;
             if (holes == 0)
             {
-                StoreOps.Release(globals, field->cells);
+                StoreMemory.Release(globals, field->cells);
                 field->cells = null;
                 return;
             }
 
-            field->cells = (byte*)StoreOps.Reallocate(globals, field->cells, (ulong)expected);
+            field->cells = (byte*)StoreMemory.Reallocate(globals, field->cells, (ulong)expected);
             UnsafeUtility.MemCpy(field->cells, cells, expected);
         }
     }

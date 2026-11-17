@@ -5,6 +5,7 @@ using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Shapes;
 
 namespace KSP.Retooled.Physics
 {
@@ -20,13 +21,9 @@ namespace KSP.Retooled.Physics
         internal const uint StreamMagic = 0x4853454d; // "MESH"
         internal const uint StreamVersion = 3;
 
-        internal const int StatusOk = 0;
-        internal const int StatusEmpty = 1;
-        internal const int StatusBadVertices = 2;
-        internal const int StatusBadIndices = 3;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        internal delegate void CookFunction(NativeStore.CookInput* input, NativeStore.CookOutput* output);
+        internal delegate void CookFunction(CookInput* input, CookOutput* output);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate int ValidateFunction(byte* stream, long size, int convex);
@@ -37,7 +34,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true, FloatMode = FloatMode.Strict)]
         [MonoPInvokeCallback(typeof(CookFunction))]
-        internal static void Cook(NativeStore.CookInput* input, NativeStore.CookOutput* output)
+        internal static void Cook(CookInput* input, CookOutput* output)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CookMesh.Auto();
 
@@ -54,7 +51,7 @@ namespace KSP.Retooled.Physics
         /// managed callback.
         /// </summary>
         [BurstDiscard]
-        private static void CookInMono(NativeStore.CookInput* input, NativeStore.CookOutput* output, ref bool ranInMono)
+        private static void CookInMono(CookInput* input, CookOutput* output, ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCook();
@@ -64,7 +61,7 @@ namespace KSP.Retooled.Physics
             }
             catch (Exception e)
             {
-                output->status = StatusBadVertices;
+                output->status = (int)MeshCookStatus.BadVertices;
                 Debug.LogException(e);
             }
         }
@@ -78,14 +75,14 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ValidateMesh.Auto();
 
-            if (stream == null || size < sizeof(NativeStore.MeshData))
+            if (stream == null || size < sizeof(MeshData))
             {
                 return 0;
             }
 
-            NativeStore.MeshData header;
-            UnsafeUtility.MemCpy(&header, stream, sizeof(NativeStore.MeshData));
-            long expected = sizeof(NativeStore.MeshData) + header.vertexCount * (long)sizeof(float3) + header.triangleCount * (long)sizeof(int3);
+            MeshData header;
+            UnsafeUtility.MemCpy(&header, stream, sizeof(MeshData));
+            long expected = sizeof(MeshData) + header.vertexCount * (long)sizeof(float3) + header.triangleCount * (long)sizeof(int3);
             if (header.magic != StreamMagic
                 || header.version != StreamVersion
                 || (header.convex != 0) != (convex != 0)
@@ -94,7 +91,7 @@ namespace KSP.Retooled.Physics
                 return 0;
             }
 
-            int* indices = (int*)(stream + sizeof(NativeStore.MeshData) + header.vertexCount * (long)sizeof(float3));
+            int* indices = (int*)(stream + sizeof(MeshData) + header.vertexCount * (long)sizeof(float3));
             long count = header.triangleCount * 3L;
             for (long i = 0; i < count; i++)
             {
@@ -109,7 +106,7 @@ namespace KSP.Retooled.Physics
             return 1;
         }
 
-        private static void Run(NativeStore.CookInput* input, NativeStore.CookOutput* output)
+        private static void Run(CookInput* input, CookOutput* output)
         {
             // The input count is in indices, or in triangles when each element contains a whole triangle.
             bool convex = input->convex != 0;
@@ -119,17 +116,17 @@ namespace KSP.Retooled.Physics
             {
                 // Allow space for twice as many vertices because thickening a flat convex mesh doubles the vertex
                 // count.
-                output->size = sizeof(NativeStore.MeshData)
+                output->size = sizeof(MeshData)
                     + input->vertexCount * (convex ? 2L : 1L) * sizeof(float3)
                     + indexCount / 3 * sizeof(int3);
                 return;
             }
 
             output->size = 0;
-            NativeStore.MeshData* mesh = (NativeStore.MeshData*)output->bytes;
-            float3* vertices = NativeStore.VerticesOf(mesh);
+            MeshData* mesh = (MeshData*)output->bytes;
+            float3* vertices = MeshData.VerticesOf(mesh);
             output->status = ReadVertices(input, vertices);
-            if (output->status != StatusOk)
+            if (output->status != (int)MeshCookStatus.Ok)
             {
                 return;
             }
@@ -144,7 +141,7 @@ namespace KSP.Retooled.Physics
                 }
                 else if (spanning < 3)
                 {
-                    output->status = StatusEmpty;
+                    output->status = (int)MeshCookStatus.Empty;
                     vertexCount = 0;
                 }
             }
@@ -156,33 +153,33 @@ namespace KSP.Retooled.Physics
             {
                 // The hull depends only on vertices. These triangles describe the source mesh, which may have no
                 // triangles.
-                if (triangleStatus == StatusBadIndices || vertexCount == 0)
+                if (triangleStatus == (int)MeshCookStatus.BadIndices || vertexCount == 0)
                 {
                     triangleCount = 0;
                 }
             }
-            else if (triangleStatus == StatusEmpty)
+            else if (triangleStatus == (int)MeshCookStatus.Empty)
             {
-                output->status = StatusEmpty;
+                output->status = (int)MeshCookStatus.Empty;
                 vertexCount = 0;
                 triangleCount = 0;
             }
-            else if (triangleStatus == StatusBadIndices)
+            else if (triangleStatus == (int)MeshCookStatus.BadIndices)
             {
-                output->status = StatusBadIndices;
+                output->status = (int)MeshCookStatus.BadIndices;
                 return;
             }
 
             WriteHeader(mesh, convex, vertices, vertexCount, triangles, triangleCount);
-            output->size = sizeof(NativeStore.MeshData) + vertexCount * (long)sizeof(float3) + triangleCount * (long)sizeof(int3);
+            output->size = sizeof(MeshData) + vertexCount * (long)sizeof(float3) + triangleCount * (long)sizeof(int3);
         }
 
-        private static int ReadVertices(NativeStore.CookInput* input, float3* vertices)
+        private static int ReadVertices(CookInput* input, float3* vertices)
         {
             uint stride = input->vertexStride != 0 ? input->vertexStride : (uint)sizeof(float3);
             if (input->vertices == null || input->vertexCount == 0 || stride < sizeof(float3))
             {
-                return StatusBadVertices;
+                return (int)MeshCookStatus.BadVertices;
             }
 
             byte* source = (byte*)input->vertices;
@@ -192,13 +189,13 @@ namespace KSP.Retooled.Physics
                 UnsafeUtility.MemCpy(&vertex, source + i * stride, sizeof(float3));
                 if (!math.all(math.isfinite(vertex)))
                 {
-                    return StatusBadVertices;
+                    return (int)MeshCookStatus.BadVertices;
                 }
 
                 vertices[i] = vertex;
             }
 
-            return StatusOk;
+            return (int)MeshCookStatus.Ok;
         }
 
         /// <summary>
@@ -206,14 +203,14 @@ namespace KSP.Retooled.Physics
         /// positions.
         /// Leave degenerate triangles for Unity Physics to remove.
         /// </summary>
-        private static int CookTriangles(NativeStore.CookInput* input, float3* vertices, long indexCount, int3* triangles, ref int triangleCount)
+        private static int CookTriangles(CookInput* input, float3* vertices, long indexCount, int3* triangles, ref int triangleCount)
         {
             uint elementSize = input->indexStride;
             bool wholeTriangles = elementSize == 6 || elementSize == 12;
             bool wide = elementSize == 4 || elementSize == 12;
             if (input->indices == null || (!wholeTriangles && elementSize != 2 && elementSize != 4))
             {
-                return StatusBadIndices;
+                return (int)MeshCookStatus.BadIndices;
             }
 
             ushort* narrow = (ushort*)input->indices;
@@ -227,7 +224,7 @@ namespace KSP.Retooled.Physics
                     uint index = wide ? wideIndices[i + corner] : narrow[i + corner];
                     if (index >= input->vertexCount)
                     {
-                        return StatusBadIndices;
+                        return (int)MeshCookStatus.BadIndices;
                     }
 
                     corners[corner] = (int)index;
@@ -240,7 +237,7 @@ namespace KSP.Retooled.Physics
                 triangles[triangleCount++] = input->flippedNormals != 0 ? corners.xzy : corners;
             }
 
-            return usable ? StatusOk : StatusEmpty;
+            return usable ? (int)MeshCookStatus.Ok : (int)MeshCookStatus.Empty;
         }
 
         /// <summary>
@@ -360,7 +357,7 @@ namespace KSP.Retooled.Physics
         /// Exclude vertices that no triangle uses when calculating a triangle mesh's bounds.
         /// </summary>
         private static void WriteHeader(
-            NativeStore.MeshData* mesh,
+            MeshData* mesh,
             bool convex,
             float3* vertices,
             int vertexCount,

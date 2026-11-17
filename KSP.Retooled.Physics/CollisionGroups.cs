@@ -1,6 +1,9 @@
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -38,9 +41,9 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
             ulong engineId = EntityId.ToULong(collider.GetEntityId());
-            NativeStore.Shape* shape = GroupTable.Set(globals, engineId, group, member, selfCollides ? GroupTable.SelfCollides : 0u);
+            Shape* shape = GroupTable.Set(globals, engineId, group, member, selfCollides ? GroupTable.SelfCollides : 0u);
             Wake(shape);
             if (IgnoreTable.GroupsOf(globals)->Orphans >= nextOrphanCheck)
             {
@@ -128,15 +131,15 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Wake a shape's body after a group change so that contacts are reevaluated.
         /// </summary>
-        private static void Wake(NativeStore.Shape* shape)
+        private static void Wake(Shape* shape)
         {
-            if (shape != null && shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            if (shape != null && shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
                 JointKernel.WakeRow(StoreOps.Hot(shape->body));
             }
         }
 
-        internal static void ForgetDestroyedColliders(NativeStore.StoreGlobals* globals)
+        internal static void ForgetDestroyedColliders(StoreGlobals* globals)
         {
             int capacity = (int)IgnoreTable.GroupsOf(globals)->Orphans;
             using var ids = new NativeArray<ulong>(capacity, Allocator.Temp);

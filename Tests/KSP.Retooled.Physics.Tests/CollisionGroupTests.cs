@@ -1,5 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -342,16 +344,16 @@ namespace KSP.Retooled.Physics.Tests
         {
             TwoBoxes();
             UnityEngine.Physics.IgnoreCollision(First, Second);
-            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
-            IgnoreTable* current = globals->ignoreTable;
+            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            IgnoreTable* current = (IgnoreTable*)globals->ignoreTable;
 
             // Seed bytes beyond the old table with a stale marker and pointer before shrinking the allocation.
             const int oldSize = IgnoreTable.OldSize;
-            var block = (byte*)StoreOps.Reallocate(globals, null, oldSize + 16);
+            var block = (byte*)StoreMemory.Reallocate(globals, null, oldSize + 16);
             Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCpy(block, current, oldSize);
             *(ulong*)(block + oldSize) = 0x3250554F52474954; // "TIGROUP2"
             *(ulong*)(block + oldSize + 8) = 0xDEADBEEF0;
-            var old = (IgnoreTable*)StoreOps.Reallocate(globals, block, oldSize);
+            var old = (IgnoreTable*)StoreMemory.Reallocate(globals, block, oldSize);
             IgnoreTable.ClearLayoutMark(old);
             globals->ignoreTable = old;
             try
@@ -362,7 +364,7 @@ namespace KSP.Retooled.Physics.Tests
             }
             finally
             {
-                StoreOps.Release(globals, globals->ignoreTable);
+                StoreMemory.Release(globals, globals->ignoreTable);
                 globals->ignoreTable = current;
             }
 

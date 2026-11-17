@@ -7,6 +7,12 @@ using Unity.Mathematics;
 using Unity.Physics;
 using static Unity.Physics.Math;
 using PhysicsJoint = Unity.Physics.Joint;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.Vehicles;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -29,10 +35,10 @@ namespace KSP.Retooled.Physics
         private const float RollSpeedPadding = 0.1f;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* Store;
+        public WorldData* Store;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.StoreGlobals* Globals;
+        public StoreGlobals* Globals;
 
         [ReadOnly]
         public CollisionWorld Collision;
@@ -64,7 +70,7 @@ namespace KSP.Retooled.Physics
             float gravity = math.length(Store->gravity);
             for (uint v = 0; v < Store->vehicleCount; v++)
             {
-                NativeStore.VehicleData* vehicle = Store->vehicles[v];
+                VehicleData* vehicle = Store->vehicles[v];
                 if (vehicle != null && vehicle->body != null)
                 {
                     Drive(vehicle, gravity);
@@ -72,25 +78,25 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void Drive(NativeStore.VehicleData* vehicle, float gravity)
+        private void Drive(VehicleData* vehicle, float gravity)
         {
             int row = (int)vehicle->body->index;
-            NativeStore.BodyData* body = Store->bodies + row;
+            BodyData* body = Store->bodies + row;
             int built = row < BuiltIndices.Length ? BuiltIndices[row] : -1;
-            if (built < 0 || (body->flags & NativeStore.BodyFlags.Sleeping) != 0)
+            if (built < 0 || (body->flags & BodyFlags.Sleeping) != 0)
             {
                 return;
             }
 
             RigidTransform pose = Collision.Bodies[built].WorldFromBody;
-            float3 centreOfMass = math.transform(pose, body->mass->Transform.pos);
+            float3 centreOfMass = math.transform(pose, (*body).Mass()->Transform.pos);
             float3 up = math.rotate(pose.rot, math.up());
             bool pushed = built < MotionVelocities.Length && MotionVelocities[built].InverseMass > 0.0f;
 
-            NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+            WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             for (uint i = 0; i < vehicle->wheelCount; i++)
             {
-                NativeStore.WheelSlot* wheel = wheels + i;
+                WheelSlot* wheel = wheels + i;
                 if (wheel->enabled == 0)
                 {
                     continue;
@@ -102,15 +108,15 @@ namespace KSP.Retooled.Physics
                 // motor torque.
                 if (wheel->motorTorque != 0.0f)
                 {
-                    body->sleep->WakeCounter = math.max(body->sleep->WakeCounter, StoreOps.WakeCounterReset);
+                    (*body).Sleep()->WakeCounter = math.max((*body).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
                 }
             }
         }
 
-        private void DriveWheel(NativeStore.VehicleData* vehicle, NativeStore.WheelSlot* wheel, int row, int built, RigidTransform pose,
+        private void DriveWheel(VehicleData* vehicle, WheelSlot* wheel, int row, int built, RigidTransform pose,
             float3 centreOfMass, float3 up, float gravity, bool pushed)
         {
-            ref NativeStore.WheelSuspension suspension = ref wheel->suspension;
+            ref WheelSuspension suspension = ref wheel->suspension;
             float radius = wheel->wheel.radius;
             float3 top = centreOfMass + math.rotate(pose.rot, wheel->centreOffset) + up * suspension.maxCompression;
             float length = suspension.maxCompression + suspension.maxDroop + radius;
@@ -169,7 +175,7 @@ namespace KSP.Retooled.Physics
             float across = math.dot(contactVelocity, sideways);
             float roll = wheel->rotationSpeed * radius;
 
-            wheel->hit = new NativeStore.WheelQueryResult
+            wheel->hit = new WheelQueryResult
             {
                 point = hit.Position,
                 normal = normal,
@@ -225,7 +231,7 @@ namespace KSP.Retooled.Physics
         /// Updates wheel rotation using motor torque, brake torque, and damping. Rotation is not coupled to the ground
         /// because the game disables tyre friction and calculates wheel speeds itself.
         /// </summary>
-        private void Spin(NativeStore.WheelSlot* wheel)
+        private void Spin(WheelSlot* wheel)
         {
             float inertia = wheel->wheel.momentOfInertia > 0.0f ? wheel->wheel.momentOfInertia : 1.0f;
             float speed = wheel->rotationSpeed + (wheel->motorTorque - wheel->wheel.dampingRate * wheel->rotationSpeed) / inertia * DeltaTime;
@@ -270,11 +276,11 @@ namespace KSP.Retooled.Physics
     internal unsafe struct WheelRayCollector : ICollector<RaycastHit>
     {
         internal RaycastHit Closest;
-        internal NativeStore.ShapeData* Shape;
+        internal ShapeData* Shape;
 
         private readonly NativeArray<RigidBody> bodies;
-        private readonly NativeStore.BodyData* rows;
-        private readonly NativeStore.StoreGlobals* globals;
+        private readonly BodyData* rows;
+        private readonly StoreGlobals* globals;
         private readonly int ownRow;
         private readonly uint collidesWith;
         private readonly uint belongsTo;
@@ -283,7 +289,7 @@ namespace KSP.Retooled.Physics
         private readonly float3 direction;
         private uint closestSerial;
 
-        internal WheelRayCollector(NativeArray<RigidBody> bodies, NativeStore.BodyData* rows, NativeStore.StoreGlobals* globals, int ownRow,
+        internal WheelRayCollector(NativeArray<RigidBody> bodies, BodyData* rows, StoreGlobals* globals, int ownRow,
             uint collidesWith, uint belongsTo, uint ignoreId, uint groupRecord, float3 direction)
         {
             this.bodies = bodies;
@@ -316,9 +322,9 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            NativeStore.BodyData* row = rows + body.Entity.Index;
-            NativeStore.ShapeData* shape = row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, hit.ColliderKey, ColliderBuilder.FirstSupported(row))];
-            bool hidden = (shape->flags & NativeStore.ShapeFlagSceneQuery) == 0 || (shape->flags & NativeStore.ShapeFlagTrigger) != 0;
+            BodyData* row = rows + body.Entity.Index;
+            ShapeData* shape = row->shapes[ColliderBuilder.ShapeIndexOf(body.Collider, hit.ColliderKey, ColliderBuilder.FirstSupported(row))];
+            bool hidden = (shape->flags & StoreConstants.ShapeFlagSceneQuery) == 0 || (shape->flags & StoreConstants.ShapeFlagTrigger) != 0;
             if (hidden || (shape->belongsTo & collidesWith) == 0 || shape->collisionDisabled != 0)
             {
                 return false;

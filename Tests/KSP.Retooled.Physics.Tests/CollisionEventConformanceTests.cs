@@ -1,6 +1,10 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Reports;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -152,7 +156,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(collision.gameObject, Is.EqualTo(ground));
             Assert.That(collision.contactCount, Is.EqualTo(4), "a box lying flat touches at its corners");
 
-            foreach (ContactPoint contact in collision.contacts)
+            foreach (UnityEngine.ContactPoint contact in collision.contacts)
             {
                 AssertVector(Vector3.up, contact.normal, 0.01f, "normal");
                 Assert.That(contact.point.y, Is.EqualTo(0.0f).Within(0.05f));
@@ -192,7 +196,7 @@ namespace KSP.Retooled.Physics.Tests
             AssertVector(Vector3.up, collision.impulse.normalized, 0.01f, "impulse direction");
 
             Vector3 sum = Vector3.zero;
-            foreach (ContactPoint contact in collision.contacts)
+            foreach (UnityEngine.ContactPoint contact in collision.contacts)
             {
                 sum += contact.impulse;
             }
@@ -892,11 +896,11 @@ namespace KSP.Retooled.Physics.Tests
         /// </summary>
         private static unsafe bool EndsRemovedPair(long triggerShape, long colliderShape)
         {
-            NativeStore.WorldData* store = StepKernel.Current->Store;
+            WorldData* store = StepKernel.Current->Store;
             for (uint i = 0; i < store->triggerCount; i++)
             {
-                NativeStore.TriggerEvent e = store->triggers[i];
-                if (e.type == NativeStore.TriggerEventShapeRemoved && (long)e.triggerShape == triggerShape && (long)e.colliderShape == colliderShape
+                TriggerEvent e = store->triggers[i];
+                if (e.type == StoreConstants.TriggerEventShapeRemoved && (long)e.triggerShape == triggerShape && (long)e.colliderShape == colliderShape
                     && e.trigger == 0 && e.collider == 0)
                 {
                     return true;
@@ -933,12 +937,12 @@ namespace KSP.Retooled.Physics.Tests
             body.GetComponent<Collider>().enabled = false;
             Simulate();
 
-            NativeStore.WorldData* store = StepKernel.Current->Store;
+            WorldData* store = StepKernel.Current->Store;
             bool ended = false;
             for (uint i = 0; i < store->triggerCount; i++)
             {
-                NativeStore.TriggerEvent e = store->triggers[i];
-                ended |= e.type == NativeStore.TriggerEventShapeRemoved && (long)e.triggerShape == zoneShape && (long)e.colliderShape == boxShape
+                TriggerEvent e = store->triggers[i];
+                ended |= e.type == StoreConstants.TriggerEventShapeRemoved && (long)e.triggerShape == zoneShape && (long)e.colliderShape == boxShape
                     && e.trigger == 0 && e.collider == 0;
             }
 
@@ -948,8 +952,8 @@ namespace KSP.Retooled.Physics.Tests
         /// <summary>The address of the backend's shape for the collider on an object, which Unity knows the shape by.</summary>
         private static unsafe long ShapeAddress(GameObject gameObject)
         {
-            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
-            NativeStore.WorldData* store = StepKernel.Current != null ? StepKernel.Current->Store : null;
+            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            WorldData* store = StepKernel.Current != null ? StepKernel.Current->Store : null;
             if (globals == null || store == null)
             {
                 Assert.Ignore("The test reads the shapes of the Retooled backend's store.");
@@ -958,10 +962,10 @@ namespace KSP.Retooled.Physics.Tests
             ulong id = EntityId.ToULong(gameObject.GetComponent<Collider>().GetEntityId());
             for (uint row = 0; row < store->bodyCount; row++)
             {
-                NativeStore.Body* owner = store->bodies[row].owner;
+                Body* owner = store->bodies[row].owner;
                 for (uint i = 0; owner != null && i < owner->shapeCount; i++)
                 {
-                    NativeStore.ShapeData* shape = owner->shapes[i];
+                    ShapeData* shape = owner->shapes[i];
                     if (shape->userData != null && *(ulong*)((byte*)shape->userData + globals->engineObjectIdOffset) == id)
                     {
                         return (long)shape->owner;

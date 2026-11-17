@@ -4,6 +4,12 @@ using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Versions;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -46,44 +52,6 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Shared version for changes to joint grouping or vessel forest roles.
-    /// Unchanged worlds reuse groups; a change in any world invalidates all worlds.
-    /// </summary>
-    internal static class JointTopology
-    {
-        private readonly struct Key { }
-
-        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
-
-        internal static uint Version => (uint)Shared.Data;
-
-        /// <summary>Moves the version on and returns the new value.</summary>
-        internal static unsafe uint Changed()
-        {
-            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
-        }
-    }
-
-    /// <summary>
-    /// Shared version for joint settings that affect vessel constraints. Changed joints record the new version.
-    /// Unchanged values and drive targets leave it unchanged, allowing cached edges and closures to be reused.
-    /// </summary>
-    internal static class JointSettings
-    {
-        private readonly struct Key { }
-
-        private static readonly SharedStatic<int> Shared = SharedStatic<int>.GetOrCreate<Key>();
-
-        internal static uint Version => (uint)Shared.Data;
-
-        /// <summary>Moves the version on and returns the new value.</summary>
-        internal static unsafe uint Changed()
-        {
-            return (uint)System.Threading.Interlocked.Increment(ref UnsafeUtility.AsRef<int>(Shared.UnsafeDataPointer));
-        }
-    }
-
-    /// <summary>
     /// Store main-thread joint commands for BuildJointsJob. Commands arrive outside simulation.
     /// </summary>
     [BurstCompile]
@@ -91,7 +59,7 @@ namespace KSP.Retooled.Physics
     {
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
-        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // A span costs about as much as a read, so reads run without the category's span, as in BodyKernel.
             if (IsRead((JointCommand)command))
@@ -122,13 +90,13 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args)
+        private static void Dispatch(uint command, void* handle, CommandArgs* args)
         {
             bool ranInMono = false;
             RunInMono(command, handle, args, ref ranInMono);
             if (!ranInMono)
             {
-                Execute((JointCommand)command, (NativeStore.JointData*)handle, args);
+                Execute((JointCommand)command, (JointData*)handle, args);
             }
         }
 
@@ -137,13 +105,13 @@ namespace KSP.Retooled.Physics
         /// to native code.
         /// </summary>
         [BurstDiscard]
-        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, ref bool ranInMono)
+        private static void RunInMono(uint command, void* handle, CommandArgs* args, ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCommand();
             try
             {
-                Execute((JointCommand)command, (NativeStore.JointData*)handle, args);
+                Execute((JointCommand)command, (JointData*)handle, args);
             }
             catch (Exception e)
             {
@@ -151,9 +119,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Execute(JointCommand command, NativeStore.JointData* joint, NativeStore.CommandArgs* a)
+        private static void Execute(JointCommand command, JointData* joint, CommandArgs* a)
         {
-            NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, (int)math.min(a->value, NativeStore.JointAxisCount - 1));
+            JointAxis* axis = JointData.AxisOf(joint, (int)math.min(a->value, StoreConstants.JointAxisCount - 1));
             if (!Changes(command))
             {
                 Run(command, joint, a, axis);
@@ -163,7 +131,7 @@ namespace KSP.Retooled.Physics
             // The game often sends a setting again with the value that the joint already has. Keep a copy of the record,
             // so that only a command that really changes a setting moves the joint's settings stamp.
             bool setsTarget = SetsTarget(command);
-            NativeStore.JointData before = default;
+            JointData before = default;
             if (!setsTarget)
             {
                 before = *joint;
@@ -171,7 +139,7 @@ namespace KSP.Retooled.Physics
 
             // Reuse groups and forest roles when mergeability, bodies, frames and flags are unchanged.
             bool wasMergeable = BuildJointsJob.Mergeable(joint);
-            NativeStore.Body* body0 = joint->body0, body1 = joint->body1;
+            Body* body0 = joint->body0, body1 = joint->body1;
             quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
             var flags = joint->flags;
             Run(command, joint, a, axis);
@@ -183,13 +151,13 @@ namespace KSP.Retooled.Physics
                 JointTopology.Changed();
             }
 
-            if (!setsTarget && UnsafeUtility.MemCmp(&before, joint, sizeof(NativeStore.JointData)) != 0)
+            if (!setsTarget && UnsafeUtility.MemCmp(&before, joint, sizeof(JointData)) != 0)
             {
                 joint->settingsStamp = JointSettings.Changed();
             }
         }
 
-        private static void Run(JointCommand command, NativeStore.JointData* joint, NativeStore.CommandArgs* a, NativeStore.JointAxis* axis)
+        private static void Run(JointCommand command, JointData* joint, CommandArgs* a, JointAxis* axis)
         {
             switch (command)
             {
@@ -225,7 +193,7 @@ namespace KSP.Retooled.Physics
                     JointLoadStates.Refresh(joint);
                     break;
                 case JointCommand.GetIsConstraintValid:
-                    a->enabled = (joint->state & (NativeStore.JointState.Broken | NativeStore.JointState.BodyDestroyed)) == 0 ? 1u : 0u;
+                    a->enabled = (joint->state & (JointState.Broken | JointState.BodyDestroyed)) == 0 ? 1u : 0u;
                     break;
                 case JointCommand.GetForces:
                     // While the joint's world has a step state, the loads are in its dense array, not in the record.
@@ -247,16 +215,16 @@ namespace KSP.Retooled.Physics
                 case JointCommand.SetActors:
                     CountEnd(joint->body0, -1);
                     CountEnd(joint->body1, -1);
-                    joint->body0 = ((NativeStore.ActorDescriptor*)a->pointer)[0].actor;
-                    joint->body1 = ((NativeStore.ActorDescriptor*)a->pointer)[1].actor;
+                    joint->body0 = ((ActorDescriptor*)a->pointer)[0].actor;
+                    joint->body1 = ((ActorDescriptor*)a->pointer)[1].actor;
                     CountEnd(joint->body0, 1);
                     CountEnd(joint->body1, 1);
-                    joint->state &= ~NativeStore.JointState.BodyDestroyed;
+                    joint->state &= ~JointState.BodyDestroyed;
                     JointLoadStates.Refresh(joint);
                     break;
                 case JointCommand.GetActors:
-                    Describe(joint->body0, (NativeStore.ActorDescriptor*)a->pointer);
-                    Describe(joint->body1, (NativeStore.ActorDescriptor*)a->pointer + 1);
+                    Describe(joint->body0, (ActorDescriptor*)a->pointer);
+                    Describe(joint->body1, (ActorDescriptor*)a->pointer + 1);
                     break;
                 case JointCommand.WakeUpActors:
                     Wake(joint->body0);
@@ -301,12 +269,12 @@ namespace KSP.Retooled.Physics
                     joint->projectionAngularTolerance = a->scalar2;
                     break;
                 case JointCommand.SetDistanceLimit:
-                    axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
+                    axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
                     axis->min = a->scalar;
                     axis->max = a->scalar2;
                     break;
                 case JointCommand.SetDistanceSpringLimit:
-                    axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
+                    axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
                     axis->limitSpring = a->scalar;
                     axis->limitDamping = a->scalar2;
                     break;
@@ -314,17 +282,17 @@ namespace KSP.Retooled.Physics
                     joint->distanceErrorTolerance = a->scalar;
                     break;
                 case JointCommand.SetHingeLimitEnabled:
-                    SetState(joint, NativeStore.JointState.HingeLimitEnabled, a->enabled != 0);
+                    SetState(joint, JointState.HingeLimitEnabled, a->enabled != 0);
                     break;
                 case JointCommand.SetHingeMotorConfiguration:
                     joint->hingeMotorMaxForce = a->scalar;
-                    SetState(joint, NativeStore.JointState.HingeMotorFreeSpin, a->enabled != 0);
+                    SetState(joint, JointState.HingeMotorFreeSpin, a->enabled != 0);
                     break;
                 case JointCommand.SetHingeMotorTargetVelocity:
                     joint->hingeMotorTargetVelocity = a->scalar;
                     break;
                 case JointCommand.SetHingeLimit:
-                    SetLimit(NativeStore.AxisOf(joint, NativeStore.AxisAngularX), a);
+                    SetLimit(JointData.AxisOf(joint, StoreConstants.AxisAngularX), a);
                     break;
             }
         }
@@ -368,13 +336,13 @@ namespace KSP.Retooled.Physics
         }
 
         // Swing commands repeat the y/z limit pair, so share one slot. Linear limits use the Distance slot.
-        private static NativeStore.JointAxis* LimitAxis(NativeStore.JointData* joint, uint axis)
+        private static JointAxis* LimitAxis(JointData* joint, uint axis)
         {
-            bool swing = axis == NativeStore.AxisAngularY || axis == NativeStore.AxisAngularZ;
-            return NativeStore.AxisOf(joint, swing ? NativeStore.AxisAngularYZ : (int)math.min(axis, NativeStore.JointAxisCount - 1));
+            bool swing = axis == StoreConstants.AxisAngularY || axis == StoreConstants.AxisAngularZ;
+            return JointData.AxisOf(joint, swing ? StoreConstants.AxisAngularYZ : (int)math.min(axis, StoreConstants.JointAxisCount - 1));
         }
 
-        private static void SetLimit(NativeStore.JointAxis* axis, NativeStore.CommandArgs* a)
+        private static void SetLimit(JointAxis* axis, CommandArgs* a)
         {
             axis->min = a->scalar;
             axis->max = a->scalar2;
@@ -383,21 +351,21 @@ namespace KSP.Retooled.Physics
             axis->contactDistance = a->vector.z;
         }
 
-        private static void SetState(NativeStore.JointData* joint, NativeStore.JointState bit, bool set)
+        private static void SetState(JointData* joint, JointState bit, bool set)
         {
             joint->state = set ? joint->state | bit : joint->state & ~bit;
         }
 
-        private static void Describe(NativeStore.Body* body, NativeStore.ActorDescriptor* descriptor)
+        private static void Describe(Body* body, ActorDescriptor* descriptor)
         {
             descriptor->actor = body;
             descriptor->userData = body != null ? body->userData : null;
 
             // Physics::ActorType: Invalid, Static, Dynamic.
-            descriptor->type = body == null ? (ushort)0 : (StoreOps.Hot(body)->flags & NativeStore.BodyFlags.Static) != 0 ? (ushort)1 : (ushort)2;
+            descriptor->type = body == null ? (ushort)0 : (StoreOps.Hot(body)->flags & BodyFlags.Static) != 0 ? (ushort)1 : (ushort)2;
         }
 
-        private static void Wake(NativeStore.Body* body)
+        private static void Wake(Body* body)
         {
             if (body != null)
             {
@@ -405,30 +373,30 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static void WakeRow(NativeStore.BodyData* hot)
+        internal static void WakeRow(BodyData* hot)
         {
-            hot->flags &= ~NativeStore.BodyFlags.Sleeping;
-            hot->sleep->WakeCounter = math.max(hot->sleep->WakeCounter, StoreOps.WakeCounterReset);
+            hot->flags &= ~BodyFlags.Sleeping;
+            (*hot).Sleep()->WakeCounter = math.max((*hot).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
         }
 
-        internal static NativeStore.JointData* Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        internal static JointData* Create(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateJoint.Auto();
 
             if (world->jointCount == world->jointCapacity)
             {
-                world->jointCapacity = StoreOps.Grown(world->jointCapacity);
-                world->joints = (NativeStore.JointData**)StoreOps.Reallocate(globals, world->joints, world->jointCapacity * (ulong)sizeof(void*));
+                world->jointCapacity = StoreMemory.Grown(world->jointCapacity);
+                world->joints = (JointData**)StoreMemory.Reallocate(globals, world->joints, world->jointCapacity * (ulong)sizeof(void*));
             }
 
-            NativeStore.JointData* joint = StoreOps.Allocate<NativeStore.JointData>(globals);
+            JointData* joint = StoreMemory.Allocate<JointData>(globals);
             joint->rotation0 = quaternion.identity;
             joint->rotation1 = quaternion.identity;
             joint->targetRotation = quaternion.identity;
             joint->type = a->value;
             joint->flags = a->flags;
-            joint->body0 = (NativeStore.Body*)a->pointer;
-            joint->body1 = (NativeStore.Body*)a->pointer2;
+            joint->body0 = (Body*)a->pointer;
+            joint->body1 = (Body*)a->pointer2;
             joint->userData = a->pointer3;
             CountEnd(joint->body0, 1);
             CountEnd(joint->body1, 1);
@@ -436,22 +404,22 @@ namespace KSP.Retooled.Physics
             joint->breakTorque = float.PositiveInfinity;
             joint->inverseMassScale0 = 1.0f;
             joint->inverseMassScale1 = 1.0f;
-            for (int i = 0; i < NativeStore.JointAxisCount; i++)
+            for (int i = 0; i < StoreConstants.JointAxisCount; i++)
             {
-                NativeStore.AxisOf(joint, i)->dofLock = NativeStore.DofLocked;
-                NativeStore.AxisOf(joint, i)->driveMaxForce = float.PositiveInfinity;
+                JointData.AxisOf(joint, i)->dofLock = StoreConstants.DofLocked;
+                JointData.AxisOf(joint, i)->driveMaxForce = float.PositiveInfinity;
             }
 
             joint->index = world->jointCount;
             world->joints[world->jointCount++] = joint;
 
             // Every new joint moves the topology version, so the new value is a number that no other joint received.
-            joint->serial = JointTopology.Changed();
+            joint->serial = Serials.Next();
             JointLoadStates.Created(world, joint);
             return joint;
         }
 
-        internal static void Destroy(NativeStore.WorldData* world, NativeStore.JointData* joint, NativeStore.StoreGlobals* globals)
+        internal static void Destroy(WorldData* world, JointData* joint, StoreGlobals* globals)
         {
             if (joint == null)
             {
@@ -471,17 +439,17 @@ namespace KSP.Retooled.Physics
                 world->joints[joint->index]->index = joint->index;
             }
 
-            StoreOps.Release(globals, joint);
+            StoreMemory.Release(globals, joint);
         }
 
         /// <summary>
         /// A joint can outlive a body that it connects. Clear the pointer to that body before its record is freed.
         /// </summary>
-        internal static void ForgetBody(NativeStore.WorldData* world, NativeStore.Body* body)
+        internal static void ForgetBody(WorldData* world, Body* body)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
 
-            NativeStore.BodyData* hot = world->bodies + body->index;
+            BodyData* hot = world->bodies + body->index;
             if (hot->jointEnds > 0)
             {
                 JointTopology.Changed();
@@ -490,33 +458,33 @@ namespace KSP.Retooled.Physics
             UnsafeList<JointLoadState>* states = JointLoadStates.Of(world);
             for (uint i = 0; i < world->jointCount && hot->jointEnds > 0; i++)
             {
-                NativeStore.JointData* joint = world->joints[i];
+                JointData* joint = world->joints[i];
                 if (joint->body0 == body)
                 {
                     joint->body0 = null;
-                    joint->state |= NativeStore.JointState.BodyDestroyed;
+                    joint->state |= JointState.BodyDestroyed;
                     hot->jointEnds--;
                 }
 
                 if (joint->body1 == body)
                 {
                     joint->body1 = null;
-                    joint->state |= NativeStore.JointState.BodyDestroyed;
+                    joint->state |= JointState.BodyDestroyed;
                     hot->jointEnds--;
                 }
 
-                if (states != null && (joint->state & NativeStore.JointState.BodyDestroyed) != 0)
+                if (states != null && (joint->state & JointState.BodyDestroyed) != 0)
                 {
                     JointLoadStates.Refresh(states->Ptr + i, joint);
                 }
             }
         }
 
-        private static void CountEnd(NativeStore.Body* body, int change)
+        private static void CountEnd(Body* body, int change)
         {
             if (body != null)
             {
-                NativeStore.BodyData* hot = body->world->bodies + body->index;
+                BodyData* hot = body->world->bodies + body->index;
                 hot->jointEnds += change;
             }
         }

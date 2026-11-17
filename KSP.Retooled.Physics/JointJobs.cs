@@ -7,6 +7,11 @@ using Unity.Mathematics;
 using Unity.Physics;
 using static Unity.Physics.Math;
 using PhysicsJoint = Unity.Physics.Joint;
+using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -17,7 +22,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct WakeJointedBodiesJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public void Execute()
         {
@@ -25,7 +30,7 @@ namespace KSP.Retooled.Physics
             bool anyAsleep = false;
             for (uint i = 0; i < World->bodyCount && !anyAsleep; i++)
             {
-                anyAsleep = (World->bodies[i].flags & NativeStore.BodyFlags.Sleeping) != 0;
+                anyAsleep = (World->bodies[i].flags & BodyFlags.Sleeping) != 0;
             }
 
             while (anyAsleep && WakeThroughJoints(World))
@@ -37,19 +42,19 @@ namespace KSP.Retooled.Physics
         /// Makes one pass over the joints to wake connected bodies. The caller repeats the pass until no more bodies
         /// wake.
         /// </summary>
-        internal static bool WakeThroughJoints(NativeStore.WorldData* world)
+        internal static bool WakeThroughJoints(WorldData* world)
         {
             bool woke = false;
             for (uint i = 0; i < world->jointCount; i++)
             {
-                NativeStore.JointData* joint = world->joints[i];
+                JointData* joint = world->joints[i];
                 if (joint->body0 == null || joint->body1 == null || (joint->state & JointConstraints.Inactive) != 0)
                 {
                     continue;
                 }
 
-                NativeStore.BodyData* first = StoreOps.Hot(joint->body0);
-                NativeStore.BodyData* second = StoreOps.Hot(joint->body1);
+                BodyData* first = StoreOps.Hot(joint->body0);
+                BodyData* second = StoreOps.Hot(joint->body1);
                 woke |= WakeFrom(first, second);
                 woke |= WakeFrom(second, first);
             }
@@ -57,11 +62,11 @@ namespace KSP.Retooled.Physics
             return woke;
         }
 
-        private static bool WakeFrom(NativeStore.BodyData* awake, NativeStore.BodyData* sleeping)
+        private static bool WakeFrom(BodyData* awake, BodyData* sleeping)
         {
-            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
-            bool otherMoves = (awake->flags & (immobile | NativeStore.BodyFlags.Sleeping)) == 0;
-            if (!otherMoves || (sleeping->flags & NativeStore.BodyFlags.Sleeping) == 0 || (sleeping->flags & immobile) != 0)
+            const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
+            bool otherMoves = (awake->flags & (immobile | BodyFlags.Sleeping)) == 0;
+            if (!otherMoves || (sleeping->flags & BodyFlags.Sleeping) == 0 || (sleeping->flags & immobile) != 0)
             {
                 return false;
             }
@@ -87,7 +92,7 @@ namespace KSP.Retooled.Physics
         private const float PureDamperSpringRatio = 1e-3f;
 
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         /// <summary>
         /// Joint load states indexed by the world's joint list. Locking reads their smoothed loads.
@@ -170,7 +175,7 @@ namespace KSP.Retooled.Physics
             forestLock = JointForestLock.None;
             if (Locking && role != JointForestRole.None)
             {
-                NativeStore.JointData* lead = World->joints[unit.Joint];
+                JointData* lead = World->joints[unit.Joint];
                 if (!GroupJointsJob.Immobile(lead->body0) && !GroupJointsJob.Immobile(lead->body1))
                 {
                     forestLock = UnitLock(unit);
@@ -214,12 +219,12 @@ namespace KSP.Retooled.Physics
             return allowed;
         }
 
-        private JointForestLock JointLock(NativeStore.JointData* joint, JointLoadState* state)
+        private JointForestLock JointLock(JointData* joint, JointLoadState* state)
         {
             int lockedAngles = 0;
             for (int i = 0; i < 3; i++)
             {
-                lockedAngles += NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked ? 1 : 0;
+                lockedAngles += JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked ? 1 : 0;
             }
 
             if (lockedAngles == 3)
@@ -234,12 +239,12 @@ namespace KSP.Retooled.Physics
                 | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
         }
 
-        internal static int BodyKey(NativeStore.Body* body)
+        internal static int BodyKey(Body* body)
         {
             return body == null ? -1 : (int)body->index;
         }
 
-        internal static bool SameFrames(NativeStore.JointData* first, NativeStore.JointData* second)
+        internal static bool SameFrames(JointData* first, JointData* second)
         {
             return math.all(first->rotation0.value == second->rotation0.value) && math.all(first->rotation1.value == second->rotation1.value)
                 && first->flags == second->flags;
@@ -249,9 +254,9 @@ namespace KSP.Retooled.Physics
         /// Return whether joints between the same bodies can be merged.
         /// Require held anchors, compatible angular constraints and no conflicting targets or nearby limits.
         /// </summary>
-        internal static bool Mergeable(NativeStore.JointData* joint)
+        internal static bool Mergeable(JointData* joint)
         {
-            if ((joint->state & JointConstraints.Inactive) != 0 || joint->type != NativeStore.JointTypeDof6)
+            if ((joint->state & JointConstraints.Inactive) != 0 || joint->type != StoreConstants.JointTypeDof6)
             {
                 return false;
             }
@@ -259,12 +264,12 @@ namespace KSP.Retooled.Physics
             int lockedAngles = 0;
             for (int i = 0; i < 3; i++)
             {
-                if (NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i)->dofLock != NativeStore.DofLocked && !HeldByDrive(joint, i))
+                if (JointData.AxisOf(joint, StoreConstants.AxisLinearX + i)->dofLock != StoreConstants.DofLocked && !HeldByDrive(joint, i))
                 {
                     return false;
                 }
 
-                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked)
                 {
                     lockedAngles++;
                 }
@@ -288,8 +293,8 @@ namespace KSP.Retooled.Physics
 
             for (int i = 0; i < 3; i++)
             {
-                NativeStore.JointAxis* drive = AngularDrive(joint, i);
-                bool locked = NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked;
+                JointAxis* drive = AngularDrive(joint, i);
+                bool locked = JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked;
                 if (!locked && HasAxisDrive(drive) && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce))
                 {
                     return false;
@@ -302,21 +307,21 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// The drive for an angular axis: the twist drive for x, or the shared swing drive for y and z.
         /// </summary>
-        internal static NativeStore.JointAxis* AngularDrive(NativeStore.JointData* joint, int axis)
+        internal static JointAxis* AngularDrive(JointData* joint, int axis)
         {
-            return NativeStore.AxisOf(joint, axis == 0 ? NativeStore.AxisAngularX : NativeStore.AxisAngularYZ);
+            return JointData.AxisOf(joint, axis == 0 ? StoreConstants.AxisAngularX : StoreConstants.AxisAngularYZ);
         }
 
         /// <summary>
         /// Return whether an angular limit lies within UnreachedAngle of the rest orientation.
         /// </summary>
-        private static bool HasNearAngularLimit(NativeStore.JointData* joint)
+        private static bool HasNearAngularLimit(JointData* joint)
         {
-            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
-            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
-            bool nearTwist = twist->dofLock == NativeStore.DofLimited && (twist->min > -UnreachedAngle || twist->max < UnreachedAngle);
-            bool nearY = NativeStore.AxisOf(joint, NativeStore.AxisAngularY)->dofLock == NativeStore.DofLimited && swing->min < UnreachedAngle;
-            bool nearZ = NativeStore.AxisOf(joint, NativeStore.AxisAngularZ)->dofLock == NativeStore.DofLimited && swing->max < UnreachedAngle;
+            JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
+            JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
+            bool nearTwist = twist->dofLock == StoreConstants.DofLimited && (twist->min > -UnreachedAngle || twist->max < UnreachedAngle);
+            bool nearY = JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLimited && swing->min < UnreachedAngle;
+            bool nearZ = JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLimited && swing->max < UnreachedAngle;
             return nearTwist || nearY || nearZ;
         }
 
@@ -326,7 +331,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private const float UnreachedAngle = 0.5f;
 
-        internal static bool HasAxisDrive(NativeStore.JointAxis* drive)
+        internal static bool HasAxisDrive(JointAxis* drive)
         {
             return drive->driveMaxForce > 0.0f && (drive->driveSpring > 0.0f || drive->driveDamper > 0.0f);
         }
@@ -338,7 +343,7 @@ namespace KSP.Retooled.Physics
         private void AppendGroup(int index)
         {
             JointGroup group = PrepareGroup(index, out float3 anchor0, out float3 anchor1);
-            NativeStore.JointData* leader = World->joints[group.Leader];
+            JointData* leader = World->joints[group.Leader];
             if (!Begin(leader, anchor0, anchor1, new Entity { Index = index, Version = JointGroup.EntityVersion }))
             {
                 return;
@@ -364,7 +369,7 @@ namespace KSP.Retooled.Physics
         /// Prepare stiffness and member offsets for a vessel group so that ShareGroupLoadsJob can distribute its
         /// load.
         /// </summary>
-        internal static void PrepareVesselGroup(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
+        internal static void PrepareVesselGroup(WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
             NativeArray<JointGroupMember> members)
         {
             if (unit.Group >= 0)
@@ -382,16 +387,16 @@ namespace KSP.Retooled.Physics
         /// Compute group mean anchors, angular stiffness and member offsets.
         /// Express angular stiffness as multiples of the direct solver cap.
         /// </summary>
-        private static JointGroup PrepareGroup(NativeStore.WorldData* world, NativeArray<JointGroup> groups, NativeArray<JointGroupMember> members,
+        private static JointGroup PrepareGroup(WorldData* world, NativeArray<JointGroup> groups, NativeArray<JointGroupMember> members,
             int index, out float3 anchor0, out float3 anchor1)
         {
             JointGroup group = groups[index];
-            NativeStore.JointData* leader = world->joints[group.Leader];
+            JointData* leader = world->joints[group.Leader];
             anchor0 = float3.zero;
             anchor1 = float3.zero;
             for (int i = 0; i < group.MemberCount; i++)
             {
-                NativeStore.JointData* member = world->joints[members[group.FirstMember + i].Joint];
+                JointData* member = world->joints[members[group.FirstMember + i].Joint];
                 anchor0 += member->position0;
                 anchor1 += member->position1;
             }
@@ -408,7 +413,7 @@ namespace KSP.Retooled.Physics
             for (int i = 0; i < group.MemberCount; i++)
             {
                 JointGroupMember member = members[group.FirstMember + i];
-                NativeStore.JointData* joint = world->joints[member.Joint];
+                JointData* joint = world->joints[member.Joint];
                 member.Offset = math.rotate(toJoint, joint->position0 - anchor0);
                 member.AngularStiffness = AngularStiffness(joint, angularCap);
                 group.Stiffness += member.AngularStiffness + group.LinearRatio * (math.lengthsq(member.Offset) - member.Offset * member.Offset);
@@ -422,14 +427,14 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Angular stiffness per axis as a fraction of the direct solver cap, limited to one.
         /// </summary>
-        private static float3 AngularStiffness(NativeStore.JointData* joint, float angularCap)
+        private static float3 AngularStiffness(JointData* joint, float angularCap)
         {
-            NativeStore.JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+            JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
             float3 stiffness = float3.zero;
             for (int i = 0; i < 3; i++)
             {
-                NativeStore.JointAxis* drive = wholeRotation != null ? wholeRotation : AngularDrive(joint, i);
-                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                JointAxis* drive = wholeRotation != null ? wholeRotation : AngularDrive(joint, i);
+                if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked)
                 {
                     stiffness[i] = 1.0f;
                 }
@@ -446,21 +451,21 @@ namespace KSP.Retooled.Physics
         /// The inverse mass used for a body during the step. Bodies held in place, including sleeping bodies, have zero
         /// inverse mass.
         /// </summary>
-        private static float MovingInverseMass(NativeStore.Body* body)
+        private static float MovingInverseMass(Body* body)
         {
-            return HeldInPlace(body) ? 0.0f : StoreOps.Hot(body)->mass->InverseMass;
+            return HeldInPlace(body) ? 0.0f : (*StoreOps.Hot(body)).Mass()->InverseMass;
         }
 
         /// <summary>
         /// The mean inverse inertia across a body's axes, used to calculate the angular stiffness cap. Returns zero for
         /// bodies held in place.
         /// </summary>
-        private static float MovingInverseInertia(NativeStore.Body* body)
+        private static float MovingInverseInertia(Body* body)
         {
-            return HeldInPlace(body) ? 0.0f : math.csum(StoreOps.Hot(body)->mass->InverseInertia) / 3.0f;
+            return HeldInPlace(body) ? 0.0f : math.csum((*StoreOps.Hot(body)).Mass()->InverseInertia) / 3.0f;
         }
 
-        private void Append(NativeStore.JointData* joint)
+        private void Append(JointData* joint)
         {
             if ((joint->state & JointConstraints.Inactive) != 0)
             {
@@ -474,20 +479,20 @@ namespace KSP.Retooled.Physics
 
             switch (joint->type)
             {
-                case NativeStore.JointTypeFixed:
+                case StoreConstants.JointTypeFixed:
                     Add(Constraint.BallAndSocket(ReportEveryImpulse));
                     AddLockedAngles(new bool3(true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
                     break;
-                case NativeStore.JointTypeHinge:
+                case StoreConstants.JointTypeHinge:
                     AddHinge(joint);
                     break;
-                case NativeStore.JointTypeBallAndSocket:
+                case StoreConstants.JointTypeBallAndSocket:
                     Add(Constraint.BallAndSocket(ReportEveryImpulse));
                     break;
-                case NativeStore.JointTypeDistance:
+                case StoreConstants.JointTypeDistance:
                     AddDistance(joint);
                     break;
-                case NativeStore.JointTypeDof6:
+                case StoreConstants.JointTypeDof6:
                     AddLinearDof(joint);
                     AddAngularDof(joint);
                     AddLinearDrives(joint);
@@ -510,7 +515,7 @@ namespace KSP.Retooled.Physics
         /// Initialize joint construction. Return false if unavailable or both bodies are immovable;
         /// still emit an empty joint in the latter case to preserve collision settings.
         /// </summary>
-        private bool Begin(NativeStore.JointData* joint, float3 anchor0, float3 anchor1, Entity entity)
+        private bool Begin(JointData* joint, float3 anchor0, float3 anchor1, Entity entity)
         {
             int indexA = BuiltIndex(joint->body1);
             int indexB = BuiltIndex(joint->body0);
@@ -525,7 +530,7 @@ namespace KSP.Retooled.Physics
                 AFromJoint = new MTransform(joint->rotation1, anchor1),
                 BFromJoint = new MTransform(joint->rotation0, anchor0),
                 Entity = entity,
-                EnableCollision = (joint->flags & NativeStore.JointFlagCollisionEnabled) != 0,
+                EnableCollision = (joint->flags & StoreConstants.JointFlagCollisionEnabled) != 0,
                 ForestRole = role,
                 ForestLock = forestLock,
             };
@@ -544,13 +549,13 @@ namespace KSP.Retooled.Physics
             return true;
         }
 
-        private static bool HeldInPlace(NativeStore.Body* body)
+        private static bool HeldInPlace(Body* body)
         {
-            const NativeStore.BodyFlags held = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Sleeping;
+            const BodyFlags held = BodyFlags.Static | BodyFlags.Kinematic | BodyFlags.Sleeping;
             return body == null || (StoreOps.Hot(body)->flags & held) != 0;
         }
 
-        private int BuiltIndex(NativeStore.Body* body)
+        private int BuiltIndex(Body* body)
         {
             return body == null ? AnchorIndex : BuiltIndices[(int)body->index];
         }
@@ -576,14 +581,14 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void AddHinge(NativeStore.JointData* joint)
+        private void AddHinge(JointData* joint)
         {
             Add(Constraint.BallAndSocket(ReportEveryImpulse));
             AddLockedAngles(new bool3(false, true, true), Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
 
-            if ((joint->state & NativeStore.JointState.HingeLimitEnabled) != 0)
+            if ((joint->state & JointState.HingeLimitEnabled) != 0)
             {
-                NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
+                JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
                 Add(Constraint.Twist(0, new FloatRange(axis->min, axis->max), ReportEveryImpulse));
             }
 
@@ -598,9 +603,9 @@ namespace KSP.Retooled.Physics
         /// Returns whether a free-spinning hinge motor should apply no impulse because the hinge is already at or
         /// beyond its target speed in the target direction.
         /// </summary>
-        private bool MotorCoasts(NativeStore.JointData* joint)
+        private bool MotorCoasts(JointData* joint)
         {
-            if ((joint->state & NativeStore.JointState.HingeMotorFreeSpin) == 0)
+            if ((joint->state & JointState.HingeMotorFreeSpin) == 0)
             {
                 return false;
             }
@@ -610,9 +615,9 @@ namespace KSP.Retooled.Physics
             return target >= 0.0f ? speed >= target : speed <= target;
         }
 
-        private void AddDistance(NativeStore.JointData* joint)
+        private void AddDistance(JointData* joint)
         {
-            NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
+            JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
             Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
             Add(Constraint.LimitedDistance(new FloatRange(axis->min, axis->max), ReportEveryImpulse, frequency, damping));
         }
@@ -621,23 +626,23 @@ namespace KSP.Retooled.Physics
         /// Treat an unlimited linear drive with zero targets as a lock so that its force contributes to joint
         /// breaking.
         /// </summary>
-        private static bool HeldByDrive(NativeStore.JointData* joint, int index)
+        private static bool HeldByDrive(JointData* joint, int index)
         {
-            NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + index);
+            JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisLinearX + index);
             return axis->driveSpring >= JointConstraints.UnlimitedForce && axis->driveMaxForce >= JointConstraints.UnlimitedForce
                 && joint->targetPosition[index] == 0.0f && joint->targetLinearVelocity[index] == 0.0f;
         }
 
-        private void AddLinearDof(NativeStore.JointData* joint)
+        private void AddLinearDof(JointData* joint)
         {
             bool3 locked = default;
             bool3 limited = default;
             for (int i = 0; i < 3; i++)
             {
-                uint dofLock = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i)->dofLock;
+                uint dofLock = JointData.AxisOf(joint, StoreConstants.AxisLinearX + i)->dofLock;
                 bool held = HeldByDrive(joint, i);
-                locked[i] = dofLock == NativeStore.DofLocked || held;
-                limited[i] = dofLock == NativeStore.DofLimited && !held;
+                locked[i] = dofLock == StoreConstants.DofLocked || held;
+                limited[i] = dofLock == StoreConstants.DofLimited && !held;
             }
 
             if (math.any(locked))
@@ -648,7 +653,7 @@ namespace KSP.Retooled.Physics
             if (math.any(limited))
             {
                 // Unity limits the combined distance along the limited axes. These constraints measure that distance.
-                NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisDistance);
+                JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
                 Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
                 bool signed = limited.x ^ limited.y ^ limited.z && !math.all(limited);
                 Add(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
@@ -672,12 +677,12 @@ namespace KSP.Retooled.Physics
             };
         }
 
-        private void AddAngularDof(NativeStore.JointData* joint)
+        private void AddAngularDof(JointData* joint)
         {
             bool3 locked = default;
             for (int i = 0; i < 3; i++)
             {
-                locked[i] = NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked;
+                locked[i] = JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked;
             }
 
             if (math.any(locked))
@@ -685,17 +690,17 @@ namespace KSP.Retooled.Physics
                 AddLockedAngles(locked, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
             }
 
-            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
-            if (twist->dofLock == NativeStore.DofLimited && (twist->min > -math.PI || twist->max < math.PI))
+            JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
+            if (twist->dofLock == StoreConstants.DofLimited && (twist->min > -math.PI || twist->max < math.PI))
             {
                 Softness(twist->limitSpring, twist->limitDamping, JointConstraints.AngularMass(joint, 0), false, out float frequency, out float damping);
                 Add(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
             }
 
             // The shared swing limit stores the angle about y in min and the angle about z in max.
-            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
-            bool limitedY = NativeStore.AxisOf(joint, NativeStore.AxisAngularY)->dofLock == NativeStore.DofLimited && swing->min < math.PI;
-            bool limitedZ = NativeStore.AxisOf(joint, NativeStore.AxisAngularZ)->dofLock == NativeStore.DofLimited && swing->max < math.PI;
+            JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
+            bool limitedY = JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLimited && swing->min < math.PI;
+            bool limitedZ = JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLimited && swing->max < math.PI;
             if (limitedY || limitedZ)
             {
                 Softness(swing->limitSpring, swing->limitDamping, JointConstraints.AngularMass(joint, 1), false, out float frequency, out float damping);
@@ -735,14 +740,14 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void AddLinearDrives(NativeStore.JointData* joint)
+        private void AddLinearDrives(JointData* joint)
         {
             float mass = JointConstraints.LinearMass(joint);
             float3 current = JointConstraints.RelativePosition(joint);
             for (int i = 0; i < 3; i++)
             {
-                NativeStore.JointAxis* axis = NativeStore.AxisOf(joint, NativeStore.AxisLinearX + i);
-                if (axis->dofLock == NativeStore.DofLocked || HeldByDrive(joint, i) || axis->driveMaxForce <= 0.0f || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
+                JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisLinearX + i);
+                if (axis->dofLock == StoreConstants.DofLocked || HeldByDrive(joint, i) || axis->driveMaxForce <= 0.0f || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
                 {
                     continue;
                 }
@@ -758,11 +763,11 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void AddAngularDrives(NativeStore.JointData* joint)
+        private void AddAngularDrives(JointData* joint)
         {
-            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
-            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
-            NativeStore.JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+            JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
+            JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
+            JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
             if (wholeRotation != null)
             {
                 AddSoftRotation(joint, wholeRotation);
@@ -778,7 +783,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Build whole-rotation spring and damper constraints at the target. Drives emit no impulse events.
         /// </summary>
-        private void AddSoftRotation(NativeStore.JointData* joint, NativeStore.JointAxis* drive)
+        private void AddSoftRotation(JointData* joint, JointAxis* drive)
         {
             Flush();
 
@@ -795,9 +800,9 @@ namespace KSP.Retooled.Physics
             pending.AFromJoint = new MTransform(joint->rotation1, joint->position1);
         }
 
-        private void AddAxisDrive(NativeStore.JointData* joint, int index, NativeStore.JointAxis* drive)
+        private void AddAxisDrive(JointData* joint, int index, JointAxis* drive)
         {
-            if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + index)->dofLock == NativeStore.DofLocked || drive->driveMaxForce <= 0.0f)
+            if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + index)->dofLock == StoreConstants.DofLocked || drive->driveMaxForce <= 0.0f)
             {
                 return;
             }
@@ -831,7 +836,7 @@ namespace KSP.Retooled.Physics
             return motor;
         }
 
-        private float MaxImpulse(NativeStore.JointAxis* drive)
+        private float MaxImpulse(JointAxis* drive)
         {
             return drive->driveMaxForce >= JointConstraints.UnlimitedForce ? float.PositiveInfinity : MaxImpulse(drive->driveMaxForce);
         }
@@ -876,7 +881,7 @@ namespace KSP.Retooled.Physics
     internal unsafe struct GroupJointsJob : IJob
     {
         [NativeDisableUnsafePtrRestriction]
-        public NativeStore.WorldData* World;
+        public WorldData* World;
 
         public NativeList<JointGroup> Groups;
         public NativeList<JointGroupMember> Members;
@@ -935,7 +940,7 @@ namespace KSP.Retooled.Physics
 
             for (int u = 0; u < Units.Length; u++)
             {
-                NativeStore.JointData* joint = World->joints[Units[u].Joint];
+                JointData* joint = World->joints[Units[u].Joint];
                 if (!BuildJointsJob.Mergeable(joint))
                 {
                     Roles[u] = JointForestRole.None;
@@ -960,9 +965,9 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static bool Immobile(NativeStore.Body* body)
+        internal static bool Immobile(Body* body)
         {
-            const NativeStore.BodyFlags immobile = NativeStore.BodyFlags.Static | NativeStore.BodyFlags.Kinematic;
+            const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
             return body == null || (StoreOps.Hot(body)->flags & immobile) != 0;
         }
 
@@ -994,7 +999,7 @@ namespace KSP.Retooled.Physics
             {
                 groupOf[i] = -1;
                 leaderOf[i] = -1;
-                NativeStore.JointData* joint = World->joints[i];
+                JointData* joint = World->joints[i];
                 if (!BuildJointsJob.Mergeable(joint))
                 {
                     continue;
@@ -1145,47 +1150,47 @@ namespace KSP.Retooled.Physics
     /// <summary>Calculates effective masses and the state of the two joint frames for the joint jobs.</summary>
     internal static unsafe class JointConstraints
     {
-        internal const NativeStore.JointState Inactive = NativeStore.JointState.Broken | NativeStore.JointState.BodyDestroyed;
+        internal const JointState Inactive = JointState.Broken | JointState.BodyDestroyed;
 
         // Above this threshold, a drive's force limit has no practical effect, and calculating an impulse from it may
         // exceed the range of a float. Stock joints use 1e20; Unity's default is float.MaxValue.
         internal const float UnlimitedForce = 1e15f;
 
-        private static float InverseMass(NativeStore.Body* body)
+        private static float InverseMass(Body* body)
         {
             if (body == null)
             {
                 return 0.0f;
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(body);
-            return (hot->flags & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Static)) != 0 ? 0.0f : hot->mass->InverseMass;
+            BodyData* hot = StoreOps.Hot(body);
+            return (hot->flags & (BodyFlags.Kinematic | BodyFlags.Static)) != 0 ? 0.0f : (*hot).Mass()->InverseMass;
         }
 
-        private static float InverseInertia(NativeStore.Body* body, float3 worldAxis)
+        private static float InverseInertia(Body* body, float3 worldAxis)
         {
             if (body == null)
             {
                 return 0.0f;
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(body);
-            if ((hot->flags & (NativeStore.BodyFlags.Kinematic | NativeStore.BodyFlags.Static)) != 0)
+            BodyData* hot = StoreOps.Hot(body);
+            if ((hot->flags & (BodyFlags.Kinematic | BodyFlags.Static)) != 0)
             {
                 return 0.0f;
             }
 
-            float3 axis = math.rotate(math.conjugate(math.mul(hot->pose->Rotation, hot->mass->Transform.rot)), worldAxis);
-            return math.csum(axis * axis * hot->mass->InverseInertia);
+            float3 axis = math.rotate(math.conjugate(math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot)), worldAxis);
+            return math.csum(axis * axis * (*hot).Mass()->InverseInertia);
         }
 
-        internal static float LinearMass(NativeStore.JointData* joint)
+        internal static float LinearMass(JointData* joint)
         {
             return 1.0f / math.max(InverseMass(joint->body0) + InverseMass(joint->body1), 1e-9f);
         }
 
         /// <summary>The effective inertia of the two bodies for rotation about one joint axis.</summary>
-        internal static float AngularMass(NativeStore.JointData* joint, int axis)
+        internal static float AngularMass(JointData* joint, int axis)
         {
             float3 local = float3.zero;
             local[axis] = 1.0f;
@@ -1197,65 +1202,65 @@ namespace KSP.Retooled.Physics
         /// Return a drive for the whole rotation, or null when separate motors are required.
         /// An active slerp drive takes precedence. Use motors when force limits must be enforced.
         /// </summary>
-        internal static NativeStore.JointAxis* WholeRotationDrive(NativeStore.JointData* joint)
+        internal static JointAxis* WholeRotationDrive(JointData* joint)
         {
             for (int i = 0; i < 3; i++)
             {
-                if (NativeStore.AxisOf(joint, NativeStore.AxisAngularX + i)->dofLock == NativeStore.DofLocked)
+                if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked)
                 {
                     return null;
                 }
             }
 
-            NativeStore.JointAxis* slerp = NativeStore.AxisOf(joint, NativeStore.AxisSlerp);
+            JointAxis* slerp = JointData.AxisOf(joint, StoreConstants.AxisSlerp);
             if (slerp->driveSpring > 0.0f || slerp->driveDamper > 0.0f)
             {
                 return slerp;
             }
 
-            NativeStore.JointAxis* twist = NativeStore.AxisOf(joint, NativeStore.AxisAngularX);
-            NativeStore.JointAxis* swing = NativeStore.AxisOf(joint, NativeStore.AxisAngularYZ);
+            JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
+            JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
             bool sameDrive = twist->driveSpring == swing->driveSpring && twist->driveDamper == swing->driveDamper;
             bool noForceLimit = twist->driveMaxForce >= UnlimitedForce && swing->driveMaxForce >= UnlimitedForce;
             return sameDrive && noForceLimit && twist->driveSpring > 0.0f ? twist : null;
         }
 
-        internal static quaternion WorldRotation0(NativeStore.JointData* joint)
+        internal static quaternion WorldRotation0(JointData* joint)
         {
-            return joint->body0 != null ? math.mul(StoreOps.Hot(joint->body0)->pose->Rotation, joint->rotation0) : joint->rotation0;
+            return joint->body0 != null ? math.mul((*StoreOps.Hot(joint->body0)).Pose()->Rotation, joint->rotation0) : joint->rotation0;
         }
 
-        internal static quaternion WorldRotation1(NativeStore.JointData* joint)
+        internal static quaternion WorldRotation1(JointData* joint)
         {
-            return joint->body1 != null ? math.mul(StoreOps.Hot(joint->body1)->pose->Rotation, joint->rotation1) : joint->rotation1;
+            return joint->body1 != null ? math.mul((*StoreOps.Hot(joint->body1)).Pose()->Rotation, joint->rotation1) : joint->rotation1;
         }
 
-        private static float3 WorldAnchor(NativeStore.Body* body, float3 local)
+        private static float3 WorldAnchor(Body* body, float3 local)
         {
             if (body == null)
             {
                 return local;
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(body);
-            return hot->pose->Position + math.rotate(hot->pose->Rotation, local);
+            BodyData* hot = StoreOps.Hot(body);
+            return (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, local);
         }
 
         /// <summary>
         /// The position of frame 1's origin relative to frame 0's origin, expressed along frame 0's axes. Linear drives
         /// and limits measure this position.
         /// </summary>
-        internal static float3 RelativePosition(NativeStore.JointData* joint)
+        internal static float3 RelativePosition(JointData* joint)
         {
             float3 difference = WorldAnchor(joint->body1, joint->position1) - WorldAnchor(joint->body0, joint->position0);
             return math.rotate(math.conjugate(WorldRotation0(joint)), difference);
         }
 
         /// <summary>Body 1's angular velocity relative to body 0, in world space.</summary>
-        internal static float3 RelativeAngularVelocity(NativeStore.JointData* joint)
+        internal static float3 RelativeAngularVelocity(JointData* joint)
         {
-            float3 first = joint->body0 != null ? StoreOps.WorldAngularVelocity(*StoreOps.Hot(joint->body0)) : float3.zero;
-            float3 second = joint->body1 != null ? StoreOps.WorldAngularVelocity(*StoreOps.Hot(joint->body1)) : float3.zero;
+            float3 first = joint->body0 != null ? BodyKinematics.WorldAngularVelocity(*StoreOps.Hot(joint->body0)) : float3.zero;
+            float3 second = joint->body1 != null ? BodyKinematics.WorldAngularVelocity(*StoreOps.Hot(joint->body1)) : float3.zero;
             return second - first;
         }
 
@@ -1263,7 +1268,7 @@ namespace KSP.Retooled.Physics
         /// Target angular velocity of frame 1 relative to frame 0. Negate Unity's target to match PhysX;
         /// other drive targets keep their signs.
         /// </summary>
-        internal static float3 TargetAngularVelocity(NativeStore.JointData* joint)
+        internal static float3 TargetAngularVelocity(JointData* joint)
         {
             return -joint->targetAngularVelocity;
         }

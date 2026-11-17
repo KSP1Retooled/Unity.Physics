@@ -1,5 +1,8 @@
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics
 {
@@ -55,9 +58,9 @@ namespace KSP.Retooled.Physics
         internal const int OldSize = 64;
 
         /// <summary>Returns the collision groups, or null if there are none yet.</summary>
-        internal static GroupTable* GroupsOf(NativeStore.StoreGlobals* globals)
+        internal static GroupTable* GroupsOf(StoreGlobals* globals)
         {
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             return table != null && table->layoutMark == CurrentLayout ? table->Groups : null;
         }
 
@@ -65,14 +68,14 @@ namespace KSP.Retooled.Physics
         /// Returns whether two shapes must not collide, either because Physics.IgnoreCollision ignored their pair or
         /// because the group rule stops them.
         /// </summary>
-        internal static bool Ignores(NativeStore.StoreGlobals* globals, NativeStore.ShapeData* first, NativeStore.ShapeData* second)
+        internal static bool Ignores(StoreGlobals* globals, ShapeData* first, ShapeData* second)
         {
             return Contains(globals, first->ignorePairId, second->ignorePairId) || GroupTable.Ignores(globals, first, second);
         }
 
-        internal static bool Contains(NativeStore.StoreGlobals* globals, uint first, uint second)
+        internal static bool Contains(StoreGlobals* globals, uint first, uint second)
         {
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             if (table == null || first == 0 || second == 0)
             {
                 return false;
@@ -85,7 +88,7 @@ namespace KSP.Retooled.Physics
         /// Ignores a pair or restores its collisions. When ignoring a pair, assigns an id to either collider whose id
         /// is 0. The caller passes the ids back to Unity.
         /// </summary>
-        internal static void Set(NativeStore.StoreGlobals* globals, ref uint first, ref uint second, bool ignored)
+        internal static void Set(StoreGlobals* globals, ref uint first, ref uint second, bool ignored)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.IgnoreCollision.Auto();
 
@@ -94,7 +97,7 @@ namespace KSP.Retooled.Physics
             {
                 if (globals->ignoreTable != null)
                 {
-                    globals->ignoreTable->Remove(first, second);
+                    ((IgnoreTable*)globals->ignoreTable)->Remove(first, second);
                 }
 
                 return;
@@ -113,9 +116,9 @@ namespace KSP.Retooled.Physics
         /// Returns the number of bytes that the ignore table holds on the store's heap, without the group table. Used
         /// by benchmarks.
         /// </summary>
-        internal static ulong Bytes(NativeStore.StoreGlobals* globals)
+        internal static ulong Bytes(StoreGlobals* globals)
         {
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             if (table == null)
             {
                 return 0;
@@ -126,9 +129,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Returns the number of ignored pairs.</summary>
-        internal static ulong PairCount(NativeStore.StoreGlobals* globals)
+        internal static ulong PairCount(StoreGlobals* globals)
         {
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             ulong count = 0;
             for (uint i = 0; table != null && i < table->slotCount; i++)
             {
@@ -141,12 +144,12 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Removes every ignored pair involving a destroyed collider and frees its id.
         /// </summary>
-        internal static void Forget(NativeStore.StoreGlobals* globals, uint id)
+        internal static void Forget(StoreGlobals* globals, uint id)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetIgnoredCollisions.Auto();
 
             globals->ignoreVersion++;
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             if (table == null || id == 0)
             {
                 return;
@@ -164,10 +167,10 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Rehash stored pairs after domain reload so that lookups use the current hash function.
         /// </summary>
-        internal static void Reslot(NativeStore.StoreGlobals* globals)
+        internal static void Reslot(StoreGlobals* globals)
         {
             Upgrade(globals);
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             if (table != null && table->slotCount != 0)
             {
                 table->Rehash(globals);
@@ -180,14 +183,14 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        internal static IgnoreTable* TableOf(NativeStore.StoreGlobals* globals)
+        internal static IgnoreTable* TableOf(StoreGlobals* globals)
         {
             if (globals->ignoreTable == null)
             {
-                IgnoreTable* table = (IgnoreTable*)StoreOps.Reallocate(globals, null, (ulong)sizeof(IgnoreTable));
+                IgnoreTable* table = (IgnoreTable*)StoreMemory.Reallocate(globals, null, (ulong)sizeof(IgnoreTable));
                 *table = default;
-                table->firstEdge = (uint*)StoreOps.Reallocate(globals, null, IdCount * sizeof(uint));
-                table->freeIds = (ushort*)StoreOps.Reallocate(globals, null, IdCount * sizeof(ushort));
+                table->firstEdge = (uint*)StoreMemory.Reallocate(globals, null, IdCount * sizeof(uint));
+                table->freeIds = (ushort*)StoreMemory.Reallocate(globals, null, IdCount * sizeof(ushort));
                 for (uint i = 0; i < IdCount; i++)
                 {
                     table->firstEdge[i] = 0;
@@ -197,7 +200,7 @@ namespace KSP.Retooled.Physics
                 globals->ignoreTable = table;
             }
 
-            return globals->ignoreTable;
+            return (IgnoreTable*)globals->ignoreTable;
         }
 
         /// <summary>
@@ -206,15 +209,15 @@ namespace KSP.Retooled.Physics
         /// Copy those bytes into a table of the current size and initialize it without groups when the marker is
         /// absent.
         /// </summary>
-        internal static void Upgrade(NativeStore.StoreGlobals* globals)
+        internal static void Upgrade(StoreGlobals* globals)
         {
-            IgnoreTable* table = globals->ignoreTable;
+            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
             if (table == null || table->layoutMark == CurrentLayout)
             {
                 return;
             }
 
-            table = (IgnoreTable*)StoreOps.Reallocate(globals, table, (ulong)sizeof(IgnoreTable));
+            table = (IgnoreTable*)StoreMemory.Reallocate(globals, table, (ulong)sizeof(IgnoreTable));
             table->layoutMark = CurrentLayout;
             table->Groups = null;
             globals->ignoreTable = table;
@@ -291,7 +294,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private void Add(NativeStore.StoreGlobals* globals, uint first, uint second)
+        private void Add(StoreGlobals* globals, uint first, uint second)
         {
             uint key = KeyOf(first, second);
             if (FindSlot(key, out _))
@@ -341,7 +344,7 @@ namespace KSP.Retooled.Physics
             freeEdge = edge;
         }
 
-        private uint TakeEdge(NativeStore.StoreGlobals* globals)
+        private uint TakeEdge(StoreGlobals* globals)
         {
             if (freeEdge != 0)
             {
@@ -352,8 +355,8 @@ namespace KSP.Retooled.Physics
 
             if (edgesUsed == edgeCapacity)
             {
-                edgeCapacity = StoreOps.Grown(edgeCapacity);
-                edges = (Edge*)StoreOps.Reallocate(globals, edges, edgeCapacity * (ulong)sizeof(Edge));
+                edgeCapacity = StoreMemory.Grown(edgeCapacity);
+                edges = (Edge*)StoreMemory.Reallocate(globals, edges, edgeCapacity * (ulong)sizeof(Edge));
             }
 
             return ++edgesUsed;
@@ -395,7 +398,7 @@ namespace KSP.Retooled.Physics
 
         // Move every live pair to a clean table. This also removes the deleted slots left when collisions were
         // restored.
-        private void Rehash(NativeStore.StoreGlobals* globals)
+        private void Rehash(StoreGlobals* globals)
         {
             uint live = 0;
             for (uint i = 0; i < slotCount; i++)
@@ -408,7 +411,7 @@ namespace KSP.Retooled.Physics
 
             uint* oldSlots = slots;
             uint oldCount = slotCount;
-            slots = (uint*)StoreOps.Reallocate(globals, null, newCount * sizeof(uint));
+            slots = (uint*)StoreMemory.Reallocate(globals, null, newCount * sizeof(uint));
             slotCount = newCount;
             slotsTaken = live;
             uint mask = newCount - 1;
@@ -434,7 +437,7 @@ namespace KSP.Retooled.Physics
                 slots[slot] = content;
             }
 
-            StoreOps.Release(globals, oldSlots);
+            StoreMemory.Release(globals, oldSlots);
         }
     }
 }

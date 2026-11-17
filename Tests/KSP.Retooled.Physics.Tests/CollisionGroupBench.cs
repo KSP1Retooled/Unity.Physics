@@ -12,6 +12,8 @@ using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.World;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -35,13 +37,13 @@ namespace KSP.Retooled.Physics.Tests
             public NativeArray<IntPtr> Second;
 
             [NativeDisableUnsafePtrRestriction]
-            public NativeStore.StoreGlobals* Globals;
+            public StoreGlobals* Globals;
 
             public NativeArray<byte> Ignored;
 
             public void Execute(int index)
             {
-                Ignored[index] = IgnoreTable.Ignores(Globals, (NativeStore.ShapeData*)First[index], (NativeStore.ShapeData*)Second[index]) ? (byte)1 : (byte)0;
+                Ignored[index] = IgnoreTable.Ignores(Globals, (ShapeData*)First[index], (ShapeData*)Second[index]) ? (byte)1 : (byte)0;
             }
         }
 
@@ -145,7 +147,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private unsafe void Run(string mode, int side, StringBuilder report)
         {
-            NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
             List<Rigidbody> bodies = Cube(side);
             Collider[] colliders = bodies.Select(b => b.GetComponent<Collider>()).ToArray();
 

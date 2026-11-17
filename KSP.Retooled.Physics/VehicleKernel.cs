@@ -4,6 +4,13 @@ using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.Vehicles;
+using Unity.Physics.Store.World;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -58,7 +65,7 @@ namespace KSP.Retooled.Physics
 
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
-        internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // A WheelCollider's state is read every frame, and a span costs about as much as such a read, so reads run
             // without the category's span, as in BodyKernel.
@@ -98,13 +105,13 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Dispatch(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
+        private static void Dispatch(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             bool ranInMono = false;
             RunInMono(command, handle, args, globals, ref ranInMono);
             if (!ranInMono)
             {
-                Execute((VehicleCommand)command, (NativeStore.WorldData*)handle, args, globals);
+                Execute((VehicleCommand)command, (WorldData*)handle, args, globals);
             }
         }
 
@@ -112,14 +119,14 @@ namespace KSP.Retooled.Physics
         /// Burst omits this method, so it runs only in Mono. The Mono version must catch the exception here.
         /// </summary>
         [BurstDiscard]
-        private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals,
+        private static void RunInMono(uint command, void* handle, CommandArgs* args, StoreGlobals* globals,
             ref bool ranInMono)
         {
             ranInMono = true;
             BackendHost.NoteManagedCommand();
             try
             {
-                Execute((VehicleCommand)command, (NativeStore.WorldData*)handle, args, globals);
+                Execute((VehicleCommand)command, (WorldData*)handle, args, globals);
             }
             catch (Exception e)
             {
@@ -127,7 +134,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static void Execute(VehicleCommand command, NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void Execute(VehicleCommand command, WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             switch (command)
             {
@@ -138,17 +145,17 @@ namespace KSP.Retooled.Physics
                     Destroy(world, a->value2, globals);
                     return;
                 case VehicleCommand.ResetVehicleQueryResultsForShape:
-                    ForgetShape(world, (NativeStore.Shape*)a->pointer);
+                    ForgetShape(world, (Shape*)a->pointer);
                     return;
             }
 
-            NativeStore.VehicleData* vehicle = Find(world, a->value2);
+            VehicleData* vehicle = Find(world, a->value2);
             if (vehicle == null)
             {
                 return;
             }
 
-            NativeStore.WheelSlot* wheel = a->value < vehicle->wheelCount ? NativeStore.WheelsOf(vehicle) + a->value : null;
+            WheelSlot* wheel = a->value < vehicle->wheelCount ? VehicleData.WheelsOf(vehicle) + a->value : null;
             switch (command)
             {
                 case VehicleCommand.SetVehicleWheelEnabled:
@@ -199,7 +206,7 @@ namespace KSP.Retooled.Physics
             switch (command)
             {
                 case VehicleCommand.GetVehicleWheelQueryResult:
-                    *(NativeStore.WheelQueryResult*)a->pointer = wheel->grounded != 0 ? wheel->hit : default;
+                    *(WheelQueryResult*)a->pointer = wheel->grounded != 0 ? wheel->hit : default;
                     break;
                 case VehicleCommand.SetVehicleWheelFilterData:
                     SetFilter(wheel, (uint*)a->pointer);
@@ -216,17 +223,17 @@ namespace KSP.Retooled.Physics
                     a->vector2 = wheel->forceOffset;
                     break;
                 case VehicleCommand.SetVehicleWheelSuspensionData:
-                    wheel->suspension = *(NativeStore.WheelSuspension*)a->pointer;
+                    wheel->suspension = *(WheelSuspension*)a->pointer;
                     wheel->jounce = math.clamp(wheel->jounce, -wheel->suspension.maxDroop, wheel->suspension.maxCompression);
                     break;
                 case VehicleCommand.GetVehicleWheelSuspensionData:
-                    *(NativeStore.WheelSuspension*)a->pointer = wheel->suspension;
+                    *(WheelSuspension*)a->pointer = wheel->suspension;
                     break;
                 case VehicleCommand.SetVehicleWheelData:
-                    wheel->wheel = *(NativeStore.WheelBody*)a->pointer;
+                    wheel->wheel = *(WheelBody*)a->pointer;
                     break;
                 case VehicleCommand.GetVehicleWheelData:
-                    *(NativeStore.WheelBody*)a->pointer = wheel->wheel;
+                    *(WheelBody*)a->pointer = wheel->wheel;
                     break;
                 case VehicleCommand.GetVehicleWheelLocalPose:
                     LocalPose(vehicle, wheel, a);
@@ -259,7 +266,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        private static NativeStore.VehicleData* Find(NativeStore.WorldData* world, uint id)
+        private static VehicleData* Find(WorldData* world, uint id)
         {
             return id < world->vehicleCount ? world->vehicles[id] : null;
         }
@@ -268,7 +275,7 @@ namespace KSP.Retooled.Physics
         /// Create vehicle slots, preserving indices when copying from a smaller source vehicle.
         /// Unity rebinds wheels in slot order before destroying the source.
         /// </summary>
-        private static void Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
+        private static void Create(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             uint id = 0;
             while (id < world->vehicleCount && world->vehicles[id] != null)
@@ -280,24 +287,24 @@ namespace KSP.Retooled.Physics
             {
                 if (world->vehicleCount == world->vehicleCapacity)
                 {
-                    world->vehicleCapacity = StoreOps.Grown(world->vehicleCapacity);
-                    world->vehicles = (NativeStore.VehicleData**)StoreOps.Reallocate(globals, world->vehicles, world->vehicleCapacity * (ulong)sizeof(void*));
+                    world->vehicleCapacity = StoreMemory.Grown(world->vehicleCapacity);
+                    world->vehicles = (VehicleData**)StoreMemory.Reallocate(globals, world->vehicles, world->vehicleCapacity * (ulong)sizeof(void*));
                 }
 
                 world->vehicleCount++;
             }
 
             uint wheelCount = a->mode;
-            ulong size = (ulong)sizeof(NativeStore.VehicleData) + wheelCount * (ulong)sizeof(NativeStore.WheelSlot);
-            var vehicle = (NativeStore.VehicleData*)StoreOps.Reallocate(globals, null, size);
+            ulong size = (ulong)sizeof(VehicleData) + wheelCount * (ulong)sizeof(WheelSlot);
+            var vehicle = (VehicleData*)StoreMemory.Reallocate(globals, null, size);
             UnsafeUtility.MemClear(vehicle, (long)size);
-            vehicle->body = (NativeStore.Body*)a->pointer3;
+            vehicle->body = (Body*)a->pointer3;
             vehicle->wheelCount = wheelCount;
             vehicle->implicitSprungMasses = 1;
             world->vehicles[id] = vehicle;
 
             uint written = 0;
-            NativeStore.VehicleData* source = Find(world, a->value);
+            VehicleData* source = Find(world, a->value);
             if (source != null)
             {
                 vehicle->implicitSprungMasses = source->implicitSprungMasses;
@@ -307,7 +314,7 @@ namespace KSP.Retooled.Physics
                 vehicle->substepsAbove = source->substepsAbove;
 
                 uint kept = math.min(source->wheelCount, wheelCount);
-                UnsafeUtility.MemCpy(NativeStore.WheelsOf(vehicle), NativeStore.WheelsOf(source), kept * (long)sizeof(NativeStore.WheelSlot));
+                UnsafeUtility.MemCpy(VehicleData.WheelsOf(vehicle), VehicleData.WheelsOf(source), kept * (long)sizeof(WheelSlot));
                 written = WriteUserData(vehicle, (void**)a->pointer, kept);
             }
 
@@ -315,15 +322,15 @@ namespace KSP.Retooled.Physics
             a->size = written;
         }
 
-        private static void Destroy(NativeStore.WorldData* world, uint id, NativeStore.StoreGlobals* globals)
+        private static void Destroy(WorldData* world, uint id, StoreGlobals* globals)
         {
-            NativeStore.VehicleData* vehicle = Find(world, id);
+            VehicleData* vehicle = Find(world, id);
             if (vehicle == null)
             {
                 return;
             }
 
-            StoreOps.Release(globals, vehicle);
+            StoreMemory.Release(globals, vehicle);
             world->vehicles[id] = null;
             while (world->vehicleCount > 0 && world->vehicles[world->vehicleCount - 1] == null)
             {
@@ -335,7 +342,7 @@ namespace KSP.Retooled.Physics
         /// Enables or disables a wheel and clears its previous hit. The wheel starts at full droop with no rotation
         /// speed.
         /// </summary>
-        private static void Enable(NativeStore.VehicleData* vehicle, NativeStore.WheelSlot* wheel, NativeStore.CommandArgs* a)
+        private static void Enable(VehicleData* vehicle, WheelSlot* wheel, CommandArgs* a)
         {
             wheel->enabled = a->enabled;
             wheel->userData = a->enabled != 0 ? a->pointer2 : null;
@@ -346,14 +353,14 @@ namespace KSP.Retooled.Physics
             wheel->jounce = -wheel->suspension.maxDroop;
         }
 
-        private static bool AllDisabled(NativeStore.VehicleData* vehicle)
+        private static bool AllDisabled(VehicleData* vehicle)
         {
             return FirstEnabled(vehicle) == NoIndex;
         }
 
-        private static uint FirstEnabled(NativeStore.VehicleData* vehicle)
+        private static uint FirstEnabled(VehicleData* vehicle)
         {
-            NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+            WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             for (uint i = 0; i < vehicle->wheelCount; i++)
             {
                 if (wheels[i].enabled != 0)
@@ -365,9 +372,9 @@ namespace KSP.Retooled.Physics
             return NoIndex;
         }
 
-        private static uint FirstDisabled(NativeStore.VehicleData* vehicle)
+        private static uint FirstDisabled(VehicleData* vehicle)
         {
-            NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+            WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             for (uint i = 0; i < vehicle->wheelCount; i++)
             {
                 if (wheels[i].enabled == 0)
@@ -383,14 +390,14 @@ namespace KSP.Retooled.Physics
         /// Return enabled wheels' user data in slot order among the first limit slots. Omit disabled slots rather
         /// than returning null pointers.
         /// </summary>
-        private static uint WriteUserData(NativeStore.VehicleData* vehicle, void** buffer, uint limit)
+        private static uint WriteUserData(VehicleData* vehicle, void** buffer, uint limit)
         {
             if (buffer == null)
             {
                 return 0;
             }
 
-            NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+            WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             uint written = 0;
             uint slots = math.min(limit, vehicle->wheelCount);
             for (uint i = 0; i < slots; i++)
@@ -404,7 +411,7 @@ namespace KSP.Retooled.Physics
             return written;
         }
 
-        private static void SetFilter(NativeStore.WheelSlot* wheel, uint* words)
+        private static void SetFilter(WheelSlot* wheel, uint* words)
         {
             wheel->collidesWith = words[0];
             wheel->belongsTo = words[1];
@@ -412,7 +419,7 @@ namespace KSP.Retooled.Physics
             wheel->filterIds = words[3];
         }
 
-        private static void GetFilter(NativeStore.WheelSlot* wheel, uint* words)
+        private static void GetFilter(WheelSlot* wheel, uint* words)
         {
             words[0] = wheel->collidesWith;
             words[1] = wheel->belongsTo;
@@ -424,16 +431,16 @@ namespace KSP.Retooled.Physics
         /// Save pre-force vehicle velocities for suspension damping so that this step's gravity is not counted as
         /// compression.
         /// </summary>
-        internal static void RecordStartVelocities(NativeStore.WorldData* world)
+        internal static void RecordStartVelocities(WorldData* world)
         {
             for (uint v = 0; v < world->vehicleCount; v++)
             {
-                NativeStore.VehicleData* vehicle = world->vehicles[v];
+                VehicleData* vehicle = world->vehicles[v];
                 if (vehicle != null && vehicle->body != null)
                 {
-                    NativeStore.BodyData* hot = world->bodies + vehicle->body->index;
-                    vehicle->startLinear = hot->velocity->Linear;
-                    vehicle->startAngular = StoreOps.WorldAngularVelocity(*hot);
+                    BodyData* hot = world->bodies + vehicle->body->index;
+                    vehicle->startLinear = (*hot).Velocity()->Linear;
+                    vehicle->startAngular = BodyKinematics.WorldAngularVelocity(*hot);
                 }
             }
         }
@@ -442,11 +449,11 @@ namespace KSP.Retooled.Physics
         /// Detach a destroyed body from its vehicle to prevent stale pointer access.
         /// Keep the vehicle allocation until Unity destroys it.
         /// </summary>
-        internal static void ForgetBody(NativeStore.WorldData* world, NativeStore.Body* body)
+        internal static void ForgetBody(WorldData* world, Body* body)
         {
             for (uint v = 0; v < world->vehicleCount; v++)
             {
-                NativeStore.VehicleData* vehicle = world->vehicles[v];
+                VehicleData* vehicle = world->vehicles[v];
                 if (vehicle != null && vehicle->body == body)
                 {
                     vehicle->body = null;
@@ -458,17 +465,17 @@ namespace KSP.Retooled.Physics
         /// Clears every hit on a shape that is changing or being destroyed, so that the shape is not read through an
         /// old hit afterward.
         /// </summary>
-        private static void ForgetShape(NativeStore.WorldData* world, NativeStore.Shape* shape)
+        private static void ForgetShape(WorldData* world, Shape* shape)
         {
             for (uint v = 0; v < world->vehicleCount; v++)
             {
-                NativeStore.VehicleData* vehicle = world->vehicles[v];
+                VehicleData* vehicle = world->vehicles[v];
                 if (vehicle == null)
                 {
                     continue;
                 }
 
-                NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+                WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
                 for (uint i = 0; i < vehicle->wheelCount; i++)
                 {
                     if (wheels[i].hitShape == shape)
@@ -485,12 +492,12 @@ namespace KSP.Retooled.Physics
         /// Returns the wheel's pose relative to its body. The centre is raised by the jounce. The rotation applies
         /// steering first, then spin about the axle.
         /// </summary>
-        private static void LocalPose(NativeStore.VehicleData* vehicle, NativeStore.WheelSlot* wheel, NativeStore.CommandArgs* a)
+        private static void LocalPose(VehicleData* vehicle, WheelSlot* wheel, CommandArgs* a)
         {
             float3 centreOfMass = float3.zero;
             if (vehicle->body != null)
             {
-                centreOfMass = StoreOps.Hot(vehicle->body)->mass->Transform.pos;
+                centreOfMass = (*StoreOps.Hot(vehicle->body)).Mass()->Transform.pos;
             }
 
             a->position = centreOfMass + wheel->centreOffset + new float3(0.0f, wheel->jounce, 0.0f);
@@ -500,12 +507,12 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Wakes the body when motor torque is non-zero. The game uses this to prevent a vehicle from falling asleep.
         /// </summary>
-        private static void WakeFor(NativeStore.VehicleData* vehicle, float torque)
+        private static void WakeFor(VehicleData* vehicle, float torque)
         {
             if (torque != 0.0f && vehicle->body != null)
             {
-                NativeStore.BodyData* hot = StoreOps.Hot(vehicle->body);
-                if ((hot->flags & NativeStore.BodyFlags.Sleeping) != 0)
+                BodyData* hot = StoreOps.Hot(vehicle->body);
+                if ((hot->flags & BodyFlags.Sleeping) != 0)
                 {
                     JointKernel.WakeRow(hot);
                 }
@@ -517,17 +524,17 @@ namespace KSP.Retooled.Physics
         /// masses as PhysX does.
         /// Wheel offsets are relative to the centre of mass in body axes.
         /// </summary>
-        private static void SprungMasses(NativeStore.VehicleData* vehicle, uint* ids, float3* offsets, int count)
+        private static void SprungMasses(VehicleData* vehicle, uint* ids, float3* offsets, int count)
         {
             if (count <= 0 || vehicle->body == null)
             {
                 return;
             }
 
-            NativeStore.BodyData* hot = StoreOps.Hot(vehicle->body);
-            float inverseMass = hot->mass->InverseMass;
+            BodyData* hot = StoreOps.Hot(vehicle->body);
+            float inverseMass = (*hot).Mass()->InverseMass;
             float mass = inverseMass > 0.0f ? 1.0f / inverseMass : 0.0f;
-            NativeStore.WheelSlot* wheels = NativeStore.WheelsOf(vehicle);
+            WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             for (int i = 0; i < count; i++)
             {
                 if (ids[i] < vehicle->wheelCount)
