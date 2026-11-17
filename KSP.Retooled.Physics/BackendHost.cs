@@ -185,7 +185,17 @@ namespace KSP.Retooled.Physics
             int worldCount = NativeStore.RetooledPhysics_WorldCount();
             for (int i = 0; i < worldCount; i++)
             {
-                ReleaseWorld(NativeStore.RetooledPhysics_GetWorld(i));
+                NativeStore.WorldData* world = NativeStore.RetooledPhysics_GetWorld(i);
+                lock (Worlds)
+                {
+                    // Unity keeps the trigger pairs that it holds, so the world's next state needs the touching pairs.
+                    if (Worlds.TryGetValue((IntPtr)world, out WorldState state))
+                    {
+                        state.SaveTouching();
+                    }
+                }
+
+                ReleaseWorld(world);
             }
         }
 
