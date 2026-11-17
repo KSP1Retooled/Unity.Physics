@@ -172,6 +172,19 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
+            // Finish every world's pending refit of the dynamic tree while the plugin can still call into this core.
+            // A query on a worker that finds a refit pending helps with it through the plugin's helpRefit. The detach
+            // clears helpRefit and then waits for each world's query lock. A query that took the lock after that
+            // waited for the refit with no way to help, and when no free worker ran the refit's jobs, the query and
+            // the detach waited for each other.
+            lock (Worlds)
+            {
+                foreach (WorldState state in Worlds.Values)
+                {
+                    state.FinishPendingRefit();
+                }
+            }
+
             if (BodyEntities.Bound)
             {
                 BodyEntities.Unbind();

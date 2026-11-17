@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Profiling;
 
 namespace Unity.Physics
 {
@@ -53,6 +54,9 @@ namespace Unity.Physics
         int m_NextSubtree;
         int m_DoneSubtrees;
         int m_TopTaken;
+
+        // 1 when a thread failed to finish its piece of work, because of an exception (see Help).
+        int m_Failed;
 
         /// <summary>
         /// Clears the ready word and schedules jobs that refit the dynamic tree of <paramref name="world"/> after
@@ -103,6 +107,7 @@ namespace Unity.Physics
             refit->m_DoneSubtrees = 0;
             refit->m_TopTaken = 0;
             refit->m_NextSubtree = 0;
+            refit->m_Failed = 0;
             Interlocked.Exchange(ref *ready, 0);
 
             // Last, so that a thread that takes a batch sees the fields above.
@@ -134,11 +139,51 @@ namespace Unity.Physics
                 return;
             }
 
+            // An exception that leaves a piece of work unfinished would leave the other threads waiting for that
+            // piece forever. So the thread marks the refit failed, which sets the ready word, and the exception goes
+            // on to this thread's caller. The other threads stop waiting, and the owner sees the failure in Failed.
+            bool returned = false;
+            try
+            {
+                DoWork();
+                returned = true;
+            }
+            finally
+            {
+                if (!returned)
+                {
+                    Fail();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether a thread failed to finish its part of the last refit, because of an exception. The tree can then
+        /// hold bounds of the poses before the step, and the owner must build it again before a query reads it. Read
+        /// it only after the ready word is set.
+        /// </summary>
+        internal bool Failed => Interlocked.CompareExchange(ref m_Failed, 0, -1) != 0;
+
+        void Fail()
+        {
+            Interlocked.Exchange(ref m_Failed, 1);
+            Interlocked.Exchange(ref *m_Ready, 1);
+            AddressWait.WakeAll(m_Ready);
+        }
+
+        void DoWork()
+        {
             int batches = (m_Count + BodiesPerBatch - 1) / BodiesPerBatch;
+            BodiesMarker.Begin();
             for (int batch = Interlocked.Increment(ref m_NextBatch) - 1; batch < batches; batch = Interlocked.Increment(ref m_NextBatch) - 1)
             {
                 int start = batch * BodiesPerBatch;
                 int end = math.min(start + BodiesPerBatch, m_Count);
+                if (batch == 0 && s_ThrowForTests.Data != 0)
+                {
+                    ThrowForTests();
+                }
+
                 for (int i = start; i < end; i++)
                 {
                     CollisionWorld.UpdateDynamicBoundsJob.UpdateBody(i, m_MotionDatas, m_MotionVelocities, m_Bodies, m_Aabbs, m_AabbMargin,
@@ -148,12 +193,21 @@ namespace Unity.Physics
                 Interlocked.Add(ref m_DoneBodies, end - start);
             }
 
-            while (Interlocked.CompareExchange(ref m_DoneBodies, 0, -1) < m_Count)
+            BodiesMarker.End();
+            WaitMarker.Begin();
+            while (Interlocked.CompareExchange(ref m_DoneBodies, 0, -1) < m_Count && Interlocked.CompareExchange(ref m_Failed, 0, -1) == 0)
             {
                 Common.Pause();
             }
 
+            WaitMarker.End();
+            if (Interlocked.CompareExchange(ref m_Failed, 0, -1) != 0)
+            {
+                return;
+            }
+
             const int subtrees = BoundingVolumeHierarchy.RefitSubtreeCount;
+            NodesMarker.Begin();
             for (int slot = Interlocked.Increment(ref m_NextSubtree) - 1; slot < subtrees; slot = Interlocked.Increment(ref m_NextSubtree) - 1)
             {
                 int root = m_Tree.FindRefitSubtree(slot);
@@ -165,18 +219,28 @@ namespace Unity.Physics
                 Interlocked.Increment(ref m_DoneSubtrees);
             }
 
-            while (Interlocked.CompareExchange(ref m_DoneSubtrees, 0, -1) < subtrees)
+            NodesMarker.End();
+            WaitMarker.Begin();
+            while (Interlocked.CompareExchange(ref m_DoneSubtrees, 0, -1) < subtrees && Interlocked.CompareExchange(ref m_Failed, 0, -1) == 0)
             {
                 Common.Pause();
             }
 
-            if (Interlocked.CompareExchange(ref m_TopTaken, 1, 0) == 0)
+            WaitMarker.End();
+            if (Interlocked.CompareExchange(ref m_Failed, 0, -1) == 0 && Interlocked.CompareExchange(ref m_TopTaken, 1, 0) == 0)
             {
+                TopMarker.Begin();
                 m_Tree.RefitAboveCut();
                 Interlocked.Exchange(ref *m_Ready, 1);
                 AddressWait.WakeAll(m_Ready);
+                TopMarker.End();
             }
         }
+
+        static readonly ProfilerMarker BodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Bodies");
+        static readonly ProfilerMarker NodesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Subtrees");
+        static readonly ProfilerMarker TopMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Top");
+        static readonly ProfilerMarker WaitMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Wait");
 
         /// <summary>
         /// For tests: whether the scheduled jobs leave all of the refit's work to the threads that call
@@ -193,6 +257,34 @@ namespace Unity.Physics
         }
 
         static readonly SharedStatic<int> s_JobsLeaveTheWork = SharedStatic<int>.GetOrCreate<SharedDynamicTreeRefit, JobsLeaveTheWorkKey>();
+
+        /// <summary>
+        /// For tests: whether the thread that takes the first batch of bodies throws, as a bug in the refit would. Only
+        /// code that runs in Mono throws; Burst leaves the throw out, and <see cref="ThrowsForTests"/> counts the throws.
+        /// </summary>
+        internal static bool ThrowForTestsEnabled
+        {
+            get => s_ThrowForTests.Data != 0;
+            set => s_ThrowForTests.Data = value ? 1 : 0;
+        }
+
+        /// <summary>For tests: the number of injected throws since the program started.</summary>
+        internal static int ThrowsForTests => s_ThrowsForTests;
+
+        static int s_ThrowsForTests;
+
+        [BurstDiscard]
+        static void ThrowForTests()
+        {
+            Interlocked.Increment(ref s_ThrowsForTests);
+            throw new System.InvalidOperationException("a throw that a test injected into the refit of the dynamic tree");
+        }
+
+        sealed class ThrowForTestsKey
+        {
+        }
+
+        static readonly SharedStatic<int> s_ThrowForTests = SharedStatic<int>.GetOrCreate<SharedDynamicTreeRefit, ThrowForTestsKey>();
 
         [BurstCompile]
         struct HelpJob : IJobParallelFor

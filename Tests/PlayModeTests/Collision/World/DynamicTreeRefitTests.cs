@@ -487,6 +487,311 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
+        /// Computes the bounds of one body at many poses, through the cache's shape entry and from the collider, and
+        /// counts the poses where the two differ in any bit. The first call makes the entry from the collider.
+        /// </summary>
+        [BurstCompile(CompileSynchronously = true)]
+        unsafe struct ShapeBoundsJob : IJob
+        {
+            public Physics.RigidBody Body;
+            public DynamicBoundsCache.View View;
+            public NativeArray<RigidTransform> Poses;
+            public NativeReference<int> Mismatches;
+            public NativeReference<int> FromShapes;
+
+            public void Execute()
+            {
+                Physics.RigidBody body = Body;
+                for (int i = 0; i < Poses.Length; i++)
+                {
+                    body.WorldFromBody = Poses[i];
+                    Aabb fromShape = View.ColliderBounds(0, &body);
+                    Aabb fromCollider = body.CalculateAabb();
+                    if (math.any(math.asuint(fromShape.Min) != math.asuint(fromCollider.Min)) || math.any(math.asuint(fromShape.Max) != math.asuint(fromCollider.Max)))
+                    {
+                        Mismatches.Value++;
+                    }
+
+                    if (View.Shapes[0].Kind != DynamicBoundsCache.ShapeBounds.ReadCollider)
+                    {
+                        FromShapes.Value++;
+                    }
+                }
+            }
+        }
+
+        static BlobAssetReference<Collider> ShapeCollider(string kind)
+        {
+            var orientation = quaternion.Euler(0.3f, 1.1f, -0.7f);
+            var center = new float3(0.4f, -1.3f, 2.2f);
+            switch (kind)
+            {
+                case "box":
+                    return BoxCollider.Create(new BoxGeometry { Orientation = orientation, Center = center, Size = new float3(1.0f, 2.5f, 0.3f), BevelRadius = 0.05f });
+                case "sphere":
+                    return SphereCollider.Create(new SphereGeometry { Center = center, Radius = 0.7f });
+                case "capsule":
+                    return CapsuleCollider.Create(new CapsuleGeometry { Vertex0 = center, Vertex1 = -center, Radius = 0.3f });
+                case "cylinder":
+                    return CylinderCollider.Create(new CylinderGeometry { Orientation = orientation, Center = center, Height = 2.0f, Radius = 0.5f, SideCount = 12 });
+                case "convex":
+                {
+                    var points = new NativeArray<float3>(40, Allocator.Temp);
+                    var random = new Unity.Mathematics.Random(7);
+                    for (int i = 0; i < points.Length; i++)
+                    {
+                        points[i] = center + random.NextFloat3Direction() * new float3(1.0f, 2.0f, 0.5f);
+                    }
+
+                    BlobAssetReference<Collider> hull = ConvexCollider.Create(points, ConvexHullGenerationParameters.Default);
+                    points.Dispose();
+                    return hull;
+                }
+                case "mesh":
+                {
+                    var vertices = new NativeArray<float3>(4, Allocator.Temp);
+                    vertices[0] = center;
+                    vertices[1] = center + new float3(3.0f, 0.0f, 0.0f);
+                    vertices[2] = center + new float3(0.0f, 0.0f, 3.0f);
+                    vertices[3] = center + new float3(3.0f, 1.0f, 3.0f);
+                    var triangles = new NativeArray<int3>(2, Allocator.Temp);
+                    triangles[0] = new int3(0, 1, 2);
+                    triangles[1] = new int3(1, 3, 2);
+                    BlobAssetReference<Collider> mesh = MeshCollider.Create(vertices, triangles);
+                    vertices.Dispose();
+                    triangles.Dispose();
+                    return mesh;
+                }
+                default:
+                {
+                    BlobAssetReference<Collider> box = ShapeCollider("box");
+                    BlobAssetReference<Collider> sphere = ShapeCollider("sphere");
+                    var children = new NativeArray<CompoundCollider.ColliderBlobInstance>(2, Allocator.Temp);
+                    children[0] = new CompoundCollider.ColliderBlobInstance { Collider = box, CompoundFromChild = new RigidTransform(orientation, new float3(1.0f, 0.0f, 0.0f)) };
+                    children[1] = new CompoundCollider.ColliderBlobInstance { Collider = sphere, CompoundFromChild = new RigidTransform(quaternion.identity, new float3(-2.0f, 0.5f, 0.0f)) };
+                    BlobAssetReference<Collider> compound = CompoundCollider.Create(children);
+                    children.Dispose();
+                    box.Dispose();
+                    sphere.Dispose();
+                    return compound;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The bounds that the cache computes from what it keeps of a body's collider are the bounds that the collider
+        /// computes, to the last bit, at poses near and far from the origin. A convex hull and a cylinder keep reading
+        /// the collider.
+        /// </summary>
+        [TestCase("box", true)]
+        [TestCase("sphere", true)]
+        [TestCase("capsule", true)]
+        [TestCase("compound", true)]
+        [TestCase("mesh", true)]
+        [TestCase("convex", false)]
+        [TestCase("cylinder", false)]
+        public unsafe void ShapeBoundsAreTheCollidersBoundsToTheLastBit(string kind, bool fromShapes)
+        {
+            BlobAssetReference<Collider> collider = ShapeCollider(kind);
+            uint colliderVersion = 1;
+            var cache = new DynamicBoundsCache(&colliderVersion, Allocator.TempJob);
+            var poses = new NativeArray<RigidTransform>(4000, Allocator.TempJob);
+            var mismatches = new NativeReference<int>(0, Allocator.TempJob);
+            var shaped = new NativeReference<int>(0, Allocator.TempJob);
+            bool wasEnabled = DynamicBoundsCache.ShapesEnabled;
+            try
+            {
+                DynamicBoundsCache.ShapesEnabled = true;
+                var random = new Unity.Mathematics.Random(11);
+                for (int i = 0; i < poses.Length; i++)
+                {
+                    float reach = i % 4 == 0 ? 1.0f : i % 4 == 1 ? 100.0f : i % 4 == 2 ? 1e4f : 1e6f;
+                    poses[i] = new RigidTransform(random.NextQuaternionRotation(), random.NextFloat3(-reach, reach));
+                }
+
+                new ShapeBoundsJob
+                {
+                    Body = new Physics.RigidBody { Collider = collider, Scale = 1.0f, Entity = new Entity { Index = 3, Version = 1 } },
+                    View = cache.Resize(1),
+                    Poses = poses,
+                    Mismatches = mismatches,
+                    FromShapes = shaped,
+                }.Run();
+
+                Assert.That(mismatches.Value, Is.Zero, $"{kind}: poses where the bounds differ");
+                Assert.That(shaped.Value, Is.EqualTo(fromShapes ? poses.Length : 0), $"{kind}: poses where the cache kept the shape");
+            }
+            finally
+            {
+                DynamicBoundsCache.ShapesEnabled = wasEnabled;
+                cache.Dispose();
+                poses.Dispose();
+                mismatches.Dispose();
+                shaped.Dispose();
+                collider.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// The cache makes a body's shape entry again from the collider when the index gets another collider or
+        /// another body, or when any body's collider changed since the entry was made, and only then.
+        /// </summary>
+        [Test]
+        public unsafe void AShapeEntryIsMadeAgainForAnotherColliderBodyOrColliderVersion()
+        {
+            BlobAssetReference<Collider> small = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(1.0f) });
+            BlobAssetReference<Collider> large = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(4.0f) });
+            uint colliderVersion = 1;
+            var cache = new DynamicBoundsCache(&colliderVersion, Allocator.Temp);
+            bool wasEnabled = DynamicBoundsCache.ShapesEnabled;
+            try
+            {
+                DynamicBoundsCache.ShapesEnabled = true;
+                DynamicBoundsCache.View view = cache.Resize(1);
+
+                // The test changes an entry by hand below, which the check would count as a mismatch.
+                view.Check = null;
+                var body = new Physics.RigidBody
+                {
+                    Collider = small,
+                    WorldFromBody = new RigidTransform(quaternion.Euler(0.2f, 0.4f, 0.6f), new float3(5.0f, 1.0f, -2.0f)),
+                    Scale = 1.0f,
+                    Entity = new Entity { Index = 3, Version = 1 },
+                };
+
+                AssertSameBounds(body.CalculateAabb(), view.ColliderBounds(0, &body), "first call");
+                Assert.That(view.Shapes[0].Collider, Is.EqualTo((long)small.GetUnsafePtr()));
+                Assert.That(view.Shapes[0].Local.Max.x, Is.EqualTo(0.5f));
+
+                // Another collider at the index.
+                body.Collider = large;
+                AssertSameBounds(body.CalculateAabb(), view.ColliderBounds(0, &body), "another collider");
+                Assert.That(view.Shapes[0].Local.Max.x, Is.EqualTo(2.0f), "the entry holds the new collider's shape");
+
+                // Another body with the same collider: the entry is made again, for the new body.
+                body.Entity = new Entity { Index = 3, Version = 2 };
+                view.ColliderBounds(0, &body);
+                Assert.That(view.Shapes[0].Body, Is.EqualTo(body.Entity), "the entry belongs to the new body");
+
+                // A collider change anywhere: the entry is made again. The test changes the entry's shape by hand, as
+                // a collider at the same address with another shape would, and the new version replaces it.
+                view.Shapes[0].Local.Max.x = 100.0f;
+                AssertSameBounds(view.Shapes[0].At(body.WorldFromBody), view.ColliderBounds(0, &body), "the entry holds while the version holds");
+                colliderVersion++;
+                AssertSameBounds(body.CalculateAabb(), view.ColliderBounds(0, &body), "after a collider change");
+                Assert.That(view.Shapes[0].Local.Max.x, Is.EqualTo(2.0f), "the entry was made again");
+                Assert.That(view.Shapes[0].Version, Is.EqualTo(colliderVersion));
+
+                // A scaled body never uses the entry.
+                body.Scale = 2.0f;
+                AssertSameBounds(body.CalculateAabb(), view.ColliderBounds(0, &body), "scaled");
+            }
+            finally
+            {
+                DynamicBoundsCache.ShapesEnabled = wasEnabled;
+                cache.Dispose();
+                small.Dispose();
+                large.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Computes the bounds of a hull at many poses and scales with ConvexCollider.CalculateAabb, and with the loop
+        /// that computed them one vertex at a time before, and counts the poses where the two differ in any bit.
+        /// </summary>
+        [BurstCompile(CompileSynchronously = true)]
+        unsafe struct HullBoundsJob : IJob
+        {
+            public BlobAssetReference<Collider> Hull;
+            public NativeArray<RigidTransform> Poses;
+            public NativeArray<int> Mismatches;
+
+            public void Execute()
+            {
+                ref ConvexCollider hull = ref UnsafeUtility.AsRef<ConvexCollider>(Hull.GetUnsafePtr());
+                for (int i = 0; i < Poses.Length; i++)
+                {
+                    float scale = i % 3 == 0 ? 1.0f : i % 3 == 1 ? 0.37f : -2.5f;
+                    Aabb fast = hull.CalculateAabb(Poses[i], scale);
+                    Aabb loop = LoopBounds(ref hull, Poses[i], scale);
+                    if (math.any(math.asuint(fast.Min) != math.asuint(loop.Min)) || math.any(math.asuint(fast.Max) != math.asuint(loop.Max)))
+                    {
+                        Mismatches[0]++;
+                    }
+                }
+            }
+
+            /// <summary>ConvexCollider.CalculateAabb as it was before it rotated four vertices at a time.</summary>
+            static Aabb LoopBounds(ref ConvexCollider hull, RigidTransform transform, float uniformScale)
+            {
+                BlobArray.Accessor<float3> vertices = hull.ConvexHull.Vertices;
+                float3 min = math.rotate(transform, vertices[0]);
+                float3 max = min;
+                for (int i = 1; i < vertices.Length; ++i)
+                {
+                    float3 v = math.rotate(transform, vertices[i]);
+                    min = math.min(min, v);
+                    max = math.max(max, v);
+                }
+
+                min = (min - new float3(hull.ConvexHull.ConvexRadius)) * uniformScale + transform.pos;
+                max = (max + new float3(hull.ConvexHull.ConvexRadius)) * uniformScale + transform.pos;
+                return new Aabb { Min = math.min(min, max), Max = math.max(min, max) };
+            }
+        }
+
+        /// <summary>
+        /// The bounds of a convex hull, which the hull now computes four vertices at a time, are the bounds that the
+        /// loop over one vertex at a time computed, to the last bit: for hulls of 4 to 255 vertices, with and without
+        /// a convex radius, at random poses near and far from the origin, at poses that put vertices on a coordinate
+        /// plane, where a rotated coordinate is zero, and at a position of negative zero.
+        /// </summary>
+        [TestCase(4, 0.0f)]
+        [TestCase(9, 0.0f)]
+        [TestCase(16, 0.05f)]
+        [TestCase(37, 0.0f)]
+        [TestCase(64, 0.05f)]
+        [TestCase(128, 0.0f)]
+        [TestCase(255, 0.0f)]
+        public unsafe void HullBoundsAreTheBoundsOfTheLoopOverVertices(int points, float bevel)
+        {
+            var input = new NativeArray<float3>(points, Allocator.Temp);
+            var random = new Unity.Mathematics.Random((uint)points);
+            for (int i = 0; i < points; i++)
+            {
+                // Some points on the coordinate planes, so that a rotation about an axis leaves a coordinate at zero.
+                float3 point = random.NextFloat3Direction() * new float3(1.0f, 2.0f, 0.5f);
+                input[i] = i % 5 == 0 ? new float3(point.x, 0.0f, point.z) : point;
+            }
+
+            ConvexHullGenerationParameters parameters = ConvexHullGenerationParameters.Default;
+            parameters.BevelRadius = bevel;
+            BlobAssetReference<Collider> hull = ConvexCollider.Create(input, parameters);
+            input.Dispose();
+            var poses = new NativeArray<RigidTransform>(20000, Allocator.TempJob);
+            var mismatches = new NativeArray<int>(1, Allocator.TempJob);
+            try
+            {
+                for (int i = 0; i < poses.Length; i++)
+                {
+                    float reach = i % 4 == 0 ? 1.0f : i % 4 == 1 ? 100.0f : i % 4 == 2 ? 1e4f : 1e6f;
+                    quaternion rotation = i % 7 == 0 ? quaternion.identity : i % 7 == 1 ? quaternion.RotateY(random.NextFloat(-3.0f, 3.0f)) : random.NextQuaternionRotation();
+                    float3 position = i % 11 == 0 ? new float3(-0.0f, 0.0f, -0.0f) : random.NextFloat3(-reach, reach);
+                    poses[i] = new RigidTransform(rotation, position);
+                }
+
+                new HullBoundsJob { Hull = hull, Poses = poses, Mismatches = mismatches }.Run();
+                Assert.That(mismatches[0], Is.Zero, $"poses where the bounds of a hull of {points} points differ");
+            }
+            finally
+            {
+                poses.Dispose();
+                mismatches.Dispose();
+                hull.Dispose();
+            }
+        }
+
+        /// <summary>
         /// An entry that is written again for the same body takes the filter of the body's collider, even when the
         /// collider has the address that the entry held. A body whose collider is gone for a build leaves its entry
         /// as it was, and its next collider can get the old collider's address from the heap, with another filter. The
