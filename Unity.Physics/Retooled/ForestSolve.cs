@@ -136,6 +136,14 @@ namespace Unity.Physics
             /// <summary>Whether the run solves a vessel island with the vessel kernel's own rows.</summary>
             public bool VesselMode;
 
+            /// <summary>
+            /// For a vessel island: the number of substeps in the step, and whether the strut loads are solved once at the
+            /// step's last substep from the mean of the substeps' loads, which needs a forest that lasts the whole step.
+            /// </summary>
+            public int Substeps;
+
+            public bool DeferStrutLoads;
+
             /// <summary>For a vessel island: the step's vessels and which of them the island holds.</summary>
             public VesselSet Vessels;
             public int* IslandVessels;

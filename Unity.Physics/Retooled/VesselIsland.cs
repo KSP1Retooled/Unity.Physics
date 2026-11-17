@@ -69,6 +69,10 @@ namespace Unity.Physics
                 Substep = stepInput.CurrentSubstep,
                 RigidBodies = stepInput.Bodies,
                 RigidBodyCount = stepInput.BodyCount,
+                Substeps = stepInput.NumSubsteps,
+
+                // A forest made for this solve alone ends with the substep, and its sums with it.
+                DeferStrutLoads = !temporary && stepInput.NumSubsteps > 1 && stepInput.CurrentSubstep >= 0,
             };
 
             int builds = forest->StructureBuilds;
@@ -90,6 +94,7 @@ namespace Unity.Physics
                 motionVelocities, motionDatas, stepInput, jacobianRows, recovery, sparseContacts, team, applyImpulses, impulses, linear,
                 angular);
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
+            FinishStrutLoads(ref run);
             stepInput.DirectSolverCache.AddTime(DirectSolverCache.ForestFinishTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
             bodyLinear.Dispose();
@@ -416,6 +421,8 @@ namespace Unity.Physics
                     Substep = substep,
                     RigidBodies = stepInput.Bodies,
                     RigidBodyCount = stepInput.BodyCount,
+                    Substeps = stepInput.NumSubsteps,
+                    DeferStrutLoads = stepInput.NumSubsteps > 1,
                 };
 
                 int builds = forest->StructureBuilds;
@@ -482,6 +489,7 @@ namespace Unity.Physics
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 }
 
+                FinishStrutLoads(ref run);
                 for (int k = 0; k < kinematic.Length; k++)
                 {
                     Integrator.IntegrateMotion(kinematic[k], motionDatas, motionVelocities, stepInput.Timestep);
@@ -1399,6 +1407,12 @@ namespace Unity.Physics
         {
             ForestIsland* forest = run.Forest;
             PrepareStatics(ref run);
+            forest->Context.DeferStrutLoads = run.DeferStrutLoads;
+            if (run.DeferStrutLoads && run.Substep <= 0)
+            {
+                forest->Statics.BeginStep();
+            }
+
             if (forest->SharedSections.Length == 0)
             {
                 RunVesselStage(ref run, VesselTasks.FinishSections, forest->SectionCount);
@@ -1461,6 +1475,65 @@ namespace Unity.Physics
                 kernel.StoreRootLoad(s, prefixForce[end - 1]);
                 kernel.ApplyStrutLoads(s);
                 sums.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// At a step's last substep, when the substeps only summed the loads of the sections that have closures inside them:
+        /// solves each such section once with the mean of its substeps' loads, and writes the loads of the edges on the
+        /// closures' loops and of the closures to the vessel set in place of the means that the substeps wrote there.
+        /// </summary>
+        static unsafe void FinishStrutLoads(ref ForestRun run)
+        {
+            if (!run.DeferStrutLoads || run.Substep != run.Substeps - 1)
+            {
+                return;
+            }
+
+            ForestIsland* forest = run.Forest;
+            ref VesselContext kernel = ref forest->Context;
+            ref VesselStatics statics = ref forest->Statics;
+            VesselSet set = run.Vessels;
+            int sections = math.min(forest->SectionCount, statics.SectionEntry.Length);
+            for (int s = 0; s < sections; s++)
+            {
+                int entryIndex = statics.SectionEntry[s];
+                if (entryIndex < 0)
+                {
+                    continue;
+                }
+
+                statics.Apply(ref kernel, s, VesselStatics.ApplyMode.Finish);
+                SectionStatics* entry = statics.Entries.Ptr + entryIndex;
+                int start = kernel.SectionPartStart[s];
+                for (int l = 0; l < entry->Links.Length; l++)
+                {
+                    int target = entry->Links[l].Target;
+                    if (target < 0)
+                    {
+                        continue;
+                    }
+
+                    int part = kernel.SectionParts[start + target];
+                    int setPart = forest->PartSetPart[part];
+                    if (setPart < 0)
+                    {
+                        continue;
+                    }
+
+                    VesselEdge* edge = forest->Edges.Ptr + part;
+                    VesselEdgeLoad load = forest->KernelEdgeLoads[part];
+                    load.Ratio = Ratio(load, edge->BreakForce, edge->BreakTorque);
+                    set.EdgeLoads[setPart] = load;
+                    forest->PartRatio[part] = (float)load.Ratio;
+                }
+
+                for (int c = statics.SectionClosureStart[s]; c < statics.SectionClosureStart[s + 1]; c++)
+                {
+                    int closure = statics.SectionClosures[c];
+                    VesselEdgeLoad load = forest->KernelClosureLoads[closure];
+                    set.ClosureLoads[forest->ClosureSetIndex[closure]] = new VesselEdgeLoad { Force = load.Force, Torque = load.Torque };
+                }
             }
         }
 

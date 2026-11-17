@@ -121,6 +121,12 @@ namespace Unity.Physics
         /// </summary>
         public VesselStatics* Statics;
 
+        /// <summary>
+        /// Add each section's loads to its static system's sum instead of solving in every substep. The caller then
+        /// solves once with the mean, see <see cref="VesselStatics.ApplyMode"/>.
+        /// </summary>
+        public bool DeferStrutLoads;
+
         public int SectionCount;
         public int OffDiagonalCount;
         public int ChunkCount;
@@ -856,7 +862,7 @@ namespace Unity.Physics
         {
             if (Statics != null && s < Statics->SectionEntry.Length)
             {
-                Statics->Apply(ref this, s);
+                Statics->Apply(ref this, s, DeferStrutLoads ? VesselStatics.ApplyMode.Add : VesselStatics.ApplyMode.Now);
             }
         }
 

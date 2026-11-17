@@ -162,6 +162,11 @@ namespace Unity.Physics
         public int FirstBody;
         public UnsafeList<int4> PairLinks;
 
+        /// <summary>The sum of each unknown's load over a step's substeps so far, and how many substeps it holds.</summary>
+        public UnsafeList<double> Sum;
+
+        public int Summed;
+
         /// <summary>The unknown that a body moves with, or -1 when the body is held fixed or isn't in the system.</summary>
         public int BodyUnknown(int body) => body < BodyMap.Length ? BodyMap[body] : -1;
 
@@ -177,6 +182,11 @@ namespace Unity.Physics
             Inverse.Dispose();
             Blocks.Dispose();
             Links.Dispose();
+            if (Sum.IsCreated)
+            {
+                Sum.Dispose();
+            }
+
             if (Position.IsCreated)
             {
                 Position.Dispose();
@@ -354,6 +364,8 @@ namespace Unity.Physics
                     created.KeyParts.Add(keyIndex[context.SectionParts[k]]);
                 }
 
+                created.Sum = new UnsafeList<double>(0, Allocator.Persistent);
+
                 SectionEntry[s] = Entries.Length;
                 Entries.Add(created);
                 fresh.Add(s);
@@ -389,6 +401,9 @@ namespace Unity.Physics
                 {
                     long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     Build(context, s, Entries.Ptr + SectionEntry[s], timeStep, partCount);
+                    SectionStatics* built = Entries.Ptr + SectionEntry[s];
+                    built->Sum.Resize(6 * math.max(1, built->Count), NativeArrayOptions.ClearMemory);
+                    built->Summed = 0;
                     long ticks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
                     System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Factored);
                     System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredUnknowns, Entries[SectionEntry[s]].Count);
@@ -750,12 +765,42 @@ namespace Unity.Physics
             return -1;
         }
 
+        /// <summary>What <see cref="Apply"/> does with a section's loads.</summary>
+        public enum ApplyMode
+        {
+            /// <summary>Solve with this substep's loads and write the looped edges' and closures' loads.</summary>
+            Now,
+
+            /// <summary>Add this substep's loads to the section's sum, and leave the tree method's loads in place.</summary>
+            Add,
+
+            /// <summary>Solve with the mean of the summed loads and write the looped edges' and closures' loads.</summary>
+            Finish,
+        }
+
+        /// <summary>Clears every section's sum of loads, before a step's first substep.</summary>
+        public void BeginStep()
+        {
+            for (int e = 0; e < Entries.Length; e++)
+            {
+                SectionStatics* entry = Entries.Ptr + e;
+                if (entry->Sum.IsCreated)
+                {
+                    UnsafeUtility.MemClear(entry->Sum.Ptr, (long)entry->Sum.Length * sizeof(double));
+                }
+
+                entry->Summed = 0;
+            }
+        }
+
         /// <summary>
         /// Takes the loads of section s's looped edges and closures from its static system. The tree method must have
         /// stored every locked edge's load first: an edge's load then is its child's whole subtree, which is also what
-        /// the bridges keep. Writes the looped edges' loads and every closure inside the section.
+        /// the bridges keep. Writes the looped edges' loads and every closure inside the section, unless the mode only
+        /// adds this substep's loads to the section's sum. The system is linear, so the solve of the mean of the substeps'
+        /// loads is the mean of their solves, and one solve in each step gives the mean loads that the step reports.
         /// </summary>
-        public void Apply(ref VesselContext context, int s)
+        public void Apply(ref VesselContext context, int s, ApplyMode mode = ApplyMode.Now)
         {
             int entryIndex = SectionEntry[s];
             int closureStart = SectionClosureStart[s], closureEnd = SectionClosureStart[s + 1];
@@ -779,29 +824,59 @@ namespace Unity.Physics
             double3x3 rotation = VectorMath.Rotation(firstPart->Orientation);
             double3x3 back = math.transpose(rotation);
             double3 origin = firstPart->Position;
-
-            // Each unknown's subtree load, about the first part's centre, in its frame.
             var buffer = new NativeArray<double>(12 * math.max(1, count), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             double* subtree = (double*)buffer.GetUnsafePtr();
             double* rhs = subtree + 6 * count;
-            for (int j = 0; j < count; j++)
+            if (mode != ApplyMode.Finish)
             {
-                int part = sectionParts[entry->Node[j]];
-                VesselEdgeLoad load = context.EdgeLoads[part];
-                double3 torque = load.Torque + math.cross(context.ChildPoint[part] - origin, load.Force);
-                VectorMath.Store3(subtree + 6 * j, math.mul(back, load.Force));
-                VectorMath.Store3(subtree + 6 * j + 3, math.mul(back, torque));
+                // Each unknown's subtree load, about the first part's centre, in its frame.
+                for (int j = 0; j < count; j++)
+                {
+                    int part = sectionParts[entry->Node[j]];
+                    VesselEdgeLoad load = context.EdgeLoads[part];
+                    double3 torque = load.Torque + math.cross(context.ChildPoint[part] - origin, load.Force);
+                    VectorMath.Store3(subtree + 6 * j, math.mul(back, load.Force));
+                    VectorMath.Store3(subtree + 6 * j + 3, math.mul(back, torque));
+                }
+
+                // What the links must give each unknown: its own subtree, less the subtrees of its children on loops,
+                // which hang from it through links of the system.
+                UnsafeUtility.MemCpy(rhs, subtree, 6L * count * sizeof(double));
+                for (int l = 0; l < entry->Links.Length; l++)
+                {
+                    StaticLink link = entry->Links[l];
+                    if (link.Target >= 0 && link.A >= 0)
+                    {
+                        (double6.Load(rhs + 6 * link.A) - double6.Load(subtree + 6 * link.B)).Store(rhs + 6 * link.A);
+                    }
+                }
             }
 
-            // What the links must give each unknown: its own subtree, less the subtrees of its children on loops, which
-            // hang from it through links of the system.
-            UnsafeUtility.MemCpy(rhs, subtree, 6L * count * sizeof(double));
-            for (int l = 0; l < entry->Links.Length; l++)
+            if (mode == ApplyMode.Add)
             {
-                StaticLink link = entry->Links[l];
-                if (link.Target >= 0 && link.A >= 0)
+                double* sum = entry->Sum.Ptr;
+                for (int i = 0; i < 6 * count; i++)
                 {
-                    (double6.Load(rhs + 6 * link.A) - double6.Load(subtree + 6 * link.B)).Store(rhs + 6 * link.A);
+                    sum[i] += rhs[i];
+                }
+
+                entry->Summed++;
+                System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started);
+                return;
+            }
+
+            if (mode == ApplyMode.Finish)
+            {
+                if (entry->Summed == 0)
+                {
+                    return;
+                }
+
+                double mean = 1.0 / entry->Summed;
+                double* sum = entry->Sum.Ptr;
+                for (int i = 0; i < 6 * count; i++)
+                {
+                    rhs[i] = mean * sum[i];
                 }
             }
 
