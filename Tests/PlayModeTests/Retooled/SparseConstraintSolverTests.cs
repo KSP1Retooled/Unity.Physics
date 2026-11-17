@@ -13,9 +13,8 @@ using Unity.Numerics.Linear.Solvers.Lowlevel;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Checks the sparse solver in two independent ways: compares with the package's dense complementarity solver, and
-    /// checks the conditions for a solution on each row of a matrix constructed here. Also checks exact counts for the
-    /// size of the factor.
+    /// Compare sparse solving with the dense complementarity solver and independently check row conditions and
+    /// factor sizes.
     /// </summary>
     public unsafe class SparseConstraintSolverTests
     {
@@ -81,9 +80,8 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             /// <summary>
-            /// Adds a contact between a body and the world, using the same rows as the direct solver. Each contact
-            /// point has a normal row that allows pushing only. Three friction rows follow: two along tangents and one
-            /// about the normal. Their bounds depend on the sum of the normal impulses.
+            /// Add body-world contact rows: push-only normals and three friction rows bounded by their summed
+            /// impulse.
             /// </summary>
             public void AddContact(int body, int normals, float friction)
             {

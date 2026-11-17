@@ -10,11 +10,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Saves problems from the direct solver to Library/SolverCapture/(name) for <see cref="SolverCaptureBench"/>. Set
-    /// RETOOLED_SOLVER_CAPTURE to a name before starting the editor, then fly a craft. Count only problems with at
-    /// least SmallestRows rows. Starting at each multiple of SolveInterval, save RunLength consecutive qualifying
-    /// problems, for up to MaxRuns groups. These groups sample different stages of the flight and show how each problem
-    /// changes between solves.
+    /// Capture direct solver problems to Library/SolverCapture/(RETOOLED_SOLVER_CAPTURE).
+    /// Sample RunLength consecutive qualifying problems every SolveInterval, up to MaxRuns groups.
     /// </summary>
     [InitializeOnLoad]
     public static unsafe class SolverCapture

@@ -13,9 +13,8 @@ using SolverIsland = Unity.Physics.DispatchPairSequencer.SolverIsland;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The job that finds the solver's islands treats each vessel as one node. These tests run the job alone on made-up
-    /// pairs and vessels, and check which islands it finds, how it numbers them, and in what order it lists their
-    /// bodies and vessels. They also check that the job's cache follows a change of the vessels' bodies.
+    /// Test vessel-node island finding, numbering, body order and cache invalidation on synthetic pairs and
+    /// vessels.
     /// </summary>
     public unsafe class IslandNodeTests
     {
@@ -186,9 +185,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Compares the job with a plain search over bodies, on random vessels and pairs, with and without the cache.
-        /// The islands must hold the same bodies and pairs, be numbered by their lowest body, and list the vessel parts
-        /// first, then the other bodies in ascending order.
+        /// Compare cached and uncached island finding with a reference search on random pairs and vessels.
+        /// Require numbering by lowest body and vessel parts before other bodies.
         /// </summary>
         [Test]
         public void RandomScenesMatchASearchOverBodies()

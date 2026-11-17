@@ -10,17 +10,15 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The direct solver with vessels: the tests build the vessel set themselves and hand it to the step through
-    /// <see cref="VesselSet.TestSet"/>, as the backend will once it compiles vessels from the store's joints. The parts of a
-    /// vessel have no Unity joints between them; the vessel kernel's rows hold them together.
+    /// Test supplied vessel sets passed through VesselSet.TestSet, with vessel constraints replacing internal Unity
+    /// joints.
     /// </summary>
     public class VesselModeTests : PhysicsScene
     {
         private const float PartMass = 4.0f;
 
         /// <summary>
-        /// A vessel set that a test fills and keeps alive while it steps. The parts' world indices are looked up again
-        /// before every step, from the last world the backend built.
+        /// Test-owned vessel set. Refresh world body indices before each step.
         /// </summary>
         private sealed unsafe class TestVessels : IDisposable
         {
@@ -164,9 +162,7 @@ namespace KSP.Retooled.Physics.Tests
         private int wasFusedParts;
 
         /// <summary>
-        /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
-        /// default, which sends every vessel island to the fused job. These tests keep the vessels in the substeps'
-        /// jobs, and <see cref="FusedVesselModeTests"/> runs the same tests with the default.
+        /// Fused-job part threshold for these tests. int.MaxValue keeps substep solving; zero uses the default.
         /// </summary>
         protected virtual int FusedParts => int.MaxValue;
 
@@ -200,8 +196,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Steps once without gravity, so that the backend builds a world to look the parts up in, and then hands the
-        /// vessels to the step. With gravity, the parts would fall apart for that one step, before any edge holds them.
+        /// Build the initial world without gravity before supplying vessel constraints, avoiding an unconstrained
+        /// falling step.
         /// </summary>
         private static void Begin(TestVessels set)
         {
@@ -286,8 +282,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// An arm of one part held out sideways from a part hooked to the world. With a swing spring that may not lock, the
-        /// arm droops by its moment over the spring. With an edge that may lock, it hardly droops at all.
+        /// Compare droop of a horizontal spring arm with locking disabled and enabled.
         /// </summary>
         [Test]
         public void ALockedArmBarelyDroopsWhereASpringDroopsByItsLoad()
@@ -423,10 +418,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A floating column pulled apart from both ends at 70% of its edges' break force. Its edges yield after a
-        /// few steps. Then the column leaves the fused job for one step and comes back. The edges' lock states go with
-        /// the column from the fused job's forest to the island's forest and back, so the edges stay yielding. Before,
-        /// each forest started the column again with every edge locked.
+        /// Verify yielding edge lock states survive transfers between fused and substep solver caches.
         /// </summary>
         [Test]
         public void LockStatesFollowAVesselInAndOutOfTheFusedJob()
@@ -479,9 +471,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A column dropped onto the ground at a slant, once with the island's jobs of each substep and once with the
-        /// fused vessel job, which takes the ground contacts into its boundary block. The two land the column in the
-        /// same place with the same loads.
+        /// Compare landing poses and loads between fused vessel and substep solving for a slanted column.
         /// </summary>
         [Test]
         public void TheFusedJobLandsAColumnAsTheIslandPathDoes()
@@ -534,17 +524,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A column whose top part is kinematic, moved sideways and up by hand in every step. The fused job moves a
-        /// kinematic part of its island at the end of each substep, and the substeps' jobs move it when the island is
-        /// not fused. The scene runs once with the island in the substeps' jobs and once with it in the fused job. The
-        /// kinematic part ends in the same place to the last bit, and the parts below it end in the same places within
-        /// what the two solvers differ by.
-        /// <para>
-        /// The game never hands the step a vessel with a kinematic part: VesselPipeline leaves a vessel out of the step
-        /// while any of its parts is kinematic, and <see cref="VesselSet"/> says that all vessel bodies are dynamic.
-        /// In this scene the parts below the kinematic part don't follow it, in either path, so the test only checks
-        /// that the two paths agree.
-        /// </para>
+        /// Compare fused and substep integration of a kinematic vessel part.
+        /// This is outside the dynamic-only vessel contract; test path agreement rather than physical following.
         /// </summary>
         [Test]
         public void AKinematicPartMovesTheSameInTheFusedJobAsInTheSubsteps()
@@ -605,9 +586,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Four columns of different heights fall onto the ground at a slant, each one a fused island of its own. The
-        /// fused job solves the four islands at the same time on several threads. The scene runs once on one thread and
-        /// once on the default job workers, and the two runs end with the same poses and loads, to the last bit.
+        /// Require bitwise-identical poses and loads for four fused columns on one and multiple threads.
         /// </summary>
         [Test]
         public void SeveralFusedIslandsEndTheSameOnOneThreadAndOnMany()
@@ -676,8 +655,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// By default, every vessel island goes to the fused job, however small it is and however many there are: one
-        /// floating column of 64 parts, and two of them. Before, two such columns stayed with the substeps' jobs.
+        /// Verify that the default fused path handles both one and multiple small vessel islands.
         /// </summary>
         [Test]
         public void SmallVesselsGoToTheFusedJobHoweverManyThereAre()
@@ -718,10 +696,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A fleet of twelve small vessels, columns of 3 to 8 parts, falls onto the ground at a slant. The scene runs
-        /// twice: once with the substeps' jobs, and once with the fused vessel job, which the default rule sends every
-        /// column to. The fused job solves several columns at once. It lands the columns where the substeps' jobs land
-        /// them, with the same loads, within the tolerance of <see cref="TheFusedJobLandsAColumnAsTheIslandPathDoes"/>.
+        /// Compare a fleet of small grounded vessels solved by fused jobs and substep jobs within tolerance.
         /// </summary>
         [Test]
         public void AFleetOfSmallVesselsLandsTheSameInTheFusedJobAsInTheSubsteps()
@@ -791,9 +766,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Forty floating vessels of two parts each, every one a fused island. The fused job keeps the state of every
-        /// one of them from step to step, so that no island builds its structure again. With room for only 32 islands,
-        /// eight of them built their structure again in every step.
+        /// Verify fused cache slots retain structures for forty two-part vessels.
         /// </summary>
         [Test]
         public void FortyFusedIslandsKeepTheirStructuresFromStepToStep()
@@ -802,9 +775,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Three hundred floating vessels of two parts each: more fused islands than the table of fused slots starts
-        /// with. The table grows, and no island builds its structure again. When the table held 256 islands at most,
-        /// 44 of them built their structure again in every step.
+        /// Verify fused cache growth retains structures for three hundred two-part vessels.
         /// </summary>
         [Test]
         public void MoreFusedIslandsThanTheTableStartsWithKeepTheirStructures()
@@ -845,10 +816,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A hundred floating vessels of two parts each, which the fused job doesn't take, so that the substeps solve
-        /// them: more islands than the 64 slots that the substeps' cache held before. The cache's table grows, and no
-        /// island builds its structure again. With 64 slots, the 36 islands past them built their structures again in
-        /// every substep. The test runs with the substeps' chain of jobs and with one thread doing the substeps.
+        /// Verify substep cache growth retains structures for one hundred vessels on chained and serial substep
+        /// paths.
         /// </summary>
         [Test]
         public void MoreUnfusedIslandsThanTheOldCacheHeldKeepTheirStructures([Values] bool folded)
@@ -891,11 +860,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Columns of 2 to 9 parts fall onto the ground at a slant. A loose box falls onto two of them, and two plain
-        /// bodies swing on a hinge, so that some islands can't be fused. The scene runs with the substeps' work done
-        /// by the chain of jobs, and with that work done on one thread: in a lane of the fused job when the fused job
-        /// takes the columns of 5 parts or more, and in a job of its own when the fused job is off. Both ways end with
-        /// the same poses and loads, to the last bit, because each island's work is the same and in the same order.
+        /// Require bitwise-identical poses and loads for chained and serial substep execution with mixed fusible
+        /// and ordinary islands.
         /// </summary>
         [Test]
         public void TheSubstepsEndTheSameOnOneThreadAsInTheirChainOfJobs([Values] bool fusedJob)
@@ -1089,8 +1055,7 @@ namespace KSP.Retooled.Physics.Tests
     }
 
     /// <summary>
-    /// The tests of <see cref="VesselModeTests"/> with the fused vessel job taking every vessel island, as it does by
-    /// default, so that the fused job's results are checked against the same expectations as the substeps' jobs'.
+    /// Run VesselModeTests with fused solving enabled for every eligible island.
     /// </summary>
     public class FusedVesselModeTests : VesselModeTests
     {

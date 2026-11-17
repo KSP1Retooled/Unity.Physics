@@ -1,11 +1,7 @@
-// Mesh commands. MeshCook.cs does the cooking; this file unpacks the commands, owns the memory and counts the references.
-//
-// A cooked mesh is one relocatable block, and those bytes are also the stream Unity stores in a pre-baked mesh asset.
-//
-// While the managed core is away for a domain reload, a cook or a load can't run. Unity wants a handle at once, and a mesh
-// handle is only read through Mesh::data, which may be null, so both are queued with a copy of their input and finish on
-// attach. Until then the mesh has no collider, bounds or mass. Only a stream cook can't wait, because Unity stores its
-// bytes straight away, so it fails. Destroying a mesh needs no managed code.
+// Unpack mesh commands, manage allocations and count references. MeshCook.cs performs cooking.
+// Queue mesh creation and loading while managed code is detached; handles have null data until attach completes
+// them.
+// Stream cooks cannot wait and fail while detached. Destruction needs no managed code.
 
 #include <cstdio>
 #include <cstdlib>

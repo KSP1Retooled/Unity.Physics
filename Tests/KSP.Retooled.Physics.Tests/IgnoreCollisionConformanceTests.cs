@@ -123,12 +123,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Two overlapping boxes ignore each other, so the step learns that their two bodies never collide. Then the
-        /// first box is turned off, and a third box is moved onto the second box. The third box also has an ignored pair,
-        /// with a box far away, but not with the second box, so the two must push apart. The backend keeps what it learned
-        /// about a pair of bodies by their rows in its store. Turning a box off destroys its body, and the store moves
-        /// its last body, the third box, into the row of the destroyed body. Turning the box off changes neither the
-        /// ignored pairs nor the colliders, so only the bodies' serial numbers show that the row holds another body.
+        /// Verify that serial numbers invalidate ignored-body-pair cache entries when swap-removal reuses store
+        /// rows.
         /// </summary>
         [Test]
         public void ABodyInTheRowOfAnIgnoredBodyStillCollides()

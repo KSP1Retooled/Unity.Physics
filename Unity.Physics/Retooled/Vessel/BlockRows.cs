@@ -5,8 +5,7 @@ using Unity.Numerics.Kernels;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Holds helpers for a row of twelve floats that acts on two blocks of a block vector. The first six floats of the
-    /// row act on one block, and the last six act on the other block. A block vector holds six doubles for each block.
+    /// Helpers for twelve-float Jacobian rows acting on two six-double blocks.
     /// </summary>
     internal static unsafe class BlockRows
     {
@@ -18,9 +17,7 @@ namespace Unity.Physics
             new double4(columns[0], columns[1], columns[2], columns[3]), new double2(columns[4], columns[5]));
 
         /// <summary>
-        /// Adds <paramref name="scale"/> times the row to the block vector. The first half of the row goes to block
-        /// sections.x, and the second half goes to block sections.y. A negative block index means that this half of the
-        /// row has no block, so the routine skips it.
+        /// Add scale times a row to its two section blocks. Skip halves with negative section indices.
         /// </summary>
         public static void Add(double* vector, int2 sections, float* columns, double scale)
         {

@@ -10,12 +10,8 @@ using Unity.Numerics.Linear.Solvers.Lowlevel;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Times the Cholesky factor and the solve that the boundary's dense solve uses, apart from any scene. A Burst job
-    /// factors a random symmetric positive definite matrix many times, and solves with the factor many times. The job
-    /// does this with the faer port, <see cref="CholeskyLLT.Factor"/> and <see cref="CholeskyLLT.Solve"/>, and with a
-    /// copy of the kernel that the solver used before (one entry at a time, each a dot product with one running vector
-    /// sum, and a solve with L^T that reads L down its columns). The bench prints microseconds per factor and per
-    /// solve for several sizes, and checks that both kernels give the same answer up to rounding.
+    /// Benchmark Cholesky factorization and solves against the previous scalar kernel.
+    /// Report microseconds for multiple sizes and verify results within rounding tolerance.
     /// </summary>
     [Explicit("A benchmark, under a minute long")]
     public unsafe class BoundaryFactorBench
@@ -192,10 +188,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Times whole boundary solves of a problem shaped like a grounded craft's boundary: 24 contacts of 5 rows, two
-        /// normal rows that only push and three friction rows coupled to them, 120 rows in all. Each solve starts from
-        /// the states of the answer to a nearby problem, as a vessel's solve starts from the last solve's states. The
-        /// bench prints microseconds per solve and the solve's counters, for each way of changing the factor.
+        /// Benchmark warm boundary solves with 24 five-row contacts. Report timings and factor-update counters.
         /// </summary>
         [Test]
         public void MeasureSolve()

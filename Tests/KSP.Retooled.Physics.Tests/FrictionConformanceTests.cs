@@ -4,9 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests how friction holds bodies in place and slows sliding, both on static ground and between dynamic bodies.
-    /// PhysX uses two friction anchors per contact patch, giving an effective coefficient twice the material
-    /// coefficient. The expected values here include that factor of two.
+    /// Test static and sliding friction on static and dynamic bodies.
+    /// Expected values include PhysX's two friction anchors per patch.
     /// </summary>
     public class FrictionConformanceTests : PhysicsScene
     {
@@ -101,10 +100,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(friction, Is.EqualTo(expected).Within(0.03f));
         }
 
-        /// <summary>
-        /// The sphere and the ground wear a material of their own. The default material is a project setting: the game's
-        /// project sets one with a coefficient of 0.25, but a new project uses Unity's, which has 0.6.
-        /// </summary>
+        // Use explicit materials so that friction expectations do not depend on the project's default material.
         [Test]
         public void ASlidingSphereSpendsItsCoefficient()
         {
@@ -233,10 +229,8 @@ namespace KSP.Retooled.Physics.Tests
             AssertSettles(Plank(), DynamicBox(new Vector3(0.0f, 0.7f, 0.0f)));
         }
 
-        /// <summary>
-        /// The ground, the plank and the box wear a material of their own, as in <see cref="ASlidingSphereSpendsItsCoefficient"/>.
-        /// With Unity's default material, the ground stops the plank in about 6 mm, short of what the test needs to see.
-        /// </summary>
+        // Use explicit materials for all bodies to keep the measured sliding distance independent of project
+        // defaults.
         [Test]
         public void ABoxRidesAMovingPlank()
         {

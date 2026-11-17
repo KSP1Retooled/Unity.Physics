@@ -8,9 +8,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Lists the plugin API's world commands by the ID that World.cpp passes. During attachment, the command count is
-    /// checked against the plugin's count. Commands that a world needs before attachment remain in World.cpp, so only
-    /// some commands run in <see cref="WorldKernel"/>.
+    /// World command IDs shared with World.cpp. Attach verifies the count.
+    /// Commands required before attach stay native.
     /// </summary>
     internal enum WorldCommand : uint
     {
@@ -42,9 +41,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Creates, destroys and iterates over bodies in a world's dense array. World commands arrive on the main thread
-    /// outside a simulation step. As with query functions, the plugin stores a Burst function pointer. Until
-    /// asynchronous compilation finishes, that pointer refers to a stub that runs the same code in Mono.
+    /// Manage bodies in a world's dense array. World commands run on the main thread outside simulation.
     /// </summary>
     [BurstCompile]
     internal static unsafe class WorldKernel
@@ -294,9 +291,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Frees any bodies that remain when a world is destroyed. Unity normally destroys bodies before destroying
-        /// their world. This method releases any remaining entities, detaches their shapes and frees the body records.
-        /// A shape can outlive its body.
+        /// Release entities, detach shapes and free bodies remaining when the world is destroyed. Shapes may
+        /// outlive their bodies.
         /// </summary>
         internal static void FreeBodies(NativeStore.WorldData* world, NativeStore.StoreGlobals* globals)
         {

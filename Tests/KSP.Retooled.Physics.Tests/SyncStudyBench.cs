@@ -15,10 +15,9 @@ using UnityEngine.Jobs;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A throwaway measurement for the study of the end of the step. It builds free bodies that are each the root of
-    /// their own transform hierarchy, as KSP's physical parts are in flight, and times the stages of Unity's step one by
-    /// one, the commands that Unity sends per body during the read-back, and two ways to write the poses ourselves.
-    /// Results go to the log and to SyncStudyBench.txt in Logs.
+    /// Measure Unity step stages, pose read-back commands and direct pose writes for independent transform
+    /// hierarchies.
+    /// Write results to Logs/SyncStudyBench.txt.
     /// </summary>
     [Explicit("A benchmark")]
     [Category("Slow")]

@@ -4,9 +4,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests a heavy stack supported by very light bodies that are pinned to the world and rest on the ground, as
-    /// launch clamps support a rocket. The forces on the light bodies are very large relative to their mass, but the
-    /// scene must remain stable.
+    /// Verify stability of heavy stacks on light, grounded bodies pinned to the world, as with launch clamps.
     /// </summary>
     public class HeavyOnLightConformanceTests : PhysicsScene
     {

@@ -9,11 +9,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A study of which commands Unity sends in each stage of a step. It needs a plugin built with
-    /// RETOOLED_COMMAND_TRACE=ON, which counts the commands of each category and id on the main thread and on other
-    /// threads. The scene has awake free bodies with child transforms, sleeping bodies, kinematic bodies with targets,
-    /// bodies whose Transforms a script moved, and static colliders. Results go to the log and to CommandTrace.txt in
-    /// Logs.
+    /// Trace command categories and IDs by thread across physics stages. Requires RETOOLED_COMMAND_TRACE=ON.
+    /// Write results to the log and Logs/CommandTrace.txt.
     /// </summary>
     [Explicit("A study that needs a plugin built with RETOOLED_COMMAND_TRACE")]
     [Category("Slow")]

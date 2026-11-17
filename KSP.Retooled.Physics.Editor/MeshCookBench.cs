@@ -8,9 +8,8 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// Measures the cost of cooking a mesh and building its collider on first use, on the selected backend. The meshes
-    /// come from the game, with an additional grid sized like a PQS terrain patch and a sphere. Run with
-    /// `unity exec --backend`. Output lines start with [MeshBench].
+    /// Measure mesh cooking and first-use collider construction on the selected backend.
+    /// Run with `unity exec --backend`. Results use the [MeshBench] log prefix.
     /// </summary>
     public static class MeshCookBench
     {
@@ -38,9 +37,8 @@ namespace KSP.Retooled.Physics.Editor
             Mesh grid = Grid(15);
             Mesh sphere = Sphere();
 
-            // Mesh cooking and collider building run in Mono until Burst finishes compiling their code. The compiled
-            // cook kernel only reaches the plugin from the main thread, and the loop below sleeps on the main thread,
-            // so wait for the kernels here first.
+            // Install the Burst kernels before sleeping on the main thread; installation also needs the main
+            // thread.
             Stopwatch wait = Stopwatch.StartNew();
             BackendHost.WaitForCompiledKernels(BurstWaitSeconds);
             long managed = -1;
@@ -145,8 +143,8 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Measures the first query after adding a collider, in milliseconds. This includes building the collider blob
-        /// and rebuilding the query world, which otherwise has no colliders.
+        /// Measure the first query after adding a collider, including collider construction and rebuilding an
+        /// otherwise empty query world.
         /// </summary>
         private static double BuildOnce(Mesh mesh, bool convex)
         {

@@ -5,9 +5,8 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Provides Burst entry points for <see cref="StepState"/>. As with the other kernels, these methods run in Mono
-    /// until asynchronous Burst compilation finishes. Each step runs the physics system group. One group serves every
-    /// physics scene, so its systems use <see cref="Current"/> to find the world for the current step.
+    /// Burst entry points for StepState. Current selects the scene being stepped by the shared physics system
+    /// group.
     /// </summary>
     [BurstCompile]
     internal static unsafe class StepKernel
@@ -61,8 +60,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Finishes the step whose solve PrepareSolve prepared, while that solve may still be running, and returns 1.
-        /// Returns 0 and does nothing if no solve has been prepared since the last step finished.
+        /// Finish a prepared step, possibly while solving is still running. Return one, or zero if no step is
+        /// prepared.
         /// </summary>
         [BurstCompile]
         internal static int FinishPreparedStep(float deltaTime)
@@ -87,8 +86,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Does the work that is left of a refit of the dynamic tree that a step left running (see
-        /// <see cref="SharedDynamicTreeRefit.Help"/>). The plugin calls it from a query, on any thread.
+        /// Help remaining dynamic refit work from a query on any thread; see SharedDynamicTreeRefit.Help.
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true)]
         [AOT.MonoPInvokeCallback(typeof(NativeStore.RefitFunction))]

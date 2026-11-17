@@ -7,8 +7,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Defines the plugin API's body commands using the ids passed by Body.cpp. Attach checks that the number of
-    /// commands matches the plugin's count.
+    /// Body command IDs shared with Body.cpp. Attach verifies the command count.
     /// </summary>
     internal enum BodyCommand : uint
     {
@@ -70,16 +69,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Implements body commands. Forces and torques accumulate here until <see cref="ApplyForcesJob"/> applies them
-    /// during the next step.
+    /// Implement body commands and accumulate forces and torques for the next step.
+    /// Unity may read poses from workers; the plugin handles those reads directly without entering this kernel.
     /// </summary>
-    /// <remarks>
-    /// The plugin stores a Burst function pointer, as it does for query functions. Until asynchronous compilation
-    /// finishes, that pointer refers to a stub that runs the same code in Mono. Body commands arrive outside a step,
-    /// mostly on the main thread. Unity also reads poses from worker threads. The plugin answers those reads itself,
-    /// through the rows in the state that <see cref="BodyEntities"/> left them, and so it does for the main thread's
-    /// reads right after a step (see Body.cpp). GetPose reaches this kernel only on the main thread at other times.
-    /// </remarks>
     [BurstCompile]
     internal static unsafe class BodyKernel
     {
@@ -98,9 +90,7 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
         internal static void Run(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals)
         {
-            // Unity reads every awake body's pose after each step, and the poses of the moved bodies before each step. A
-            // span costs about as much as such a read, so reads run without the category's span. A read that does more
-            // work, such as GetClosestWorldPointOnBounds, still has its own span.
+            // Skip category markers for frequent reads; their overhead is comparable to the read itself.
             if (IsRead((BodyCommand)command))
             {
                 Dispatch(command, handle, args, globals);
@@ -160,7 +150,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Burst omits this method, so it runs only in Mono. The Mono version must catch the exception here.
+        /// Run the Mono fallback and catch exceptions before returning to native code. Omitted by Burst.
         /// </summary>
         [BurstDiscard]
         private static void RunInMono(uint command, void* handle, NativeStore.CommandArgs* args, NativeStore.StoreGlobals* globals, ref bool ranInMono)
@@ -406,18 +396,16 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity sets the pose of every body beneath a transform that moved. Most of those bodies are already at the
-        /// supplied pose. Moving a static body requires rebuilding the static tree.
+        /// Set a body's pose and mark the static tree dirty when a static body moves.
         /// </summary>
         private static void SetPose(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
             float3 position = hot->pose->Position;
             quaternion rotation = hot->pose->Rotation;
 
-            // A pose that equals the stored one to the last bit changes nothing. Setting the rotation again would convert
-            // the angular velocity to world space and back, which can change its last bits, so the body stays as it is.
-            // The body still wakes if Unity asks, as a PhysX body does. The bits are compared rather than the floats, so
-            // that -0 against 0, or a NaN, still counts as a change.
+            // Preserve the exact state when pose bits match, avoiding rounding from angular velocity
+            // conversions.
+            // Still honor wake requests. Bitwise comparison distinguishes signed zero and NaN payloads.
             if (math.all(math.asuint(a->position) == math.asuint(position)) && math.all(math.asuint(a->rotation.value) == math.asuint(rotation.value)))
             {
                 WakeIfAsked(hot, a);
@@ -475,9 +463,8 @@ namespace KSP.Retooled.Physics
                 JointTopology.Changed();
             }
 
-            // PhysX ends the touching pairs of a body that becomes kinematic or stops being kinematic, and starts them
-            // again, also when the body sleeps. The next step checks the touching pairs and wakes their bodies (see
-            // WakeRefilteredPairsJob).
+            // Match PhysX: changing isKinematic restarts touching pairs, even for sleeping bodies.
+            // WakeRefilteredPairsJob reevaluates the pairs on the next step.
             if (((hot->flags ^ before) & NativeStore.BodyFlags.Kinematic) != 0)
             {
                 PairFilterVersion.Changed();
@@ -485,9 +472,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity supplies world-space poses for static bodies' shapes here and in SetPose. It supplies local poses for
-        /// dynamic bodies' shapes, despite the comments in the plugin API. The store keeps every shape's pose relative
-        /// to its body.
+        /// Convert a static shape's world-space pose to body-local storage.
+        /// Unity supplies local shape poses for dynamic bodies, despite the plugin API comments.
         /// </summary>
         internal static void StoreStaticShapePose(NativeStore.ShapeData* shape, NativeStore.BodyData* body, float3 worldPosition, quaternion worldRotation)
         {
@@ -600,9 +586,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Uses the cyclic Jacobi method to rotate a symmetric matrix until it is diagonal. The accumulated rotation is
-        /// stored in <paramref name="axes"/>, whose columns become the eigenvectors. Both arrays use the index [row * 3
-        /// + column].
+        /// Diagonalize a symmetric 3 by 3 matrix using cyclic Jacobi rotations.
+        /// Store eigenvectors in the columns of axes. Both arrays use row-major order.
         /// </summary>
         private static void Diagonalize(double* a, double* axes)
         {
@@ -708,8 +693,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Distributes the body's mass among its shapes in proportion to their volumes, excluding triggers. This
-        /// follows PhysX's updateMassAndInertia.
+        /// Distribute mass among non-trigger shapes by volume, following PhysX updateMassAndInertia.
         /// </summary>
         private static void RecomputeMassProperties(NativeStore.Body* body, NativeStore.BodyData* hot, NativeStore.CommandArgs* a)
         {
@@ -798,8 +782,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Adds the contribution of a shape with the given mass to the inertia tensor about the body's centre of mass.
-        /// This includes the shape's inertia rotated into the body's frame and the parallel axis term.
+        /// Add a shape's rotated inertia and parallel axis contribution to the body's inertia tensor.
         /// </summary>
         private static void AddToTensor(double* tensor, NativeStore.ShapeData* shape, double mass, float3 offset, float3x3 inertiaPerUnitMass)
         {
@@ -830,8 +813,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Converts angular acceleration or a change in angular velocity into torque using the principal axes and
-        /// moments of inertia. These inputs do not include the effect of inertia.
+        /// Apply the principal moments and axes of inertia to an angular acceleration or velocity change.
         /// </summary>
         private static float3 ApplyInertia(NativeStore.BodyData* hot, float3 angular)
         {

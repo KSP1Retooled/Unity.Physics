@@ -8,9 +8,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Defines the plugin API's shape commands by the id passed from Shape.cpp. Attach checks that the command count
-    /// matches the plugin's count. The names here matter only for commands handled by <see cref="ShapeKernel"/>; mesh
-    /// commands are handled in Mesh.cpp.
+    /// Shape command IDs shared with Shape.cpp. Attach verifies the count; Mesh.cpp handles mesh commands.
     /// </summary>
     internal enum ShapeCommand : uint
     {
@@ -51,10 +49,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Handles the parts of shape commands that the plugin does not handle itself. Commands arrive outside a simulation
-    /// step, mostly on the main thread. Unity also sets poses from job workers, which read rows in the state left by
-    /// <see cref="BodyEntities"/>. As with query functions, the plugin stores a Burst function pointer. Until
-    /// asynchronous compilation finishes, that pointer refers to a stub that runs the same code in Mono.
+    /// Handle shape commands outside simulation. Unity may also set poses from workers using existing body row
+    /// pointers.
     /// </summary>
     [BurstCompile]
     internal static unsafe class ShapeKernel
@@ -212,10 +208,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity rewrites both colliders' filters after every IgnoreCollision call so that PhysX evaluates their pairs
-        /// again. Contact processing reads the current ignore id directly. Rebuild a collider only if data baked into
-        /// it has changed. PhysX removes a shape's pairs whenever its filter is set, so wake a sleeping body to check
-        /// which shapes it still touches.
+        /// Apply shape filter changes and wake the body to reevaluate touching pairs.
+        /// Rebuild only when filter data baked into the collider changes.
         /// </summary>
         private static void SetFilter(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
@@ -317,10 +311,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the pose in the same space that SetPose accepts: relative to the body, or in world space for a shape
-        /// attached to a static body. Unity synchronizes transforms on job workers and skips colliders whose new poses
-        /// match this value. Returning a pose in a different space would cause every collider under a moved transform
-        /// to require a pose update on the main thread.
+        /// Return the shape pose in SetPose coordinates: world space for static shapes, body-local space otherwise.
         /// </summary>
         private static void GetPose(NativeStore.Shape* shape, NativeStore.CommandArgs* a)
         {
@@ -337,11 +328,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Tests whether a dynamic body's shape has stayed in the same place relative to the body. Unity calculates
-        /// that local pose from world transforms that move with the craft. Even when a collider stays in place, the
-        /// calculated pose differs slightly each frame, and the quaternion may have the opposite sign while
-        /// representing the same rotation. Treating these differences as movement would require rebuilding colliders
-        /// every step, either by moving a compound's children or by baking a collider again.
+        /// Ignore small rounding differences and quaternion sign changes in body-local shape poses to avoid
+        /// unnecessary collider rebuilds.
         /// </summary>
         private static bool IsRounding(float3 position, quaternion rotation, float3 newPosition, quaternion newRotation)
         {
@@ -368,9 +356,7 @@ namespace KSP.Retooled.Physics
             {
                 BodyKernel.StoreStaticShapePose(&shape->data, StoreOps.Hot(shape->body), a->position, a->rotation);
 
-                // A shift of the floating origin moves a static body and its shapes together. Converting the shape's
-                // world pose back to a local pose introduces different rounding each time. Treat changes this small as
-                // rounding rather than movement.
+                // Ignore rounding from converting static shape poses after a floating origin shift.
                 float tolerance = 1e-6f * (math.cmax(math.abs(a->position)) + 1.0f);
                 if (math.all(math.abs(shape->data.localPosition - position) <= tolerance)
                     && math.all(math.abs(shape->data.localRotation.value - rotation.value) <= 1e-6f))

@@ -5,9 +5,7 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// How the island cache gives its slots to islands. A slot follows the identity of the island's first body, which
-    /// the backend makes from the body's serial number, not the body's row in the world: a craft keeps its slot when its
-    /// bodies move to other rows, and a new craft in a destroyed craft's rows doesn't take over its slot.
+    /// Test island cache slots keyed by body serial so that row movement preserves state and row reuse does not.
     /// </summary>
     public unsafe class DirectSolverCacheTests
     {
@@ -65,9 +63,7 @@ namespace KSP.Retooled.Physics.Tests
         private static void NextStep(ref DirectSolverCache cache) => Assign(ref cache, new int[0], new ulong[0]);
 
         /// <summary>
-        /// A step has more fused vessel islands than the table of fused slots starts with. The table grows, and every
-        /// vessel finds the same forest in the next step. When the table had a fixed size, every island past its end
-        /// solved with a forest for one step only and built its structure again in every step.
+        /// Verify fused slot table growth preserves every vessel's cached forest across steps.
         /// </summary>
         [Test]
         public void EveryFusedVesselKeepsItsForestWhenThereAreMoreThanTheTableStartsWith()
@@ -136,9 +132,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A step has 200 islands, more than the 64 slots that the substeps' table starts with. The table grows, and in
-        /// the next step every island finds its slot again, even when the islands come in the other order. When the
-        /// table had a fixed size of 64, the islands past the 64th solved without a slot in every step.
+        /// Verify substep slot table growth preserves 200 island slots when their order reverses.
         /// </summary>
         [Test]
         public void EveryIslandKeepsItsSlotWhenThereAreMoreThanTheTableStartsWith()
@@ -181,9 +175,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The fused job keeps the state of its islands in slots of its own, so the job that marks the fused islands
-        /// gives them the identity <see cref="DirectSolverCache.NoSlot"/>. Such an island gets no slot, and it takes
-        /// no slot from the other islands.
+        /// Verify fused islands marked NoSlot do not consume or displace substep cache slots.
         /// </summary>
         [Test]
         public void AnIslandThatNeedsNoSlotGetsNone()
@@ -205,9 +197,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Once every slot of the substeps' table has been used, a new island takes the slot of an island that no step
-        /// has used for <see cref="DirectSolverCache.SlotKeepSteps"/> steps. Before that, the new island gets a new
-        /// slot, so that an island that sat out a few steps finds its slot again.
+        /// Verify inactive substep slots are reused only after SlotKeepSteps, preserving recently absent islands.
         /// </summary>
         [Test]
         public void ANewIslandTakesOnlyTheSlotOfAnIslandThatStayedAwayLong()

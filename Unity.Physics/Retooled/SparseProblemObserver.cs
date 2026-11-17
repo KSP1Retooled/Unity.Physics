@@ -5,10 +5,8 @@ using Unity.Burst;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Exposes each problem completed by the direct solver to managed code, allowing real problems to be saved and
-    /// replayed offline. The solver runs in Burst on a worker thread and calls a managed method through a pointer
-    /// stored in a SharedStatic. The observer runs on that same thread during the job, so time spent in the observer
-    /// adds to the step's duration.
+    /// Report completed direct-solver problems to managed observers for capture and replay.
+    /// Callbacks run on the solving worker inside the job, adding to step time.
     /// </summary>
     internal static unsafe class SparseProblemObserver
     {
@@ -25,9 +23,8 @@ namespace Unity.Physics
         static Callback current;
 
         /// <summary>
-        /// Registers <paramref name="callback"/> for subsequent reports, or disables reports if it is null. A pointer
-        /// to a managed method becomes invalid when its domain is unloaded. The caller must therefore clear the
-        /// callback before an assembly reload.
+        /// Register an observer, or disable reporting with null.
+        /// Clear the callback before domain unload invalidates its managed function pointer.
         /// </summary>
         public static void Set(Callback callback)
         {

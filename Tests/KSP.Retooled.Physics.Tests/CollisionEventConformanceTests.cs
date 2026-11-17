@@ -535,9 +535,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A trigger that turns solid around a body ends the trigger pair and starts a contact pair in the same step, as
-        /// in PhysX: OnTriggerExit, then OnCollisionEnter, and no more OnTriggerStay. When the trigger turns back while
-        /// the body is still inside, the pair at the same two shapes enters again and stays.
+        /// Verify that a trigger becoming solid sends an exit and collision enter in the same step, and can enter
+        /// again when restored.
         /// </summary>
         [Test]
         public void ATriggerTurnedSolidAroundABodyExitsAndCollides()
@@ -569,9 +568,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// As <see cref="ATriggerTurnedSolidAroundABodyExitsAndCollides"/>, with the body asleep inside the static
-        /// trigger. The pair of two resting bodies is kept without being seen, so the change has to wake the body, as
-        /// PhysX does.
+        /// Verify that a trigger becoming solid wakes a sleeping overlapping body and restarts the pair in the same
+        /// step.
         /// </summary>
         [Test]
         public void ATriggerTurnedSolidAroundASleepingBodyExitsAndCollides()
@@ -598,9 +596,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that turns into a trigger while it presses into a wall ends the contact pair and starts a trigger
-        /// pair in the same step: OnCollisionExit and OnTriggerEnter, then OnTriggerStay. When it turns solid again,
-        /// the trigger pair exits and stops staying.
+        /// Verify collision-to-trigger transitions and that making the body solid again ends trigger stays.
         /// </summary>
         [Test]
         public void ABodyTurnedTriggerInsideAWallEndsTheContactAndEnters()
@@ -633,10 +629,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that rests on a wall within the contact offsets, without overlapping it, turns into a trigger. As in
-        /// PhysX, the contact pair ends with OnCollisionExit, and no trigger pair starts, because a trigger pair needs
-        /// the shapes to overlap. PhysX gives the same messages for gaps from 0.2 mm to 5 mm, and with the wall turned
-        /// into a trigger instead of the body.
+        /// Verify that converting a near but non-overlapping contact to a trigger ends the contact without starting
+        /// a trigger pair.
         /// </summary>
         [Test]
         public void AContactPairTurnedTriggerWhileApartOnlyExits()
@@ -656,12 +650,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that rests on a wall under gravity turns into a trigger. As in PhysX, the trigger pair starts in the
-        /// step of the change: OnTriggerEnter, OnTriggerStay and OnCollisionExit all come in that step. The trigger
-        /// agent's note that such a pair starts one step late came from the trigger probe's scene C, where a box starts
-        /// 5 cm inside a wall without gravity: PhysX pushes it out over three steps while it tilts, so a corner is still
-        /// inside the wall when it turns into a trigger, while this backend pushes it out in one step, and the tilt
-        /// takes the corner back in a step later. The pair's messages follow the poses in both backends.
+        /// Verify that a resting body converted to a trigger reports its overlap in the same step, matching PhysX.
         /// </summary>
         [Test]
         public void ABodyRestingOnAWallTurnedTriggerEntersInTheSameStep()
@@ -680,9 +669,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that becomes kinematic inside a trigger ends its trigger pair and starts it again in the same step, as
-        /// in PhysX: OnTriggerExit, then OnTriggerEnter and OnTriggerStay. The same happens when the body becomes dynamic
-        /// again. Between the changes, the pair stays.
+        /// Verify that kinematic/dynamic transitions restart trigger pairs in the same step.
         /// </summary>
         [Test]
         public void ABodyMadeKinematicInsideATriggerExitsAndEntersAgain()
@@ -707,8 +694,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// As <see cref="ABodyMadeKinematicInsideATriggerExitsAndEntersAgain"/>, with the body asleep inside the trigger.
-        /// PhysX ends and starts the pair in the step of the change all the same.
+        /// Verify that kinematic changes restart trigger pairs even for sleeping bodies.
         /// </summary>
         [Test]
         public void ASleepingBodyMadeKinematicInsideATriggerExitsAndEntersAgain()
@@ -728,9 +714,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that touches another dynamic body and becomes kinematic ends the contact pair and starts it again in
-        /// the same step, as in PhysX: OnCollisionExit, then OnCollisionEnter. The same happens when it becomes dynamic
-        /// again.
+        /// Verify that kinematic/dynamic changes send collision exit and reenter events in the same step.
         /// </summary>
         [Test]
         public void ABodyMadeKinematicWhileTouchingAnotherBodyExitsAndEntersAgain()
@@ -755,9 +739,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A static trigger that moves to a layer that doesn't collide with a body asleep inside it ends the pair with
-        /// OnTriggerExit, as in PhysX. The change wakes the body, because a pair of two resting bodies is kept without
-        /// being seen. Moving the trigger back starts the pair at the same two shapes again.
+        /// Verify that a filter change wakes a body inside a trigger and ends the pair; restoring the layer permits
+        /// reentry.
         /// </summary>
         [Test]
         public void ATriggerMovedToAnIgnoredLayerAroundASleepingBodyExits()
@@ -794,9 +777,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A body that stops detecting collisions inside a trigger ends the pair with OnTriggerExit, and starts it
-        /// again when it detects collisions again, as in PhysX. A body whose object is deactivated inside the trigger
-        /// ends the pair without a message, and when it is activated again outside the trigger, it hears no stays.
+        /// Verify trigger exits when collision detection is disabled and no stale stays after deactivation and
+        /// reactivation elsewhere.
         /// </summary>
         [Test]
         public void ATriggerPairEndsWhenTheBodyStopsDetectingCollisionsOrIsDeactivated()
@@ -825,10 +807,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Unity keeps each trigger pair that entered, and it sends OnTriggerStay for the pair in every step until an
-        /// event ends the pair. When a collider is disabled inside a trigger, the backend has to end the pair with the
-        /// event for a removed shape, as PhysX does. Otherwise Unity keeps the pair, and when the collider is enabled
-        /// again far from the trigger, Unity starts sending OnTriggerStay for it again.
+        /// Verify that disabling a collider inside a trigger clears Unity's cached pair, preventing stays after
+        /// reactivation elsewhere.
         /// </summary>
         [Test]
         public void AColliderEnabledAgainOutsideATriggerGetsNoStays()
@@ -856,21 +836,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A new trigger pair whose two shapes took the addresses of a pair that ended because its shapes were
-        /// destroyed. Unity keeps the trigger pairs by the addresses of their shapes, and it adds an entering pair only
-        /// if it has no pair at those addresses. If the backend didn't end the old pair, Unity kept the old pair with
-        /// the ids of the destroyed colliders, and the new pair got one OnTriggerStay and then no more. The store frees
-        /// the memory of destroyed shapes, but the heap doesn't hand the same addresses back in any fixed order, so the
-        /// test repeats the scene until the new pair took the addresses of an earlier destroyed pair a few times. Without
-        /// the fix, Unity kept the old pairs of every earlier iteration, so the new pair can match any of them.
+        /// Verify sustained trigger stays when new shapes reuse the addresses of a removed pair.
+        /// Repeat until address reuse occurs. Fail only for pairs destroyed by this test; warn about unrelated
+        /// stale cache entries.
         /// </summary>
-        /// <remarks>
-        /// Unity's cache lives as long as the editor, so a pair that earlier tests left in it can also take the stays of
-        /// a new pair. That was how this test found the bugs that <see cref="TriggerPairsOutlastADetachOfTheCore"/>,
-        /// <see cref="ATriggerTurnedSolidAroundABodyExitsAndCollides"/> and the bounds cache's tests cover. The test
-        /// fails only for a pair at the addresses of a pair that it destroyed itself, and it logs a warning for a pair
-        /// that lost its stays to a pair from outside the test.
-        /// </remarks>
         [Test]
         public unsafe void ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays()
         {
@@ -891,9 +860,7 @@ namespace KSP.Retooled.Physics.Tests
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
                 Simulate();
 
-                // What keeps the stays of a pair that takes the old addresses is the event that ends the old pair in
-                // Unity's cache. The test checks that event in every iteration, because the heap hands an old address
-                // back only now and then.
+                // Check removal events on every iteration; address reuse is allocator-dependent.
                 Assert.That(EndsRemovedPair(oldZoneShape, oldBoxShape), $"iteration {iteration}: the step after the destruction ends the old pair in Unity's cache");
                 bool reused = destroyedPairs.Contains((ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)));
                 Simulate(100);
@@ -912,9 +879,8 @@ namespace KSP.Retooled.Physics.Tests
                 DestroyAll();
             }
 
-            // How often the heap gives the new shapes the old shapes' addresses isn't up to this code: in one run, it was 2
-            // times in 200 iterations. The event above is checked in every iteration, so fewer reuses only mean fewer
-            // checks of the stays themselves.
+            // Address reuse depends on heap allocation. Removal events are checked on every iteration
+            // regardless.
             if (reuses < wantedReuses)
             {
                 Debug.Log($"{nameof(ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays)}: the new shapes took the old shapes' addresses {reuses} times in 200 iterations.");
@@ -922,8 +888,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Whether the last step reported the event for a removed shape, with zero ids, that ends the trigger pair of two
-        /// shapes in Unity's cache.
+        /// Whether the last step emitted a zero-ID shape-removal event to clear Unity's trigger cache.
         /// </summary>
         private static unsafe bool EndsRemovedPair(long triggerShape, long colliderShape)
         {
@@ -942,11 +907,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Detaching the managed core, as a domain reload in the editor does, discards the step state, but Unity keeps the
-        /// trigger pairs that entered. The next step state takes the touching pairs over: a pair that still touches
-        /// doesn't enter again, and a collider that is disabled after the reload ends its pair in Unity's cache with the
-        /// event for a removed shape. Without that event, Unity kept the pair with the ids of the collider, and a new
-        /// pair at the same two addresses got one OnTriggerStay and then no more.
+        /// Verify that touching pairs survive managed detach without duplicate enters, and that later removal
+        /// clears Unity's trigger cache.
         /// </summary>
         [Test]
         public unsafe void TriggerPairsOutlastADetachOfTheCore()

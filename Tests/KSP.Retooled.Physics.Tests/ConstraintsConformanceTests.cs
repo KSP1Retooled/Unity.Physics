@@ -4,8 +4,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Rigidbody.constraints. No command carries them: after each step Unity itself reads the pose and velocities back,
-    /// removes the frozen components and writes the result, and it zeroes the inertia of frozen rotation axes.
+    /// Test Rigidbody.constraints, applied by Unity during read-back rather than through backend commands.
     /// </summary>
     public class ConstraintsConformanceTests : PhysicsScene
     {

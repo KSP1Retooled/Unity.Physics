@@ -7,8 +7,8 @@ using Unity.Numerics.Linear.Sparse;
 namespace Unity.Physics
 {
     /// <summary>
-    /// A live edge between two sections: a yielding or free tree edge, or a closure. The "child" side is the tree edge's
-    /// child part, or a closure's part B; the rows push the child side one way and the parent side the other.
+    /// Live constraint between sections. The child side is the tree child or closure part B;
+    /// rows apply opposite impulses to the two sides.
     /// </summary>
     internal struct VesselLink
     {
@@ -38,18 +38,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// The structure of one vessel's solve, rebuilt only when an edge changes state: the rigid sections, their elimination
-    /// order, the symbolic factor, the cut into chunks for the job threads, and where every update lands.
-    ///
-    /// Sections are numbered by their place in the elimination order, so section s is column s of the factor. The factor
-    /// is stored as 6x6 blocks in one array: the diagonal blocks first (one per section), then each column's off-diagonal
-    /// blocks (row s, column r for every later section r the column couples to, its "structure"), then the chunks'
-    /// private buffers. Right-hand sides are laid out the same way: one per section, then the chunks' buffers.
-    ///
-    /// The order is a postorder of the elimination tree. A chunk is a set of whole subtrees of that tree, so every block a
-    /// chunk writes belongs to its own sections or to the top: the sections above all chunks, eliminated last by a single
-    /// job. A chunk adds what it owes the top into its private buffer and the top job sums the buffers, so no two threads
-    /// ever write the same block.
+    /// Rigid sections, elimination order, symbolic factor and parallel chunks for one vessel.
+    /// Rebuild when edge states change. Number sections by elimination order and store 6 by 6 blocks column-wise.
+    /// Chunks own subtrees and private top-update buffers; the top job combines them without concurrent writes.
     /// </summary>
     internal struct VesselStructure : System.IDisposable
     {

@@ -5,9 +5,8 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Counts the sizes of the dense blocks that <see cref="SparseConstraintSolver"/> factors, so that a bench can show
-    /// which sizes its dense routines run on. Counting is off unless <see cref="Enabled"/> is set, because every count
-    /// is an atomic addition on a line that all lanes share. Tests and benches read the counts between steps.
+    /// Optional dense block size counters for sparse solver benchmarks.
+    /// Enable explicitly; read between steps. Updates use shared atomic counters.
     /// </summary>
     public unsafe struct SparseBlockCounters
     {

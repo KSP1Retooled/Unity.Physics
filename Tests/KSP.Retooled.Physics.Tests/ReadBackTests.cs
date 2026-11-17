@@ -6,9 +6,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Covers the reads that Unity sends around each step: the read-back of the poses into the Transforms after the step,
-    /// on the main thread, and the reads of the poses of moved Transforms before the step, mostly on job workers. The
-    /// plugin answers both kinds of GetPose itself through the rows.
+    /// Test main-thread pose read-back and worker reads during transform synchronization.
     /// </summary>
     public class ReadBackTests : PhysicsScene
     {
@@ -47,9 +45,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheSyncBeforeTheStepReadsTheMovedBodiesPoses()
         {
-            // Unity's sync reads the pose of each body whose Transform moved, on job workers, and sends the Transform's
-            // pose only where they differ. Half of the Transforms move, and the other half are set to the poses that
-            // their bodies already have.
+            // Move half the transforms and leave the rest at their body poses to test sync's pose comparison.
             UnityEngine.Physics.autoSyncTransforms = false;
             var bodies = new List<Rigidbody>();
             for (int i = 0; i < 256; i++)

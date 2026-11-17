@@ -5,15 +5,8 @@ using Unity.Numerics.Kernels;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The double kernels in <see cref="Blas"/> and <see cref="CholeskyLLT"/> on every kind of layout that a
-    /// <see cref="MatrixView{T}"/> can describe, against plain loops on the same entries. Each layout reaches a
-    /// different path in the kernels:
-    /// <list type="bullet">
-    /// <item>column by column, with a leading dimension larger than the rows (the fast paths);</item>
-    /// <item>transposed, that is row by row, with a column stride of 1 (the paths that transpose the problem);</item>
-    /// <item>a block that starts inside a larger matrix stored column by column;</item>
-    /// <item>every other row of a larger matrix, where neither rows nor columns are contiguous (the plain paths).</item>
-    /// </list>
+    /// Compare double BLAS and Cholesky kernels with scalar references on padded column-major, transposed,
+    /// submatrix and noncontiguous strided views.
     /// </summary>
     public unsafe class StridedKernelTests
     {
@@ -67,8 +60,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A matrix stored in an array at the given layout. The entries that are outside it hold NaN, so that a kernel
-        /// that reads one of them gives NaN in its answer.
+        /// Create a matrix view with NaN padding to detect out-of-range kernel reads.
         /// </summary>
         internal static double[] Store(double[,] m, Place place)
         {
@@ -90,8 +82,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Stores a lower triangular matrix with NaN above its diagonal, and on it if <paramref name="unitDiagonal"/>
-        /// is true, so that a kernel that reads those entries gives NaN in its answer.
+        /// Fill unused triangular entries, including unit diagonals, with NaN to detect accidental reads.
         /// </summary>
         internal static double[] StoreTriangle(double[,] l, Place place, bool unitDiagonal)
         {
@@ -333,8 +324,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// C += alpha A B with each of A, B and C in each layout, which includes A transposed (the copied path), C
-        /// transposed (the problem transposed) and C with neither rows nor columns contiguous (the plain path).
+        /// Test C += alpha*A*B across all operand layouts, including transposed and noncontiguous views.
         /// </summary>
         [Test]
         public void TheProductTakesAnyLayout([Values(1, 8, 13, 21)] int m, [Values(1, 6, 7)] int n, [Values(1, 9)] int k,

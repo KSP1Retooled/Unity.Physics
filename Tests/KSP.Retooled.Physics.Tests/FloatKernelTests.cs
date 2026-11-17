@@ -6,10 +6,8 @@ using static KSP.Retooled.Physics.Tests.StridedKernelTests;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The float kernels in <see cref="Blas"/> and <see cref="CholeskyLLT"/>, which run in vectors of eight floats,
-    /// against plain loops in doubles, on the same layouts as <see cref="StridedKernelTests"/>. The sizes reach the
-    /// paths for whole vectors of eight, a vector of four, single entries, the 16 by 6 tiles and their edges, and the
-    /// base case of 32 rows of the factor.
+    /// Compare float BLAS and Cholesky kernels with double reference loops across strided layouts, vector tails and
+    /// tile edges.
     /// </summary>
     public unsafe class FloatKernelTests
     {

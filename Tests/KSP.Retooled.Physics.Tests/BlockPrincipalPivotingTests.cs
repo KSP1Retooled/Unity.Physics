@@ -5,12 +5,8 @@ using Unity.Numerics.Linear.Solvers.Lowlevel;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests <see cref="BlockPrincipalPivoting"/>, which solves a vessel island's boundary block, including what it does
-    /// when it runs out of pivoting rounds and how it changes its factor between rounds. Each problem looks like
-    /// a set of contacts between a few bodies: every contact has two normal rows, which may only push, and three
-    /// friction rows, whose bounds are the coefficient of friction times the sum of the contact's normal impulses. The
-    /// matrix is J M^-1 J^T plus a small compliance, with random Jacobians, so that the rows are strongly coupled and
-    /// a cold solve needs many rounds.
+    /// Test boundary block pivoting, round limits and factor updates on coupled contact problems.
+    /// Use W = J*M^-1*J^T plus compliance, with normal rows and friction bounds coupled to normal impulses.
     /// </summary>
     public unsafe class BlockPrincipalPivotingTests
     {
@@ -105,8 +101,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Solves a copy of the problem, cold or from the given states, either changing the factor of the free rows from
-        /// round to round or factoring them again in every round.
+        /// Solve a copy from cold or supplied states, with incremental factor updates or full refactorization.
         /// </summary>
         private static bool Solve(in Problem problem, byte[] start, bool update, out double[] z, out byte[] states,
             out int rounds, out BlockPrincipalPivotingStats stats)
@@ -128,10 +123,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The solve that changes the factor of its free rows from round to round gives the same answer as the solve
-        /// that factors them again in every round: the same rounds, the same states, and the same impulses up to
-        /// rounding. Each problem is solved cold, and again from the states of the answer to a nearby problem, as a
-        /// vessel island's solve starts from the last solve's states.
+        /// Compare incremental factor updates with fresh factorization for cold and warm starts.
+        /// Require matching rounds, states and impulses within rounding tolerance.
         /// </summary>
         [Test]
         public void ChangingTheFactorGivesTheSameAnswerAsFactoringAgain()
@@ -186,11 +179,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The order in which the first factor takes its free rows, and the way in which the rounds change the factor,
-        /// change the answer only by rounding: a solve whose first factor takes the rows by a random priority, and a
-        /// solve that keeps the factor up to the first row that left instead of deleting the rows that left, take the
-        /// same rounds to the same states and impulses as the plain solve. Each problem is solved from the states of
-        /// the answer to a nearby problem.
+        /// Verify that factor ordering and prefix reuse preserve pivot rounds, states and impulses within rounding
+        /// tolerance.
         /// </summary>
         [Test]
         public void TheFactorsOrderAndItsUpdatesDoNotChangeTheAnswer()
@@ -273,8 +263,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Checks that every impulse is inside its bounds, where the friction bounds come from the answer's own normal
-        /// impulses, and that each row's state matches its impulse.
+        /// Check impulse bounds against the answer's own normal impulses and verify matching row states.
         /// </summary>
         private static void CheckAnswer(in Problem problem, double[] z, byte[] states, string what)
         {
@@ -322,11 +311,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A cold solve that needs more than 8 rounds, with a cap of 8 rounds, finds no answer that meets every
-        /// condition. The solver says so, and it still returns impulses that are inside their bounds. The impulses do
-        /// better than no impulses at all: they make 1/2 z^T W z - q^T z negative. Impulses that are only clamped to
-        /// their bounds, as the solver returned them before, can make that value large and positive, which means that
-        /// they push the bodies much harder than the contacts ask for.
+        /// Verify that an eight-round cap reports failure but returns feasible impulses with a negative objective,
+        /// rather than excessive energy from simply clamping the last iterate.
         /// </summary>
         [Test]
         public void ASolveThatRunsOutOfRoundsStillReturnsImpulsesInsideTheirBounds()
@@ -346,9 +332,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A cold solve that finds an answer but runs out of rounds while it moves the friction bounds returns that
-        /// answer. The answer's friction stays inside the bounds of the answer's own normal impulses, and the states
-        /// that the solve returns, which the island remembers for the next solve, are the states of that answer.
+        /// Verify that exhausting friction-bound rounds retains the last feasible answer and its states.
         /// </summary>
         [Test]
         public void AnAnswerReturnedAtTheCapKeepsItsFrictionInsideItsOwnBounds()

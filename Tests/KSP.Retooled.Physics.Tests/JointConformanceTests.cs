@@ -5,8 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What Unity's joint components do to the bodies they connect, asserted through their public API. Each test states
-    /// one behaviour that PhysX shows, and its tolerance is what the two solvers can honestly be held to.
+    /// Test joint behavior through Unity's public API, using PhysX observations and tolerances shared by both
+    /// solvers.
     /// </summary>
     public class JointConformanceTests : PhysicsScene
     {

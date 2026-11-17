@@ -177,9 +177,7 @@ namespace Unity.Numerics.Linear.Tests
                 float maxDiff = MaxAbsoluteDiff(original, M);
 
                 Assert.IsTrue(maxDiff < 1.0e-5f);
-                // The factor's updates go through the kernels' fused multiply-adds when Burst compiles the job, which
-                // round once instead of twice. The determinant then comes out as -634457.9, 2 units in the last place
-                // of a float away from the exact -634458, so the check allows 1 part in a million.
+                // Allow FMA rounding differences in the float determinant (one part per million).
                 Assert.AreEqual(-634458, determinant.Value, 634458 * 1e-6);
 
                 original.Dispose();

@@ -11,8 +11,7 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The sparse solver's 6x6 block kernels against the general ones, and the cost of reading blocks out of order, in
-    /// nanoseconds per block. Each test logs its table and checks only that the kernels agree.
+    /// Benchmark 6 by 6 sparse blocks against general kernels and shuffled access. Check numerical agreement.
     /// </summary>
     [Category("Slow")]
     public unsafe class SixKernelBench

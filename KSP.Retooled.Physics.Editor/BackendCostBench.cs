@@ -10,9 +10,8 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// Measures the elapsed time per command on the selected backend, in nanoseconds. Run it on each backend with
-    /// `unity exec --backend`. The benchmark writes Library/RetooledPhysics/cost-(backend).csv. It repeats each case
-    /// and reports the median, so an occasional pause on the machine does not determine the reported time.
+    /// Measure median command costs in nanoseconds on the selected backend.
+    /// Run with `unity exec --backend`. Write results to Library/RetooledPhysics/cost-(backend).csv.
     /// </summary>
     public static class BackendCostBench
     {
@@ -161,8 +160,7 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Waits for queries to run in Burst instead of Mono, or reports that the wait timed out. This identifies which
-        /// version of the code was used for the raycast measurement.
+        /// Wait for Burst query compilation and report a timeout before measuring raycasts.
         /// </summary>
         private static void WaitForBurstQueries(Rigidbody body)
         {
@@ -189,8 +187,7 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Measures a floating origin shift by moving every body's transform and synchronizing the changes to the
-        /// backend.
+        /// Measure transform synchronization after shifting all bodies to simulate a floating origin change.
         /// </summary>
         private static void MeasureTransformSync(Rigidbody[] bodies)
         {

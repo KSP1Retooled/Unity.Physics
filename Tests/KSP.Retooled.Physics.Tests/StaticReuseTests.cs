@@ -11,11 +11,7 @@ using RaycastHit = UnityEngine.RaycastHit;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A build in which no static body changed keeps the static bodies' rows that the last build wrote into the world,
-    /// instead of writing them again from the store (see StepState.KeepsStaticRows). These tests take a scene through
-    /// every change that can happen to a static body, and check after every step that the world's static rows are the
-    /// rows that the store gives now, that the build kept the rows when nothing had changed, and that the scene moves,
-    /// and the queries and collision messages come out, exactly as when every build writes the rows.
+    /// Verify retained static rows through body changes, comparing motion, queries and events with full rebuilds.
     /// </summary>
     public unsafe class StaticReuseTests : PhysicsScene
     {
@@ -41,9 +37,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Checks every static body's row in the world that the last step built against the row that BuildBodiesJob
-        /// writes from the store now: the same collider, the same pose to the last bit, and the same entity. The anchor's
-        /// row after the static bodies has no collider.
+        /// Compare built static collider, pose and entity fields with freshly built store rows. The anchor must
+        /// have no collider.
         /// </summary>
         private static void AssertStaticRowsMatchTheStore(int step)
         {
@@ -77,14 +72,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Boxes that fall onto a grid of static boxes and hulls on the ground. After 10 steps in which nothing changes,
-        /// one change every five steps: a static box moves, turns, gets a larger collider, moves to a layer that ignores
-        /// the boxes, gets another material, and is turned off and on again; that material's friction changes; a static
-        /// box is destroyed, and one is added; a static box gets a Rigidbody, which makes it dynamic, and loses it again;
-        /// a static box gets a kinematic Rigidbody; a static box becomes a trigger; a dynamic box is added and destroyed,
-        /// which changes the number of dynamic bodies but no static body, so the static rows move in the world; and a
-        /// static box moves just before a query. In
-        /// each step, rays and a box query look through the grid, and every collision message goes into a hash.
+        /// Run static pose, shape, layer, material and membership changes, including dynamic count changes that
+        /// move retained rows.
+        /// Record queries and collision hashes after each step.
         /// </summary>
         private Run RunScene(bool reuse)
         {

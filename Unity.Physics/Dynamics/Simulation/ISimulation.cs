@@ -45,11 +45,9 @@ namespace Unity.Physics
         public Solver.DirectSolverSettings DirectSolverSettings;
 
         /// <summary>
-        /// When positive, groups constraints by island rather than by individual solver type. Each island uses a single
-        /// solver. An island that fits within <see cref="DispatchPairSequencer.NumIslandPhases"/> phases uses one
-        /// iterative substep with <see cref="NumSolverIterations"/> iterations. All other islands use the direct
-        /// solver, with this value as their substep count. This avoids coupling between the solvers and allows the
-        /// step's jobs to be scheduled without knowing which constraints it contains.
+        /// When positive, solve constraints by island: use iterative solving for islands fitting within
+        /// NumIslandPhases,
+        /// and direct solving with this many substeps for larger islands.
         /// </summary>
         public int DirectIslandSubsteps;
 

@@ -12,9 +12,8 @@ using UnityEngine.TestTools;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A step returns while the refit of the dynamic tree to the solved poses still runs on job workers. These tests run
-    /// queries and commands right after a step, while the refit is likely still pending, and check that they see the
-    /// refitted world and that nothing deadlocks.
+    /// Run queries and commands immediately after steps to verify pending refits complete without deadlocks or
+    /// stale results.
     /// </summary>
     public unsafe class RefitOverlapTests : PhysicsScene
     {
@@ -81,10 +80,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A step that throws after it scheduled the refit, while the solve's jobs still run, leaves the refit pending,
-        /// and a query on a worker then helps with it. The refit reads the solved motions, so the step waits for them
-        /// before the exception goes on. Burst leaves the injected throw out, so the test is inconclusive with Burst
-        /// on; run it with Burst compilation off.
+        /// Verify that a step throwing after refit scheduling waits for solved motions before queries can help the
+        /// refit.
+        /// Requires Burst disabled for the injected exception.
         /// </summary>
         [Test]
         [Timeout(120000)]
@@ -132,10 +130,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A detach while queries on a worker wait for a pending refit. The detach finishes each world's refit before
-        /// the plugin stops calling into the core. Before, the plugin first stopped the queries' help with the refit
-        /// and then waited for each world's query lock, so a query that took the lock in between waited for a refit
-        /// that nobody did, and with one worker the query and the detach waited for each other.
+        /// Verify that detach completes pending refits before removing the query helper, avoiding query-lock
+        /// deadlocks.
         /// </summary>
         [Test]
         [Timeout(120000)]
@@ -177,10 +173,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A thread that throws while it does a piece of the refit marks the refit failed, so that the threads that
-        /// wait for that piece stop waiting: the refit's other jobs, a query that helps, and the main thread. The next
-        /// query on the main thread builds the world again, and finds the hits at the solved poses. Burst leaves the
-        /// injected throw out, so the test is inconclusive with Burst on; run it with Burst compilation off.
+        /// Verify that a refit exception releases waiters and the next main-thread query rebuilds the world.
+        /// Requires Burst disabled for the injected exception.
         /// </summary>
         [TestCase(false)]
         [TestCase(true)]
@@ -356,10 +350,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Every worker and the main thread run query jobs right after each step, so that the queries, and not only
-        /// jobs, must finish the refit. With no workers, the main thread runs the query jobs itself while it waits for
-        /// them, where it can't complete the refit's jobs. With queriesDoTheWork, the refit's jobs leave all of the
-        /// work to the queries.
+        /// Run query jobs after each step, including with no workers, to verify they can finish pending refits
+        /// without completing job handles.
         /// </summary>
         [TestCase(-1, false)]
         [TestCase(-1, true)]

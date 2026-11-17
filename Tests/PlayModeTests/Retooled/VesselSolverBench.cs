@@ -17,11 +17,8 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The section solver spec's falsifier measurement: whole steps of <see cref="VesselSolver"/> on the reference craft
-    /// and the synthetic 4,500-body rocket under each lock rule, on one thread and on eight (seven job workers and the
-    /// waiting main thread), back to back ("warm") and with 2 ms of unrelated memory traffic between steps ("cold"). Each
-    /// session starts only once the machine's total CPU load is under 15%, waiting up to ten minutes, and reports the
-    /// load it started at. Results go to the log and to VesselSolverBench.txt in the project's Logs folder.
+    /// Benchmark reference and synthetic 4,500-body vessels under each lock rule on one and eight threads,
+    /// with warm caches and intervening memory traffic. Write Logs/VesselSolverBench.txt.
     /// </summary>
     [Explicit("A benchmark, about half an hour long")]
     [Category("Slow")]

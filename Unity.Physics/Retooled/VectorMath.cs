@@ -81,9 +81,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns R diag(d) R^T, where R is the rotation matrix of the unit quaternion <paramref name="orientation"/>
-        /// and d is <paramref name="inertia"/>. For example, this turns the inertia of a body about its principal axes
-        /// into its inertia in world space.
+        /// Return R*diag(inertia)*R^T for the unit quaternion orientation, converting principal inertia to the
+        /// rotated frame.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static double3x3 RotateDiagonal(double4 orientation, double3 inertia) =>
@@ -129,10 +128,8 @@ namespace Unity.Physics
         public static double4 ConjugateQuaternion(double4 q) => new double4(-q.xyz, q.w);
 
         /// <summary>
-        /// Converts a double to a float, and returns zero when the size of the value is below 1e-30. A locked section
-        /// at rest leaves differences of about 1e-40. Without this flush, those differences would turn into denormal
-        /// velocities and impulses. Every job that reads them afterwards, such as the row and Jacobian builds and the
-        /// integration, would then run tens of times slower.
+        /// Convert double to float, flushing magnitudes below 1e-30 to zero to avoid denormal velocities and
+        /// impulses.
         /// </summary>
         public static float Flushed(double value) => math.abs(value) < 1e-30 ? 0.0f : (float)value;
 

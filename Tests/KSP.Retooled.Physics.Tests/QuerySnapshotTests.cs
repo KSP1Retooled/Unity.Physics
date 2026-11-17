@@ -4,11 +4,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Queries after a step read a snapshot of the store's bodies and shapes, and the dynamic tree from the start of
-    /// the step with its bounds fitted to the solved poses. The step keeps the last snapshot when only poses changed,
-    /// because the snapshot holds no poses. These tests check that queries still find moved bodies at their new
-    /// places, also after bodies have passed each other, and that every change to the shapes or the bodies' rows
-    /// reaches the queries.
+    /// Verify query snapshot reuse after pose-only changes, tree refits, shape changes and body row changes.
     /// </summary>
     public unsafe class QuerySnapshotTests : PhysicsScene
     {

@@ -9,9 +9,8 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Builds one Unity Physics collider from a body's shapes. Uses the shape directly when possible, or a compound
-    /// whose children store their shape indices in <see cref="CompoundCollider.ColliderBlobInstance.Entity"/>. The
-    /// store keeps colliders as raw blob pointers so that they can be released and rebuilt during a domain reload.
+    /// Build a Unity Physics collider from a body's shapes.
+    /// Compound children store shape indices in ColliderBlobInstance.Entity.
     /// </summary>
     [BurstCompile]
     internal static unsafe class ColliderBuilder
@@ -42,8 +41,7 @@ namespace KSP.Retooled.Physics
         private const long Failed = -1;
 
         /// <summary>
-        /// Identifies a body to refresh and whether to rebuild its entire collider or only move the compound's
-        /// children.
+        /// Body to refresh, with a choice of rebuilding the collider or updating compound child poses.
         /// </summary>
         internal struct Work
         {
@@ -52,12 +50,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Schedules a new collider for every body marked for a rebuild or a change in child poses. If <paramref
-        /// name="all"/> is true, includes every body. Building runs concurrently with subsequent work on the main
-        /// thread. Until the returned handle completes, nothing may read a body's collider or write its flags. Keep
-        /// <paramref name="work"/> and <paramref name="results"/> alive until then. If any body requires a full build,
-        /// increment <paramref name="wholeBuilds"/> because its shapes may have changed. If any body gets a new
-        /// collider, increment <paramref name="changes"/>.
+        /// Schedule collider refreshes for dirty bodies, or every body if all is true.
+        /// Keep work and results alive until completion. Do not read body colliders or write flags in the
+        /// meantime.
+        /// Increment wholeBuilds if any body needs a full rebuild, and changes if any collider is replaced.
         /// </summary>
         internal static JobHandle ScheduleRefresh(
             NativeStore.WorldData* world,
@@ -104,10 +100,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Marks every body whose last build threw an exception for a full rebuild. Those bodies still have their
-        /// previous colliders. Call only on the main thread after the refresh has completed. The next build can give a
-        /// static body a new collider this way, so the method moves the world's statics version for a static body, as
-        /// StoreOps.MarkColliderDirty does.
+        /// Retry failed collider builds, keeping their previous colliders until replacement succeeds.
+        /// Call on the main thread after refresh completes. Invalidate the static tree for affected static
+        /// bodies.
         /// </summary>
         internal static void AskAgainForFailed(NativeStore.WorldData* world, NativeList<Work> work, NativeList<long> results)
         {
@@ -172,9 +167,8 @@ namespace KSP.Retooled.Physics
             public NativeReference<uint> WholeBuilds;
 
             /// <summary>
-            /// The number of refreshes that gave any body a new collider. The cache of the dynamic bodies' bounds
-            /// knows a collider by its address, and a new collider can take the memory of one that was freed, so
-            /// the cache holds nothing while this number differs from the one it recorded.
+            /// Number of refreshes that replaced colliders. Bounds caches must invalidate when this changes,
+            /// because collider addresses can be reused.
             /// </summary>
             public NativeReference<uint> Changes;
 
@@ -251,9 +245,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives a body's row a collider, or no collider when <paramref name="collider"/> isn't created. Every write of
-        /// a row's collider goes through this method, so that the row's copy of the collider's expansion factor
-        /// (<see cref="NativeStore.BodyData.colliderExpansion"/>) always belongs to the collider that the row holds.
+        /// Assign a collider and update the row's cached expansion factor. An uncreated collider clears both.
         /// </summary>
         internal static void SetCollider(NativeStore.BodyData* body, BlobAssetReference<Collider> collider)
         {
@@ -262,9 +254,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a new compound by copying the previous compound's children and applying the shapes' new poses.
-        /// Returns null if the body has no built collider or its collider is not a compound. Copying a child avoids
-        /// rebuilding its hull or hierarchy.
+        /// Copy a compound collider with updated child poses, reusing child geometry.
+        /// Return null if the existing collider is absent or is not a compound.
         /// </summary>
         private static void* Repose(NativeStore.BodyData* body)
         {
@@ -334,9 +325,8 @@ namespace KSP.Retooled.Physics
                     return Create(shape, float3.zero, quaternion.identity).GetUnsafePtr();
                 }
 
-                // Represent a mesh away from its body's origin as a compound with one child. Subsequent moves only
-                // change the child's pose. Baking the pose into the mesh would require rebuilding its hull or hierarchy
-                // on every move.
+                // Use a single-child compound for an offset mesh so that pose changes do not rebuild its
+                // geometry.
                 if (!ShapeMath.IsMeshGeometry(shape->geometryType) || IsAtOrigin(shape))
                 {
                     return Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
@@ -382,9 +372,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the index of the body's shape identified by the key. For a compound, the index is stored on its
-        /// immediate child. Do not descend further, because polygons within a mesh child do not store the shape index.
-        /// For any other collider, return <paramref name="singleShape"/>.
+        /// Return the shape index stored on the immediate compound child, or singleShape for a non-compound
+        /// collider.
         /// </summary>
         internal static int ShapeIndexOf(BlobAssetReference<Collider> collider, ColliderKey key, int singleShape)
         {
@@ -398,10 +387,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the shape whose pose is applied to the built body instead of being baked into its collider, or null.
-        /// Unity moves static colliders by setting their shapes' poses, every frame for animated colliders. Baking a
-        /// pose into a mesh would require rebuilding it after each move. Unity joints cannot connect to a static body,
-        /// so no other behavior depends on the built body's transform.
+        /// Return the shape whose pose is applied to the built body rather than baked into its collider, or
+        /// null.
         /// </summary>
         internal static NativeStore.ShapeData* PosedShape(NativeStore.BodyData* body)
         {
@@ -484,9 +471,7 @@ namespace KSP.Retooled.Physics
 
         private static BlobAssetReference<Collider> Create(NativeStore.ShapeData* shape, float3 center, quaternion orientation)
         {
-            // Unity Physics applies query filters in both directions. A collider that collides with nothing would
-            // therefore be invisible to every ray. Allow all collision layers in its filter here, then disable its
-            // contacts in MaterialOf.
+            // Permit queries on all layers. MaterialOf disables contacts for shapes that collide with nothing.
             CollisionFilter filter = new CollisionFilter
             {
                 BelongsTo = shape->belongsTo,
@@ -512,10 +497,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Places a height field's grid in its shape with a quarter turn about Y. The grid's rows run along X and its
-        /// columns run backwards along Z. PhysX splits each cell from (x, z) to (x + 1, z + 1). Unity Physics queries
-        /// always split from (i + 1, j) to (i, j + 1), regardless of the setting passed to TerrainCollider.Create.
-        /// Rotate the grid so that the splits agree.
+        /// Rotate the height field grid a quarter turn about Y so that Unity Physics and PhysX split cells
+        /// along the same diagonal.
         /// </summary>
         internal static RigidTransform ShapeFromGrid(NativeStore.ShapeData* shape)
         {
@@ -593,10 +576,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a convex collider from the supplied points. The hull builder allocates stack space in proportion to
-        /// the input size, and the main thread has a 1 MB stack. It also tests every point against every face. Reduce
-        /// large inputs first to limit both costs. This loses very little detail because the collider retains at most
-        /// 252 vertices anyway.
+        /// Build a convex collider, reducing large inputs to limit hull construction time and stack usage.
         /// </summary>
         private static BlobAssetReference<Collider> CreateConvex(NativeArray<float3> points, CollisionFilter filter, Material material)
         {
@@ -613,8 +593,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Selects the points farthest along evenly distributed directions. All selected points lie on the hull.
-        /// Include the axes first so that the selected points preserve the bounds of the full set.
+        /// Select hull support points along evenly distributed directions. Include the axes to preserve the
+        /// original bounds.
         /// </summary>
         private static NativeArray<float3> SupportPoints(NativeArray<float3> points)
         {
@@ -668,9 +648,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Calculates the volume and mass moments of an unscaled convex mesh's hull. Compiles with Burst, like <see
-        /// cref="BuildCollidersJob"/>, so that the calculation stays fast when called by a body command running in
-        /// Mono. Commands run on the main thread, where a temporary allocator is available.
+        /// Compute volume and mass moments of an unscaled convex hull.
         /// </summary>
         [BurstCompile]
         internal static void ConvexMoments(NativeStore.MeshData* mesh, NativeStore.MeshMoments* moments)
@@ -697,8 +675,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a mesh blob with the shape's scale and pose baked into its vertices, since Unity Physics does not
-        /// store these separately for each collider. <see cref="BuildCollidersJob"/> executes this job directly.
+        /// Build a mesh collider with the shape's scale and pose baked into its vertices.
         /// </summary>
         [BurstCompile]
         private struct MeshColliderJob : IJob
@@ -751,17 +728,14 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a height field blob using the grid placed by <see cref="ShapeFromGrid"/>. Grid cell (i, j)
-        /// corresponds to source cell (j, last - i). Unity Physics terrain cannot contain holes. If there are holes,
-        /// build a triangle mesh from the solid cells with the same splits and with triangles facing up, as they do in
-        /// a mesh. Use triangle collisions for terrain, as PhysX does. VertexSamples instead pushes up any vertex below
-        /// the surface, which can throw a body into the air when its centre is below the surface.
+        /// Build a height field collider with the grid orientation from ShapeFromGrid.
+        /// Use a triangle mesh when cells contain holes, since Unity Physics terrain cannot represent them.
+        /// Use triangle collisions to match PhysX.
         /// </summary>
         [BurstCompile]
         private struct HeightFieldColliderJob : IJob
         {
-            // Unity Physics scales the tallest sample to the full range of a short. An all-zero field would cause
-            // division by zero, so raise one corner by this fraction of a sample.
+            // Raise one corner slightly to avoid division by zero when scaling an all-zero height field.
             private const float FlatFieldRise = 1.0f / 1024.0f;
 
             [NativeDisableUnsafePtrRestriction]

@@ -4,9 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests WheelCollider suspension, raycasts that find the ground and exclude unwanted colliders, and distribution
-    /// of a body's mass among its wheels. KSP disables tyre friction and controls wheel motion itself, so these tests
-    /// also disable tyre friction wherever it would affect the result.
+    /// Test WheelCollider suspension, query filtering and sprung mass distribution.
+    /// Disable tyre friction to match KSP's externally controlled tyres.
     /// </summary>
     public class WheelColliderConformanceTests : PhysicsScene
     {
@@ -89,10 +88,8 @@ namespace KSP.Retooled.Physics.Tests
         [TestCase(-40.0f)]
         public void ALeaningBodyLandingHardWhileRollingStopsAtFullCompression(float speed)
         {
-            // PhysX constrains the suspension stop against the world along the suspension axis. In this setup, the body
-            // is thrown off the ground when rolling one way and sinks 7 cm past the stop when rolling the other way.
-            // The PhysX iterative solver reduces the upward impulse enough for a landing aircraft to survive, but our
-            // exact solver would apply the full impulse.
+            // PhysX's suspension-axis stop can lift or sink a tilted vehicle. The direct solver would apply its
+            // full impulse.
             Assume.That(BackendInfo.IsRetooled);
 
             Box(new Vector3(0.0f, -0.5f, 0.0f), new Vector3(20.0f, 1.0f, 600.0f));

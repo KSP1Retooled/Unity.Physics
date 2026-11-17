@@ -7,8 +7,7 @@ using Unity.Entities;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Creates an Entities world and the systems that step rigid bodies for all tests in this namespace. Edit mode does
-    /// not start Entities automatically, and stepping requires the world's physics system group.
+    /// Create the Entities world and stepping systems required by edit-mode backend tests.
     /// </summary>
     [SetUpFixture]
     public class BodyEntityWorld

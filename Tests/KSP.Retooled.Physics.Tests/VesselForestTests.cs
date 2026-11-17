@@ -5,8 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The forest path of the direct solve against the sparse path it replaces: the same scene stepped both ways moves the
-    /// same, the forest path really runs, and it gives way to the sparse path where its boundary would be too big.
+    /// Compare forest and sparse solving, verifying matching motion, actual forest use and fallback above the
+    /// boundary cap.
     /// </summary>
     public class VesselForestTests : PhysicsScene
     {

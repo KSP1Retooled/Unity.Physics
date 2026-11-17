@@ -293,12 +293,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// How far apart a contact point's surfaces can be and still get a row. Every point the narrowphase finds is within its
-        /// reach, the collision tolerance plus how far the bodies can move in the step, and a point not yet touching is a
-        /// speculative contact: its row lets the bodies close the gap and no more. A cut nearer than the narrowphase's reach
-        /// drops exactly the points a fast body needs, so one that crosses the cut in a step passes through what it hits.
-        /// A kilometre is more than anything moves in a step, and far less than the distance the backend writes over points it
-        /// finds out of reach, so that those still get no row.
+        /// Maximum contact separation that receives a solver row. Keep above narrowphase speculative reach to stop
+        /// fast bodies,
+        /// but below the backend's unreachable-contact separation.
         /// </summary>
         internal const float ContactRowReach = 1000.0f;
 
@@ -679,9 +676,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The J rows of one solve in one block, row i at i * 12 floats. A Jacobian's rows start where the rows of those before
-        /// it end, so each Jacobian can be built on its own, in any order. Temp memory goes when the job ends, so the rows are
-        /// never disposed one by one.
+        /// Contiguous Jacobian rows, twelve floats per row. Preassigned row ranges allow independent construction.
+        /// Temporary allocations are released with the job.
         /// </summary>
         unsafe struct JacobianRows
         {
@@ -829,9 +825,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// How far each row of an equality Jacobian's constraint will move in a substep if its bodies keep
-        /// <paramref name="motionVelocities"/>, as the integrator moves them, one value per row in <paramref name="change"/>.
-        /// False for a Jacobian with a range or no position to hold, which has nothing to predict.
+        /// Predict equality constraint motion over a substep using the integrator and supplied velocities.
+        /// Write one change per row. Return false for ranged or position-free constraints.
         /// </summary>
         static unsafe bool PredictEqualityChange(ref JacobianHeader header, in NativeArray<MotionVelocity> motionVelocities,
             float timestep, float* change)
@@ -921,11 +916,9 @@ namespace Unity.Physics
         const float LimitArmingMargin = 0.001f;
 
         /// <summary>
-        /// Picks the bound a limit's row acts on this substep and returns its \gamma * \phi(q_)/dt term for the right hand
-        /// side. A hard limit is armed when the substep would reach it, with its gap as the target, so that a body stops on
-        /// the limit. A row armed only past the limit takes all the speed off and then pushes back at its correction
-        /// velocity, which nothing takes off again once the body is inside, so the body leaves the limit. A soft limit is a
-        /// spring, which has nothing to do until the limit is passed.
+        /// Select the active limit bound and return its gamma*phi/dt correction.
+        /// Arm hard limits before crossing to stop at the boundary; activate soft-limit springs only after
+        /// crossing.
         /// </summary>
         static float SetLimitRow(float distance, float minimum, float maximum, float rate,
             in JacobianHeader.DirectSolverRegularizationData regularization, float timestep, int row,
@@ -970,16 +963,14 @@ namespace Unity.Physics
         const float ContactRecovery = 0.2f;
 
         /// <summary>
-        /// How deep a contact may sit and still be pushed out by velocity alone. Resting contacts sit a little way in under
-        /// their load, and pushing them out with velocity keeps the set of touching contacts steady from one substep to the
-        /// next. Deeper than this, the rest of the push moves the bodies without speeding them up, see <see cref="SolvePushOut"/>.
+        /// Contact penetration corrected through velocity. Deeper penetration uses SolvePushOut without adding
+        /// speed.
         /// </summary>
         const float ContactSlop = 0.01f;
 
         /// <summary>
-        /// A contact's compliance against the inverse mass that its row moves. A stack resting on a light part presses that
-        /// part's contact with the weight of the stack, so this has to stay small next to the part's own inverse mass, but
-        /// some is needed to make the forces of several contacts on one face unique.
+        /// Contact compliance relative to row inverse mass, small enough to support heavy stacks on light parts
+        /// while making forces on redundant face contacts unique.
         /// </summary>
         const float ContactCompliance = 1e-3f;
 
@@ -997,9 +988,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Leaves each contact point holding the normal impulse it has pushed with so far this substep, which bounds what the
-        /// solve may take back, and adds this substep's normal and friction impulses to the contact's totals for the step,
-        /// which bound the friction of the substeps after it.
+        /// Store normal impulse per contact point and accumulate step-wide normal/friction totals for later substep
+        /// bounds.
         /// </summary>
         static unsafe void HandOverContactImpulses(ref JacobianHeader header, float* lambda, float collisionTolerance)
         {
@@ -1546,16 +1536,14 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Gathers the blocks and couplings of a sparse solve from an island's Jacobians, and numbers the bodies that the
-        /// Jacobians reach, in the order that the Jacobians reach them. Each Jacobian's rows start at its entry in
-        /// <paramref name="headerRows"/> and end where the next Jacobian's rows start.
+        /// Gather sparse blocks and couplings, numbering bodies in Jacobian order.
+        /// headerRows gives each Jacobian's row range.
         /// </summary>
         static unsafe void GatherSparseBlocks(ref SparseSetup setup, IslandHeader* islandHeaders, int* headerRows, int headerCount, int rows,
             in NativeArray<MotionVelocity> motionVelocities, SparseSolveTeam* team)
         {
-            // Only numbering the bodies, in the order the Jacobians reach them, has to follow the Jacobians in order. The
-            // lanes split reading the Jacobians and then writing the lists, each task starting where the tasks before it
-            // end.
+            // Number bodies serially in Jacobian order; split Jacobian reads and list writes into disjoint task
+            // ranges.
             int taskCount = (headerCount + JacobiansPerSummaryTask - 1) / JacobiansPerSummaryTask;
             var summaries = new NativeArray<JacobianSummary>(math.max(1, headerCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var taskBlocks = new NativeArray<int>(math.max(1, taskCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -1889,12 +1877,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Writes to <paramref name="rhsChange"/> what would aim the rows that hold a position at where the integrator will
-        /// really take their constraint, and returns whether any is nonzero. A row holds the constraint's rate, which is its
-        /// drift only to first order: a spinning pair swings its anchors along a curve the row can't see, and they part a
-        /// little every substep. The curve is measured at the velocities the solve's answer gives, not the ones before it: a
-        /// body can start a step far out of line with its joints, and extrapolating that motion, which the solve takes away,
-        /// would throw the craft apart.
+        /// Adjust positional row targets for nonlinear drift predicted from the solved velocities.
+        /// Return whether any correction is nonzero. Use post-solve motion so that rejected initial motion does not
+        /// distort the prediction.
         /// </summary>
         static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
@@ -1903,10 +1888,8 @@ namespace Unity.Physics
         {
             using ProfilerMarker.AutoScope span = PredictDriftMarker.Auto();
 
-            // A body takes its rows' impulses as the solve's impulses will give it them. The island owns its bodies'
-            // velocities while it solves, so the prediction writes the solved velocities into the world's array and
-            // puts the old ones back afterwards. Before, it copied the velocities of every body in the world, which
-            // cost each small island in a large world far more than its own solve.
+            // Temporarily apply solved velocities in the island-owned motion array, then restore them after
+            // prediction.
             var motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(motionVelocities);
             var saved = new NativeArray<MotionVelocity>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int compact = 0; compact < problem.BodyCount; compact++)
@@ -2006,10 +1989,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The drift a Jacobian's rows miss is second order in how far its bodies turn in a substep: about (turn A + turn
-        /// B)^2 times the reach of the joint, in metres or radians. Below this a Jacobian is left unaimed, which also leaves
-        /// a craft at rest without a second solve. The prediction itself is taken in single precision from positions metres
-        /// from the origin, so it is no better than float's resolution of a metre, about this.
+        /// Minimum predicted nonlinear drift requiring a target correction, near float position resolution at one
+        /// metre.
         /// </summary>
         const float DriftTolerance = 1e-7f;
 
@@ -2116,12 +2097,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Moves the bodies of a solve by the push-out of its deep contacts, without speeding them up. PhysX moves
-        /// penetrating bodies apart in its position iterations and takes that speed back in its velocity iterations, so a
-        /// part driven into the ground comes out without being thrown: as velocity, the push of a deep contact would throw a
-        /// wreck tens of metres a second. The push is a problem of its own, solved by a solver of its own so that the kept
-        /// one goes on into the next substep as it was: contacts push and don't pull, friction holds nothing, and joints
-        /// carry the push to the bodies jointed to the ones pushed. Only a substep with a deep contact pays for it.
+        /// Correct deep penetration without adding velocity, propagating motion through joints.
+        /// Use a separate push-out solve with unilateral contacts and no friction so that the main solver state is
+        /// preserved.
         /// </summary>
         static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
@@ -2172,9 +2150,8 @@ namespace Unity.Physics
             pushOut.CouplingCount = 0;
             pushOut.Couplings = null;
 
-            // A push that pivoting couldn't settle is left for the next substep, which finds the penetration again: its impulses,
-            // clamped to their bounds, would move bodies metres at once. The push has the solve's rows and regularization,
-            // so a forest island's push takes the factor and boundary block its solve made, with the push's bounds.
+            // Skip unconverged push-out rather than applying a large clamped correction.
+            // Forest push-out reuses the main solve's factor and boundary block with new bounds.
             var solver = default(SparseConstraintSolver);
             var bodyImpulses = new NativeArray<float3>(forest != null ? 2 * worldBodies.Length : 0, Allocator.Temp,
                 NativeArrayOptions.UninitializedMemory);
@@ -2256,10 +2233,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Adds to each contact row's distance how far the push-out is about to move its bodies along it: the world velocities
-        /// and motion-space spins <see cref="SolvePushOut"/> found, for <paramref name="duration"/> seconds. The next substep
-        /// finds a contact's distance from velocity alone, which the push-out leaves alone, so without this it would push the
-        /// same depth out again. A point without a row is farther away than one push can close, and keeps its distance.
+        /// Update contact distances for the position changes from SolvePushOut before the next substep.
+        /// Rows absent from the solve retain their distances.
         /// </summary>
         static unsafe void MovePushedContacts(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<int> worldBodies, MotionData* datas, in NativeArray<float3> linears, in NativeArray<float3> spins,
@@ -2383,9 +2358,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// What building one Jacobian's rows reads and writes, shared by every Jacobian of a solve. A Jacobian writes only its
-        /// own rows, so the Jacobians of a sparse solve can be built in any order and on any thread. The dense solve also adds
-        /// JinvM blocks and bound coupling in order, so its Jacobians are built one after another.
+        /// Shared inputs and outputs for Jacobian row construction. Sparse Jacobians write disjoint rows and may
+        /// run in parallel;
+        /// dense construction must preserve block and coupling order.
         /// </summary>
         unsafe struct RowBuildContext
         {
@@ -2443,8 +2418,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Builds one Jacobian's rows of J, epsilon, the bounds and the right-hand side, from <paramref name="startRow"/> on.
-        /// <paramref name="JBlocks"/> and <paramref name="JinvMBlocks"/> are scratch space for <paramref name="jacRows"/> rows.
+        /// Build a Jacobian's rows, regularization, bounds and right-hand side starting at startRow.
+        /// JBlocks and JinvMBlocks provide scratch space for jacRows rows.
         /// </summary>
         static unsafe void BuildJacobianRows(ref JacobianHeader header, int startRow, int jacRows, ref RowBuildContext context,
             Vector* JBlocks, Vector* JinvMBlocks)
@@ -2664,9 +2639,8 @@ namespace Unity.Physics
 
                                         var hingeAxis = rotationAxis;
 
-                                        // The angle between the axes is never negative, and where they line up the axis it
-                                        // turns about is arbitrary, so a cone has no lower bound to reach. It stays finite,
-                                        // because a row without limits on either side is an equality.
+                                        // A cone has no lower angular limit. Keep the bound finite because an
+                                        // unbounded row is treated as equality.
                                         float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
                                         AddAngularLimit1D(in heap, ref jacobianRows, JBlocks,
                                             bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
@@ -3352,8 +3326,8 @@ namespace Unity.Physics
                                         // unilateral contact
                                         l[normalRow] = 0;
 
-                                        // A warm start has already pushed the bodies apart by the impulse the point holds, so the
-                                        // solve may take that much back: what the contact pushes in all is what can't go negative.
+                                        // Allow removal of the warm impulse, but keep the contact's total
+                                        // impulse nonnegative.
                                         if (sparseContacts)
                                         {
                                             l[normalRow] = -contactAngularJac.Jac.Impulse;

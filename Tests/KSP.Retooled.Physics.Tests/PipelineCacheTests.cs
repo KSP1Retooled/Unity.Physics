@@ -5,9 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// What the step keeps from one step to the next while the joints stay as they are: the same scene stepped once as it
-    /// is and once with everything worked out again every step moves exactly the same, through joints added, removed,
-    /// broken and set up again, bodies made kinematic and moved by hand, and contacts coming and going.
+    /// Compare cached and fully rebuilt pipeline results through joint, body and contact changes, requiring
+    /// identical motion.
     /// </summary>
     public class PipelineCacheTests : PhysicsScene
     {
@@ -106,8 +105,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A hung column taken through every change the caches have to notice, returning each part's pose at the end. With
-        /// <paramref name="everyStepAfresh"/> nothing is kept from one step to the next.
+        /// Run a hanging column through cache-invalidating changes and return final poses.
+        /// everyStepAfresh disables reuse between steps.
         /// </summary>
         private (Vector3[], Quaternion[]) RunChanges(bool forest, bool everyStepAfresh)
         {
@@ -249,9 +248,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A column that lands on the ground, a box that is moved by hand, turned and given a larger collider, and a
-        /// kinematic box that is carried along, with the bounds cache on or off. In each step, a ray and a box query
-        /// look through the scene. Returns the poses at the end and the queries' hits, sorted by collider.
+        /// Run a bounds-cache comparison scene with landing, manual movement, rotation, collider replacement and
+        /// kinematic motion.
+        /// Return final poses and sorted query hits.
         /// </summary>
         private ((Vector3[], Quaternion[]) poses, List<string> hits) RunBounds(bool boundsCache)
         {
@@ -313,9 +312,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The build of the dynamic tree takes the bodies' bounds from what the refit at the end of the last step left
-        /// in a cache. The same scene with the cache on and off moves every body the same, to the last bit, and its
-        /// queries find the same hits.
+        /// Require bitwise-identical motion and query hits with the dynamic bounds cache enabled and disabled.
         /// </summary>
         [Test]
         public void TheBoundsCacheChangesNoPoseAndNoHit()
@@ -341,13 +338,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A weightless box that rests in place has its collider turned off for a step, and turned on again on another
-        /// layer. While the collider is off, the build has no collider to write into the box's entry of the bounds cache,
-        /// so the entry keeps the old collider's address and filter. The heap often gives the new collider the old
-        /// collider's address. The entry then had the same address and the same body, and the build kept the old
-        /// filter in it, so from the next step on the box took the old layer from the cache: a ray that looks for the
-        /// new layer missed the box, and the cache's check counted a mismatch. Each round turns the box to the other
-        /// layer, so that a round where the heap reuses the address is likely.
+        /// Verify filter invalidation when a disabled collider is recreated on a new layer at the same address.
         /// </summary>
         [Test]
         public unsafe void ABoxWhoseColliderComesBackOnAnotherLayerIsFoundOnThatLayer()
@@ -455,11 +446,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A box rests on the ground, so that the step keeps the impulse of its contact for the next step's warm start.
-        /// Then the box is destroyed and a new box is made in its place. The store often gives the new box's shape the
-        /// memory of the old box's shape, and the step keeps the impulses by the shapes' addresses. The new box's
-        /// contact is new, so it must start without an impulse. The test repeats this, so that the store reuses the
-        /// memory at least once, and it counts how often that happened.
+        /// Verify that a new contact starts cold when shapes reuse the addresses of a destroyed warm contact.
         /// </summary>
         [Test]
         public unsafe void ANewShapeInTheMemoryOfARemovedShapeStartsWithoutItsImpulse()

@@ -10,21 +10,10 @@ using Unity.Profiling;
 namespace Unity.Physics
 {
     /// <summary>
-    /// A refit of the dynamic tree to the solved poses, as <see cref="CollisionWorld.ScheduleRefitDynamicTree"/> does it,
-    /// that any thread can help to finish. A step can then return while the refit still runs, and a thread that needs
-    /// the tree before the refit has finished does the work that is left instead of waiting for jobs that may not run.
-    /// <para>
-    /// The work comes in three stages: moving the bodies and computing their bounds, in batches of bodies; fitting the
-    /// subtrees below the cut, one subtree at a time; and fitting the nodes above the cut. A thread in <see cref="Help"/>
-    /// takes the batches and subtrees that nobody has taken yet, one by one, through a counter. It then waits until the
-    /// threads that took the stage's last pieces have finished them, which takes at most one piece's time, because
-    /// those threads are running. The first thread past the second stage fits the nodes above the cut and sets the
-    /// ready word. So no thread in Help ever waits for a thread that is not running.
-    /// </para>
-    /// <para>
-    /// The owner keeps the struct at a fixed address. <see cref="Schedule"/> fills it on the main thread while no thread
-    /// helps, and the owner must not call it again before the refit that it last scheduled has finished.
-    /// </para>
+    /// Shared dynamic tree refit that queries can help while scheduled workers run.
+    /// Claim body batches, subtrees and the final upper-tree stage atomically; wait only for work already running.
+    /// Keep at a fixed address. Schedule on the main thread with no helpers active, after the previous refit
+    /// finishes.
     /// </summary>
     internal unsafe struct SharedDynamicTreeRefit
     {
@@ -59,16 +48,10 @@ namespace Unity.Physics
         int m_Failed;
 
         /// <summary>
-        /// Clears the ready word and schedules jobs that refit the dynamic tree of <paramref name="world"/> after
-        /// <paramref name="inputDeps"/>: <paramref name="helpers"/> jobs, each of which calls <see cref="Help"/>. A world
-        /// without dynamic bodies needs no refit, so the word is set at once and the returned handle is
-        /// <paramref name="inputDeps"/>. The tree must have been built for the same dynamic bodies in the same order,
-        /// as for <see cref="CollisionWorld.ScheduleRefitDynamicTree"/>. With <paramref name="boundsCache"/>, the
-        /// refit also leaves the bodies' bounds in the cache.
-        /// <para>
-        /// Only <paramref name="inputDeps"/> may write the world's motions while the jobs wait, because the pointers
-        /// are taken now. A thread may call Help only after inputDeps has completed.
-        /// </para>
+        /// Clear the ready word and schedule helpers after inputDeps to refit the same dynamic bodies in the same
+        /// order.
+        /// Optionally cache collider bounds. With no dynamic bodies, mark ready and return inputDeps.
+        /// Only inputDeps may write motions while waiting, and helpers must not run before it completes.
         /// </summary>
         internal static JobHandle Schedule(SharedDynamicTreeRefit* refit, ref PhysicsWorld world, float timeStep, float3 gravity,
             JobHandle inputDeps, DynamicBoundsCache boundsCache, int* ready, int helpers)
@@ -127,9 +110,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Does the refit's work that nobody has taken yet, and returns when the refit has finished, or when the last
-        /// piece of work is with another thread that is running it. In the second case the caller waits for the
-        /// ready word. Returns at once when the refit has already finished.
+        /// Claim remaining refit work. Return when finished or when the last piece is running elsewhere;
+        /// in the latter case, the caller waits for the ready word.
         /// </summary>
         internal void Help()
         {
@@ -139,9 +121,7 @@ namespace Unity.Physics
                 return;
             }
 
-            // An exception that leaves a piece of work unfinished would leave the other threads waiting for that
-            // piece forever. So the thread marks the refit failed, which sets the ready word, and the exception goes
-            // on to this thread's caller. The other threads stop waiting, and the owner sees the failure in Failed.
+            // On exception, mark the refit failed and set ready so that other helpers and queries stop waiting.
             bool returned = false;
             try
             {
@@ -158,9 +138,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Whether a thread failed to finish its part of the last refit, because of an exception. The tree can then
-        /// hold bounds of the poses before the step, and the owner must build it again before a query reads it. Read
-        /// it only after the ready word is set.
+        /// Whether a helper failed. Read only after ready is set, then rebuild before using potentially stale
+        /// bounds.
         /// </summary>
         internal bool Failed => Interlocked.CompareExchange(ref m_Failed, 0, -1) != 0;
 
@@ -243,8 +222,7 @@ namespace Unity.Physics
         static readonly ProfilerMarker WaitMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Wait");
 
         /// <summary>
-        /// For tests: whether the scheduled jobs leave all of the refit's work to the threads that call
-        /// <see cref="Help"/> themselves, so that the refit stays pending until a query or the owner finishes it.
+        /// Test option leaving all refit work to queries or owner helpers instead of scheduled workers.
         /// </summary>
         internal static bool JobsLeaveTheWork
         {
@@ -259,8 +237,8 @@ namespace Unity.Physics
         static readonly SharedStatic<int> s_JobsLeaveTheWork = SharedStatic<int>.GetOrCreate<SharedDynamicTreeRefit, JobsLeaveTheWorkKey>();
 
         /// <summary>
-        /// For tests: whether the thread that takes the first batch of bodies throws, as a bug in the refit would. Only
-        /// code that runs in Mono throws; Burst leaves the throw out, and <see cref="ThrowsForTests"/> counts the throws.
+        /// Inject an exception in the first body batch for Mono tests. Burst omits it; ThrowsForTests counts
+        /// executions.
         /// </summary>
         internal static bool ThrowForTestsEnabled
         {

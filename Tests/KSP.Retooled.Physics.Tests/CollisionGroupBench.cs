@@ -16,13 +16,9 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Compares the two ways of stopping collisions inside one craft: an ignored pair for every two colliders, as the
-    /// game's CollisionManager sets today, and one collision group for the whole craft. The craft is a cube of
-    /// 17 x 17 x 17 boxes, each on its own body. Each box is slightly larger than the spacing, so it overlaps all 26
-    /// neighbours, as the parts of a real craft overlap their neighbours. The benchmark reports the time and the memory
-    /// to set up each way, the time of the pair filter over every overlapping body pair, and the time of whole steps
-    /// with and without the filter's cache. RETOOLED_BENCH_SIDE changes the size of the cube, RETOOLED_BENCH_THREADS
-    /// the number of threads, and RETOOLED_BENCH_MODES=groups or =pairs runs one way only.
+    /// Compare per-pair ignores with collision groups on a cube of overlapping bodies.
+    /// Report setup time/memory, pair filtering and whole-step costs.
+    /// Configure size, threads and modes with RETOOLED_BENCH_SIDE, RETOOLED_BENCH_THREADS and RETOOLED_BENCH_MODES.
     /// </summary>
     [Explicit("A benchmark, a few minutes long")]
     public class CollisionGroupBench : PhysicsScene

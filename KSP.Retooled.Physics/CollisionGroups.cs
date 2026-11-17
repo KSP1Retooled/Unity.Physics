@@ -5,31 +5,20 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Lets the game stop collisions between the parts of one vessel without calling Physics.IgnoreCollision for every
-    /// pair of colliders. The game gives each collider a group and a member: the vessel and the part, for example. Two
-    /// colliders in the same group don't collide, except in two cases:
-    /// <list type="bullet">
-    /// <item>Both colliders allow self-collision and belong to different members. This matches the part setting
-    /// sameVesselCollision.</item>
-    /// <item>The game called <see cref="SetMembersCollide"/> for their two members.</item>
-    /// </list>
-    /// Colliders in different groups, and colliders without a group, collide as before. Pairs that the game ignores
-    /// through Physics.IgnoreCollision stay ignored whatever their groups are. A change takes effect on the next
-    /// simulation step.
-    ///
-    /// A wheel collider follows its group in the same way when it looks for ground. Physics.GetIgnoreCollision still
-    /// reports only the pairs that Physics.IgnoreCollision ignored, because Unity asks the backend about a pair of
-    /// ignore ids rather than a pair of colliders.
-    ///
-    /// Every method does nothing and returns false when the retooled backend isn't attached. The game must then fall
-    /// back to Physics.IgnoreCollision. Call these methods on the main thread, outside a simulation step.
+    /// Control collisions within groups, such as parts of a vessel.
+    /// Members of the same group collide only when both allow self-collision and have different member IDs,
+    /// or when SetMembersCollide permits the pair. Physics.IgnoreCollision still takes precedence.
+    /// Wheel ground queries use the same rules; Physics.GetIgnoreCollision reports only explicitly ignored
+    /// pairs.
+    /// Changes take effect on the next step. Call on the main thread, outside simulation.
+    /// Methods return false without effect when the backend is detached; use Physics.IgnoreCollision as a
+    /// fallback.
     /// </summary>
     public static unsafe class CollisionGroups
     {
         /// <summary>
-        /// Once this many colliders have a group but no shape, the next call to <see cref="Set"/> forgets the groups of
-        /// colliders that have been destroyed. A wheel collider has no shape, so it always counts. After each check,
-        /// the next check waits until the count doubles, so that the checks cost little per call.
+        /// Initial count of grouped colliders without shapes that triggers removal of destroyed colliders.
+        /// Double the threshold after each check to limit cleanup cost.
         /// </summary>
         private const uint OrphanCheckThreshold = 4096;
 
@@ -39,9 +28,8 @@ namespace KSP.Retooled.Physics
         public static bool Available => BackendHost.IsAttached;
 
         /// <summary>
-        /// Puts a collider in a group. A group of zero removes the collider from its group. The member and the
-        /// self-collision flag matter only for colliders in the same group. Returns false if the backend isn't
-        /// attached.
+        /// Set a collider's group, member and self-collision flag. Group zero removes membership.
+        /// Return false if the backend is detached.
         /// </summary>
         public static bool Set(Collider collider, uint group, uint member, bool selfCollides)
         {
@@ -93,9 +81,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Lets the colliders of two members collide when they are in the same group, or stops them again. Members are
-        /// matched by value alone, so the game must use member values that are unique across groups, such as part
-        /// persistent ids. A member never collides with itself. Returns false if the backend isn't attached.
+        /// Enable or disable collisions between two members in the same group.
+        /// Member IDs must be unique across groups. A member never collides with itself.
+        /// Return false if the backend is detached.
         /// </summary>
         public static bool SetMembersCollide(uint first, uint second, bool collide)
         {
@@ -138,8 +126,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Wakes the body of a shape whose group changed, so that a sleeping body notices that it now touches a shape
-        /// that it ignored before, or stops touching one.
+        /// Wake a shape's body after a group change so that contacts are reevaluated.
         /// </summary>
         private static void Wake(NativeStore.Shape* shape)
         {

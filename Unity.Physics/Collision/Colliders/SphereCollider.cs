@@ -261,8 +261,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The bounds of a sphere with the given center and radius at the transform. The bounds cache of the
-        /// broadphase keeps the center and radius for each body, and computes the bounds without the collider.
+        /// Calculate sphere bounds from centre and radius at the supplied transform, without reading a collider.
         /// </summary>
         internal static Aabb CalculateAabb(float3 center, float radius, RigidTransform transform, float uniformScale)
         {

@@ -28,9 +28,7 @@ namespace Unity.Physics
         internal NativeStream TriggerEventDataStream;
         internal NativeStream ImpulseEventDataStream;
 
-        // The number of dispatch pairs that the last step sorted for its islands. The next step reads it when it
-        // schedules its jobs, to choose between one job that sorts the pairs on one thread and the parallel chain. See
-        // DispatchPairSequencer.SerialIslandPairLimit.
+        // Previous step's island pair count, used to choose serial or parallel sorting.
         internal NativeReference<int> IslandPairCount;
 
         /// <summary>   Gets the collision events. </summary>
@@ -265,10 +263,8 @@ namespace Unity.Physics
         public JobHandle FinalJobHandle => JobHandle.CombineDependencies(FinalSimulationJobHandle, m_StepHandles.FinalDisposeHandle);
 
         /// <summary>
-        /// Gets a handle that completes when the step's motions are final. A step that solves by island reaches this
-        /// point before the jobs that free its buffers and export the events of its direct islands. Other steps
-        /// reach it with <see cref="FinalSimulationJobHandle"/>. Jobs that read only the motions can wait for this
-        /// handle. Jobs that read the events must wait for <see cref="FinalSimulationJobHandle"/>.
+        /// Handle completing when motions are final, possibly before solver cleanup and event export.
+        /// Consumers of events must still wait for FinalSimulationJobHandle.
         /// </summary>
         internal JobHandle MotionsSolvedHandle => StepContext.HasMotionsSolved ? StepContext.MotionsSolved : FinalSimulationJobHandle;
 
@@ -504,9 +500,7 @@ namespace Unity.Physics
                 return m_StepHandles;
             }
 
-            // In a step that solves by island, no job between the broadphase and the narrow phase reads or writes the
-            // motion velocities or the input velocities. Apply gravity now, beside the jobs that find and sort the
-            // pairs, so that the narrow phase doesn't wait for it. ScheduleNarrowphaseJobs waits for this handle.
+            // Apply gravity alongside island pair sorting; the narrow phase waits for this handle.
             if (multiThreaded && input.DirectIslandSubsteps > 0 && input.NumSubsteps <= 1)
             {
                 StepContext.GravityApplied = Solver.ScheduleApplyGravityAndUpdateInputVelocitiesJob(ref input.World.DynamicsWorld,
@@ -538,10 +532,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Groups pairs into islands when <see cref="SimulationStepInput.DirectIslandSubsteps"/> is positive. This is
-        /// separate from the broadphase so that the caller can first remove pairs from
-        /// <see cref="StepContext.PairsToSortByIsland"/>. A pair that will not be solved must not connect bodies into
-        /// an island or occupy a solver phase.
+        /// Group filtered pairs into islands when DirectIslandSubsteps is positive.
+        /// Remove unsolved pairs before calling so that they do not connect islands or occupy phases.
         /// </summary>
         internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps)
         {

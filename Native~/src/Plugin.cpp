@@ -71,8 +71,7 @@ namespace Retooled
         }
     }
 
-    // Which commands arrived with no managed core, counted per detached stretch and logged at the next attach. In a player
-    // this is the only evidence of what comes before managed code exists, and in the editor it shows what a reload missed.
+    // Commands received while managed code was detached, counted until the next attach.
     static std::atomic<uint32_t> s_Detached[16][256];
 
     static void NoteDetachedCommand(uint32_t category, uint32_t id)
@@ -83,12 +82,7 @@ namespace Retooled
         }
     }
 
-    // Which of those commands did nothing because they needed the managed core, so that they were lost. Most commands
-    // that come before the first attach (the SDK's set-up, the materials, CreateWorld, SetGravity) run in the plugin and
-    // aren't lost. A domain reload, a play mode change and a scene load send no command while the core is away; only a
-    // test that detaches the core on purpose, or the teardown after the core detached at quitting, has been seen to.
-    // A command lost any other way, for example a DestroyBody, would leave the store out of step with Unity, so the
-    // plugin names the lost commands in a warning at the next attach.
+    // Commands dropped because they required the managed core. Report their names at the next attach.
     static std::atomic<uint32_t> s_Dropped[16][256];
 
     // Set by NoteDroppedCommand while ProcessCommand runs a command on this thread.

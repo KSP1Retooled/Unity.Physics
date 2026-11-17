@@ -328,11 +328,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedules the jobs that build the dynamic tree, as the overload without a cache does. A body that is the
-        /// same as before the build (<see cref="DynamicBoundsCache.View.Same"/>, which the code that built the bodies
-        /// must have set) takes its collider's bounds from <paramref name="boundsCache"/> instead of computing them
-        /// from its collider. The job writes the bounds of every other body into the cache. See
-        /// <see cref="DynamicBoundsCache"/>.
+        /// Build the dynamic tree, reusing cached bounds for bodies marked unchanged by
+        /// DynamicBoundsCache.View.Same.
+        /// Compute and cache bounds for other bodies.
         /// </summary>
         internal unsafe JobHandle ScheduleDynamicTreeBuildJobs(ref PhysicsWorld world, float timeStep, float3 gravity, int numThreadsHint,
             JobHandle inputDeps, DynamicBoundsCache boundsCache, bool incremental = false)
@@ -395,24 +393,11 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedules jobs that do the work of <see cref="ScheduleDynamicTreeBuildJobs(ref PhysicsWorld, float, float3, int, JobHandle, DynamicBoundsCache, bool)"/>
-        /// without building the tree again: they compute every body's bounds, filter and response as the build does, and
-        /// then fit the bounds of the tree that the last build left to them. The tree keeps its shape, so each leaf
-        /// holds the same body indices as before. Use it only when the last build of the tree, or the last refit of
-        /// this kind, was for the same number of dynamic bodies; the caller should also make sure that the bodies are
-        /// mostly the bodies that the tree was built for, because the tree is only as good as the grouping of the
-        /// bodies that it was built for.
-        /// <para>
-        /// The leaves get exactly the bounds that a build would give them, and every node's bounds and filter hold
-        /// all of its children's, as in a built tree. So the tree finds exactly the pairs of bodies that a built tree
-        /// finds, though in another order, and queries find exactly the same hits. When a body's filter differs from
-        /// the filter that the tree held for its index, the refit builds the nodes' filters again from the bodies'.
-        /// </para>
-        /// <para>
-        /// The jobs leave in <paramref name="results"/> whether a filter changed, and two surface areas that tell how
-        /// good the tree still is (see <see cref="DynamicTreeRefitResults.Quality"/>). The caller keeps the results
-        /// at a fixed address and reads them only after the jobs have completed.
-        /// </para>
+        /// Refit the existing dynamic tree using the same bounds, filters and responses as a fresh build.
+        /// Require the same dynamic body count and preferably the same body order to retain useful spatial
+        /// grouping.
+        /// Keep results at a fixed address and read them only after completion. Report filter changes and tree
+        /// quality.
         /// </summary>
         internal unsafe JobHandle ScheduleDynamicTreeRefitBuildJobs(ref PhysicsWorld world, float timeStep, float3 gravity,
             JobHandle inputDeps, DynamicBoundsCache boundsCache, DynamicTreeRefitResults* results)
@@ -1553,10 +1538,8 @@ namespace Unity.Physics
             public DynamicBoundsCache.View Cache;
 
             /// <summary>
-            /// Null for a build of the tree. For a refit of the tree that the last build left (see
-            /// <see cref="ScheduleDynamicTreeRefitBuildJobs"/>), the job sets this word to 1 when any body's filter
-            /// differs from the filter that the arrays held before, because the nodes' filters must then be built
-            /// again. A refit doesn't read <see cref="Points"/>, so the job writes them only when they are created.
+            /// Optional filter-change flag for refit builds. Set to one when node filters need rebuilding.
+            /// Refits do not read Points, so write them only when allocated.
             /// </summary>
             [NativeDisableUnsafePtrRestriction]
             public int* FiltersChanged;
@@ -1572,9 +1555,7 @@ namespace Unity.Physics
                 if (index == 0)
                     Incremental.Value = false;
 
-                // A body that the cache holds at this pose with this collider takes its collider's bounds and filter
-                // from the cache, and the job doesn't read its collider at all. Every other body computes them as
-                // ExecuteImpl does and leaves them in the cache.
+                // Reuse bounds and filters for exact cached matches; compute and cache them for other bodies.
                 RigidBody body = RigidBodies[index];
                 Aabb bounds;
                 CollisionFilter filter;
@@ -2083,25 +2064,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// The bounds of the dynamic bodies' colliders, kept from the end of one step to the build of the dynamic tree at
-    /// the start of the next. Without it, every dynamic body's collider bounds were computed twice for each step: once
-    /// when the step refits the tree to the solved poses (<see cref="CollisionWorld.ScheduleRefitDynamicTree"/>), and
-    /// again when the next step builds the tree, although most bodies are where the refit put them.
-    /// <para>
-    /// Each index of the world's dynamic bodies has an entry: the bounds of the collider of the world's body at that
-    /// index, at that body's pose, and the collider with its filter. The refit and the build each leave the bounds of
-    /// every body with a collider in the cache, so that after either, entry i holds the bounds of the body that the
-    /// world holds at index i. The code that builds the next world's bodies sets <see cref="View.Same"/> for each
-    /// body that has exactly the collider and pose, to the last bit, that the world's body at its index had before.
-    /// Only such a body takes its bounds from the cache. Anything that moves a body between the steps, such as the
-    /// game, a shift of the floating origin or a kinematic target, makes the body compute its bounds again.
-    /// </para>
-    /// <para>
-    /// A collider's memory can be freed and given to a new collider, so the address of a collider is not enough to
-    /// know it. The owner of the cache counts every change of the bodies' colliders in the number that the cache's
-    /// colliderVersion points to, and <see cref="MarkCurrent"/> records that number when the entries hold the current
-    /// colliders. While the two numbers differ, no body takes its bounds from the cache.
-    /// </para>
+    /// Cache dynamic collider bounds between refits and builds.
+    /// Reuse only for exact body identity, collider and pose matches marked by View.Same.
+    /// Collider version changes invalidate reuse even when an allocation keeps the same address.
     /// </summary>
     internal unsafe struct DynamicBoundsCache : IDisposable
     {
@@ -2118,18 +2083,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// What a body's collider needs, apart from the body's pose, to compute its bounds, so that the bounds can be
-        /// computed without reading the collider. The bounds of a box, for example, are its bounds in its own space
-        /// moved to the pose, and those don't change while the box keeps its collider. Reading the collider took most of
-        /// the time of computing the bounds, because each body's collider is a separate block of memory. For 10,868
-        /// boxes, computing their bounds from the colliders took 63 to 79 ns per box, and from the boxes' own bounds
-        /// 12 ns per box. The entry gives exactly the bounds that the collider gives, to the last bit, because the
-        /// collider computes its bounds with the same code from the same numbers.
-        /// <para>
-        /// An entry belongs to a collider's address, the body that has the collider, and the number of collider
-        /// changes when the entry was made. The address alone could belong to a new collider, but the body's entity
-        /// is never given to another body, and a body's collider changes only with the number of collider changes.
-        /// </para>
+        /// Cached collider data for computing bounds at a new pose without reading collider memory.
+        /// Require matching collider address, body identity and collider version. Results must match collider
+        /// bounds bit for bit.
         /// </summary>
         internal struct ShapeBounds
         {
@@ -2221,8 +2177,7 @@ namespace Unity.Physics
             public ColliderInfo* Colliders;
 
             /// <summary>
-            /// For each index, what the collider of the body that last computed its bounds at that index needs to
-            /// compute them again (see <see cref="ColliderBounds"/>), or null when <see cref="ShapesEnabled"/> is off.
+            /// Cached geometry for the body last written at each index, or null when ShapesEnabled is false.
             /// </summary>
             [NativeDisableUnsafePtrRestriction]
             public ShapeBounds* Shapes;
@@ -2246,8 +2201,7 @@ namespace Unity.Physics
             public bool IsCreated => Bounds != null;
 
             /// <summary>
-            /// Computes, from the collider, the bounds, filter and response of a body that took them from entry i,
-            /// and counts the body, and counts it again as a mismatch if any of them differs from the entry's.
+            /// Validate cached bounds, filter and response against the collider and count mismatches.
             /// </summary>
             public void CheckEntry(int i, in RigidBody body)
             {
@@ -2268,11 +2222,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Computes the bounds of the body's collider at the body's pose, as <see cref="RigidBody.CalculateAabb"/>
-            /// does and to the same bits, without reading the collider when entry i of <see cref="Shapes"/> holds what
-            /// the collider needs. Otherwise the method computes the bounds from the collider and makes the entry, so
-            /// that the next call for the same body and collider at this index doesn't read the collider. A convex hull
-            /// still reads the collider every time, because its bounds need all of its vertices.
+            /// Compute collider bounds using cached shape geometry when available, otherwise refresh the cache.
+            /// Convex hulls still read their vertices from the collider.
             /// </summary>
             public Aabb ColliderBounds(int i, RigidBody* body)
             {
@@ -2307,9 +2258,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Computes the bounds of the body's collider from the collider, and counts the body in the check's shape
-            /// counts, and again as a mismatch, in the shape counts and in all mismatches, if the bounds differ from
-            /// <paramref name="bounds"/>.
+            /// Compare supplied bounds with collider-computed bounds and increment validation/mismatch counters.
             /// </summary>
             void CheckShape(int i, RigidBody* body, Aabb bounds)
             {
@@ -2327,9 +2276,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Whether entry i holds the bounds and filter of the body's collider at the body's pose: the body is the
-            /// same as before the build, and the entries hold the current colliders. A body with a scale other than
-            /// 1 never matches.
+            /// Return whether entry i matches the body's pose, identity and current collider version.
+            /// Non-unit body scale never matches.
             /// </summary>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Holds(int i, in RigidBody body)
@@ -2340,8 +2288,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose, and
-            /// the collider's filter and response, which it reads from the collider.
+            /// Write bounds, filter and response from a body's collider into entry i.
             /// </summary>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void Write(int i, in RigidBody body, Aabb bounds)
@@ -2350,19 +2297,9 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose, and
-            /// the filter and response that the caller read from the collider. Every write stores the filter and the
-            /// response, because neither the collider's address nor the body tells that the entry already holds them.
+            /// Write collider bounds, filter and response for entry i.
+            /// Always refresh filter and response: a replaced collider can reuse the same address on the same body.
             /// </summary>
-            /// <remarks>
-            /// The heap can give a new collider the address of a collider that was freed. That happens to a new body at
-            /// the index of a destroyed body, and also to the same body: a body whose collider is gone for a build
-            /// leaves its entry as it was, because the build has no collider to write, and its next collider can take
-            /// the old collider's address. When a write kept the old collider's filter because the address and the body
-            /// were the same, the body took that filter from the cache from the next step on. A trigger pair of a new
-            /// body ended one step after it entered, and a ray that looked for the layer of a box whose collider came
-            /// back on another layer missed the box.
-            /// </remarks>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void Write(int i, in RigidBody body, Aabb bounds, CollisionFilter filter, bool respondsToCollision)
             {
@@ -2377,25 +2314,14 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Returns whether a body that is built at index i is the body that the world held at that index before,
-            /// with exactly the same collider and pose. The code that builds the bodies calls it before it overwrites
-            /// the body, and stores the answer in <see cref="Same"/>.
+            /// Return whether identity, collider and pose exactly match the previous body at index i.
+            /// Call before overwriting the body and store the result in Same.
             /// </summary>
-            /// <remarks>
-            /// The entity must match too, because the heap can give a new body's collider the address of a collider
-            /// that was freed. That happens when a body is destroyed and a new body takes its index. Without the check,
-            /// the new body took the old body's bounds, filter and response from the cache: a trigger pair of a new
-            /// body ended one step after it entered, because the cache gave the new body the filter of an old body on a
-            /// layer that didn't collide with the trigger. The same body keeps its entity, and its collider can't take
-            /// the address of the collider that the world held, because the backend builds the new collider before it
-            /// frees the old one.
-            /// </remarks>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public static bool Matches(RigidBody before, RigidBody after)
             {
-                // The collider of the body that the world held before can have been freed since. So read the
-                // colliders' addresses as they are stored, at the start of the body. BlobAssetReference.GetUnsafePtr
-                // checks the collider's header first, and that check fails and throws for a freed collider.
+                // Compare stored addresses directly. The old collider may be freed, so GetUnsafePtr's header
+                // check is unsafe.
                 return *(void**)&before == *(void**)&after && before.Entity == after.Entity && before.Scale == after.Scale
                     && math.all(math.asuint(before.WorldFromBody.pos) == math.asuint(after.WorldFromBody.pos))
                     && math.all(math.asuint(before.WorldFromBody.rot.value) == math.asuint(after.WorldFromBody.rot.value));
@@ -2434,9 +2360,9 @@ namespace Unity.Physics
         static readonly Unity.Burst.SharedStatic<int> SharedCheckOn = Unity.Burst.SharedStatic<int>.GetOrCreate<DynamicBoundsCache, CheckOnKey>();
 
         /// <summary>
-        /// Whether the build computes the bounds, filter and response of every body that takes them from the cache
-        /// too, and counts the bodies whose cached values differ (<see cref="Counts"/>). For tests and for finding a
-        /// stale entry; the build still uses the cached values.
+        /// Validate cached bounds, filters and responses against recomputed values while still using cached
+        /// results.
+        /// Record mismatches in Counts.
         /// </summary>
         public static bool CheckEnabled
         {
@@ -2518,9 +2444,8 @@ namespace Unity.Physics
         };
 
         /// <summary>
-        /// Records that the entries hold the current colliders. Call it on the main thread when no job changes the
-        /// colliders, and only after every entry that a body could take holds that body's current collider: after a
-        /// build of the tree since the colliders last changed.
+        /// Record the current collider version after every reusable entry has been refreshed by a build.
+        /// Call on the main thread while colliders cannot change.
         /// </summary>
         public void MarkCurrent()
         {
@@ -2541,9 +2466,8 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// What the jobs of <see cref="Broadphase.ScheduleDynamicTreeRefitBuildJobs"/> leave for the code that decides
-    /// whether the next build of the dynamic tree may refit the tree again. The owner keeps it at a fixed address, and
-    /// reads it on the main thread only after the jobs have completed.
+    /// Refit results used to decide whether to reuse the dynamic tree again.
+    /// Keep at a fixed address and read on the main thread after jobs complete.
     /// </summary>
     internal unsafe struct DynamicTreeRefitResults
     {
@@ -2561,10 +2485,8 @@ namespace Unity.Physics
         public fixed float SlotLeafAreas[BoundingVolumeHierarchy.RefitSubtreeCount];
 
         /// <summary>
-        /// The node area for each unit of leaf area, or 0 when the tree has no area. A tree that groups bodies that
-        /// are close together has small nodes, so this number grows as the bodies of a node move apart. The bounds of
-        /// the bodies themselves grow or shrink with their speed, and dividing by the leaf area keeps such a change
-        /// from looking like a worse tree.
+        /// Node surface area divided by leaf surface area, or zero for an empty tree.
+        /// Higher values indicate worse spatial grouping, normalized for changing body bounds.
         /// </summary>
         public float Quality => LeafArea > 0.0f ? NodeArea / LeafArea : 0.0f;
 

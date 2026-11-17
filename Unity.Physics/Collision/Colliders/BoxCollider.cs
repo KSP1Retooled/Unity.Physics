@@ -469,9 +469,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The bounds of the box in the collider's own space, which <see cref="CalculateAabb(RigidTransform, float)"/>
-        /// moves to the transform. They don't depend on the transform, so the bounds cache of the broadphase keeps
-        /// them for each body (see DynamicBoundsCache.ShapeBounds).
+        /// Box bounds in collider-local space, reusable by the broadphase bounds cache.
         /// </summary>
         internal Aabb LocalAabb()
         {

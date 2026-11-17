@@ -5,10 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A build whose dynamic bodies come from the same store rows as the last build's refits the dynamic tree that
-    /// the last build left, instead of building it from scratch (see StepState.RefitsDynamicTree). These tests take a
-    /// scene through every change that the refit has to handle, and check that the scene moves exactly as it moves
-    /// when every build builds the tree from scratch, and that queries and collision messages are the same.
+    /// Compare refitted and rebuilt dynamic trees through scene changes, requiring identical motion, query hits and
+    /// events.
     /// </summary>
     public unsafe class TreeReuseTests : PhysicsScene
     {
@@ -36,11 +34,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Columns of boxes that settle on the ground. After 30 steps in which nothing else changes, a box is added,
-        /// a box is removed, a box is moved a little by hand, a box is moved 400 m away and back, a box gets a larger
-        /// collider, a box moves to a layer that ignores the ground's, a box is made kinematic and dynamic again, and
-        /// a box is put to sleep and woken. In each step, rays and a box query look through the columns, and every
-        /// collision message goes into a hash.
+        /// Run settling boxes through body creation/removal, movement, collider/layer changes, kinematic changes
+        /// and sleep/wake.
+        /// Record query hits and collision hashes after each step.
         /// </summary>
         private Run RunScene(bool reuse)
         {
@@ -206,11 +202,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Two kinematic boxes overlap so that their tops are at the same height, and a ray, a sphere cast and a box
-        /// cast come down on the line where they overlap, so both boxes are hit at the same distance. The boxes swap
-        /// places after the first step. A tree that every build refits keeps the shape of the first build, so it visits
-        /// the two boxes in the other order than a tree built from scratch. The closest hit must be the same with both
-        /// trees, and it must be the box that was created later, which is the box that PhysX reports.
+        /// Verify equal-distance queries choose the later-created box regardless of refitted or rebuilt tree
+        /// traversal order.
         /// </summary>
         [Test]
         public void AClosestHitAtEqualDistancesDoesNotDependOnTheTree()

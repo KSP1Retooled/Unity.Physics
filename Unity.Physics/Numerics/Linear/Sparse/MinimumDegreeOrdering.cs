@@ -4,21 +4,14 @@ using Unity.Collections.LowLevel.Unsafe;
 namespace Unity.Numerics.Linear.Sparse
 {
     /// <summary>
-    /// Picks the order in which a sparse Cholesky factorization eliminates the vertices of a symmetric matrix's graph,
-    /// by the minimum-degree rule. The order needs only the graph, not the values of the matrix. A good order keeps the
-    /// factor sparse. <see cref="SymbolicCholesky"/> then works out which entries of the factor are nonzero in that
-    /// order. The graph uses a compressed layout: the neighbours of vertex v are adjacency[adjacencyStart[v]] up to, but
-    /// not including, adjacency[adjacencyStart[v + 1]]. The vessel solver can order the sections of a vessel with it.
+    /// Minimum-degree ordering for sparse symmetric factorization, using graph structure only.
+    /// Vertex v's neighbours occupy adjacency[adjacencyStart[v] .. adjacencyStart[v + 1]).
     /// </summary>
     public static class MinimumDegreeOrdering
     {
         /// <summary>
-        /// Computes a minimum-degree elimination order for a graph with <paramref name="count"/> vertices, and appends
-        /// it to <paramref name="order"/>. The routine repeatedly eliminates the vertex that has the fewest remaining
-        /// neighbours. It then connects that vertex's neighbours to each other, as eliminating the vertex in a
-        /// factorization would. On a tree, this order takes the leaves first. On a tree with a few extra edges that close
-        /// loops, the order avoids filling the whole tree path between the two ends of each extra edge. It also leaves
-        /// the vertices that have many neighbours until last.
+        /// Append a minimum-degree elimination order for count vertices.
+        /// Eliminate the vertex with fewest remaining neighbours, connecting those neighbours to account for fill.
         /// </summary>
         public static void Compute(int count, NativeArray<int> adjacency, NativeArray<int> adjacencyStart,
             NativeList<int> order)

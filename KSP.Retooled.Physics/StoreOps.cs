@@ -8,14 +8,9 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// A version counter for the store data that the query snapshot copies (see <see cref="SnapshotQueryDataJob"/>).
-    /// The snapshot holds no poses. For each built body it holds the body's record, its shapes and whether it is
-    /// static. For each shape it holds the shape's record, user data, engine object id, flags and geometry type. The
-    /// version moves when a body is created or destroyed, when a body's list of shapes changes, and when a command
-    /// changes an attached shape's flags, filter, material or geometry. The step also compares the built body order
-    /// with the order that the snapshot was taken in, so a body that moves to a new row or stops being simulated
-    /// still causes a new snapshot. The plugin mirrors the store's records, so there is no space for this counter in
-    /// them. All worlds share it, as they share <see cref="JointTopology"/>.
+    /// Shared version for non-pose data copied into query snapshots, including body/shape membership and shape
+    /// settings.
+    /// Snapshot reuse also requires the same built body row order.
     /// </summary>
     internal static class QuerySnapshotVersion
     {
@@ -33,9 +28,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Provides operations that the command kernels share for store memory, flags that mark query worlds as dirty, and
-    /// lists of shapes attached to bodies. A world's handle points to its <see cref="NativeStore.WorldData"/>, and a
-    /// shape's handle points to its <see cref="NativeStore.ShapeData"/>.
+    /// Shared command helpers for native allocations, query invalidation and body shape lists.
     /// </summary>
     internal static unsafe class StoreOps
     {
@@ -46,10 +39,9 @@ namespace KSP.Retooled.Physics
         private const uint MinimumCapacity = 32;
 
         /// <summary>
-        /// Returns the body's row in the dense array with current component pointers. The row remains valid until a
-        /// body in the same world is created or destroyed. Its component pointers remain valid until the next
-        /// structural change in the bound Entities world. Use this method on the main thread only. Refreshing the
-        /// pointers requires looking up the entity through EntityManager, which worker threads must never do.
+        /// Return the body's row with refreshed component pointers. Main thread only.
+        /// The row may move when bodies are created or destroyed; entity pointers may change after structural
+        /// changes.
         /// </summary>
         internal static NativeStore.BodyData* Hot(NativeStore.Body* body)
         {
@@ -59,10 +51,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the body's row for access to fields stored directly in it: flags, shapes and owner. These fields do
-        /// not depend on component storage in entities. Unity sends some commands from worker threads, which may read
-        /// these fields even when the component pointers are stale. Only the main thread can refresh the component
-        /// pointers. The row itself can move when bodies are created or destroyed.
+        /// Return the row without refreshing entity component pointers. Workers may read row-owned flags, shapes
+        /// and owner.
+        /// The row may move when bodies are created or destroyed.
         /// </summary>
         internal static NativeStore.BodyData* Row(NativeStore.Body* body)
         {
@@ -176,16 +167,13 @@ namespace KSP.Retooled.Physics
         internal const uint QueryStale = 1;
 
         /// <summary>
-        /// Marks a query world in which only static bodies have moved since the last build. The next build only needs
-        /// to update their poses and update or rebuild the static tree. Unity moves static bodies every frame: KSC's
-        /// tracking dishes turn, and the scaled spheres for planets orbit.
+        /// Query state indicating that only static poses and their tree need updating.
         /// </summary>
         internal const uint QueryStaticsMoved = 2;
 
         /// <summary>
-        /// Marks a query world that is current once the refit of the dynamic tree that the last step left running has
-        /// finished (kQueryTreePending in Store.h). A main-thread query then asks for a build, which finishes the refit.
-        /// Every build finishes a pending refit first, so the other marks can replace this one.
+        /// Query state indicating that the world is current after its pending dynamic tree refit.
+        /// Any build finishes the refit before processing further changes.
         /// </summary>
         internal const uint QueryTreePending = 3;
 
@@ -198,9 +186,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Marks the query world after a static body has only moved. If the world is already marked as stale, it
-        /// remains stale because a full rebuild will include this movement. A world that waits only for the refit
-        /// needs the static bodies posed as well.
+        /// Mark static pose changes without weakening an existing full-rebuild request.
         /// </summary>
         internal static void MarkStaticMoved(NativeStore.Body* body)
         {
@@ -223,8 +209,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Marks a body whose collider must be built again because its shapes changed. A change to the shapes can also
-        /// change what the query snapshot holds, so this moves <see cref="QuerySnapshotVersion"/> as well.
+        /// Mark collider geometry dirty and invalidate query snapshot data after shape changes.
         /// </summary>
         internal static void MarkColliderDirty(NativeStore.Body* body)
         {
@@ -235,8 +220,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Marks colliders after a shape moves within its body. A compound collider can be copied with updated child
-        /// poses. Other colliders have the pose baked into their geometry and must be rebuilt.
+        /// Mark shape pose changes. Copy compounds with new child poses; rebuild colliders with baked poses.
         /// </summary>
         internal static void MarkCollidersMoved(NativeStore.Body* body)
         {
@@ -287,9 +271,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Hides a removed shape from the last published query world, which workers continue to read. Otherwise a hit
-        /// could return a pointer to Unity for a collider that is about to be destroyed. The shape's slot may refer to
-        /// an older query world, so the code checks that the slot still identifies this shape.
+        /// Hide a removed shape from the published query snapshot before its collider is destroyed.
+        /// Verify that the snapshot slot still belongs to this shape.
         /// </summary>
         private static void HideFromQueries(NativeStore.WorldData* world, NativeStore.Shape* shape)
         {

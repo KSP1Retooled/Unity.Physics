@@ -1,29 +1,29 @@
 #!/bin/sh
-# Runs EditMode tests in an editor that stays open between runs, so that a run doesn't pay for the editor's start-up
-# (30 to 60 s) every time, and the editor's Burst compiler keeps its work between runs.
+# Run EditMode tests in a persistent editor, retaining Burst compilation work.
 #
-# usage: Tests/editor-test.sh <project folder> <run name> full|quick|retooled|filter=<filters> [category=<categories>] [NAME=VALUE...]
-#        Tests/editor-test.sh <project folder> stop
+# Usage:
+#   Tests/editor-test.sh <project folder> <run name> full|quick|retooled|filter=<filters> [category=<categories>] [NAME=VALUE...]
+#   Tests/editor-test.sh <project folder> stop
 #
-#   full, quick and retooled pick the same tests as in Tests/run-suite.sh. filter=<filters> takes test filters
-#   separated by ';', as Unity's -testFilter argument does, for example
-#   'filter=KSP.Retooled.Physics.Tests.VesselForestBench.Measure$'. Each filter is a regular expression that can match
-#   any part of a test's full name, so without the "$" that filter also runs VesselForestBench.MeasureStages.
-#   category=<categories> works like -testCategory.
-#   NAME=VALUE sets an environment variable for this run only, for example RETOOLED_VESSEL=0. When the set of variables
-#   differs from the last run, the editor reloads its scripts before the run, so that settings read at start-up see the
-#   new values.
+# Selection:
+#   full, quick and retooled use the run-suite.sh test selections.
+#   filter=<filters> accepts semicolon-separated regular expressions.
+#   Use $ for an exact suffix, for example filter=VesselForestBench.Measure$.
+#   category=<categories> accepts semicolon-separated test categories.
 #
-# The first run installs the service from Tests/EditorService~ into <project>/Assets/RetooledTestService and starts the
-# editor in batch mode. Each later run reuses that editor: the editor imports and compiles the changed scripts, then
-# runs the tests. EDITOR_ARGS adds arguments to the editor's command line when this script starts it, for example
-# EDITOR_ARGS=-burst-disable-compilation; stop the editor to change them.
+# Environment:
+#   NAME=VALUE applies to this run only. Changes trigger a script reload.
+#   Omitted variables return to the values from editor startup.
+#   EDITOR_ARGS adds editor startup arguments; stop the editor to change them.
 #
-# Stop the editor with "stop" when you are done with work for now. Never run Tests/run-suite.sh or another Unity
-# instance on a project while its editor is open.
+# The first run installs Tests/EditorService~ and starts the editor.
+# Later runs import changed scripts before testing.
+# Do not open another Unity instance or use run-suite.sh on this project.
 #
-# The results go to <project>/Logs/<run name>-results.xml, the editor's log to <project>/Logs/editor-service.log, and
-# the service's files to <project>/TestService.
+# Output:
+#   Logs/<run name>-results.xml   Test results.
+#   Logs/editor-service.log      Editor log.
+#   TestService                  Service requests and state.
 
 set -u
 
@@ -44,18 +44,14 @@ mkdir -p "$service" "$project/Logs"
 
 project_windows=$(cygpath -w "$project")
 
-# Prints the process id of the editor that has this project open, found by its command line, or nothing. An asset
-# import worker also has the project on its command line, so the search leaves workers out. The search takes a few
-# seconds, so running() uses it only when the process in pid.txt doesn't answer.
+# Print the editor PID for this project, excluding import workers. Return nothing if absent.
 find_editor() {
     powershell.exe -NoProfile -Command "\$p = '$project_windows'; Get-CimInstance Win32_Process -Filter 'Name=''Unity.exe''' |
         Where-Object { \$_.CommandLine -like ('*-projectPath ' + [char]34 + \$p + [char]34 + '*') -and \$_.CommandLine -notlike '*AssetImportWorker*' } |
         Select-Object -First 1 -ExpandProperty ProcessId" | tr -d '\r\n'
 }
 
-# Succeeds when the project's editor is running. The service writes the editor's process id into pid.txt when its
-# scripts load. If that process is gone, the editor may still be running under another id, for example when pid.txt
-# is stale; the command-line search then finds it, and pid.txt is corrected.
+# Check pid.txt, falling back to a command-line search and updating stale PIDs.
 running() {
     if [ -f "$service/pid.txt" ] && tasklist //FI "PID eq $(cat "$service/pid.txt")" //NH 2>/dev/null | grep -qi "unity"; then
         return 0

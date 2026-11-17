@@ -1,22 +1,8 @@
-// The native store: everything the backend knows about the physics scene, held in plain memory that outlives a managed
-// domain reload. The structs marked "mirrored" are read and written directly by managed code and Burst jobs through
-// NativeStore.cs, so their layout is a contract: only 4-byte fields and 8-byte pointers, padding spelled out, and a size
-// and offset check here and in NativeStore.FirstSizeMismatch. RetooledPhysics_StructSize reports the sizes, and managed
-// attach refuses to run on a mismatch.
-//
-// Commands reach the store through the Burst kernels in BodyKernel.cs, ShapeKernel.cs and WorldKernel.cs. Native code keeps
-// only what comes before managed code exists: worlds, their settings and materials. It answers a few hot reads itself, of
-// fields the cold records and the rows hold, because a kernel call costs more than such a read.
-//
-// SDK handles are stable pointers to the cold records (Body*, Shape*, Joint*, MaterialData*, Mesh*, HeightField*, World*). Each
-// world keeps a dense swap-remove BodyData array, so jobs walk its bodies linearly. A BodyData moves when another body is
-// destroyed; a Body never does. A body's physical state belongs to managed, which reaches it through BodyData's pointers.
-//
-// Threads: store mutation happens on the main thread outside Simulate. Queries can arrive from worker threads, and they
-// read only the query world, a snapshot managed builds on the main thread and holds nothing of the live store. Replacing
-// that snapshot takes World::queryLock exclusively, and queries hold it shared. Mesh cooking can arrive from worker
-// threads too: a cook touches only its own new record, a mesh's reference count is the one thing threads share, and
-// g_MeshLock keeps the cook functions from going away under a cook.
+// Native physics scene storage, retained across managed domain reloads.
+// Mirrored structures must match NativeStore.cs; attach verifies sizes and layouts before use.
+// SDK handles point to stable records. Dense BodyData rows may move on swap-removal.
+// Mutate the store on the main thread outside Simulate. Queries use snapshots under shared queryLock;
+// publication takes the lock exclusively. Mesh cooking uses private data and g_MeshLock protects callbacks.
 
 #pragma once
 
@@ -76,8 +62,8 @@ namespace Retooled
 
     static_assert(sizeof(BodyPose) == 32, "Unity.Transforms.LocalTransform has this layout");
 
-    // The start of one rigid body's row, static or not, mirrored. Managed allocates the rows and keeps its own fields after
-    // these, so changing those needs no plugin build. Rows are StoreGlobals::bodyDataSize apart: walk them with BodyRow.
+    // Mirrored prefix of a rigid body's dense row. Managed fields follow it.
+    // Use BodyRow to walk rows spaced by StoreGlobals::bodyDataSize.
     struct BodyData
     {
         Body* owner;
@@ -85,17 +71,14 @@ namespace Retooled
         uint32_t flags; // BodyStateFlags
         uint32_t shapeCount;
 
-        // Where the body's pose is. Managed moves it when the body's entity moves to another chunk, and it updates the
-        // pointer then, but only on the main thread: after a structural change to the body's entity that managed did not
-        // make itself, the pointer stays stale until the main thread next uses the row. So the plugin reads through it only
-        // where managed would read the same pointer (see Body.cpp).
+        // Pointer to managed pose storage. Only the main thread refreshes it after entity structural changes.
+        // Read it directly only where Body.cpp permits.
         const BodyPose* pose;
     };
 
     static_assert(sizeof(BodyData) == 32, "NativeStore.BodyData starts with this layout");
 
-    // Mirrored. Friction and bounciness of a PhysicsMaterial; combine modes hold Physics::MaterialCombineMode. Unity holds
-    // one reference and each shape using the material another, because Unity releases a material while shapes still use it.
+    // Mirrored material settings, with one reference from Unity and one from each attached shape.
     struct MaterialData
     {
         float dynamicFriction;
@@ -133,10 +116,9 @@ namespace Retooled
 
     static_assert(sizeof(ShapeData) == 96, "NativeStore.ShapeData mirrors this layout");
 
-    // Mirrored, and written by MeshCook.cs. The head of a cooked mesh: one block with no pointers in it, followed by
-    // vertexCount Float3 and then triangleCount triples of uint32_t, which is also the stream stored in a baked mesh asset.
-    // The vertices are the source mesh's, unscaled, and doubled into a slab for a flat convex mesh. A convex mesh may have no
-    // triangles, since its hull comes from its vertices. A mesh with no vertices has no collider.
+    // Mirrored header of a relocatable cooked mesh, followed by vertexCount Float3 values and triangleCount index
+    // triples.
+    // Vertices are unscaled; planar convex meshes are thickened. Convex hulls may have no triangle data.
     struct MeshData
     {
         uint32_t magic;
@@ -162,9 +144,8 @@ namespace Retooled
 
     static_assert(sizeof(MeshMoments) == 40, "NativeStore.MeshMoments mirrors this layout");
 
-    // Mirrored. A height field, and the handle Unity holds, written by HeightFields.cs on the store's heap: the samples Unity
-    // sent, unscaled, because the scale belongs to each shape. Only the main thread touches it. Unity holds one reference and
-    // each shape using it another.
+    // Mirrored height field handle and unscaled samples. Main thread only.
+    // Unity and each attached shape hold a reference.
     struct HeightField
     {
         int16_t* heights;      // resolution * resolution samples
@@ -341,11 +322,9 @@ namespace Retooled
         uint32_t vehicleCount;
         uint32_t vehicleCapacity;
 
-        // A step returns while the refit of the dynamic tree to the solved poses still runs on job workers. treeReady is 0
-        // from then until the refit has finished, and 1 otherwise. The step clears it under queryLock, held exclusively,
-        // and the refit sets it, so a query that holds queryLock shared and finds it 1 can read the query world. The
-        // refit is shared work: a query that finds it 0 calls ManagedCallbacks::helpRefit with refit, which does the
-        // refit's remaining work on the query's thread, and then waits for the word (see Query.cpp).
+        // Set to zero while a dynamic tree refit is pending, otherwise one.
+        // Clear under exclusive queryLock. Queries holding the shared lock help pending work, then wait for
+        // completion.
         uint32_t treeReady;
         uint32_t reserved0;
         void* refit;
@@ -353,9 +332,8 @@ namespace Retooled
 
     static_assert(sizeof(WorldData) == 216, "NativeStore.WorldData mirrors this layout");
 
-    // The value of WorldData::queryDirty while the query world that the step published waits only for the refit of the
-    // dynamic tree. A main-thread query then sends the world through buildQueryWorld, which finishes the refit. Any
-    // change to the store replaces this value with its own.
+    // WorldData::queryDirty value indicating that only the dynamic tree refit remains before queries can read the
+    // world.
     constexpr uint32_t kQueryTreePending = 3;
 
     // Waits while *word holds expected, for at most the given time. It may return early, so callers check again.
@@ -508,13 +486,12 @@ namespace Retooled
     struct ManagedCallbacks
     {
         void (*simulate)(WorldData* world, float deltaTime);
-        // Brings the world's query structures up to date with the store and returns a QueryWorldBuild. Called with
-        // queryLock held exclusively, on the main thread only: the build needs Allocator.Temp, job scheduling and write
-        // access to native containers, and a job worker has none of them.
+        // Update query structures and return a QueryWorldBuild result.
+        // Main thread only, with exclusive queryLock; requires allocation, job scheduling and container write
+        // access.
         int32_t (*buildQueryWorld)(WorldData* world);
-        // Returns non-zero and fills output when a query of that kind found something; a collector gets its hits as they
-        // come. Called with queryLock held shared, on any thread. This is a Burst function, so no thread pays a Mono
-        // transition once it has compiled; until then it is a stub that runs the same code in Mono.
+        // Execute a query with shared queryLock on any thread. Return nonzero and fill output on a hit;
+        // collectors receive hits incrementally.
         int32_t (*query)(uint32_t kind, void* queryWorld, const QueryInput* input, QueryOutput* output);
         // Frees everything managed holds for a world that is going away.
         void (*destroyWorld)(WorldData* world);
@@ -534,10 +511,8 @@ namespace Retooled
 
     static_assert(sizeof(ManagedCallbacks) == 96, "NativeStore.ManagedCallbacks mirrors this layout");
 
-    // Mirrored up to references. A cooked mesh, and the handle Unity holds. data is null while the mesh waits for managed
-    // code (see Mesh.cpp) or if finishing it failed. Managed works out a convex mesh's moments on first use and keeps them
-    // here, on the main thread. Unity holds one reference and each shape using the mesh another, because a mesh goes away
-    // with its Mesh asset while colliders can still use it.
+    // Cooked mesh handle, mirrored through references. data is null until managed creation succeeds.
+    // Cache convex moments on first main-thread use. Unity and attached shapes each hold a reference.
     struct Mesh
     {
         MeshData* data = nullptr;
@@ -605,17 +580,13 @@ namespace Retooled
     // The thread managed attached on, set before any callback can run.
     extern std::thread::id g_MainThread;
 
-    // The world whose step has just returned and whose poses Unity is reading back, or null. A step refreshes the pose
-    // pointers of every row of its world when it starts, and nothing can make them stale until a script runs again. So
-    // while a world is here, the main thread reads its poses through the rows (see Body.cpp). Simulate sets it when the
-    // step returns, and any command that the read-back doesn't send clears it (see CloseReadBack).
+    // World currently being read back after Simulate, or null. Pose pointers remain current throughout this
+    // window.
+    // Main-thread GetPose reads them directly until CloseReadBack clears the world.
     extern std::atomic<World*> g_ReadBackWorld;
 
-    // Ends the read-back of the world in g_ReadBackWorld. Plugin.cpp calls it for every command other than the three that
-    // the read-back sends per body (GetFlags, GetIsSleeping and GetPose). Unity asks for the step's results right after its
-    // read-back, so the window closes before a script runs again. Only a script that runs between Unity's Run and Publish
-    // stages, and changes a body's entity there without managed, could make the main thread read a stale pointer; nothing
-    // in the game or the package does that.
+    // End direct pose read-back on commands other than GetFlags, GetIsSleeping and GetPose.
+    // This closes the window before scripts can change entity storage.
     inline void CloseReadBack()
     {
         if (g_ReadBackWorld.load(std::memory_order_relaxed) != nullptr)

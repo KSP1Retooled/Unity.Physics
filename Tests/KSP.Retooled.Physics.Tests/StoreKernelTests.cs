@@ -8,8 +8,7 @@ using Unity.Transforms;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests command kernels in a separate world, including cases that cannot be set up or inspected through the Unity
-    /// API. Calls the kernels as ordinary methods so that failures include a stack trace.
+    /// Test command kernels directly in an isolated world for cases not exposed through Unity's public API.
     /// </summary>
     public unsafe class StoreKernelTests
     {

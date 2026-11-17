@@ -648,17 +648,13 @@ namespace Unity.Physics
         public byte Version;
 
         /// <summary>
-        /// Specifies whether the direct solver treats this joint as an ordinary joint
-        /// (<see cref="JointForestRole.None"/>), a tree edge or a closure in the vessel forest. For forest joints, the
-        /// solver eliminates unbounded rows using the forest structure (see <see cref="ForestSettings"/>). The code
-        /// that builds the joints assigns this role. Joints outside the forest retain None.
+        /// Role assigned by the joint builder: ordinary joint, vessel tree edge or closure.
+        /// Forest roles allow elimination of unbounded rows through the forest structure.
         /// </summary>
         public JointForestRole ForestRole;
 
         /// <summary>
-        /// The locking operations that the joint's owner permits for its body pair in the forest. These permissions are
-        /// based on the loads measured against the joint's break limits; see <see cref="ForestSettings.Locking"/>. None
-        /// keeps the pair yielding.
+        /// Load-based locking permissions for this forest body pair. None keeps it yielding.
         /// </summary>
         public JointForestLock ForestLock;
 

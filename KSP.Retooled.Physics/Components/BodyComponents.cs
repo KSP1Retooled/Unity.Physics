@@ -3,13 +3,12 @@ using Unity.Mathematics;
 
 namespace KSP.Retooled.Components.Physics;
 
-// A rigid body's entity uses components from Unity.Physics and Unity.Transforms for the Rigidbody data that they can
-// represent. The components below store the remaining data. All vectors are in world space unless their names specify
-// local space.
+// Components for Rigidbody state not represented by Unity.Physics and Unity.Transforms.
+// Vectors use world space unless their names specify local space.
 
 /// <summary>
-/// Stores the mass and inertia returned by a Rigidbody. Inverting PhysicsMass would not recover these values exactly.
-/// They cannot be recovered at all when the inverse values are zero.
+/// Original Rigidbody mass and inertia values. These cannot always be recovered from inverse PhysicsMass
+/// values.
 /// </summary>
 public struct BodyMass : IComponentData
 {
@@ -43,8 +42,8 @@ public struct BodySleep : IComponentData
 }
 
 /// <summary>
-/// Accumulates forces, torques, and changes in velocity applied to a rigid body between steps. The accumulated values
-/// are cleared during the step. Each ForceMode has its own fields because each mode requires a different calculation.
+/// Accumulate forces, torques and velocity changes between steps, separately for each ForceMode.
+/// Cleared during the step.
 /// </summary>
 public struct BodyForces : IComponentData
 {

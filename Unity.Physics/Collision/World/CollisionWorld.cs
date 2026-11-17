@@ -773,17 +773,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedules jobs that move the dynamic bodies to their motions' poses and fit the dynamic tree's bounds to
-        /// them, as <see cref="ScheduleUpdateDynamicTree"/> does, but without building the tree again. The tree keeps
-        /// the shape that it was built with, so it holds the same bodies in the same leaves. Use this only when the
-        /// tree was built for the same dynamic bodies in the same order, for example earlier in the same step. Queries
-        /// find the same hits as in a rebuilt tree, but can report them in a different order.
+        /// Move dynamic bodies to solved motion poses and refit their existing tree, optionally caching new
+        /// collider bounds.
+        /// Require the same bodies in the same order. Query hit sets match rebuilding, but hit order may differ.
         /// </summary>
-        /// <remarks>
-        /// With <paramref name="boundsCache"/>, the refit also leaves in the cache the bounds of each body's collider
-        /// at the body's new pose, so that the next build of the tree doesn't compute them again. See
-        /// <see cref="DynamicBoundsCache"/>.
-        /// </remarks>
         internal JobHandle ScheduleRefitDynamicTree(ref PhysicsWorld world, float timeStep, float3 gravity, JobHandle inputDeps,
             DynamicBoundsCache boundsCache = default)
         {
@@ -808,11 +801,7 @@ namespace Unity.Physics
                 Cache = cache,
             }.Schedule(count, 32, inputDeps);
 
-            // The subtrees below the cut are fitted in parallel, one iteration per subtree, and then one job fits the
-            // few nodes above the cut. Before, a single job fitted the whole tree, and it was the last job of the
-            // step. With 11,000 bodies it took 0.6 ms in the step, and 0.4 ms alone after the caches were flushed,
-            // against 0.2 ms with the nodes and bounds in the caches. Most of that time goes to waiting for memory:
-            // each node that the job reads tells it which nodes to read next.
+            // Refit subtrees in parallel, then fit the nodes above the cut in one job.
             Broadphase.Tree tree = Broadphase.DynamicTree;
             handle = new RefitDynamicSubtreesJob
             {
@@ -885,11 +874,8 @@ namespace Unity.Physics
                 Aabb bounds = cache.IsCreated ? cache.ColliderBounds(i, &body) : body.CalculateAabb();
                 aabbs[i] = Broadphase.PrepareDynamicBodyDataJob.ExpandAabb(bounds, aabbMargin, gravity, timeStep, motionVelocities[i]);
 
-                // The bounds in the cache go with the body that the world now holds at index i: its collider at its
-                // new pose. The step writes back the pose of a moving body with its rotation normalized, and the next
-                // build starts from that pose. Normalizing changes the last bits of the rotation of some bodies, and
-                // those bodies compute their bounds again in the next build. Normalizing here, and computing the
-                // bounds of those bodies at the normalized pose, cost the refit more than it saved.
+                // Cache bounds at the current pose. Write-back normalization may change rotation bits,
+                // in which case the next build recomputes bounds.
                 if (cache.IsCreated && body.Collider.IsCreated)
                 {
                     cache.Bounds[i] = bounds;

@@ -19,12 +19,9 @@ namespace KSP.Retooled.Physics.Tests
     using Graph = VesselForestBench.Graph;
 
     /// <summary>
-    /// Measures the parts of the refit of the dynamic tree that each step leaves running: moving each body to its
-    /// solved pose, computing the bounds of its collider, widening the bounds by the body's speed, writing the bounds
-    /// cache, and fitting the tree's nodes. Each part runs alone on the main thread in a Burst job, over the bodies of a
-    /// bench craft after some steps, so that the numbers are the cost of the work and not of the threads that share it.
-    /// It also counts the bodies that take their bounds from the cache in the next build. PROBE_CRAFT names the craft
-    /// (default tu160x4). The report goes to Logs/RefitProbe.txt.
+    /// Measure dynamic refit stages separately in Burst, excluding scheduling costs, and count next-build cache
+    /// reuse.
+    /// PROBE_CRAFT selects the craft (default tu160x4). Write Logs/RefitProbe.txt.
     /// </summary>
     [Explicit("profiling")]
     [Category("Slow")]

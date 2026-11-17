@@ -7,9 +7,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The backend's side of persistent vessels: which vessels it compiles from the joints, the edges and closures that it
-    /// hands to the step, the Unity Physics joints that it still builds, and how it turns the loads that the solve writes
-    /// into the joints' forces and breaks. These tests read what the backend built, so they don't need the solver's side.
+    /// Test backend vessel compilation, emitted constraints and joint load/break conversion independently of the
+    /// solver.
     /// </summary>
     public unsafe class VesselBuildTests : PhysicsScene
     {
@@ -371,11 +370,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of two parts is built again before the next step: each part is destroyed and a new part is made in
-        /// its place at once, and then the new parts are joined. The store often gives each new body the memory of the
-        /// body that it replaces. The new craft is a new vessel all the same, so it gets a new Id. The test repeats
-        /// this, so that the store reuses the memory of both bodies at least once, and it counts how often that
-        /// happened.
+        /// Verify a rebuilt craft gets a new vessel ID even when both body record addresses are reused.
         /// </summary>
         [Test]
         public void ACraftBuiltAgainInTheMemoryOfAnOldCraftIsANewVessel()
@@ -418,14 +413,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The step keeps each edge that it filled by the edge's part index, and a new compilation can give that index to
-        /// a part of another vessel. Here two columns become vessels, with parts of different lengths, so that their
-        /// edges have different anchors. Then every part is put to sleep, and the first column loses the joints in its
-        /// middle. When that edge's tombstone expires, the vessels are compiled again while no vessel takes part in the
-        /// step, so the fill jobs don't run in that step: the second column, which is kept, now comes first, and the two
-        /// halves of the first column follow. The number of parts stays the same. When the parts wake, every edge must be
-        /// computed for its own joints, so the edges must match the edges that the step computes when it compiles
-        /// everything again. This holds because each compilation empties the cached edges.
+        /// Verify edge caches are invalidated when recompilation reorders sleeping vessels without changing part
+        /// count.
         /// </summary>
         [Test]
         public void EdgesCompiledWhileEveryVesselSleepsAreFilledForTheirOwnJoints()
@@ -603,9 +592,8 @@ namespace KSP.Retooled.Physics.Tests
         {
             List<Rigidbody> bodies = Column(4);
 
-            // A strut beside the stack joints of the lowest part. Its frame differs from theirs, so it isn't in their
-            // group: it is a second unit between the same two bodies. The stack joints come first in the store, so they
-            // are the edge, and the strut is a closure. Only the strut has a break force.
+            // This strut has a different frame, so it forms a closure beside the stack-joint edge. Only the
+            // strut can break.
             ConfigurableJoint strut = Strut(bodies[3], bodies[2]);
             strut.axis = Vector3.forward;
             strut.breakForce = 777.0f;
@@ -751,8 +739,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of three parts, below a minimum size of four, keeps its Unity Physics joints. Until the default
-        /// minimum became 2, a craft of three parts did this by default.
+        /// Verify a three-part craft retains Unity joints when the minimum vessel size is four.
         /// </summary>
         [Test]
         public void ACraftBelowTheMinimumSizeStaysOnUnityJoints()
@@ -923,9 +910,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void OverloadedEdgesBreakTheirJointsAmongManyJoints()
         {
-            // BreakJointsJob reads the joints' flags eight at a time, and the joints after the last group of eight one
-            // at a time. Five parts have twelve joints, so a load on the third part's edge breaks joints in the first
-            // group of eight, and a load on the fifth part's edge breaks the last joints, which are read one at a time.
+            // Twelve joints exercise both the eight-wide break flag loop and its scalar tail.
             List<Rigidbody> bodies = Column(5);
             foreach (ConfigurableJoint joint in Object.FindObjectsByType<ConfigurableJoint>(FindObjectsSortMode.None))
             {
@@ -971,9 +956,7 @@ namespace KSP.Retooled.Physics.Tests
             Simulate(5);
             OnlyVessel();
 
-            // VesselLoadsJob shares a group's load in the frame that it finds from the solved motion of the leader's
-            // body0, before the poses are written back. That frame must be the one that the written-back pose gives,
-            // to the last bit, so that the loads don't change.
+            // The leader frame read from solved motion must match the written-back pose bit for bit.
             NativeStore.WorldData* store = State->Store;
             PhysicsWorld world = State->World;
             int checkedJoints = 0;

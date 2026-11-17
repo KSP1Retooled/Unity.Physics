@@ -1,5 +1,5 @@
-// World commands. They address the world through the object handle. A world and its settings stay here because Unity
-// creates and configures the scene before any managed code exists; a world's bodies and counts run in WorldKernel.cs.
+// Manage native world creation and settings before managed code exists.
+// WorldKernel.cs handles body commands and counts.
 
 #include <algorithm>
 #include <cstddef>

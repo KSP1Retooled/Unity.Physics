@@ -8,8 +8,8 @@ namespace KSP.Retooled.Physics
     internal static unsafe class ShapeMath
     {
         /// <summary>
-        /// Returns the length of the straight part of a capsule. Despite its name in the plugin API,
-        /// CapsuleGeometry::height stores half of this length, like PxCapsuleGeometry::halfHeight.
+        /// Return the capsule's straight length. The API's height field stores half this length, like
+        /// PxCapsuleGeometry::halfHeight.
         /// </summary>
         internal static float CapsuleCylinderLength(NativeStore.ShapeData* shape)
         {
@@ -22,9 +22,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Calculates the shape's volume, centre of mass, and inertia per unit mass about that centre, in the shape's
-        /// own frame. Returns false for shapes that the calculation skips, including shapes with no volume. These
-        /// shapes receive none of the mass, and their inertia per unit mass is undefined.
+        /// Calculate volume, centre of mass and inertia per unit mass in the shape's frame.
+        /// Return false for skipped or zero-volume shapes; their inertia output is undefined.
         /// </summary>
         internal static bool MassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {
@@ -80,10 +79,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Scaling by s moves x to s x, so entry (i, j) of the covariance matrix is multiplied by s_i s_j. The inertia
-        /// of a unit mass about its centre is trace(C) I - C. Calculate the unscaled moments once per mesh. They are
-        /// needed whenever a rigidbody's mass is set, and all shapes that use the mesh can reuse them because the hull
-        /// scales with its points.
+        /// Compute scaled convex mass properties from cached mesh covariance.
+        /// Scale covariance entry (i, j) by s_i*s_j, then use I = trace(C)*identity - C.
         /// </summary>
         private static bool ConvexMassProperties(NativeStore.ShapeData* shape, out float volume, out float3 center, out float3x3 inertiaPerUnitMass)
         {

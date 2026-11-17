@@ -7,11 +7,9 @@ using Unity.Numerics.Memory;
 namespace Unity.Numerics.Linear.Tests
 {
     /// <summary>
-    /// The BLAS-style routines of Matrix and Vector and the Cholesky factor, which call the kernels in
-    /// Unity.Numerics.Kernels, against plain loops in doubles. Every operation is tried with each transpose, each side
-    /// and triangle, and on blocks of larger matrices, whose columns don't start at the matrix's first entry, and on
-    /// rows, whose stride is the number of rows. The other triangle of a triangular matrix holds other values, which the
-    /// routines must not read.
+    /// Compare Matrix/Vector kernel wrappers with scalar references across transposes, sides, triangles,
+    /// submatrices and strided rows.
+    /// Fill unused triangles to detect accidental reads.
     /// </summary>
     public unsafe class TestKernelWrappers
     {
@@ -182,10 +180,7 @@ namespace Unity.Numerics.Linear.Tests
         }
 
         /// <summary>
-        /// B := alpha op(T) B or alpha B op(T) when T and B are blocks of one matrix. The two blocks share no entry, but
-        /// the address range of one block overlaps the address range of the other. The kernels don't take storage like
-        /// that, so these products run the routine's own loops. The loop for a lower T, transposed, on the left used to
-        /// add each partial sum to itself.
+        /// Verify triangular products fall back correctly for disjoint blocks whose address ranges overlap.
         /// </summary>
         [Test]
         public void TheTriangularProductsMatchPlainLoopsWhenTheyShareStorage([Values(6, 19)] int m, [Values(4, 11)] int n,

@@ -1,7 +1,5 @@
-// Development recording of what Unity sends a backend that advertises vehicles: the PhysX extension commands with their
-// addressing and fields, and, once armed by a mark, every other command between them with its addressing. It keeps just
-// enough wheel state to answer the getters, so that Unity carries on as it would with PhysX. The file is written to
-// Library/RetooledPhysics/vehicle-trace.txt, relative to the project folder a batch editor runs in.
+// Record vehicle extension commands and intervening commands in development trace builds.
+// Maintain enough wheel state for getters. Write Library/RetooledPhysics/vehicle-trace.txt.
 
 #ifdef RETOOLED_VEHICLE_TRACE
 

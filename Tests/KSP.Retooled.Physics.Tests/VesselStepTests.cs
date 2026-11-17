@@ -6,9 +6,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Whole steps with vessels on, from ordinary Rigidbodies and ConfigurableJoints: the backend compiles the joints into
-    /// vessels, and the direct solver solves them with the vessel kernel's own rows. Where a test compares, it runs the same
-    /// scene with vessels off for reference.
+    /// Test whole steps with backend-compiled vessels, comparing with ordinary Unity joints where applicable.
     /// </summary>
     public unsafe class VesselStepTests : PhysicsScene
     {
@@ -22,9 +20,7 @@ namespace KSP.Retooled.Physics.Tests
         private int wasFusedParts;
 
         /// <summary>
-        /// The number of parts at which a vessel island goes to the fused vessel job in these tests, or 0 to keep the
-        /// default, which sends every vessel island to the fused job. These tests keep the vessels in the substeps'
-        /// jobs, and <see cref="FusedVesselStepTests"/> runs the same tests with the default.
+        /// Fused-job part threshold for these tests. int.MaxValue keeps substep solving; zero uses the default.
         /// </summary>
         protected virtual int FusedParts => int.MaxValue;
 
@@ -139,8 +135,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A horizontal arm of stack joints held out from a part hooked to the world: its tip droops far less with vessels
-        /// on, where a stack joint is hard, than with today's joints.
+        /// Compare horizontal stack-arm droop with vessel constraints and ordinary joints.
         /// </summary>
         [Test]
         public void AStackArmDroopsFarLessThanToday()
@@ -366,9 +361,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The islands of a step number their bodies in one index that they share, and each island sets its entries to -1
-        /// again when its solve ends. After steps with a vessel, a craft on Unity joints and a loose box, all of them on
-        /// the ground, every entry of the index is -1.
+        /// Verify every shared island body-index entry returns to -1 after solving mixed grounded islands.
         /// </summary>
         [Test]
         public void TheIslandsLeaveTheSharedIndexOfBodiesEmpty()
@@ -392,14 +385,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A fleet of twelve small craft of 2 to 7 parts on stack joints falls 0.2 m onto the ground with a slow spin and
-        /// settles. The scene runs twice: once with every craft on Unity joints, and once with the default minimum size
-        /// of a vessel, which makes every craft a vessel. The vessels land where the craft on Unity joints land, with the
-        /// same loads in their joints, within the tolerance of
-        /// VesselModeTests.AFleetOfSmallVesselsLandsTheSameInTheFusedJobAsInTheSubsteps. With a spin five to six times as
-        /// fast, a column of five parts rocks on the ground, and the two runs end centimetres apart: stack joints on Unity
-        /// joints flex by millimetres where a vessel's edge doesn't (see <see cref="AStackArmDroopsFarLessThanToday"/>),
-        /// and the rocking makes that difference grow.
+        /// Compare landing positions and loads for small compiled vessels and ordinary Unity joints under a slow
+        /// initial spin.
+        /// Higher spin amplifies their different joint compliance, so this test uses the shared landing tolerance.
         /// </summary>
         [Test]
         public void AFleetOfTinyCraftLandsTheSameAsOnUnityJoints()
@@ -458,8 +446,7 @@ namespace KSP.Retooled.Physics.Tests
     }
 
     /// <summary>
-    /// The tests of <see cref="VesselStepTests"/> with the fused vessel job taking every vessel island, as it does by
-    /// default, so that the fused job's results are checked against the same expectations as the substeps' jobs'.
+    /// Run VesselStepTests with fused solving enabled for every eligible island.
     /// </summary>
     public class FusedVesselStepTests : VesselStepTests
     {

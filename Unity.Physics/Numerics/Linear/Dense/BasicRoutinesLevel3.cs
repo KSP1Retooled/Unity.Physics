@@ -95,10 +95,8 @@ namespace Unity.Numerics.Linear.Dense.Primitives
                 return;
             }
 
-            // When the kernels can take the storage of A, B and C, and C shares none of it with A or B, the product
-            // goes to the GEMM kernel in Unity.Numerics.Kernels, with op(A) and op(B) as views. A transposed A is
-            // copied into panels by the kernel. The kernel adds up the products in another order and with fused
-            // multiply-adds, so the result can differ from the loops below in the last bits.
+            // Use GEMM for compatible, non-overlapping views. FMA and accumulation order may change the last
+            // bits.
             if (TryView(A, out var a) && TryView(B, out var b) && TryView(this, out var c) && !Overlaps(c, a) && !Overlaps(c, b))
             {
                 for (int i = 0; i < N; i++)
@@ -214,16 +212,9 @@ namespace Unity.Numerics.Linear.Dense.Primitives
         }
 
         /// <summary>
-        /// Runs <see cref="MultiplyByTriangular"/> or, if <paramref name="solve"/> is true,
-        /// <see cref="SolveGeneralizedTriangular"/> with the kernels in Unity.Numerics.Kernels, if they can take the
-        /// storage of A and of this matrix and the two share none of it. Returns false otherwise, and then the caller
-        /// runs its own loops.
-        /// <para>
-        /// The kernels work with a triangle on the left. A product or solve with op(A) on the right is the same one
-        /// with op(A)^T on the left of this matrix's transpose, which is the same storage with the strides swapped.
-        /// alpha (T B) and T^-1 (alpha B) both equal the routine's result with B scaled by alpha first, so this matrix
-        /// is scaled first.
-        /// </para>
+        /// Run triangular multiplication or solving through kernels when operands have compatible, non-overlapping
+        /// storage.
+        /// Return false to use the caller's loops. Scale this matrix by alpha before the operation.
         /// </summary>
         bool TryTriangularKernel(Side side, TriangularType type, Op op, DiagonalType diag, float alpha, in Matrix A, bool solve)
         {

@@ -3,21 +3,9 @@ using Unity.Mathematics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Stores the collision groups that the game assigns through <see cref="CollisionGroups"/>. Each collider can have
-    /// a group record with three values: the group, the member and a flag that lets the member collide with other
-    /// members of its group. The game would use the vessel as the group and the part as the member. Two colliders in
-    /// the same group don't collide, with two exceptions. They collide if they belong to different members and both
-    /// have the flag set. They also collide if the game listed their two members as a pair that collides.
-    ///
-    /// The game names a collider by its engine object id, and the table finds the shape through a map from that id.
-    /// Every shape with a collider is entered in the map when the shape is created, so that the game can set a group
-    /// before or after the shape exists. A shape stores the index of its group record in <see
-    /// cref="NativeStore.Shape.groupRecord"/>, so that the step reads the group without a lookup.
-    ///
-    /// A group record stays with the collider's engine id after its shape is destroyed, because Unity may destroy a
-    /// shape and create a new one for the same collider. <see cref="CollisionGroups"/> removes records of colliders
-    /// that no longer exist. Like <see cref="IgnoreTable"/>, everything is allocated on the store's heap so that the
-    /// groups survive a domain reload. The ignore table holds the pointer to this table.
+    /// Store collider group membership and member-pair exceptions for CollisionGroups.
+    /// Records are keyed by engine object ID and survive shape replacement and domain reloads.
+    /// Shapes cache their group record index; CollisionGroups removes records for destroyed colliders.
     /// </summary>
     internal unsafe struct GroupTable
     {
@@ -64,8 +52,7 @@ namespace KSP.Retooled.Physics
         private uint pairsLive;
 
         /// <summary>
-        /// The number of entries that have a group record but no shape. <see cref="CollisionGroups"/> checks those
-        /// colliders when this count grows.
+        /// Count of group records without shapes, used to trigger checks for destroyed colliders.
         /// </summary>
         internal uint Orphans;
 
@@ -100,8 +87,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the group record of a collider that has no shape of its own, such as a wheel, plus one. Returns zero
-        /// if the collider has no group.
+        /// Return one plus the group record index for a collider without a shape, or zero if ungrouped.
         /// </summary>
         internal static uint RecordOfCollider(NativeStore.StoreGlobals* globals, ulong engineId)
         {

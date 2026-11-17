@@ -6,32 +6,17 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Caches sparse solvers between solves so islands can reuse previous analysis. The caller owns this cache and
-    /// passes it in <see cref="SimulationStepInput"/>. Without a cache, each solve starts without results from a
-    /// previous solve.
-    ///
-    /// Slots are matched by the identity of each island's first body (see <see cref="BodyIdentity"/>), rather than by
-    /// the island's index. Adding an island can change later island indices without changing their first bodies, for
-    /// example when a craft drops a stage or lands near another craft. A solver can also be assigned to a different
-    /// island: it validates cached analysis against the new problem and repeats analysis when necessary.
-    ///
-    /// The identity is not the body's index in the world. When a body is destroyed, the next body that is made can take
-    /// its index, and a living body can move to another index when other bodies go. So a slot follows the body itself:
-    /// a craft keeps its slot when its bodies move, and a new craft never takes over a destroyed craft's slot as its
-    /// own. A forest's pairs keep their lock states by the identities of their bodies too.
+    /// Cache island solvers across steps, keyed by first-body identity rather than changing island indices.
+    /// The caller owns the cache and passes it through SimulationStepInput.
+    /// Solvers validate analysis before reuse; forests retain locks by body identity.
     /// </summary>
     public unsafe struct DirectSolverCache : IDisposable
     {
-        // The substeps' jobs solve the islands that the fused job doesn't take: craft whose joints can't join a
-        // vessel, islands with loose bodies, and every island when the fused job is off. The table of their slots
-        // starts with room for this many islands, and it grows when every slot holds an island that a recent step
-        // solved. When the table had a fixed size of 64, every island past the 64th solved with a solver and a forest
-        // for one step only, and built its structure again in every step.
+        // Initial capacity of the substep island slot table. Grow when all slots were used recently.
         const int InitialCapacity = 64;
 
-        // The table of slots grows to at most this many. Past that size, a new island takes the slot that was used
-        // least recently among the slots that no island of the same step holds, and an island that finds no such slot
-        // solves without cached data.
+        // Maximum slot capacity. At capacity, reuse the least recently used unclaimed slot or solve without
+        // caching.
         const int MaxSlots = 4096;
 
         // A slot that no step has used for this many steps can go to a new island. An island that went to the fused job
@@ -42,8 +27,7 @@ namespace Unity.Physics
         const long NeverUsed = long.MinValue;
 
         /// <summary>
-        /// The identity that <see cref="Assign"/> takes as "this island needs no slot". No body has it, see
-        /// <see cref="BodyIdentity"/>.
+        /// Sentinel identity for islands that need no cache slot; no body uses this value.
         /// </summary>
         internal const ulong NoSlot = ulong.MaxValue;
 
@@ -62,9 +46,7 @@ namespace Unity.Physics
             public int Key;
 
             /// <summary>
-            /// The identity of the island's first body when the slot was assigned (see <see cref="BodyIdentity"/>), or
-            /// <see cref="ulong.MaxValue"/>, which no body has, if the slot has never been assigned. Slots are matched
-            /// by this.
+            /// Stable first-body identity assigned to the slot, or ulong.MaxValue if unused.
             /// </summary>
             public ulong Identity;
 
@@ -77,15 +59,14 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The slots of the islands that the substeps' jobs solve. Only <see cref="Assign"/> adds slots, on one thread
-        /// and before any island is solved, so the solvers don't move while islands use them.
+        /// Substep solver slots. Assign grows the table serially before solving, keeping storage stable during
+        /// parallel access.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<Slot>* slots;
 
         /// <summary>
-        /// The slot that each identity of a first body was last assigned to (see <see cref="BodyIdentity"/>). Only
-        /// <see cref="Assign"/> changes it.
+        /// Map first-body identities to their previous slots. Only Assign modifies it.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeHashMap<ulong, int>* slotOfIdentity;
@@ -94,8 +75,7 @@ namespace Unity.Physics
         static Slot EmptySlot => new Slot { Key = -1, Identity = NoSlot, LastUsed = NeverUsed };
 
         /// <summary>
-        /// A slot that no island of the current step holds, and the step in which it was last used. Sorting these puts
-        /// the slot that was used least recently first, and slots that were last used in the same step in index order.
+        /// An unclaimed slot and its last-use step. Sort oldest first, breaking ties by slot index.
         /// </summary>
         struct FreeSlot : IComparable<FreeSlot>
         {
@@ -105,11 +85,7 @@ namespace Unity.Physics
             public int CompareTo(FreeSlot other) => LastUsed != other.LastUsed ? LastUsed.CompareTo(other.LastUsed) : Slot.CompareTo(other.Slot);
         }
 
-        // The fused job takes vessel islands of every size, so a scene with many small craft or much debris has many
-        // fused islands, and each of them keeps its state in a slot. The table of slots starts with room for this many
-        // and grows when every slot holds a vessel that a recent step solved. When the table had a fixed size, every
-        // fused island past that size built its structure again in every step: with 32 slots, 64 craft of 8 parts
-        // took 1.0 ms a step instead of 0.4 ms.
+        // Initial number of fused vessel slots. Grow when all slots were used recently.
         const int FusedInitialCapacity = 256;
 
         // A slot whose vessel no step has solved for this many steps can go to a new vessel. A vessel that went to the
@@ -117,9 +93,7 @@ namespace Unity.Physics
         internal const int FusedKeepSteps = 60;
 
         /// <summary>
-        /// The persistent state of one fused vessel island. The key is the ID of the island's first vessel, which the
-        /// backend keeps while the vessel's structure stays the same. The state does not depend on the island's index
-        /// or on its first body.
+        /// Persistent fused island state, keyed by its first vessel ID rather than island or body index.
         /// </summary>
         struct FusedSlot
         {
@@ -135,18 +109,14 @@ namespace Unity.Physics
         UnsafeList<FusedSlot>* fusedSlots;
 
         /// <summary>
-        /// The slot that holds each vessel's state, by the vessel's ID, for the vessels that have a slot. Only the job
-        /// that marks the fused islands changes it, before the fused job reads it from several threads.
+        /// Map vessel IDs to fused slots. Populate before fused jobs read it concurrently.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeHashMap<ulong, int>* fusedSlotOfVessel;
 
         /// <summary>
-        /// The forest that holds the newest lock states of a vessel, and the step in which that forest was handed the
-        /// vessel. A vessel can move between forests: from the fused job's forest to an island's forest when it stops
-        /// being fused for a step, from one island's forest to another's when its island's first body changes, and
-        /// back. The forest that takes the vessel over copies the lock states from the forest named here, so that the
-        /// lock states don't start again.
+        /// Forest holding a vessel's newest lock states and the step when ownership was assigned.
+        /// Copy these states when the vessel moves between fused or substep forests.
         /// </summary>
         internal struct VesselOwner
         {
@@ -158,12 +128,8 @@ namespace Unity.Physics
         UnsafeHashMap<ulong, VesselOwner>* vesselOwners;
 
         /// <summary>
-        /// For each moving body in the world, its index among the bodies of the island that is solving it, or -1. All the
-        /// islands of a step share this one index. A body belongs to one island in a step, so each island writes only
-        /// the entries of its own bodies, and islands that solve at the same time never write the same entry. An island
-        /// sets its entries to -1 again when its solve ends, so that every entry is -1 between solves. Before, each
-        /// island filled an index as large as the world for each solve, and each fused island kept one of its own: with
-        /// many small craft in a large world, that cost more than the solves themselves.
+        /// Shared world-body to island-body index, with -1 for entries not currently in use.
+        /// Parallel islands write disjoint body entries and reset them to -1 after solving.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<int>* compactOfWorld;
@@ -177,9 +143,7 @@ namespace Unity.Physics
         const int OwnerSteps = 600;
 
         /// <summary>
-        /// The cache slot for each island in this step, or -1 if the island has no slot and must solve without cached
-        /// data. Before slots have been assigned, this list is empty and lookups use the island index as the slot
-        /// index.
+        /// Cache slot per island, or -1 if uncached. Before assignment, use the island index as a slot index.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         UnsafeList<int>* slotOfIsland;
@@ -188,9 +152,8 @@ namespace Unity.Physics
         long* step;
 
         /// <summary>
-        /// How much work the islands that the fused job didn't take gave the substeps in one step: the islands, their
-        /// rows at the first substep, their bodies, and the islands that are large enough to share their solve among
-        /// lanes. Also the number of vessel parts in the islands that the fused job took.
+        /// Counts of unfused islands, first-substep rows, bodies and shareable solves, plus fused vessel part
+        /// count.
         /// </summary>
         internal struct UnfusedWork
         {
@@ -236,18 +199,12 @@ namespace Unity.Physics
         internal const int ForestLockChanges = 13;
         internal const int ForestStructureTime = 14;
 
-        /// <summary>
-        /// Counters for the largest residual momentum at a section's first body after inverse dynamics, in units of
-        /// 1e-9 N s, and the section and locked-pair counts from the last solve.
-        /// </summary>
+        // Maximum inverse-dynamics momentum residual in units of 1e-9 N s, plus last-solve section/lock counts.
         internal const int ForestResidual = 15;
         internal const int ForestLastSections = 16;
         internal const int ForestLastLocked = 17;
 
-        /// <summary>
-        /// The most recently recorded deflection, stored in nanoradians. NoteDeflection replaces the previous value;
-        /// it does not compute a maximum or an average.
-        /// </summary>
+        // Last recorded deflection in nanoradians. Replaced by NoteDeflection, without averaging.
         internal const int ForestLastDeflection = 18;
 
         /// <summary>
@@ -318,8 +275,7 @@ namespace Unity.Physics
         internal bool IsCreated => slots != null;
 
         /// <summary>
-        /// Controls whether and how direct islands are solved using a forest and a boundary block. A default cache has
-        /// no forest settings. Set this between steps; all copies of the cache refer to the same settings.
+        /// Forest/boundary settings shared by all cache copies. Set between steps; default leaves forests disabled.
         /// </summary>
         public ForestSettings Forest
         {
@@ -345,10 +301,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns elapsed milliseconds since cache creation, summed across islands and substeps. Sparse time covers
-        /// solving through impulse application. Forest times cover preparation (classification, factorization and
-        /// boundary construction), solving, and finishing (drift correction, impulse application and push-out).
-        /// Factorization and boundary construction times are also returned separately as portions of preparation.
+        /// Cumulative elapsed milliseconds across islands and substeps for sparse solving and forest preparation,
+        /// solve and finish.
+        /// Return factorization and boundary construction separately as subsets of preparation.
         /// </summary>
         public void GetSolveTimes(out double sparse, out double forestStart, out double forestSolve, out double forestFinish,
             out double forestFactor, out double forestBoundary)
@@ -447,10 +402,8 @@ namespace Unity.Physics
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6);
 
         /// <summary>
-        /// Builds a diagnostic histogram for tree edges in cached forests used in the current step. The five deflection
-        /// bins are below half the lock angle, below the lock angle, below the yield angle, below twice the yield
-        /// angle, and at or above twice the yield angle. Pairs with a contact on either body use the corresponding bin
-        /// at index + 5. Counts each pair in <paramref name="all"/> and each locked pair in <paramref name="locked"/>.
+        /// Count edges in five deflection bins: below half-lock, lock, yield, twice-yield, and the rest.
+        /// Use bins 5?9 for contact pairs. Count all pairs in all and locked pairs in locked.
         /// </summary>
         internal void DeflectionHistogram(float lockAngle, float yieldAngle, long* all, long* locked)
         {
@@ -520,9 +473,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns statistics since cache creation: total sections and locked pairs across forest solves, structure
-        /// rebuilds, lock changes, milliseconds spent rebuilding, and the largest residual from inverse dynamics in N
-        /// s. Also returns the section and locked-pair counts from the last solve.
+        /// Return cumulative section/lock counts, rebuilds, lock changes, rebuild time and maximum inverse-dynamics
+        /// residual.
+        /// Also return counts from the last solve.
         /// </summary>
         public void GetSectionCounts(out long sectionSum, out long lockedSum, out long structureBuilds, out long lockChanges,
             out double structureMilliseconds, out double residual, out long lastSections, out long lastLocked)
@@ -549,9 +502,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Discards every cached forest, including its pairs, lock states and structure. Forests are matched by an
-        /// island's first body, so a new scene with the same body indices could otherwise reuse the previous scene's
-        /// forest. Tests call this when comparing independent runs.
+        /// Discard all cached forests, including lock states and structures. Used between independent test scenes.
         /// </summary>
         public void ForgetForests()
         {
@@ -589,8 +540,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Records the forest that solves a vessel in this step. If the vessel solves with a forest that lasts for this
-        /// step only, the cache forgets the vessel's forest instead.
+        /// Record the persistent forest holding a vessel's current locks, or forget temporary forests.
         /// </summary>
         internal void SetOwner(ulong vesselId, ForestIsland* forest)
         {
@@ -609,8 +559,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Forgets the vessels whose newest lock states are in a forest that is about to be destroyed. With no forest,
-        /// and only when the record has grown large, forgets the vessels that no step has solved for a long time.
+        /// Forget vessel ownership before its forest is destroyed. Without a forest argument, prune old entries
+        /// only when the table is large.
         /// </summary>
         void ForgetOwners(ForestIsland* destroyed)
         {
@@ -642,9 +592,7 @@ namespace Unity.Physics
         internal void PruneOwners() => ForgetOwners(null);
 
         /// <summary>
-        /// Returns the persistent forest of the fused vessel island whose first vessel has this ID if a slot holds
-        /// one, or null if no slot holds it. Marks the slot as used in this step, so that no other vessel takes the
-        /// slot over in this step.
+        /// Find a cached fused forest by first vessel ID and mark its slot used this step, or return null.
         /// </summary>
         internal ForestIsland* FindFusedForest(ulong vesselId)
         {
@@ -658,10 +606,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Makes the shared index of the islands' bodies (see <see cref="compactOfWorld"/>) cover
-        /// <paramref name="motionCount"/> moving bodies, and sets every entry to -1. One job calls this before any island
-        /// of the step is solved. The islands keep every entry at -1 between their solves, so this only repairs an
-        /// index that an earlier step left in another state.
+        /// Size the shared compact index for motionCount and reset all entries to -1 before island solving.
         /// </summary>
         internal void ClearCompactIndex(int motionCount)
         {
@@ -679,9 +624,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The shared index of the islands' bodies (see <see cref="compactOfWorld"/>), or null if the cache has none or if
-        /// it covers fewer than <paramref name="motionCount"/> moving bodies. An island that gets null numbers its bodies
-        /// in an index of its own.
+        /// Return the shared compact index, or null if absent or too small. Null callers allocate their own index.
         /// </summary>
         internal int* CompactIndex(int motionCount)
         {
@@ -689,12 +632,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns the persistent forest of the fused vessel island whose first vessel has this ID, and creates it if
-        /// the vessel has none yet. A new vessel takes the least recently used slot if no step has used that slot for
-        /// <see cref="FusedKeepSteps"/> steps. Otherwise the table grows by one slot, so that every fused island of a
-        /// step keeps its state, however many there are. Only the job that marks the fused islands calls this, one
-        /// island after another and before any island is solved, so no two threads change the slots at once. The fused
-        /// job then finds the same forest with <see cref="FindFusedForest"/>.
+        /// Find or create a fused forest by first vessel ID.
+        /// Reuse slots unused for FusedKeepSteps, otherwise grow. Call serially before solving any islands.
         /// </summary>
         internal ForestIsland* FusedForestOf(ulong vesselId)
         {
@@ -745,9 +684,8 @@ namespace Unity.Physics
         internal int FusedSlotCount => fusedSlots != null ? fusedSlots->Length : 0;
 
         /// <summary>
-        /// Returns the cached forest for an island, creating it if needed, or null if the island has no valid cache
-        /// slot. Like <see cref="Solver"/>, this accesses only the island's assigned slot, so islands solved in
-        /// parallel do not share a forest.
+        /// Return or create the forest in an island's assigned slot, or null if uncached.
+        /// Parallel islands use distinct slots.
         /// </summary>
         internal ForestIsland* ForestOf(int island)
         {
@@ -772,13 +710,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns a number that tells this body apart from every other body that the world has had: the entity's
-        /// version in the high half. The backend, which is the only creator of this cache, sets each body's entity
-        /// version to the body's serial number, which it never gives to a second body. The entity's index is the body's
-        /// row in the store, which changes when other bodies go, so the identity leaves it out. (In an ECS world the
-        /// version alone would not tell entities apart; such a world doesn't use this cache.) A body without an entity
-        /// is known by its index in the world, with zero in the high half, which no entity has as its version. When the
-        /// caller has no bodies to give, every body is known by its index.
+        /// Return a stable backend body identity using its unique entity version (the body serial).
+        /// Ignore entity indices, which move with store rows. Fall back to world indices when no entity is
+        /// available.
         /// </summary>
         internal static ulong BodyIdentity(RigidBody* bodies, int bodyCount, int worldBody)
         {
@@ -792,16 +726,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Assigns cache slots for the step by the identity of each island's first body. Runs on one thread before any
-        /// island is solved. An island whose identity is <see cref="NoSlot"/> gets no slot: the fused job keeps the
-        /// state of its islands in slots of its own. Each other island first takes the slot that its identity had, which
-        /// a hash map finds. The remaining islands take the slots that no step has used for <see cref="SlotKeepSteps"/>
-        /// steps, the least recently used first, and otherwise new slots, until the table holds
-        /// <see cref="MaxSlots"/> slots. No slot goes to two islands in one step, even if two first bodies had the same
-        /// identity. A destroyed body's slot is never found again; it can still go to another island when no step has
-        /// used it for a while. Its forest then gives the island no lock states, because a forest finds lock states by
-        /// the identities of the bodies, see <see cref="ForestIsland.BuildPairs"/>. The caller gives each first body's
-        /// index and identity, see <see cref="BodyIdentity"/>.
+        /// Assign slots by first-body identity before parallel solving. NoSlot islands use fused caches instead.
+        /// Preserve existing matches, then reuse old slots or grow up to MaxSlots. Never assign a slot twice in one
+        /// step.
         /// </summary>
         internal void Assign(NativeArray<int> firstBodies, NativeArray<ulong> firstIdentities)
         {
@@ -902,8 +829,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Records how much work this step's islands that are not fused give the substeps. The job that marks the fused
-        /// islands calls this, after <see cref="Assign"/>.
+        /// Record unfused substep workload after slot assignment.
         /// </summary>
         internal void NoteUnfusedWork(UnfusedWork work)
         {
@@ -917,9 +843,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The work that the islands that were not fused gave the substeps in the last step that recorded it. Returns
-        /// false if no step has. The main thread reads this when it schedules a step, after the last step's jobs have
-        /// finished.
+        /// Return the last recorded unfused workload, or false if absent. Read after previous-step jobs complete.
         /// </summary>
         internal bool LastUnfusedWork(out UnfusedWork work)
         {
@@ -941,8 +865,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns the solver for an island, creating it if needed, or null if the island has no valid cache slot. Each
-        /// island accesses only its assigned slot, so islands solved in parallel do not share a solver.
+        /// Return or create the solver in an island's assigned slot, or null if uncached.
+        /// Parallel islands use distinct slots.
         /// </summary>
         internal SparseConstraintSolver* Solver(int island)
         {

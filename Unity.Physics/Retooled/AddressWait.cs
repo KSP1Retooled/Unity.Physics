@@ -6,13 +6,8 @@ using Unity.Profiling.LowLevel.Unsafe;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Allows a thread to block while waiting for a 32-bit word to change. Uses WaitOnAddress on Windows, a private
-    /// futex on Linux, or __ulock_wait on macOS. A blocked thread releases its core for other work, whereas a spinning
-    /// thread keeps using it. Waking takes a few microseconds. Waits can return without a change to the word, so
-    /// callers must check it again.
-    ///
-    /// Burst calls these system functions through a native plugin. A backend with such a plugin installs the functions
-    /// here. Until then, <see cref="Available"/> is false and callers spin instead.
+    /// Wait for a 32-bit word to change using native address waits. Callers must recheck the word after waking.
+    /// Use installed plugin functions when available; otherwise callers spin.
     /// </summary>
     internal static unsafe class AddressWait
     {
@@ -84,8 +79,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Converts microseconds to <see cref="ProfilerUnsafeUtility.Timestamp"/> ticks. Reading the conversion ratio
-        /// is unavailable in Burst, so the main thread computes these durations and passes them to jobs.
+        /// Convert microseconds to profiler timestamp ticks on the main thread, since Burst cannot read the
+        /// conversion ratio.
         /// </summary>
         public static long TicksFromMicroseconds(long microseconds)
         {

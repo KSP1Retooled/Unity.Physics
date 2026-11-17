@@ -1,6 +1,5 @@
-// Address waits for the solver's job lanes: a lane with nothing to do parks on a 32-bit word until another changes it, which
-// gives its core back where spinning would keep it. Burst can only call into the system through a native plugin, so the
-// managed side takes these as function pointers and calls them from its jobs.
+// Native address waits for solver workers. Idle lanes wait on a 32-bit word instead of spinning.
+// Expose function pointers for Burst jobs.
 
 #include <cstdint>
 

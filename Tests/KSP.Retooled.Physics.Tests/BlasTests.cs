@@ -5,9 +5,8 @@ using Unity.Numerics.Kernels;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The matrix products in <see cref="Blas"/>, for doubles and for floats, against plain loops, at sizes that use the
-    /// full tiles and every kind of edge. The kernels add up in another order and with fused multiply-adds, so the
-    /// tests compare with a tolerance.
+    /// Compare float and double matrix products with scalar reference loops across full tiles and edges.
+    /// Allow rounding differences from FMA and accumulation order.
     /// </summary>
     public unsafe class BlasTests
     {

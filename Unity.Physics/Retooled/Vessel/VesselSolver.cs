@@ -8,26 +8,18 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Solves one vessel per step: a tree of parts whose edges are locked, yielding, free about one axis or broken, plus
-    /// closures between parts. Parts joined by locked edges move as one rigid section; the solve is an implicit Euler step
-    /// over sections in body-only form, A = M + J^T E^-1 J, factored by block elimination leaves-inward in double
-    /// precision. See SECTION-SOLVER-SPEC in the vessel solver study for the design.
-    ///
-    /// The caller owns the part, edge and closure arrays and fills them each step; the solver reads them, writes the
-    /// parts' new poses and velocities back, and leaves every edge's load and next state in <see cref="EdgeLoads"/> and
-    /// <see cref="NextState"/>. The structure (sections, order, symbolic factor) is rebuilt only when edge states change.
-    ///
-    /// A step runs as five jobs: section properties (parallel over sections), the factor by chunks (parallel), the top of
-    /// the elimination tree (one job), the backward substitution by chunks (parallel), and the loads, state tests and
-    /// integration (parallel over sections).
+    /// Solve a vessel tree with closures using implicit Euler over rigid sections:
+    /// A = M + J^T*E^-1*J, factored in double precision.
+    /// The caller owns and updates input arrays; the solver writes part motion, EdgeLoads and NextState.
+    /// Rebuild structure when edge states change. Serial and job paths use the same kernels.
     /// </summary>
     public unsafe class VesselSolver : IDisposable
     {
         public VesselSolverSettings Settings;
 
         /// <summary>
-        /// Stops a step once it has the sections' new velocities in <see cref="Solution"/>: no loads, no state tests, and the
-        /// parts are neither moved nor given the new velocities, which leaves integrating them to the caller.
+        /// Stop after computing section velocities in Solution, leaving loads, state tests and integration to the
+        /// caller.
         /// </summary>
         public bool VelocityOnly;
 
@@ -148,8 +140,8 @@ namespace Unity.Physics
         public void MarkStructureChanged() => m_NeedsRebuild = true;
 
         /// <summary>
-        /// Extra 6x6 terms, one per section (row by row, linear then angular), added to the diagonal before the factor,
-        /// as a boundary block's coupling would be. Sections are numbered by the last rebuild; pass false to stop.
+        /// Optional row-major 6 by 6 additions to section diagonals, indexed by the last rebuild.
+        /// Pass false to disable.
         /// </summary>
         public NativeArray<double> UseExtraDiagonal(bool use)
         {
@@ -248,8 +240,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Takes the state tests' results as the edges' states. An edge that starts to yield takes its current pose as
-        /// rest, so its spring starts undeflected. Returns whether anything changed; the next step then rebuilds.
+        /// Apply edge state tests. Newly yielding edges take their current pose as rest.
+        /// Return whether the next step requires a rebuild.
         /// </summary>
         public bool ApplyNextStates()
         {
@@ -282,8 +274,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// One step. With <paramref name="threads"/> false every job runs on the calling thread; otherwise the jobs are
-        /// scheduled on the worker threads and the caller waits, helping, for the last. A pending rebuild runs first.
+        /// Run one step, rebuilding first if needed. With threads false, run jobs on the caller;
+        /// otherwise schedule workers and wait while helping.
         /// </summary>
         public void Step(bool threads)
         {
@@ -305,8 +297,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The step's five jobs, chained. The structure must be current (call <see cref="Rebuild"/> after edge states
-        /// change), since a rebuild can move the arrays the jobs point into.
+        /// Schedule the five step jobs. Rebuild after edge state changes before calling, since arrays may move.
         /// </summary>
         public JobHandle Schedule(JobHandle dependency)
         {
@@ -356,8 +347,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves against the last step's factor for another right-hand side (one 6-vector per section, linear then
-        /// angular), in place, on the calling thread in Burst. A sparse right-hand side still walks every column.
+        /// Solve another six-vector-per-section right-hand side in place against the last factor, on the calling
+        /// thread.
         /// </summary>
         public void SolveWithFactor(NativeArray<double> rhs)
         {

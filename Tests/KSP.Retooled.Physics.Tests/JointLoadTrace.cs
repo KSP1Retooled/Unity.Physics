@@ -10,13 +10,8 @@ using Object = UnityEngine.Object;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Writes, for every step of a few scenes, a hash of every joint's force and torque, of every body's pose, of every
-    /// body's velocity, of the bodies and motions of the world that the step built, and of the collision messages, and
-    /// the number of joints that are left. Two commits that must give the same results to the last bit give the same
-    /// file. TRACE_TAG names the output, Logs/JointLoadTrace-&lt;tag&gt;.txt. TRACE_BREAK sets the break force of the
-    /// Tu-160's joints, in newtons (default 2e4). The scenes are the Tu-160 dropped 2 m onto the ground, and a tower of
-    /// stack joints that a heavy box falls on, beside a chain that hangs from the world and a pair of boxes that falls
-    /// asleep.
+    /// Hash joint loads, body state, built world and collision messages for bitwise comparisons between commits.
+    /// TRACE_TAG names Logs/JointLoadTrace-&lt;tag&gt;.txt; TRACE_BREAK sets the Tu-160 joint break force.
     /// </summary>
     [Explicit("A trace for comparing two commits")]
     public class JointLoadTrace : PhysicsScene
@@ -35,8 +30,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Mixes every collision message that its GameObject receives into one hash: the kind of message, the other
-        /// collider's name, and each contact's point, normal, separation and impulse.
+        /// Hash collision message types, other collider names and contact geometry/impulses.
         /// </summary>
         [ExecuteAlways]
         internal class ContactHash : MonoBehaviour
@@ -81,9 +75,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A hash of the bodies and motions of the world that the step built: every field except the colliders'
-        /// addresses and the serial numbers, which differ between runs. It also mixes in whether each body has a collider
-        /// and a serial number.
+        /// Hash built bodies and motions, excluding collider addresses and serial values that vary between runs.
         /// </summary>
         private static unsafe ulong WorldHash()
         {
@@ -321,12 +313,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The bench's scene with many static colliders (VesselForestBench.StaticsScene): the Tu-160 dropped 2 m onto the
-        /// ground among 5,000 static boxes and hulls, and two boxes that fall onto a static box and a static hull. Between
-        /// steps, the scene changes static bodies in every way that the build has to notice: a static box moves, gets a
-        /// larger collider, moves to another layer, gets another material, is turned off and on again, and is destroyed;
-        /// a static box is added; the friction of a static's material changes; a falling box is destroyed, which changes
-        /// the number of dynamic bodies, and a new one is added.
+        /// Trace a Tu-160 among 5,000 statics while changing static poses, shapes, filters, materials and
+        /// membership,
+        /// and changing the dynamic body count.
         /// </summary>
         private void WriteStatics(StringBuilder trace, float breakForce)
         {

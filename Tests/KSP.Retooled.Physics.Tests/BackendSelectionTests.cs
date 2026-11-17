@@ -13,12 +13,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(BackendInfo.IsRetooled, Is.EqualTo(name == "RetooledPhysics"), name);
         }
 
-        /// <summary>
-        /// Unity falls back to its Null backend, which simulates nothing, when it can't find the backend that the project
-        /// asks for, and it only logs a message. That happens, for example, when the plugin isn't marked to load on
-        /// startup, or in an editor older than 6000.7 that selects the backend before it loads the plugins. The test
-        /// above passes with the Null backend too, because the Null backend is neither ours nor named RetooledPhysics.
-        /// </summary>
+        // Reject Unity's Null fallback, which can pass the backend-name check while simulating nothing.
         [Test]
         public void TheRunDidNotFallBackToTheNullBackend()
         {

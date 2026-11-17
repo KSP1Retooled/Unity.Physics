@@ -11,13 +11,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Times each routine in <see cref="SmallBlockKernels"/> against the kernel in Unity.Numerics.Kernels that does the same
-    /// work, at the block sizes that the sparse solver factors in the bench scenes. In those scenes almost every node
-    /// has 6 unknowns, one per body, and almost every block below the diagonal is 6 by 6; a few nodes have 7 or 12
-    /// (see the histogram that VesselForestBench prints with RETOOLED_BENCH_HISTOGRAM=1). A Burst job runs each routine
-    /// on a few hundred blocks that are stored row by row, as the solver stores them, and repeats that many times. The
-    /// kernels take the blocks as row-major views. The bench prints nanoseconds per call for the old routine and the
-    /// kernel, and the largest difference between their answers. Logs/SmallBlockKernelBench.txt holds the table.
+    /// Benchmark SmallBlockKernels against equivalent general kernels on row-major blocks.
+    /// Report nanoseconds per call and maximum result differences to Logs/SmallBlockKernelBench.txt.
     /// </summary>
     [Explicit("A benchmark, under a minute long")]
     public unsafe class SmallBlockKernelBench
@@ -145,8 +140,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The factor of sign * a for a block stored row by row, through the kernel: the lower triangle takes the sign,
-        /// the kernel factors it as a row-major view, and the reciprocals of the diagonal are taken after.
+        /// Factor sign*a through the row-major kernel, then compute reciprocal diagonal entries.
         /// </summary>
         private static void KernelCholesky(double* a, double* inverse, int size, double sign)
         {

@@ -4,9 +4,7 @@ using Unity.Entities;
 namespace KSP.Retooled.Systems.Physics;
 
 /// <summary>
-/// Binds rigid bodies to the world that contains this system for the lifetime of that world. The system is created and
-/// destroyed with the world, so no separate calls are needed to bind or unbind bodies, regardless of how the world
-/// ends.
+/// Bind body components to this system's Entities world until the system is destroyed.
 /// </summary>
 internal sealed partial class BodyBindingSystem : SystemBase
 {

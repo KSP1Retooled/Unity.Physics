@@ -410,12 +410,9 @@ namespace Unity.Physics
 
             Material material = Material.Default;
 
-            // Test the whole ray, not only the part of it up to the collector's MaxFraction, and compare the result with
-            // MaxFraction afterwards. The tests of a box, a convex hull, a triangle and a quad compute the fraction of the
-            // segment that they are given, so a shorter segment gives a fraction that can differ in its last bits. The
-            // collector's MaxFraction depends on the hits that came before, and so on the order in which the world's tree
-            // visits the bodies. With the whole ray, a collider's hit has the same fraction in any order, and a collector
-            // that keeps the closest hit can break a tie the same way whatever the shape of the tree.
+            // Test the full ray before applying MaxFraction so that segment rounding does not depend on
+            // previous hits.
+            // This keeps equal-distance tie-breaking independent of tree traversal order.
             float fraction = 1.0f;
             float3 normal;
             bool hadHit;

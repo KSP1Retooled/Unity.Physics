@@ -5,9 +5,7 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests how linked pairs are divided among work items in a phase. The narrow phase and the code that builds
-    /// Jacobians must divide pairs the same way. Otherwise, the Jacobian build reads contacts for another work item,
-    /// and reading the stream throws an exception when some entries remain unread at the end.
+    /// Verify narrow phase and Jacobian construction partition linked pairs into identical work items.
     /// </summary>
     public class LinkedWorkItemTests
     {

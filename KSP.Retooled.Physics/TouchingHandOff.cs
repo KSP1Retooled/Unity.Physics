@@ -4,23 +4,11 @@ using Unity.Mathematics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Keeps the touching pairs of each world while the managed core is detached, for example during a domain reload in
-    /// the editor, and gives them to the world's next step state.
+    /// Preserve touching pairs across managed detach and domain reloads so that Unity's trigger cache stays
+    /// consistent.
+    /// Temporarily store pairs in the native trigger event array with unknown event types and zero IDs.
+    /// The next StepState restores them before stepping. Main thread only.
     /// </summary>
-    /// <remarks>
-    /// Detaching discards each world's step state, but Unity keeps its scenes, and it keeps the trigger pairs that
-    /// entered in the cache that it sends OnTriggerStay from. When the next step state started with no touching pairs,
-    /// it didn't know the pairs that Unity held. A shape that was destroyed just before the detach then got no event that
-    /// ended its trigger pair, because that event is sent in the next step, and Unity kept the pair with the ids of the
-    /// destroyed colliders. A new pair whose shapes later took the same two addresses got one OnTriggerStay and then no
-    /// more. A trigger pair that still touched entered a second time.
-    ///
-    /// The managed core's memory doesn't outlast a domain reload, and neither do shared statics. So the pairs wait in
-    /// the world's array of trigger events, which belongs to the store. Unity has already read the events of the last
-    /// step when the core detaches. Each pair takes one entry, with a type that Unity doesn't know and zero ids, so
-    /// Unity would ignore such an entry if it read one. The world's next step state takes the pairs back and empties
-    /// the array before its first step. All calls run on the main thread.
-    /// </remarks>
     internal static unsafe class TouchingHandOff
     {
         // The type of an entry that holds a touching pair. The two low bits hold whether the pair is a trigger pair
@@ -58,9 +46,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Puts the touching pairs that were kept for a world into its new step state's map, and empties the world's
-        /// array of trigger events. A restored pair counts as last seen before the new state's first step, so a pair
-        /// that doesn't touch in that step ends there, unless both of its bodies rest.
+        /// Restore saved touching pairs and clear the temporary trigger array.
+        /// Pairs count as seen before the first step and end if absent, unless both bodies are asleep.
         /// </summary>
         internal static void Restore(NativeStore.WorldData* world, NativeHashMap<ShapePairKey, ShapePairState> touching)
         {

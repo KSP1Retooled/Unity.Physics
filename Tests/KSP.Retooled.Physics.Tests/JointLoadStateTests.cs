@@ -5,10 +5,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The dense array that holds the joints' loads between steps (see <see cref="JointLoadStates"/>). Each joint's slot
-    /// must follow the joint when other joints are made or destroyed, must take up a new break limit before the next
-    /// step, and must give GetForces the loads of the last step. The loads must also survive a detach, which writes
-    /// them back to the joint records.
+    /// Test dense joint load slots through creation, removal, break limit changes and managed detach.
     /// </summary>
     public unsafe class JointLoadStateTests : PhysicsScene
     {

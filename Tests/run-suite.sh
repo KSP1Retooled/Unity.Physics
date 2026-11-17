@@ -1,21 +1,22 @@
 #!/bin/sh
-# Runs the EditMode tests of this package in a Unity project, in batch mode, and prints how long each stage took.
+# Run package EditMode tests in a Unity project and report stage timings.
 #
-# usage: Tests/run-suite.sh <project folder> <run name> [full|quick|retooled] [extra Unity arguments...]
+# Usage:
+#   Tests/run-suite.sh <project folder> <run name> [full|quick|retooled] [extra Unity arguments...]
 #
-#   full      All tests, with the same filter that the agents' runsub.sh scripts use. This is the default.
-#   quick     The tests in the KSP.Retooled.Physics.Tests namespace without the "Slow" category. This leaves out
-#             the upstream tests in the Unity.Physics.Tests and Unity.Numerics namespaces, and it leaves out
-#             StepThreadTests.StepsKeepWorkingAcrossMonoAndBurstJobs.
-#             Use it in the inner loop while you change the backend, and run "full" before you merge.
-#   retooled  The tests in the KSP.Retooled.Physics.Tests namespace, including the "Slow" category.
+# Selection:
+#   full      All tests except PlayModeLifecycleTests (default).
+#   quick     Backend tests excluding the Slow category.
+#   retooled  Backend tests including the Slow category.
+#   quick and retooled also exclude PlayModeLifecycleTests and upstream suites.
 #
-# Set the solver path with the usual environment variables, for example: RETOOLED_VESSEL=1 Tests/run-suite.sh ...
+# Configure solver paths through environment variables.
+# Unity returns exit code 2 for failed tests; the script lists failures.
 #
-# Unity exits with code 2 when some tests fail. The script prints the failed tests after the summary.
-#
-# The results go to <project>/Logs/<run name>-results.xml and the Unity log goes to <project>/Logs/<run name>.log.
-# Never run two Unity instances on the same project at the same time.
+# Output:
+#   Logs/<run name>-results.xml   Test results.
+#   Logs/<run name>.log           Unity log.
+# Do not run two Unity instances on the same project.
 
 set -u
 

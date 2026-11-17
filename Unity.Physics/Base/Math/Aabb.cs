@@ -195,10 +195,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Moves the bounds of a compound or a mesh to the transform as <see cref="TransformAabb(Aabb, RigidTransform, float)"/>
-        /// does, and then clips them to a cube around their center whose half side is the collider's bounding radius.
-        /// A rotated box can be much larger than the collider, and the cube is the bounds of the sphere that holds
-        /// the collider.
+        /// Transform compound or mesh bounds and clip them to the collider's bounding sphere cube.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static Aabb TransformAabbInSphere(Aabb aabb, float boundingRadius, RigidTransform transform, float uniformScale)

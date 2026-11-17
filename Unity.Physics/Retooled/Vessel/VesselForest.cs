@@ -19,9 +19,7 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// What the joint's owner allows the forest to do with a forest joint's body pair, see <see cref="Joint.ForestLock"/>.
-    /// The owner reads the loads that count against the joint's break limits; the forest adds its own test of how far the
-    /// joint's springs would deflect.
+    /// Permitted locking operations for a forest body pair, based on owner load limits and forest deflection tests.
     /// </summary>
     [Flags]
     public enum JointForestLock : byte
@@ -36,16 +34,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// Settings for solving direct islands as a forest plus a boundary: the unbounded rows of forest joints (see
-    /// <see cref="Joint.ForestRole"/>) are eliminated structurally by the vessel section solver, and every other row of the
-    /// island (contacts, limits, motors with a force limit, other joints) forms a dense boundary block solved against that
-    /// factor. An island with no forest rows, or with more boundary rows than <see cref="BoundaryRowCap"/>, is solved by
-    /// <see cref="SparseConstraintSolver"/> as before.
-    ///
-    /// With <see cref="Locking"/>, a tree edge whose joints allow it (<see cref="JointForestLock"/>) and whose springs
-    /// would deflect less than <see cref="LockAngle"/> under its last load locks: its rows leave the solve and its two
-    /// bodies move as one rigid section, its load coming from inverse dynamics. It yields again past
-    /// <see cref="YieldAngle"/>.
+    /// Solve unbounded forest joint rows structurally and all other rows through a dense boundary.
+    /// Fall back to SparseConstraintSolver without forest rows or above BoundaryRowCap.
+    /// Optional locking merges low-deflection tree pairs into rigid sections until they reach YieldAngle.
     /// </summary>
     public struct ForestSettings
     {
@@ -60,16 +51,15 @@ namespace Unity.Physics
         public float YieldAngle;
 
         /// <summary>
-        /// Steps a pair keeps a lock state before it may change it again, which stops pairs under a contact's changing load
-        /// from locking and yielding every step. A load past twice <see cref="YieldAngle"/>, or one the joint's owner no
-        /// longer allows, yields a pair at once.
+        /// Minimum steps before changing a lock state again.
+        /// Yield immediately above twice YieldAngle or when the owner revokes permission.
         /// </summary>
         public int MinimumHoldSteps;
 
         /// <summary>
-        /// Steps over which a pair's deflection is averaged (an exponential mean with this time constant) before the lock
-        /// and yield tests read it; 0 or 1 reads each step's mean alone. The test for twice the yield angle always reads
-        /// the last step's mean, so a real load still yields at once.
+        /// Exponential smoothing duration for lock/yield deflection tests, in steps. Zero or one uses the last
+        /// step's mean.
+        /// The twice-yield test always uses the unsmoothed mean.
         /// </summary>
         public int DeflectionSmoothingSteps;
 
@@ -94,12 +84,8 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// What one direct island keeps of its forest from one solve to the next: its body pairs and their lock states, the
-    /// structure, rebuilt only when the island's forest joints, bodies or lock set change, and the arrays the factor works
-    /// in. Lives in unmanaged memory owned by <see cref="DirectSolverCache"/>, so that the jobs can build and use it.
-    ///
-    /// Parts are the island's moving bodies, numbered parents first along the spanning trees (the structure needs that
-    /// order); <see cref="BodyPart"/> and <see cref="PartBody"/> translate.
+    /// Persistent island forest pairs, locks, structure and factor arrays, owned by DirectSolverCache.
+    /// Number moving bodies parent-first; BodyPart and PartBody translate indices.
     /// </summary>
     internal unsafe struct ForestIsland
     {
@@ -111,10 +97,7 @@ namespace Unity.Physics
         public UnsafeList<VesselPart> Parts;
         public UnsafeList<VesselEdge> Edges;
 
-        /// <summary>
-        /// The state that each boundary row had at the end of the last solve, so that the next solve can start from it.
-        /// The boundary solve fills it, see <see cref="BoundaryMemory"/>.
-        /// </summary>
+        // Remembered final boundary states for the next solve; see BoundaryMemory.
         public BoundaryMemory BoundaryMemory;
         public UnsafeList<VesselClosure> Closures;
 
@@ -136,27 +119,18 @@ namespace Unity.Physics
         /// <summary>Each part's pair with its parent, or -1 for a root.</summary>
         public UnsafeList<int> PartPair;
 
-        // The island's distinct body pairs among its forest blocks, kept while the signature holds: their bodies, whether
-        // a tree joint joins them, whether they are an edge of the spanning forest (else a closure), the forest blocks of
-        // each, their lock state and the deflection their springs would take under their last load.
+        // Distinct forest body pairs with spanning roles, blocks, lock states and predicted spring deflections.
         public UnsafeList<int> BlockPair;
         public UnsafeList<int2> PairBodies;
 
-        /// <summary>
-        /// Each pair's bodies by their identities (see <see cref="DirectSolverCache.BodyIdentity"/>), the lower identity
-        /// first, each as its low and high halves. The next <see cref="BuildPairs"/> finds a pair's old lock state by these.
-        /// </summary>
+        // Ordered body identities for matching prior pair lock states, stored as low/high halves.
         public UnsafeList<int4> PairWorldKey;
         public UnsafeList<byte> PairTree;
         public UnsafeList<byte> PairEdge;
         public UnsafeList<byte> PairLocked;
         public UnsafeList<float> PairDeflection;
 
-        /// <summary>
-        /// Each pair's deflections summed over the substeps of the step so far. A step's external forces reach the
-        /// velocities once, before its first substep, so a locked pair carries them all in that substep and none after; the
-        /// mean over the step is the deflection of the load the step applied.
-        /// </summary>
+        // Deflections summed over the current step's substeps; their mean represents the full step load.
         public UnsafeList<float> PairDeflectionSum;
 
         /// <summary>Each pair's deflection over the last whole step alone, which <see cref="PairDeflection"/> smooths.</summary>
@@ -172,10 +146,8 @@ namespace Unity.Physics
         public int DeflectionCount;
         public UnsafeList<int> PairBlockStart;
 
-        /// <summary>
-        /// Each locked pair's (J^T W J)^-1 in its child's frame, 36 each, with the sum of its rows' compliances and their
-        /// count when it was found; NaN until then, and again once the pair unlocks.
-        /// </summary>
+        // Cached locked-pair inverse in the child's frame, with compliance sum and row count.
+        // Use NaN until computed and after unlocking.
         public UnsafeList<double> PairInverse;
         public UnsafeList<float> PairInverseKey;
         public UnsafeList<int> PairInverseRows;
@@ -215,28 +187,18 @@ namespace Unity.Physics
         public UnsafeList<int> PartHeld;
         public UnsafeList<float> PartRatio;
 
-        /// <summary>
-        /// Each part's index in the vessel set, or -1 for a body that is not in a vessel, and each closure's index in the
-        /// vessel set. The island fills these with the edges, so that the team's lanes can fill the parts and write the
-        /// loads by ranges of parts.
-        /// </summary>
+        // Part and closure indices in the vessel set, with -1 for non-vessel bodies.
         public UnsafeList<int> PartSetPart;
 
         public UnsafeList<int> ClosureSetIndex;
 
-        /// <summary>
-        /// The island's index of the first part of each part's vessel, or -1 for a body that is not in a vessel, and
-        /// the same index for each closure's vessel. A vessel's parents and closures number its parts from there.
-        /// </summary>
+        // First vessel-part offset for each island part and closure, or -1 outside vessels.
         public UnsafeList<int> PartVesselStart;
 
         public UnsafeList<int> ClosureVesselStart;
 
-        /// <summary>
-        /// The sections that are one task each, and the sections that the team's lanes share by ranges of parts. For
-        /// the parts of a shared section: each depth-first position's part, each part's depth-first position, the last
-        /// position in each part's subtree, and the prefix sums of the parts' forces and torques by position.
-        /// </summary>
+        // Per-section tasks and ranges for shared sections, with depth-first indices and force/torque prefix
+        // sums.
         public UnsafeList<int> SmallSections;
 
         public UnsafeList<int> SharedSections;
@@ -246,20 +208,12 @@ namespace Unity.Physics
         public UnsafeList<double3> PrefixForce;
         public UnsafeList<double3> PrefixTorque;
 
-        /// <summary>
-        /// For a fused vessel island: the world index of each moving part's body, in the order that the island numbers
-        /// them. The fused solve keeps this numbering from step to step while the island's vessels and bodies stay the
-        /// same. While the island solves, it writes the inverse, each body's number, into the index of bodies that the
-        /// islands share (see <see cref="DirectSolverCache.CompactIndex"/>).
-        /// </summary>
+        // Stable fused-island body numbering while vessels and bodies match.
+        // Write its inverse into the shared compact index only while solving.
         public UnsafeList<int> FusedWorldBodies;
 
-        /// <summary>
-        /// The lock states of the vessels that this island takes over from other forests in this step, see
-        /// <see cref="DirectSolverCache.OwnerOf"/>. For each vessel: its ID, its structure version, and where its parts'
-        /// states start in the three lists of states. When <see cref="TakesStates"/> is set, the island's next first
-        /// substep lays its parts out again and takes these states before the states that it kept itself.
-        /// </summary>
+        // Imported vessel IDs, structure versions and lock states. On the next layout, prefer imported states
+        // over this forest's older copies when TakesStates is set.
         public UnsafeList<ulong> TakenIds;
 
         public UnsafeList<uint> TakenVersions;
@@ -438,12 +392,8 @@ namespace Unity.Physics
         public int PairCount => PairBodies.Length;
 
         /// <summary>
-        /// Finds the island's body pairs among its forest blocks <paramref name="forestBlocks"/> and the spanning forest over
-        /// them: a tree edge for each pair that a tree joint joins first without closing a loop, and a closure for every
-        /// other pair. Pairs are counted once however many joints and rows they have. Numbers the parts parents first. A
-        /// pair that was here before keeps its lock state, found by the identities of its bodies, which
-        /// <paramref name="identities"/> gives for each body of the problem. The world can give a destroyed body's index to
-        /// a new body, so the bodies' indices in the world would let a new pair take over a destroyed pair's lock state.
+        /// Build distinct forest body pairs and a spanning forest, then number parts parent-first.
+        /// Preserve prior lock states by supplied body identities, never by reusable world indices.
         /// </summary>
         public void BuildPairs(in SparseConstraintSolver.Problem problem, int* forestBlocks, bool* treeBlocks, int forestBlockCount,
             ulong* identities)
@@ -702,8 +652,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Rebuilds the structure for the pairs and their lock states: a locked pair's edge folds its child into its
-        /// parent's section, and a closure whose ends share a section drops out.
+        /// Rebuild rigid sections from pairs and locks. Merge locked children into parents and omit internal
+        /// closures.
         /// </summary>
         public void BuildStructure(in SparseConstraintSolver.Problem problem, int* forestBlocks, int forestBlockCount)
         {

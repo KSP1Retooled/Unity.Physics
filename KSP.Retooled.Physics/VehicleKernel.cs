@@ -8,8 +8,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Defines the plugin API's vehicle commands, starting with CreateVehicle and using the ids passed by Vehicle.cpp.
-    /// Attach checks that the number of commands matches the plugin's count.
+    /// Vehicle command IDs shared with Vehicle.cpp. Attach verifies the count.
     /// </summary>
     internal enum VehicleCommand : uint
     {
@@ -48,10 +47,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Implements WheelCollider commands and stores the data that Unity supplies for each vehicle, its wheel slots, and
-    /// the hits from the last step. Unity creates one vehicle per body. To add slots, Unity creates a larger vehicle
-    /// using the old one as the source. <see cref="WheelJob"/> updates the wheels during each step. Commands arrive on
-    /// the main thread outside a step.
+    /// Handle WheelCollider commands on the main thread outside simulation.
+    /// Store vehicle settings, wheel slots and last-step hits; WheelJob updates them during the step.
     /// </summary>
     [BurstCompile]
     internal static unsafe class VehicleKernel
@@ -268,9 +265,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Creates a vehicle with the requested number of slots. When Unity grows a vehicle, the existing slots are
-        /// copied from the source without changing their indices. Unity then rebinds the wheels using the returned user
-        /// data in slot order and destroys the source vehicle.
+        /// Create vehicle slots, preserving indices when copying from a smaller source vehicle.
+        /// Unity rebinds wheels in slot order before destroying the source.
         /// </summary>
         private static void Create(NativeStore.WorldData* world, NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {
@@ -384,8 +380,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the user data for enabled wheels among the first <paramref name="limit"/> slots, in slot order.
-        /// Disabled slots are omitted instead of returning null pointers, because Unity follows every returned pointer.
+        /// Return enabled wheels' user data in slot order among the first limit slots. Omit disabled slots rather
+        /// than returning null pointers.
         /// </summary>
         private static uint WriteUserData(NativeStore.VehicleData* vehicle, void** buffer, uint limit)
         {
@@ -425,9 +421,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Saves each vehicle body's velocity before the forces for this step are applied. Suspension damping depends
-        /// on the speed at which the body approaches the ground. If that calculation included gravity from the current
-        /// step, it would indicate constant compression and hold the body above its rest position.
+        /// Save pre-force vehicle velocities for suspension damping so that this step's gravity is not counted as
+        /// compression.
         /// </summary>
         internal static void RecordStartVelocities(NativeStore.WorldData* world)
         {
@@ -444,9 +439,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Unity normally destroys a body's vehicle before destroying the body. This method prevents the step from
-        /// following a vehicle's pointer to a body that has already been destroyed. The vehicle remains allocated until
-        /// Unity destroys it, but no wheels are updated for it.
+        /// Detach a destroyed body from its vehicle to prevent stale pointer access.
+        /// Keep the vehicle allocation until Unity destroys it.
         /// </summary>
         internal static void ForgetBody(NativeStore.WorldData* world, NativeStore.Body* body)
         {
@@ -519,10 +513,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Distributes the body's mass among the wheels so that they support it level. The assigned masses sum to the
-        /// body's mass and balance about its centre of mass in the ground plane. If these conditions allow multiple
-        /// solutions, the solution has the smallest sum of squared masses, as in PhysX's PxVehicleComputeSprungMasses.
-        /// The offsets are measured from the centre of mass along the body's axes.
+        /// Distribute sprung mass to balance the body in the ground plane, minimizing the sum of squared wheel
+        /// masses as PhysX does.
+        /// Wheel offsets are relative to the centre of mass in body axes.
         /// </summary>
         private static void SprungMasses(NativeStore.VehicleData* vehicle, uint* ids, float3* offsets, int count)
         {
@@ -551,9 +544,8 @@ namespace KSP.Retooled.Physics
                 return mass;
             }
 
-            // The matrix for the balance equations has rows for 1, x and z, with one column per wheel. The solution of
-            // rows * m = (mass, 0, 0) with the smallest sum of squared masses is rows^T * (rows * rows^T)^-1 * (mass,
-            // 0, 0). Only the first column of that inverse is needed.
+            // Solve rows*m = (mass, 0, 0) with minimum squared mass using rows^T*(rows*rows^T)^-1.
+            // Only the first column of the inverse is needed.
             double3x3 gram = default;
             for (int i = 0; i < count; i++)
             {

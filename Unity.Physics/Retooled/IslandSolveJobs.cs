@@ -20,18 +20,10 @@ namespace Unity.Physics
         const int RelaxIterations = 4;
 
         /// <summary>
-        /// Schedules one step for every island. The jobs determine their work counts when they run, so the main thread
-        /// can schedule them without waiting for those counts. Islands assigned to iterative phases are solved phase by
-        /// phase, then their bodies are integrated. For direct islands, each substep runs a sequence of jobs that
-        /// update Jacobians, build rows in parallel, solve and integrate. The iterative and direct paths can run
-        /// concurrently because they modify different bodies. <paramref name="jacobiansBuilt"/> marks completion of
-        /// Jacobian construction, before jobs that change impulses or velocities in preparation for solving. Listing
-        /// the direct islands' Jacobians depends only on construction, so it waits for that handle alone.
-        /// <para>
-        /// <paramref name="motionsSolved"/> completes when every job that writes the motions has finished. The jobs
-        /// that free the solve's buffers and export the direct islands' events come after it. Work that reads only
-        /// the solved motions can wait for this handle and skip that chain of small jobs.
-        /// </para>
+        /// Schedule iterative and direct island solving on disjoint bodies.
+        /// jacobiansBuilt precedes impulse/velocity preparation; motionsSolved precedes buffer disposal and event
+        /// export.
+        /// Motion-only consumers may wait for motionsSolved, while event readers must wait for final completion.
         /// </summary>
         internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
@@ -41,9 +33,7 @@ namespace Unity.Physics
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
             DispatchPairSequencer.IterativeSolverSchedulerInfo iterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling;
 
-            // Schedule two team jobs: one for the solver iterations and one for relaxation. Each job processes its
-            // phases and iterations as team stages. This avoids scheduling a separate job for every phase of every
-            // iteration. Both jobs finish quickly if there are no iterative pairs.
+            // Use team stages for iterations and relaxation to avoid separate jobs for each phase.
             var teams = UnsafeList<SparseSolveTeam>.Create(2, Allocator.TempJob);
             teams->Resize(2, NativeArrayOptions.ClearMemory);
             teams->ElementAt(0).Configure();
@@ -73,10 +63,8 @@ namespace Unity.Physics
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
 
-            // After integration has applied the contact penetration correction to positions, run a few iterations to
-            // remove that correction from velocities. This is similar to PhysX velocity iterations after position
-            // iterations. Events have already been exported using the step's impulses. Start the relaxation iteration
-            // indices after the solver iterations so none is treated as the first or last solver iteration.
+            // After integration, remove penetration correction velocities. Keep iteration indices past the
+            // solver's event-export range.
             template.stepInput.Relaxing = true;
             template.stepInput.DisableExportEvents = true;
             iterativeHandle = new IterateInTeamJob
@@ -121,9 +109,7 @@ namespace Unity.Physics
         const int MaxTeamLanes = 8;
 
         /// <summary>
-        /// Solves the iterative pairs one phase at a time in each iteration. The job's lanes share the work items for
-        /// each phase. Work items in the same phase do not modify the same body. The leader waits for all tasks in one
-        /// phase to finish before starting the next phase.
+        /// Solve iterative phases in order, sharing each phase's disjoint work items among team lanes.
         /// </summary>
         [BurstCompile]
         [NoAlias]
@@ -167,8 +153,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Executes one work item in an iterative phase on a team lane. Each task copies the phase's job from the
-        /// context because its event writers contain state for the current work item and cannot be shared across lanes.
+        /// Execute one iterative work item using a private copy of the phase job, since event writers have per-item
+        /// state.
         /// </summary>
         internal static unsafe void IterativePhaseTask(void* context, int task)
         {
@@ -189,13 +175,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedules the substeps for all direct islands. Each substep updates Jacobians, counts and builds their rows,
-        /// solves the islands, and integrates their bodies. Row counting is serial; the other stages run in parallel.
-        /// Small islands are solved independently on worker threads. One team job solves all large islands
-        /// sequentially, sharing each solve among its lanes. The first substep's row counts depend only on the
-        /// constructed Jacobians, so they can be counted while listing the islands, concurrently with jobs that finish
-        /// preparing the solve. <paramref name="solved"/> completes when the islands' bodies are integrated, before
-        /// the job that frees the islands' buffers.
+        /// Schedule direct island Jacobian updates, row construction, solves and integration for each substep.
+        /// Count rows serially; run other stages in parallel. Return solved before buffer disposal.
         /// </summary>
         static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
             in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle solved)
@@ -223,9 +204,7 @@ namespace Unity.Physics
             substepInput.NumSubsteps = substeps;
             substepInput.DisableExportEvents = true;
 
-            // Mark the islands that the fused vessel job solves. The substeps' integration then skips their moving
-            // bodies. The fused job runs beside the substeps' jobs, because the two never touch the same bodies. The
-            // same job gives every vessel island its forest, with or without the fused job.
+            // Fused islands own their bodies for the entire step; substep jobs must skip them.
             bool fusedVessels = VesselFused;
             JobHandle fused = default;
             handle = new MarkFusedVesselIslandsJob
@@ -242,11 +221,8 @@ namespace Unity.Physics
                 Buffers = work.Buffers,
             }.Schedule(handle);
 
-            // The work of the substeps for the islands that the fused job doesn't take. When the last step had none of
-            // that work, or little of it beside much more work in the fused job, one lane of the fused job does it all,
-            // or one job when the fused job is off (see FoldsUnfusedSubsteps). Otherwise each substep runs the chain of
-            // jobs below. MarkFusedVesselIslandsJob decides which islands are fused when
-            // it runs, so the main thread goes by what the last step had.
+            // Choose serial unfused work from the previous step's counts; current counts are not known at
+            // scheduling time.
             bool fold = FoldsUnfusedSubsteps(stepInput.DirectSolverCache);
             var unfused = new UnfusedSubsteps
             {
@@ -295,9 +271,8 @@ namespace Unity.Physics
                 substepInput.CurrentSubstep = substep;
                 if (substep > 0)
                 {
-                    // Normally, update only contacts before counting rows, because only contact row counts can change.
-                    // Update each joint while building its rows to reuse the joint data already being read.
-                    // LegacyRowBuild instead updates all Jacobians here.
+                    // Recount contacts before building rows. Update fixed-size joint Jacobians during row
+                    // construction unless using LegacyRowBuild.
                     handle = new UpdateIslandJacobiansJob
                     {
                         Headers = work.Headers.AsDeferredJobArray(),
@@ -429,13 +404,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Whether an island whose bodies are all vessel parts is solved by one fused job for the whole step. In
-        /// every substep, that job updates the island's contacts and joints and builds their rows, fills the parts,
-        /// solves the vessels with the contacts and joints as their boundary block, writes the loads and integrates
-        /// the parts' bodies. It does this without the per-body setup of the sparse solve, without the jobs and waits
-        /// of each substep, and without the separate integration job. It is on by default. The backend reads RETOOLED_VESSEL_FUSED when the first
-        /// world attaches, and the value 0 turns it off. The flag is stored in a SharedStatic, because the jobs are
-        /// scheduled from Burst code.
+        /// Solve vessel-only islands in one fused job across all substeps, including their contact/joint boundary.
+        /// Enabled by default; RETOOLED_VESSEL_FUSED=0 disables it at first attach.
         /// </summary>
         public static bool VesselFused
         {
@@ -446,9 +416,8 @@ namespace Unity.Physics
         struct VesselFusedKey { }
 
         /// <summary>
-        /// Whether the fused vessel job also takes the vessel islands that have contacts or joints with rows. When this
-        /// is false, it takes only the islands that hold vessels and nothing else, as it did before it could build a
-        /// boundary block. It is on by default, and the bench turns it off to compare the two.
+        /// Allow fused vessel islands with contact or joint boundary rows. Enabled by default; benchmarks may
+        /// disable it.
         /// </summary>
         internal static bool FusedContacts
         {
@@ -473,18 +442,8 @@ namespace Unity.Physics
         static readonly SharedStatic<bool> VesselFusedOff = SharedStatic<bool>.GetOrCreate<VesselFusedKey>();
 
         /// <summary>
-        /// The number of vessel parts at which an island whose bodies are all vessel parts goes to the fused vessel
-        /// job. A smaller island stays with the substeps' jobs. By default, every such island goes to the fused job,
-        /// however small it is and however many there are. The fused job gives each island a team of its own and
-        /// solves several islands at once, so on the bench (whole steps, the minimum of three rounds) small craft are
-        /// as fast or faster there than in the substeps' jobs. Floating, sixteen craft of 128 parts take 0.78 ms
-        /// instead of 1.10 ms on eight threads and 1.94 ms instead of 2.26 ms on one. Thirty-two craft of 32 parts take
-        /// 0.48 ms instead of 0.53 ms on eight threads, and 64 craft of 8 parts take 0.37 ms instead of 0.46 ms. On
-        /// the ground the times are about the same: sixteen craft of 128 parts take 2.17 ms instead of 2.24 ms on eight
-        /// threads and 6.08 ms instead of 6.14 ms on one. Before round 4, the fused job solved one island after
-        /// another, and sixteen craft of 128 parts took 0.8 ms more floating and 2 ms more on the ground there. The backend reads RETOOLED_VESSEL_FUSED_PARTS when the first world attaches,
-        /// and tests set this to keep small vessels in the substeps' jobs. The value is stored in a SharedStatic,
-        /// because the jobs are scheduled from Burst code.
+        /// Minimum vessel part count for fused solving. By default every eligible island is fused.
+        /// Read RETOOLED_VESSEL_FUSED_PARTS at first attach; tests may override it.
         /// </summary>
         public static int FusedVesselParts
         {
@@ -505,9 +464,8 @@ namespace Unity.Physics
         const int SharedSolveRows = 512;
 
         /// <summary>
-        /// Selects the earlier method of building direct island rows, which updates joints separately and computes
-        /// regularization for each Jacobian. Tests use this to compare against updating joints during row construction
-        /// and sharing regularization. Read when scheduling the jobs.
+        /// Use the reference row builder with separate joint updates and per-Jacobian regularization.
+        /// Test/benchmark option.
         /// </summary>
         internal static bool LegacyRowBuild
         {
@@ -526,9 +484,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Stores rows for all direct islands in the current substep, with each island's rows in a contiguous range.
-        /// Jobs can resize these lists, so they store pointers to the list structures instead of pointers to the data
-        /// that may move.
+        /// Contiguous row ranges for direct islands. Store pointers to list headers because jobs may resize their
+        /// data.
         /// </summary>
         unsafe struct DirectIslandBuffers
         {
@@ -568,18 +525,11 @@ namespace Unity.Physics
             /// </summary>
             [NativeDisableUnsafePtrRestriction] public UnsafeList<FusedTeam>* FusedTeams;
 
-            /// <summary>
-            /// The first body of each island and that body's identity (see <see cref="DirectSolverCache.BodyIdentity"/>).
-            /// <see cref="IndexDirectIslandsJob"/> lists them, and <see cref="MarkFusedVesselIslandsJob"/> gives the
-            /// cache's slots to the islands that are not fused.
-            /// </summary>
+            // First body and stable identity per island, used to assign cache slots to unfused islands.
             [NativeDisableUnsafePtrRestriction] public UnsafeList<int>* FirstBodies;
             [NativeDisableUnsafePtrRestriction] public UnsafeList<ulong>* FirstIdentities;
 
-            /// <summary>
-            /// One word that the lanes of the fused job race for. The lane that sets it first does the substeps' work of
-            /// the islands that are not fused, when the step runs that work in the fused job.
-            /// </summary>
+            // Atomic claim for the one fused lane that executes unfused substeps.
             [NativeDisableUnsafePtrRestriction] public int* UnfusedClaim;
 
             public DirectIslandBuffers(int substeps, Allocator allocator)
@@ -663,9 +613,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The team that solves one fused island, with the island's index, its number of vessel parts, and the number
-        /// of lanes that help the team at the moment. A lane that has no island of its own to lead helps the team that
-        /// has the most parts for each lane that works on it.
+        /// Team for one fused island, with its part count and active lane count.
+        /// Idle lanes prefer the team with the most parts per lane.
         /// </summary>
         unsafe struct FusedTeam
         {
@@ -726,8 +675,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Lists each direct island's Jacobians in iterator order, with joints before contacts. Decides once per step
-        /// whether to include the island's contacts in its solve, then counts the rows for the first substep.
+        /// List direct-island Jacobians in iterator order, joints before contacts, and count first-substep rows.
         /// </summary>
         [BurstCompile]
         unsafe struct IndexDirectIslandsJob : IJob
@@ -778,9 +726,8 @@ namespace Unity.Physics
                 Work.Islands.ResizeUninitialized(islandCount);
                 Work.Buffers.Bounded->Resize(islandCount);
 
-                // Count each header's rows while reading it, then convert the counts to starting row offsets after
-                // listing the islands. This avoids another pass over headers that would mostly no longer be in the CPU
-                // cache.
+                // Count rows while listing headers, then convert counts to offsets to avoid rereading cold
+                // headers.
                 UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
                 headerRows->Clear();
                 for (int island = 0; island < islandCount; island++)
@@ -875,10 +822,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Counts the Jacobian rows for the current substep and assigns a contiguous range of rows to each island.
-        /// Contact row counts can change as contact points appear or disappear. Joint row counts are fixed by
-        /// construction, so only contacts need to be counted again after the first substep. For the first substep,
-        /// <see cref="IndexDirectIslandsJob"/> has already stored each header's row count in HeaderRows.
+        /// Count Jacobian rows and assign contiguous island ranges.
+        /// Reuse first-substep counts from IndexDirectIslandsJob; later recount only contacts.
         /// </summary>
         [BurstCompile]
         unsafe struct CountIslandRowsJob : IJob
@@ -974,9 +919,7 @@ namespace Unity.Physics
             public StepInput StepInput;
 
             /// <summary>
-            /// Updates each joint Jacobian from the current substep's poses before building its rows. Updating and
-            /// building a Jacobian do not read other Jacobians, so this gives the same result as updating all Jacobians
-            /// first.
+            /// Update a joint Jacobian from current poses immediately before building its rows.
             /// </summary>
             public bool UpdateJoints;
 
@@ -1016,10 +959,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Builds the rows of the Jacobian at <paramref name="index"/> in the list of every island's Jacobians, and
-        /// first updates it from the substep's poses if it is a joint and <paramref name="updateJoints"/> is set. Marks
-        /// the island as bounded if a row needs a bounded solve. A Jacobian writes only its own rows, so the lanes can
-        /// build the Jacobians of one island at the same time.
+        /// Build a Jacobian's disjoint row range, optionally updating joint poses, and mark the island bounded when
+        /// needed.
         /// </summary>
         static unsafe void BuildIslandHeader(int index, in IslandHeader entry, in DirectIsland island, in DirectIslandBuffers work,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in NativeArray<RigidBody> bodies,
@@ -1046,9 +987,7 @@ namespace Unity.Physics
             bool lcp = BuildHeaderRows(ref header, startRow, jacRows, IslandRowBuffers.Of(work, island), motionVelocities, motionDatas,
                 stepInput, island.ContactPairs > 0, regularization);
 
-            // All workers that update this flag store 1, and the solver reads it only after the rows are built, so a
-            // plain store is enough. Check the flag first to avoid repeated writes to the same cache line by workers
-            // building rows for one island.
+            // Workers only set this flag to one; the solver reads it after all row builds complete.
             int* bounded = work.Bounded->Ptr + entry.Island;
             if (lcp && *bounded == 0)
             {
@@ -1056,10 +995,7 @@ namespace Unity.Physics
             }
         }
 
-        /// <summary>
-        /// Where one island's rows are kept for a substep: the Jacobian, epsilon, bounds, right-hand side, push-out
-        /// and index flag of each row, from the island's first row on.
-        /// </summary>
+        // Per-island Jacobian rows, regularization, bounds, targets, push-out and states for one substep.
         unsafe struct IslandRowBuffers
         {
             public float* Jacobian;
@@ -1088,10 +1024,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Builds the rows of one Jacobian of an island, from its first row <paramref name="startRow"/> among the
-        /// island's rows. Every row starts free and unbounded, and the row build sets the bounds that the row needs.
-        /// Returns whether a row needs a bounded solve. A Jacobian writes only its own rows, so the lanes can build
-        /// the Jacobians of one island at the same time.
+        /// Build a Jacobian's rows starting at startRow, initially free and unbounded.
+        /// Return whether any bound requires a bounded solve. Parallel Jacobians write disjoint ranges.
         /// </summary>
         static unsafe bool BuildHeaderRows(ref JacobianHeader header, int startRow, int jacRows, in IslandRowBuffers buffers,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
@@ -1132,9 +1066,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves one direct island using its constructed rows and applies the resulting impulses. Solves joints and
-        /// contacts, including friction, together. This accounts for the combined constraints when supporting a heavy
-        /// stack on a light part or transmitting friction forces through a craft's joints.
+        /// Solve a direct island's joints and contacts together and apply impulses.
         /// </summary>
         [BurstCompile]
         [NoAlias]
@@ -1295,9 +1227,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// What the substeps' work of the islands that are not fused needs besides the step's arrays: the islands'
-        /// Jacobians and row buffers, and the substeps' input. One thread does that work with
-        /// <see cref="RunUnfusedSubsteps"/> when the step doesn't run the substeps' chain of jobs.
+        /// Inputs and row buffers for serial execution of unfused island substeps.
         /// </summary>
         unsafe struct UnfusedSubsteps
         {
@@ -1317,11 +1247,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Does the work of every substep for the islands that are not fused, on this thread: the same updates, row
-        /// builds, solves and integrations as the chain of jobs that ScheduleDirectIslandJobs schedules for each
-        /// substep, island after island. The islands don't share bodies or Jacobians, so the results are the same as
-        /// the chain's, whatever order the chain's lanes took. A large island is solved without a team, as the fused
-        /// job solves its islands on one thread.
+        /// Run unfused islands' Jacobian updates, row builds, solves and integration serially.
+        /// Preserve the chained jobs' operation order and results.
         /// </summary>
         static unsafe void RunUnfusedSubsteps(in UnfusedSubsteps unfused, NativeArray<IslandHeader> headers, NativeArray<DirectIsland> islands,
             NativeArray<int> islandVessels, NativeArray<int> unfusedBodies, NativeArray<MotionVelocity> motionVelocities,
@@ -1400,8 +1327,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The number of steps since the program started in which one thread did the substeps' work of the islands
-        /// that are not fused, see <see cref="RunUnfusedSubsteps"/>. Tests read it to check which way a step went.
+        /// Number of steps using serial unfused substeps, for tests of scheduling choices.
         /// </summary>
         internal static long UnfusedFoldedSteps => UnfusedFoldedStepCount.Data;
 
@@ -1412,8 +1338,7 @@ namespace Unity.Physics
         static readonly ProfilerMarker UnfusedSubstepsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.UnfusedSubsteps");
 
         /// <summary>
-        /// Does the substeps' work of the islands on one thread, when the fused job is off and the last step had little
-        /// of that work, see <see cref="FoldsUnfusedSubsteps"/>.
+        /// Run unfused substeps on one thread when fused solving is disabled and folding is selected.
         /// </summary>
         [BurstCompile]
         unsafe struct SolveUnfusedSubstepsJob : IJob
@@ -1448,10 +1373,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// How the step runs the substeps' work of the islands that the fused job doesn't take. The default,
-        /// <see cref="Auto"/>, runs it on one thread when the last step had little of it, see
-        /// <see cref="FoldsUnfusedSubsteps"/>. Tests and the bench pick one way to compare the two. The backend reads
-        /// RETOOLED_SUBSTEP_FOLD when the first world attaches: 0 for <see cref="Chain"/>, 1 for <see cref="Fold"/>.
+        /// Select chained or serial unfused substeps. Auto uses previous-step work counts.
+        /// RETOOLED_SUBSTEP_FOLD=0 forces Chain; 1 forces Fold.
         /// </summary>
         internal enum SubstepFolding
         {
@@ -1480,24 +1403,14 @@ namespace Unity.Physics
         const int FoldedBodies = 64;
 
         /// <summary>
-        /// The fewest vessel parts that the fused islands must have for each body of the islands that are not fused,
-        /// for the same. The lane that does the substeps' work is then busy for less time than the fused job, which
-        /// the step waits for anyway.
+        /// Minimum fused vessel parts per unfused body required for automatic substep folding.
         /// </summary>
         const int FoldedPartsPerBody = 8;
 
         /// <summary>
-        /// Whether this step runs the substeps' work of the islands that are not fused on one thread, either in a lane
-        /// of the fused job or in one job of its own, instead of in a chain of jobs for every substep. Each job of the
-        /// chain costs a hop between threads, even when it has nothing to do, and the chain's jobs often wait for the
-        /// fused job to free its threads. One thread is faster while the work is small and the fused job takes longer:
-        /// no island large enough to share its solve, at most <see cref="FoldedRows"/> rows and at most
-        /// <see cref="FoldedBodies"/> bodies, and <see cref="FoldedPartsPerBody"/> fused parts for each of those bodies.
-        /// On the bench with eight threads, a Tu-160 beside eight craft of 4 parts on Unity joints took 1.73-2.51 ms a
-        /// step this way and 2.00-2.81 ms with the chain. Sixteen such craft alone took 0.73-0.84 ms this way and
-        /// 0.39-0.52 ms with the chain, and a Tu-160 beside 32 of them 2.78-3.57 ms instead of 1.91-2.76 ms. The step
-        /// goes by what the last step had, because the job that decides which islands are fused runs after the main
-        /// thread has scheduled the step. Both ways give the same results.
+        /// Fold unfused substeps onto one thread when prior-step work is small enough to finish alongside fused
+        /// solving.
+        /// Require no shareable large islands, bounded row/body counts and enough fused parts per unfused body.
         /// </summary>
         static bool FoldsUnfusedSubsteps(in DirectSolverCache cache)
         {
@@ -1517,12 +1430,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Marks each island whose bodies are all vessel parts, and that has at least <see cref="FusedVesselParts"/>
-        /// vessel parts, for the fused vessel job. The island's contacts and joints go into the fused job's boundary
-        /// block. Then gives the cache's slots to the other islands, lists their bodies for the substeps' integration,
-        /// and gives every vessel island the forest that will solve it, see <see cref="AssignVesselForests"/>. The job
-        /// works per island and per vessel, and never per part. It copies the bodies of the islands that are not fused
-        /// as whole ranges.
+        /// Mark eligible vessel islands for fused solving, assign other cache slots and list unfused bodies for
+        /// integration.
         /// </summary>
         [BurstCompile]
         unsafe struct MarkFusedVesselIslandsJob : IJob
@@ -1576,9 +1485,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Gives the cache's slots to the islands that are not fused, by the identities of their first bodies, which
-            /// <see cref="IndexDirectIslandsJob"/> listed. The fused islands keep their state in the fused job's slots,
-            /// so they take no slot from the islands that need one.
+            /// Assign substep cache slots by first-body identity. Fused islands use their own slots.
             /// </summary>
             void AssignSlots()
             {
@@ -1600,9 +1507,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Lists the bodies of the islands that are not fused, and tells the cache how much work those islands
-            /// gave the substeps, so that the next step can choose how to run them, see
-            /// <see cref="FoldsUnfusedSubsteps"/>.
+            /// List unfused bodies and record their workload for the next step's scheduling decision.
             /// </summary>
             void ListUnfusedBodies()
             {
@@ -1631,9 +1536,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Gives each fused island a team of its own. The teams are sorted by the islands' part counts, the most
-            /// parts first and then by island index, so that the first lanes of the fused job lead the largest islands.
-            /// Each team is a copy of the unused team after the substeps' teams, which the main thread configured.
+            /// Create a team per fused island, ordered by descending part count then island index.
             /// </summary>
             void ListFusedTeams()
             {
@@ -1674,12 +1577,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves every island that <see cref="MarkFusedVesselIslandsJob"/> marked, for all the substeps of the step.
-        /// Each island has a team of its own, so that several islands can be solved at the same time. Each lane first
-        /// leads every island that has no leader yet, the largest island first. A lane that finds no island to lead
-        /// helps the stages of the islands that are still being solved, which split the parts into ranges. With one
-        /// thread, the islands are solved one after another, as before. Each island's results do not depend on which
-        /// lanes helped it, because each stage combines its tasks' results in the same order.
+        /// Solve marked vessel islands across all substeps with a team per island.
+        /// Idle lanes help active teams. Combine task results in fixed order for deterministic results.
         /// </summary>
         [BurstCompile]
         unsafe struct SolveFusedVesselIslandsJob : IJobParallelFor
@@ -1721,19 +1620,15 @@ namespace Unity.Physics
             [ReadOnly, NativeDisableContainerSafetyRestriction]
             public NativeArray<int> UnfusedBodies;
 
-            /// <summary>
-            /// What the lane that does the substeps' work of the islands that are not fused needs, and the word that the
-            /// lanes race for to do it. Without that word, the substeps' jobs do the work.
-            /// </summary>
+            // Unfused substep inputs and optional atomic lane claim. Without the claim word, chained jobs own
+            // the work.
             public UnfusedSubsteps Unfused;
 
             [NativeDisableUnsafePtrRestriction]
             public int* UnfusedClaim;
 
             /// <summary>
-            /// The number of lanes that the job was scheduled with. With one lane, no other lane can help an island,
-            /// so the lane solves each island without a team. Publishing the stages to a team cost 0.05 to 0.1 ms a
-            /// step on one thread for sixteen craft of 128 parts.
+            /// Scheduled lane count. With one lane, skip team stage publication and solve islands directly.
             /// </summary>
             public int Lanes;
 
@@ -1744,9 +1639,7 @@ namespace Unity.Physics
                 FusedTeam* teams = Teams->Ptr;
                 int count = Teams->Length;
 
-                // Lead each island that no lane leads yet. A lane that finishes an island looks for another one. The
-                // substeps' work of the islands that are not fused goes to the first lane that doesn't lead the
-                // largest island.
+                // Claim unled islands. Give unfused substeps to the first lane not leading the largest island.
                 for (int t = 0; t < count; t++)
                 {
                     if (teams[t].Team.TryLead())
@@ -1770,11 +1663,8 @@ namespace Unity.Physics
                     RunUnfusedOnce();
                 }
 
-                // Every island has a leader now. With several islands, work on the open stages of every island, the
-                // largest island first, for as long as some stage is open. A lane that has found no open stage for the
-                // spin time waits on the island that has the most parts for each lane that works on it, counting its
-                // leader. It works on that island's stages until the island is solved, and then looks at all the
-                // islands again. With one island, the lane waits on it at once, as before.
+                // Help open stages, largest island first. After the spin timeout, wait on the team with the
+                // most parts per lane.
                 using (HelpMarker.Auto())
                 {
                     while (true)
@@ -1836,8 +1726,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Runs the tasks of every open stage of the islands, the largest island first, until no stage has been
-            /// open for the teams' spin time. Returns false if every island is solved.
+            /// Help open island stages, largest first, until the spin timeout. Return false when all islands are
+            /// solved.
             /// </summary>
             static bool SweepOpenStages(FusedTeam* teams, int count)
             {

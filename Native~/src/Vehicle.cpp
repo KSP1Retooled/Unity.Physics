@@ -1,7 +1,6 @@
-// Vehicle commands, which back WheelCollider. Each one is unpacked here and runs in VehicleKernel.cs. Per-wheel commands
-// carry no handle: Unity passes the vehicle id in its place, so the world comes from the context. Character controllers,
-// immediate mode and contact modification stay unadvertised, so their slots keep the logging stubs Plugin.cpp installed.
-// The development trace build records what Unity sends instead.
+// Unpack WheelCollider commands for VehicleKernel.cs. Per-wheel commands use a vehicle ID and take the world from
+// context.
+// Unsupported extension commands keep logging stubs; trace builds record them.
 
 #include <cstddef>
 #include <cstdint>

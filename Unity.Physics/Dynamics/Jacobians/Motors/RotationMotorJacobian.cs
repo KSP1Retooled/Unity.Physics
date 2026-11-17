@@ -125,10 +125,8 @@ namespace Unity.Physics
             // Calculate the relative joint frame rotation
             quaternion jointBFromA = math.mul(math.mul(math.inverse(MotionBFromJoint), motionBFromA), MotionAFromJoint);
 
-            // Quaternion.ToAngleAxis returns zero below about 0.6 mrad, where stiff joints rest, and nearly a full turn when the
-            // relative rotation comes out negated. Nothing keeps it positive: its sign is a product of the bodies' rotations and
-            // of conversions from the joint frames' matrices. Flipping only the far end of the range leaves the angle continuous
-            // through a half turn, which a rotation off this axis would otherwise stick at.
+            // Avoid ToAngleAxis loss of precision at small angles and full turns for negated quaternions.
+            // Negate only near the far end of the range to keep the angle continuous through half a turn.
             float4 rotation = jointBFromA.value.w < NegatedBelow ? -jointBFromA.value : jointBFromA.value;
 
             // The share of the rotation about this axis, with the angle over sin(angle / 2) tending to 2 as the angle vanishes.

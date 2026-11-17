@@ -1,10 +1,8 @@
 namespace Unity.Numerics.Linear.Solvers.Lowlevel
 {
     /// <summary>
-    /// Counts what solves by <see cref="BlockPrincipalPivoting"/> did with the factor of their free rows. A caller that
-    /// passes the same counts to several solves gets the sums over those solves. A round of pivoting either factored
-    /// W_FF from the start, changed the last round's factor, or used that factor as it was. The rows that joined and
-    /// left the free set are counted against the round before, so the first round of a solve adds none.
+    /// Accumulate factorization, update and reuse counts across block principal pivoting solves.
+    /// Count free-set changes relative to the preceding round, excluding each solve's first round.
     /// </summary>
     public struct BlockPrincipalPivotingStats
     {
@@ -17,8 +15,7 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
         public long RemovedRows;
 
         /// <summary>
-        /// The free rows that the rounds solved for, summed over the rounds, and the most and the fewest free rows that
-        /// one round had. The fewest leaves out rounds with no free rows.
+        /// Total, minimum and maximum free rows across rounds. Ignore empty rounds for the minimum.
         /// </summary>
         public long FreeRows;
         public long MostFreeRows;

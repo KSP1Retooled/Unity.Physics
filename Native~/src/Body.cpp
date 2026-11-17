@@ -55,12 +55,9 @@ namespace Retooled
         static_cast<BodyCmd::GetIsSleeping&>(base).value = (RowFlags(object) & kBodySleeping) != 0;
     }
 
-    // Unity reads the pose of every awake body after each step, on the main thread, and the poses of the bodies whose
-    // Transforms moved before each step, mostly on job workers. The plugin reads the pose through the row's pointer
-    // wherever managed would read the same pointer without updating it first: on a worker, which can't update a pointer,
-    // and on the main thread during the read-back, when every pointer of the stepped world is current (see
-    // g_ReadBackWorld). Anywhere else on the main thread, the kernel answers, because it first updates a pointer that a
-    // structural change to the entity made stale.
+    // Read pose pointers directly on workers and during main-thread read-back, when managed would not refresh
+    // them.
+    // Other main-thread reads go through the kernel to refresh pointers after structural changes.
     static void GetPose(void* object, const Context& ctx, Command& base)
     {
         const Body* body = static_cast<const Body*>(object);

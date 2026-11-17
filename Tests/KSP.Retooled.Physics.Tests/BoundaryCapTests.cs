@@ -6,9 +6,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The limits on a vessel island's boundary block, with vessels on: the cap on contact points against the ground, the
-    /// cap on contact manifolds between parts of the same vessel, and the warm start of the boundary's pivoting from the
-    /// last solve.
+    /// Test vessel boundary caps and warm starts for ground contacts, self-contacts and external bodies.
     /// </summary>
     public class BoundaryCapTests : PhysicsScene
     {
@@ -53,8 +51,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A stock part joint between two parts that lie side by side along x: three joints over the node, anchors and
-        /// twist locked, swing held by drives. The backend makes one hard edge of them.
+        /// Create three stock-style joints across a node, with locked anchors/twist and driven swing.
         /// </summary>
         private static void StackJoint(Rigidbody host, Rigidbody target, Vector3 node, Vector3 axis)
         {
@@ -80,8 +77,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A long craft that lies on a large ground: a row of box parts along x, each joined to the one before it. Each
-        /// part touches the ground with a manifold of four points.
+        /// Create a grounded row of joined box parts, each with four ground contact points.
         /// </summary>
         private List<Rigidbody> LyingCraft(int count)
         {
@@ -103,10 +99,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 100 parts that lies on the ground has 400 contact points, more than the cap of 256. The cap takes
-        /// every part's deepest point before any part's second point, so every part keeps some of its points, and the
-        /// boundary keeps no more than the 448 rows that 256 points in manifolds of 4 would bring. The craft rests on the
-        /// ground without sinking or shaking.
+        /// Verify that the ground contact cap keeps each part's deepest point first and a 100-part craft rests
+        /// stably.
         /// </summary>
         [Test]
         public void ALongCraftOnTheGroundKeepsItsContactPointsUnderTheCap()
@@ -144,9 +138,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Two columns of parts that hang side by side from one part hooked to the world, joined at the top, so that they
-        /// are one vessel. A push on the second column presses it against the first, so that every pair of parts across
-        /// the columns is a self-contact, more than the cap of 8 manifolds. The columns stay apart and still.
+        /// Verify stable self-contact between two joined hanging columns when contact count exceeds the manifold
+        /// cap.
         /// </summary>
         [Test]
         public void PressedColumnsKeepTheirSelfContactsUnderTheCap()
@@ -204,11 +197,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 8 parts lies on the ground, and next to each part a loose box sits 3 cm deep in the ground, touching
-        /// the part, so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most
-        /// boxes are held out of the boundary. The scene runs twice: once with held rows that take no impulse of their
-        /// own, as before, and once with held rows that are too deep getting a push-out of their own. The boxes come
-        /// further out of the ground in the second run.
+        /// Compare capped-out contact rows with and without penetration correction. Loose boxes should recover from
+        /// the ground.
         /// </summary>
         [Test]
         public void HeldContactsThatAreTooDeepArePushedOut()
@@ -246,13 +236,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 8 parts lies on the ground with a loose box resting beside each part, so that the island's boundary
-        /// has rows against the boxes, which are not in a vessel. Then 20 kinematic boxes far away, made after the craft
-        /// and before the loose boxes, are destroyed. That moves the loose boxes to other places in the world. The scene
-        /// runs twice: once with the boundary rows' keys by place in the world, as before, and once with the keys by the
-        /// body's serial number, which the backend gives each body's entity. Every row is warm in the steps before the
-        /// boxes go. In the step after, the keys by place miss the rows against the loose boxes, and the keys by serial
-        /// number miss none.
+        /// Verify that serial-based boundary keys preserve warm starts when unrelated body destruction moves
+        /// external bodies to new rows.
         /// </summary>
         [Test]
         public void RowsAgainstLooseBodiesKeepTheirWarmStartWhenAnotherBodyGoes()
@@ -301,12 +286,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A craft of 8 parts lies on the ground, and next to each part a loose box rests on the ground, touching the part,
-        /// so that the boxes are in the craft's island. With a cap of 4 outside points, the contacts of most boxes are
-        /// held out of the boundary. A held row used to keep only its warm start, which is 95% of the contact's last
-        /// impulse, so a box whose contacts were all held sank a little in every step until its points were the deepest
-        /// and the cap took them again. The scene runs twice: once with held rows that take no impulse of their own, and
-        /// once with held rows that push when their contact closes. The boxes stay up in the second run.
+        /// Verify that capped-out contact rows support loose boxes rather than letting their decaying warm starts
+        /// cause sinking.
         /// </summary>
         [Test]
         public void BoxesWhoseContactsAreHeldDoNotSink()
@@ -348,11 +329,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A long craft rests on the ground, with more contact points than the cap. Then gravity goes away. Each contact
-        /// starts the next step with most of its last impulse, which pushes the craft up. The solve takes that impulse
-        /// back from the points that it keeps, and it has to take it back from the held points too, or the held points
-        /// throw the craft into the air. The scene runs twice: once with held rows that keep their warm start, as before,
-        /// and once with held rows that give it back.
+        /// Verify that capped-out contact rows can remove warm impulses after gravity is disabled, avoiding upward
+        /// acceleration.
         /// </summary>
         [Test]
         public void HeldContactsGiveBackTheirWarmStartWhenTheyAreNotNeeded()
@@ -399,9 +377,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The same craft on the ground, solved once with each solve of its boundary starting cold and once starting
-        /// from the last solve's states. The warm start takes fewer pivoting rounds. Neither run has a cap on rounds, so
-        /// that the counts are the rounds that the solve needs.
+        /// Compare unlimited cold and warm boundary solves; warm starts should require fewer pivot rounds.
         /// </summary>
         [Test]
         public void AWarmStartTakesFewerPivotingRounds()

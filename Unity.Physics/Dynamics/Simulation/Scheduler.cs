@@ -153,9 +153,8 @@ namespace Unity.Physics
             internal ulong BodyIndexASubArraySortKey => (ulong)m_BodyIndexB << 32 | m_Data;
 
             /// <summary>
-            /// Whether two pairs can be processed sequentially on one thread in the same phase, rather than requiring
-            /// separate phases. They must use the same two bodies, or the same dynamic body with any static bodies.
-            /// Static bodies are never written. Sorting places these pairs next to each other.
+            /// Return whether pairs can share one phase sequentially: the same two bodies, or one dynamic body with
+            /// any statics.
             /// </summary>
             internal bool IsSameLink(DispatchPair other, int numDynamicBodies) => BodyIndexA == other.BodyIndexA
                 && (BodyIndexB == other.BodyIndexB || (BodyIndexB >= numDynamicBodies && other.BodyIndexB >= numDynamicBodies));
@@ -408,9 +407,8 @@ namespace Unity.Physics
             public NativeList<bool> BodiesInIslands;
 
             /// <summary>
-            /// The number of contacts in each island. In <see cref="DispatchPairIslandInfos"/>, contacts follow the
-            /// joints counted by <see cref="DispatchPairIslandInfoCounts"/>. Keeping contacts outside that count
-            /// excludes them from the joint information read by the direct solver.
+            /// Contact count per island. Contacts follow joints in DispatchPairIslandInfos but are excluded from
+            /// joint-info counts.
             /// </summary>
             [NoAlias]
             public NativeList<int> IslandContactCounts;
@@ -588,9 +586,7 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Returns the pair offset and count for a job that reads pairs. In phases that group pairs by link, uses
-            /// the ranges set by <see cref="FindLinkedWorkItemRanges"/>. For other phases, uses
-            /// <see cref="GetWorkItemReadOffset(int, out int)"/>.
+            /// Return a work item's pair range, using precomputed link ranges in linked phases.
             /// </summary>
             internal int GetLinkedWorkItemReadOffset(int workItemIndexOffset, out int pairReadCount)
             {
@@ -605,9 +601,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Sets the pair range for each work item in phases that group pairs by link. Run this before jobs read the
-            /// pairs. Otherwise, one job could invalidate a pair with no contacts while building Jacobians, while
-            /// another job is still using that pair to find the start of its range.
+            /// Compute linked work-item ranges before pair-reading jobs run.
+            /// Do not discover ranges while Jacobian construction may invalidate pairs.
             /// </summary>
             internal void FindLinkedWorkItemRanges(NativeArray<DispatchPair> dispatchPairs)
             {
@@ -620,10 +615,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// In a phase that groups pairs by link, assigns all pairs of a link to the work item in which the link
-            /// starts, even if they extend beyond its original range. Work items in a phase can run concurrently, so
-            /// they must not split a link. A work item whose entire range is inside another work item's link receives
-            /// no pairs.
+            /// Assign an entire link to the work item where it starts, preventing concurrent workers from splitting
+            /// a link.
             /// </summary>
             int FindLinkedReadOffset(int workItemIndexOffset, NativeArray<DispatchPair> dispatchPairs, out int pairReadCount)
             {
@@ -1123,9 +1116,7 @@ namespace Unity.Physics
             SimulationJobHandles returnHandles = default;
             pairsToSortByIsland = default;
 
-            // A step that solves by island needs only the pairs sorted, without phases. The parallel chain below takes
-            // about a dozen small jobs to do that, and most of its time goes to waiting for the next job to start.
-            // When the last step had few pairs, one job sorts them on one thread instead. See SortPairsForIslandsJob.
+            // Use one sorting job for small island workloads to avoid the parallel chain's scheduling overhead.
             if (multiThreaded && stepInput.DirectIslandSubsteps > 0 && !stepInput.DirectSolverSettings.ForceDirectSolver
                 && islandPairCount.IsCreated && islandPairCount.Value <= SerialIslandPairLimit)
             {
@@ -1735,10 +1726,8 @@ namespace Unity.Physics
         #region Jobs
 
         /// <summary>
-        /// The largest number of pairs, counted in the last step, for which a step that solves by island sorts its
-        /// pairs in one job on one thread. Above it, the step uses the parallel chain of jobs. Tests set this to -1 to
-        /// use the parallel chain. The value is stored in a SharedStatic, because the jobs are scheduled from Burst
-        /// code.
+        /// Maximum prior-step pair count for serial island sorting. Set to -1 to force the parallel chain.
+        /// Stored in SharedStatic for Burst.
         /// </summary>
         internal static int SerialIslandPairLimit
         {
@@ -1758,12 +1747,9 @@ namespace Unity.Physics
         static readonly SharedStatic<int> SerialIslandPairLimitValue = SharedStatic<int>.GetOrCreate<SerialIslandPairLimitKey>();
 
         /// <summary>
-        /// Sorts the pairs of a step that solves by island, in one job on one thread. It does what the parallel chain
-        /// does up to <see cref="SetDisableCollisionFlagsJob"/>. It writes the dynamic pairs, then the static pairs,
-        /// then one pair for each valid joint. It sorts them by body A with one pass of a radix sort, then sorts each
-        /// body's pairs by the rest of their key. Then it disables the contacts between bodies whose joints don't allow
-        /// collision. No two pairs have the same key, so the sorted order is the same as the parallel chain's. The job
-        /// also records the number of pairs, so that the next step can choose between this job and the chain.
+        /// Sort island dispatch pairs and disable contacts forbidden by joints, matching the parallel chain's
+        /// order.
+        /// Record the pair count for next step's scheduling choice.
         /// </summary>
         [BurstCompile]
         struct SortPairsForIslandsJob : IJob

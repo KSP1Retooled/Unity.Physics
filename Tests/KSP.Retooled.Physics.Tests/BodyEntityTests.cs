@@ -114,9 +114,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void AScriptReadsThePoseOfAnEntityThatAnotherChangeMoved()
         {
-            // The plugin reads poses through the rows on the main thread only while Unity reads them back after a step.
-            // Unity's read-back ends before the script runs again, so this read goes to the kernel, which follows the
-            // entity to its new chunk first.
+            // This main-thread read follows a script change, so the kernel must refresh entity pointers.
             float3 position = new float3(440.0f, 0.0f, 0.0f);
             Rigidbody body = WeightlessBox(position);
             WeightlessBox(new float3(445.0f, 0.0f, 0.0f));
@@ -130,12 +128,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// After a step that throws before it applies the forces, which is where a step refreshes the pointers of the
-        /// store's rows, Unity reads the poses back, and the plugin reads them through those pointers. The backend
-        /// refreshes the pointers on that path too, so the read-back follows an entity that another change moved to
-        /// another chunk. Before, the plugin read the slot that the entity left, which the other box's entity had
-        /// taken. Burst leaves the injected throw out, so the test is inconclusive with Burst on; run it with Burst
-        /// compilation off.
+        /// Verify pose read-back after a step throws before force integration refreshes entity pointers.
+        /// Run with Burst disabled; Burst omits the injected exception.
         /// </summary>
         [Test]
         public void TheReadBackAfterAStepThatThrewFollowsAMovedEntity()

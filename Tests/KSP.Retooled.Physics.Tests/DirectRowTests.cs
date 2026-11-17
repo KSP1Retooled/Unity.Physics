@@ -7,9 +7,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The direct islands' rows built the fast way against the way they were built before: every problem the direct solver
-    /// is handed, rows, epsilon, right-hand side, bounds and first guesses, has to match bit for bit, on the sparse path and
-    /// on the forest path, with joints of every kind the stock parts use and with contacts.
+    /// Require bitwise-identical direct solver inputs from optimized and reference row builders on sparse and
+    /// forest paths.
     /// </summary>
     public unsafe class DirectRowTests : PhysicsScene
     {
@@ -114,8 +113,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A column of parts joined every way the backend builds: part joints, a strut closing a loop, a free hinge with a
-        /// motor, a limited hinge, a soft swing limit, a linear drive and a distance limit, landing on the ground.
+        /// Build a landing column covering part joints, struts, motors, hinges, swing limits, linear drives and
+        /// distance limits.
         /// </summary>
         private List<string> Run(bool forest, bool legacy, bool ground)
         {

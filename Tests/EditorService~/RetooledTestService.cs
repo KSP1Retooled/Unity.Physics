@@ -12,22 +12,11 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.EditorService
 {
     /// <summary>
-    /// Runs test requests in an editor that stays open, so that each run pays for the editor's start-up only once.
-    ///
-    /// The service does nothing unless the editor was started with the environment variable RETOOLED_TEST_SERVICE set
-    /// to a folder. Tests/editor-test.sh starts the editor, writes request.txt into that folder, and waits for
-    /// done.txt. A request holds lines of the form key=value:
-    /// <list type="bullet">
-    /// <item>id: the name of the request, which done.txt repeats.</item>
-    /// <item>results: the path of the results file to write.</item>
-    /// <item>filter: test filters separated by ';', with the same meaning as Unity's -testFilter argument.</item>
-    /// <item>category: categories separated by ';', with the same meaning as Unity's -testCategory argument.</item>
-    /// <item>env: an environment variable to set for this run, as NAME=VALUE. The line may repeat.</item>
-    /// </list>
-    /// Before each run the service imports changed scripts, so that the run tests the current source. When the set of
-    /// environment variables differs from the last run, the service also reloads the scripts, so that settings that the
-    /// code reads at start-up see the new values. A variable that the last run set and this run doesn't set goes back
-    /// to the value that it had when the editor started. A file named quit.txt in the folder closes the editor.
+    /// Run test requests in a persistent editor when RETOOLED_TEST_SERVICE names a folder.
+    /// Read request.txt and write done.txt. Request fields are id, results, filter, category and repeatable
+    /// env=NAME=VALUE.
+    /// Import changed scripts before each run and reload when environment settings change.
+    /// Restore omitted settings to their startup values. quit.txt closes the editor.
     /// </summary>
     [InitializeOnLoad]
     internal static class RetooledTestService
@@ -42,9 +31,8 @@ namespace KSP.Retooled.Physics.EditorService
 
         static RetooledTestService()
         {
-            // The editor's asset import workers are Unity processes of their own. They inherit the editor's environment
-            // and load the same scripts, so without the second check a worker would write its own process id into
-            // pid.txt, and could take a request or a quit.txt that was meant for the editor.
+            // Import workers inherit the service environment but must not claim requests or replace the
+            // editor's pid.txt.
             if (string.IsNullOrEmpty(Folder) || AssetDatabase.IsAssetImportWorkerProcess())
             {
                 return;
@@ -136,8 +124,8 @@ namespace KSP.Retooled.Physics.EditorService
         }
 
         /// <summary>
-        /// Sets the request's environment variables, and puts back those that an earlier request set and this one
-        /// doesn't. Returns the variables as one sorted string, so that the caller can tell whether the set changed.
+        /// Apply request environment settings and restore omitted settings to startup values.
+        /// Return a sorted representation for detecting changes.
         /// </summary>
         private static string ApplyEnvironment(SortedDictionary<string, string> wanted)
         {

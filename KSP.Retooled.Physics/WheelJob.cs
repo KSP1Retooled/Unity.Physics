@@ -11,28 +11,13 @@ using PhysicsJoint = Unity.Physics.Joint;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Updates every WheelCollider for one step, as PhysX does in its vehicle update before simulation. For each wheel,
-    /// the job casts a ray down the suspension from the body's pose at the start of the step. It applies equal and
-    /// opposite impulses to the vehicle body and any dynamic body beneath the wheel, along the ground normal. This job
-    /// uses the built world after velocities and the broadphase have been prepared, and before the solver runs. All
-    /// wheels are updated in one job because several wheels may push the same body.
+    /// Update WheelColliders before solving, applying suspension impulses to the vehicle and supporting dynamic
+    /// bodies.
+    /// Run in one job because wheels may push the same body.
+    /// Use max(sprungMass*g + spring*jounce, 0) + damper*jounceSpeed; clamp only the spring contribution.
+    /// Add a ground-normal constraint at full compression. Report spring/damper force without the stop constraint
+    /// force.
     /// </summary>
-    /// <remarks>
-    /// The suspension force is <c>max(sprungMass * g + spring * jounce, 0) + damper * jounceSpeed</c>. Jounce is
-    /// measured upward from the rest position that Unity sets through the target position. KSP's VehiclePhysics assumes
-    /// this formula when it selects a target position to cancel the weight supported by the suspension. It also uses
-    /// the reported hit force to recover the damping contribution. As in PhysX, only the spring contribution is clamped
-    /// to zero. An extending damper pulls the body down, which helps keep a landing aircraft on its wheels. The game
-    /// handles tyre friction and sets the stiffness of every friction curve to zero.
-    /// <para>
-    /// The suspension cannot compress beyond its stop. As in PhysX, a constraint between the body and the world
-    /// prevents further compression. The constraint is added during the step in which the suspension would reach the
-    /// stop, so that the solver stops the body there. If the constraint only corrected the body after it passed the
-    /// stop, the resulting push would leave the body moving upward. The reported hit force includes the spring and
-    /// damper contributions but excludes the force from this constraint. The game uses that reported force to calculate
-    /// tyre grip.
-    /// </para>
-    /// </remarks>
     [BurstCompile]
     internal unsafe struct WheelJob : IJob
     {
@@ -156,11 +141,8 @@ namespace KSP.Retooled.Physics
             RaycastHit hit = collector.Closest;
             float reach = suspension.maxCompression - (hit.Fraction * length - radius);
             float jounce = math.clamp(reach, -suspension.maxDroop, suspension.maxCompression);
-            // Damping is calculated from the speed at which the body approaches the ground at the start of the step,
-            // measured along the ground normal. Motion across the ground therefore does not contribute, regardless of
-            // the body's tilt. Calculating the rate from the difference in jounce between steps would also count the
-            // solver's corrections to joint positions as suspension travel. That can cause bouncing when a light part
-            // with a wheel is attached to a heavy body.
+            // Measure pre-step ground-normal velocity for damping; jounce differences would include solver
+            // corrections.
             float3 normal = hit.SurfaceNormal;
             float3 own = vehicle->startLinear + math.cross(vehicle->startAngular, hit.Position - centreOfMass);
             float3 contactVelocity = own - VelocityAt(hit.RigidBodyIndex, hit.Position);
@@ -219,17 +201,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Adds a one-sided constraint between the body and the world to prevent compression past the suspension stop.
-        /// At full compression, the top of the suspension is one wheel radius above the ground, measured along the
-        /// suspension axis. <paramref name="excess"/> is the distance that the body has moved past this position. A
-        /// negative value means that this much travel remains.
+        /// Add a one-sided ground-normal constraint preventing further suspension compression.
+        /// excess is travel past the stop; a negative value is remaining travel.
         /// </summary>
-        /// <remarks>
-        /// The constraint acts along the ground normal, as a contact does when a wheel reaches full compression. If it
-        /// acted along a tilted suspension instead, motion across the ground would move the body toward or away from
-        /// the world anchor at a fraction of its forward speed. An aircraft landing nose up at 100 m/s would be thrown
-        /// off the runway. An aircraft landing nose down would sink past the stop.
-        /// </remarks>
         private void HoldAtFullCompression(int built, RigidTransform pose, float3 top, float3 up, float3 normal, float excess)
         {
             float3 side = math.normalize(math.cross(normal, math.abs(normal.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
@@ -290,9 +264,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Collects the nearest hit that can support a wheel. It excludes the wheel's own body, triggers, shapes that are
-    /// hidden from queries, and layers that do not collide with the wheel. It also excludes pairs disabled by
-    /// Physics.IgnoreCollision, shapes that the wheel's collision group stops, and hits on the back of a polygon.
+    /// Collect the nearest supporting wheel hit, excluding the wheel body, triggers, hidden shapes, ignored
+    /// layers/pairs/groups and backfaces.
     /// </summary>
     internal unsafe struct WheelRayCollector : ICollector<RaycastHit>
     {
@@ -351,10 +324,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            // Unity sends a wheel a filter that collides with every layer, and PhysX applies the layer collision matrix
-            // to the wheel's raycast itself. Unity does send each shape the layers that the matrix lets it collide with,
-            // and it sends them again when the matrix changes. So the wheel skips a shape whose layers leave out the
-            // wheel's own layer. A shape whose filter has no layers collides with every layer, see ColliderBuilder.
+            // Apply the layer matrix from the shape filter; Unity gives wheel rays an all-layer filter.
             if (belongsTo != 0 && shape->collidesWith != 0 && (shape->collidesWith & belongsTo) == 0)
             {
                 return false;
@@ -370,10 +340,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            // The step may have refitted the tree of the world's bodies instead of building it from scratch, and the two
-            // trees can visit the bodies in different orders. So a tie between two hits at the same distance is broken
-            // by the bodies and leaves, not by the order in which they come, and MaxFraction lets a hit at the same
-            // distance through to this collector.
+            // Break equal-distance ties by body and collider key, independent of tree traversal order.
             uint serial = (uint)body.Entity.Version;
             if (Shape != null && !QueryCollectors.Precedes(hit.Fraction, serial, hit.ColliderKey, Closest.Fraction, closestSerial, Closest.ColliderKey))
             {

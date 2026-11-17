@@ -24,9 +24,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Waits for the background compile of the kernels, then runs a command from each kernel until none of them
-        /// runs in Mono. If Burst cannot compile a kernel, that kernel keeps running in Mono without an obvious failure.
-        /// The same compilation error would fail a player build.
+        /// Verify that every kernel leaves Mono after Burst compilation, detecting silent compilation failures.
         /// </summary>
         [UnityTest]
         public IEnumerator EveryKernelLeavesMonoOnceItsCompileLands()
@@ -69,18 +67,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Steps a pile of boxes in three phases: the initial compilation state after a domain reload, forced Mono jobs
-        /// as while asynchronous compilation is in progress, and compiled jobs enabled again while the scene is
-        /// running. Yields between steps so that the editor can update and background compilation can finish. After a
-        /// cold start without Library/BurstCache, the log shows when the first phase stopped using Mono.
-        /// <para>
-        /// The first phase ends as soon as one whole step runs without Mono jobs, because from then on the step is in
-        /// the same state as the last phase. The middle phase ends after its first step that ran Mono jobs, because
-        /// that is all that the test checks about it. Each step in the middle phase takes several seconds in Mono. Both
-        /// phases still stop after PhaseSeconds if that point never comes. The last phase stops after
-        /// CompiledAgainSteps steps, because a Mono job after the compiler is switched back on would show up in the
-        /// first steps. It also stops after PhaseSeconds if those steps take longer than that.
-        /// </para>
+        /// Step a pile through startup compilation, forced Mono execution and reenabled Burst.
+        /// Bound waits by PhaseSeconds and stop the final phase after CompiledAgainSteps.
         /// </summary>
         [UnityTest]
         [Category("Slow")]

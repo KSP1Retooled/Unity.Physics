@@ -32,28 +32,20 @@ namespace Unity.Physics
         const byte SectionRowClass = 3;
 
         /// <summary>
-        /// A row that a cap on the boundary keeps out of a vessel island's solve. The solve gives the row no impulse of its
-        /// own, so the contact impulse that the row had before the solve, its warm start, stays applied: a sparse solve's
-        /// contact rows solve for the change from their warm-start impulse. There are exceptions for normal rows, see
-        /// <see cref="SolveHeldRows"/>. A held normal row whose contact separates gives back its warm start, a held normal
-        /// row whose contact closes pushes, and in a push-out, a held normal row whose contact is too deep gets a push of
-        /// its own.
+        /// Boundary row excluded by a cap. Keep its warm impulse unless SolveHeldRows adjusts a normal row
+        /// for separation, closing motion or deep penetration.
         /// </summary>
         const byte HeldRowClass = 4;
 
         /// <summary>
-        /// A one-sided joint row that stays out of a vessel island's boundary for this solve, because the bodies' motion
-        /// over the step keeps the row more than <see cref="BoundaryCaps.DormantMargin"/> from its stop. Examples are a
-        /// limit far from its stop and a wheel that is far from bottoming out. The row takes no impulse in this solve.
-        /// The next solve checks the row again, and the row joins the boundary when it comes near its stop.
+        /// One-sided joint row predicted to remain beyond DormantMargin from its stop.
+        /// Exclude it from this boundary solve and reevaluate next solve.
         /// </summary>
         const byte DormantRowClass = 5;
 
         /// <summary>
-        /// One island's solve as a forest plus a boundary, see <see cref="ForestSettings"/>. Holds what a second solve with
-        /// a changed right-hand side reuses: the factor (in the island's <see cref="ForestIsland"/>), the classes of the
-        /// rows and the boundary block W = J_b A^-1 J_b^T + E_b; and, for sections of more than one body, what turns the
-        /// sections' answer back into each body's.
+        /// Forest and boundary state for one island solve, including reusable factor, row classes and W =
+        /// J_b*A^-1*J_b^T + E_b.
         /// </summary>
         unsafe struct ForestRun
         {
@@ -62,19 +54,16 @@ namespace Unity.Physics
             public bool Bounded;
 
             /// <summary>
-            /// Whether the caller knows that the island's vessels, their structure versions and the numbering of
-            /// its bodies are the same as when the forest's layout was last built, and that the island has no body
-            /// outside its vessels. Then the vessel preparation does not build and compare the layout's signature.
+            /// Caller guarantee that vessels, structure versions and body numbering match the cached layout,
+            /// and that no bodies lie outside vessels. Allows skipping signature comparison.
             /// </summary>
             public bool KnownLayout;
 
             /// <summary>Each block's Jacobian, for its regularization.</summary>
             public JacobianHeader** Headers;
 
-            /// <summary>
-            /// The rows as the sections see them: a row on a body of a section of several acts on the section's velocity at
-            /// the body's offset from its centre. The problem's own rows when every section is one body.
-            /// </summary>
+            // Rows transformed to section coordinates for merged bodies; otherwise use the problem's original
+            // rows.
             public float* Jacobian;
 
             public NativeArray<float> SectionJacobian;
@@ -93,20 +82,14 @@ namespace Unity.Physics
             public NativeArray<double> W;
             public int BoundaryCount;
 
-            /// <summary>
-            /// For a vessel island: the limits on its boundary, and a key for each boundary row that stays the same from one
-            /// solve to the next. The keys let a solve start from the states that the rows had in the last solve.
-            /// </summary>
+            // Vessel boundary caps and stable row keys for state reuse between solves.
             public BoundaryCaps Caps;
             public NativeArray<ulong> BoundaryKey;
 
             /// <summary>For a vessel island: the substep that the run solves, for the boundary's counters.</summary>
             public int Substep;
 
-            /// <summary>
-            /// For a vessel island: the world's bodies, so that a boundary row's key can know a body outside the island's
-            /// vessels by its entity. Null if the caller has none.
-            /// </summary>
+            // Optional world bodies used to identify boundary bodies outside vessels by entity version.
             public RigidBody* RigidBodies;
             public int RigidBodyCount;
 
@@ -115,9 +98,8 @@ namespace Unity.Physics
             public NativeArray<double> Work;
 
             /// <summary>
-            /// For sections of several bodies: each section's centre and the velocity its bodies had together before the
-            /// solve (momentum-conserving), each body's offset from its section's centre, and the bodies' own velocities.
-            /// Empty when every section is one body.
+            /// Section centres and momentum-conserving velocities, body offsets and original velocities.
+            /// Empty when each section has only one body.
             /// </summary>
             public NativeArray<double3> SectionCenter;
             public NativeArray<double3> SectionLinear;
@@ -127,10 +109,7 @@ namespace Unity.Physics
             public NativeArray<double3> OwnAngular;
             public bool MultiPart;
 
-            /// <summary>
-            /// For a settle: each section's velocity after the solve and the turn it makes in a substep, and what each body of
-            /// a section of several still needs from its locked edges (an impulse and its moment about the body's centre).
-            /// </summary>
+            // Solved section motion and each merged body's remaining impulse required from locked edges.
             public NativeArray<double3> SettleLinear;
             public NativeArray<double3> SettleAngular;
             public NativeArray<double3x3> SettleTurn;
@@ -151,10 +130,7 @@ namespace Unity.Physics
             /// <summary>The lanes that share the island's solve, or null.</summary>
             public SparseSolveTeam* Team;
 
-            /// <summary>
-            /// For a vessel island: its sections' velocities from the vessel's own rows and the fixed rows, before the
-            /// boundary acts. The boundary's solve starts from these rather than from rest.
-            /// </summary>
+            // Section velocities from vessel and fixed rows before boundary impulses are applied.
             public NativeArray<double> BaseVelocity;
 
             /// <summary>Whether the run solves a vessel island with the vessel kernel's own rows.</summary>
@@ -175,10 +151,7 @@ namespace Unity.Physics
             public int LockChanges;
             public int ContactLockChanges;
 
-            /// <summary>
-            /// Ticks in the parts that run on one lane: classifying rows, the lock decisions, the sections' sums, the body
-            /// impulse sums and the subtree sums, for the bench.
-            /// </summary>
+            // Profiler ticks for serial classification, lock decisions and section/body/subtree sums.
             public long ClassifyTicks;
             public long DecideTicks;
             public long SumsTicks;
@@ -239,8 +212,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves an island's rows as a forest plus a boundary and writes every row's impulse, or returns false, changing
-        /// nothing, when the island isn't one for it: no forest rows, or more boundary rows than the cap.
+        /// Solve forest and boundary rows, writing impulses. Return false without changes if no forest rows exist
+        /// or the boundary exceeds its cap.
         /// </summary>
         static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
             ForestIsland* forest, in ForestSettings settings, SparseSolveTeam* team, int* worldBodies, RigidBody* rigidBodies,
@@ -339,9 +312,8 @@ namespace Unity.Physics
 
             long classified = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
-            // The pairs, kept while the island's bodies and forest blocks stay the same. The signature names the bodies by
-            // their identities, not by their indices in the world: a body that the world made where a destroyed body was
-            // has the destroyed body's index, and it must not take over the destroyed body's lock states.
+            // Cache pairs by body identity so that reused world indices cannot inherit destroyed bodies' lock
+            // states.
             int bodyCount = problem.BodyCount;
             var identities = new NativeArray<ulong>(math.max(1, bodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int b = 0; b < bodyCount; b++)
@@ -385,9 +357,8 @@ namespace Unity.Physics
 
             long decideStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
 
-            // Which pairs are locked this solve: a tree edge whose joints all allow it, with nothing but forest rows, locks
-            // when its springs would deflect less than the lock angle under its last load, and stays locked until its load
-            // would deflect them past the yield angle.
+            // Lock eligible forest pairs below the lock angle and keep them locked until their predicted
+            // deflection exceeds yield.
             int lockChanges = 0, contactChanges = 0;
             int pairCount = forest->PairCount;
             for (int p = 0; p < pairCount; p++)
@@ -606,9 +577,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The boundary block W = J_b A^-1 J_b^T + E_b over the run's boundary rows, against the factor the run's forest holds.
-        /// Each boundary row's forward substitution only walks the sections on its elimination-tree path, and two rows'
-        /// entry in W is the sum over the sections that both paths share.
+        /// Build W = J_b*A^-1*J_b^T + E_b from boundary-row elimination-tree paths.
+        /// Each entry sums contributions from sections shared by the two paths.
         /// </summary>
         static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows)
         {
@@ -761,9 +731,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Fills the rows of W that one task owns. For each row i, the task computes the entries from the diagonal to
-        /// the end of the row, and writes each one to both of its places in the symmetric matrix. Two tasks never write
-        /// the same entry, because an entry belongs to the task that owns the smaller of its row and column.
+        /// Fill assigned upper-triangular rows of W and mirror entries below the diagonal.
+        /// Each entry belongs to the task owning its smaller index, preventing overlapping writes.
         /// </summary>
         internal static unsafe void ForestBoundaryTask(void* context, int task)
         {
@@ -809,9 +778,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// A contact point or a contact manifold, with its depth, for sorting. Items sort by their rank first, lowest
-        /// first, then by depth, deepest first. Items of the same rank and the same depth sort by <see cref="Tie"/>, which
-        /// changes from one solve to the next, so that a tie does not always go against the same rows.
+        /// Rank contact points or manifolds, then sort deepest first. Vary Tie between solves to avoid persistent
+        /// tie bias.
         /// </summary>
         struct DepthItem : IComparable<DepthItem>
         {
@@ -841,26 +809,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Applies the run's caps to a vessel island's boundary. The rows that a cap drops become held rows, see
-        /// <see cref="HeldRowClass"/>. The caps are these:
-        /// <list type="bullet">
-        /// <item>Each contact manifold keeps at most <see cref="BoundaryCaps.PointsPerManifold"/> of its points, the deepest.</item>
-        /// <item>
-        /// Contacts between two parts of the same vessel keep at most <see cref="BoundaryCaps.SelfContactManifolds"/>
-        /// manifolds, the deepest by their deepest point. A dropped manifold's friction rows are held too.
-        /// </item>
-        /// <item>
-        /// Other contacts, for example against the ground or against another body, keep at most
-        /// <see cref="BoundaryCaps.OutsideContactPoints"/> points over the whole island. The cap takes every manifold's
-        /// deepest point first, deepest first, then every manifold's second deepest point, and so on, so that the loss
-        /// is spread over the manifolds. A manifold that keeps a point keeps its friction rows too, and those count
-        /// against a limit on rows: the cap on points plus the friction rows of the manifolds that the cap would allow
-        /// at <see cref="BoundaryCaps.DefaultPointsPerManifold"/> points each, so 448 rows for 256 points. If a manifold
-        /// loses every point, its friction rows are held too.
-        /// </item>
-        /// </list>
-        /// A point's depth is how far its two surfaces overlap, which is minus the contact's distance. When two points or
-        /// two manifolds tie, the cap breaks the tie by a hash that changes with every solve of the island.
+        /// Cap vessel boundary contact points and self-contact manifolds, marking excluded rows held.
+        /// Keep deepest points, giving each outside manifold one point before selecting second points.
+        /// Retain friction only for manifolds with selected points, subject to the combined row cap.
         /// </summary>
         static unsafe void CapBoundary(ref ForestRun run)
         {
@@ -961,9 +912,7 @@ namespace Unity.Physics
                 }
             }
 
-            // The cap on outside points also limits the rows that the kept points bring with them: each manifold that keeps
-            // a point brings its friction rows too. The limit on rows is what the cap on points allows when every kept
-            // manifold keeps all of its points, for example 256 points and the friction rows of 64 manifolds.
+            // Include retained manifolds' friction rows in the outside row cap.
             long rowLimit = outsideLimit >= int.MaxValue
                 ? long.MaxValue
                 : outsideLimit + 3L * (outsideLimit / math.min(perManifold, BoundaryCaps.DefaultPointsPerManifold));
@@ -1020,12 +969,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Marks the dormant rows of a vessel island's boundary, see <see cref="DormantRowClass"/>. A dormant row is a
-        /// joint row with one bound at zero and no other bound, which is how a limit's row or a wheel's bottom-out row
-        /// looks once the row is armed. The test uses the velocities that the vessel's own rows and the fixed rows give
-        /// the sections, before the boundary acts. A row whose impulse may only be positive is out of reach if those
-        /// velocities move it away from its stop by more than the margin over one step, and the same holds the other way
-        /// round for a row whose impulse may only be negative. Contact rows and coupled rows always stay in the boundary.
+        /// Mark one-sided joint rows dormant when predicted motion keeps them beyond the stop margin.
+        /// Use forest and fixed-row velocities before the boundary acts. Never exclude contact or coupled rows.
         /// </summary>
         static unsafe void MarkDormantRows(ref ForestRun run)
         {
@@ -1111,22 +1056,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Makes a key for each boundary row that stays the same from one solve to the next while the row's constraint
-        /// lasts. The key comes from the row's block and from the row's own place in its constraint. The eight lowest
-        /// bits of each key are zero, so that <see cref="BoundaryMemory"/> can keep a state and an age in them.
-        /// <list type="bullet">
-        /// <item>
-        /// A block is known by its two bodies, see <see cref="BodyKey"/>, its type and, for a contact that has them, its
-        /// two collider keys. If the island has several blocks with all of these the same, a block is also known by how
-        /// many of them come before it among all of the island's blocks. The count includes blocks that have no
-        /// boundary rows, so that a cap or a dormant row in an earlier block does not change it.
-        /// </item>
-        /// <item>
-        /// A contact's normal row is known by its point's index in the manifold, and a friction row by its place among
-        /// the three friction rows. So when a point drops out of the rows, the other rows keep their keys. A joint row
-        /// is known by its place in its block, because a joint always has the same rows.
-        /// </item>
-        /// </list>
+        /// Build stable boundary keys from body identities, block type/collider keys, duplicate-block occurrence
+        /// and row position.
+        /// Leave the low eight bits free for BoundaryMemory state and age. Count blocks even when capped or
+        /// dormant.
         /// </summary>
         static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
         {
@@ -1198,16 +1131,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// A key for one side of a block that stays the same while the body stays in the island. A part of one of the
-        /// island's vessels is known by its vessel's ID and its place in the vessel. Any other body, moving or not, is
-        /// known by the version of its entity. The backend sets that version to the body's serial number, which no other
-        /// body receives, and it keeps it while the body lives. The entity's index is not part of the key, because the
-        /// index is the body's row in the backend's store, and the store moves a body to another row when an earlier
-        /// body is destroyed. So the key does not change when other bodies join or leave the world, and it does not pass
-        /// to a new body. A world whose entities share versions gives several bodies the same key. Then the blocks are
-        /// told apart by how many blocks with the same identity come before them, and the worst case is a missed warm
-        /// start. Without the world's bodies, or with <see cref="BoundaryCaps.KeyByWorldIndex"/>, a body is known by its
-        /// place in the world, as before. Returns 0 for no body.
+        /// Return a stable body key from vessel ID and part index, or entity version for other bodies.
+        /// Return zero for no body. Fall back to world index without body data or when KeyByWorldIndex is enabled.
         /// </summary>
         static unsafe ulong BodyKey(in ForestRun run, int world, int vesselParts, in NativeHashMap<int, ulong> vesselIds)
         {
@@ -1240,9 +1165,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The place of a contact block's row in its contact: for a normal row, the index of the row's point in the
-        /// manifold, and for a friction row, 0x10000 plus its place among the three friction rows. The block's first
-        /// rows are the normal rows of the points within reach, in the manifold's order, and the friction rows follow.
+        /// Contact row identity: manifold point index for normals, or 0x10000 plus friction-row index.
         /// </summary>
         static unsafe ulong ContactRowPlace(ref JacobianHeader header, int offset)
         {
@@ -1282,10 +1205,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// For sections of several bodies: each section's mass, centre and inertia from its bodies, the momentum-conserving
-        /// velocity its bodies have together, the rows as the sections see them, and each row's right-hand side moved from
-        /// the bodies' own velocities to the section's. A section's bodies need not move rigidly when it starts, after a
-        /// lock or a force on one of them; the solve takes them as one, and each body's answer is the section's.
+        /// Compute section mass, centre, inertia and momentum-conserving velocities, then transform rows and
+        /// targets to section motion.
         /// </summary>
         static unsafe void PrepareSections(ref ForestRun run)
         {
@@ -1552,8 +1473,8 @@ namespace Unity.Physics
             math.rotate(run.MotionDatas[world].WorldFromMotion.rot, run.MotionVelocities[world].AngularVelocity);
 
         /// <summary>
-        /// Turns one side of a row from a body's columns to its section's, and returns how much the row's right-hand side
-        /// moves when the body's velocity is taken as the section's: j . u_body - j_section . u_section.
+        /// Convert row columns to section coordinates and return the target correction:
+        /// j dot u_body - j_section dot u_section.
         /// </summary>
         static unsafe double ToSection(ref ForestRun run, float* columns, int body)
         {
@@ -1569,12 +1490,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves the run's island for the right-hand side <paramref name="rhs"/> against the factor and boundary block it
-        /// holds, and writes every row's impulse; a row inside a section gets none here. Returns false if the boundary's
-        /// pivoting ran out of iterations before it found an answer. The boundary's impulses are then the result of a
-        /// few sweeps of projected Gauss-Seidel: they are inside their bounds and near the answer, so a velocity solve
-        /// can apply them. A vessel island's velocity solve counts such a solve in
-        /// <see cref="BoundaryCounters.UnsettledSolves"/>. A push-out does not apply them, see <see cref="SolvePushOut"/>.
+        /// Solve using the retained forest factor and boundary block, writing row impulses.
+        /// Return false if pivoting exhausts its rounds without a feasible answer; impulses then come from bounded
+        /// finishing sweeps.
+        /// Velocity solves may apply them and count an unsettled solve; push-out skips them.
         /// </summary>
         static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
         {
@@ -1643,9 +1562,8 @@ namespace Unity.Physics
                 var states = new NativeArray<byte>(nb, Allocator.Temp, NativeArrayOptions.ClearMemory);
                 var z = new NativeArray<double>(nb, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
 
-                // A vessel island's velocity solve has a key for each boundary row. It starts each row in the state that
-                // the row had at the end of the last solve, if the island remembers one, and it takes a limited number of
-                // pivoting rounds. A push-out solve has no base velocity, and it keeps the plain solve.
+                // Warm start vessel boundary states by stable row keys and cap pivot rounds. Push-out uses the
+                // plain solve.
                 bool vesselSolve = vesselStart && run.Bounded && run.BoundaryKey.IsCreated;
                 bool warm = vesselSolve && !run.Caps.ColdStart;
                 ref UnsafeList<ulong> memory = ref run.Forest->BoundaryMemory.States;
@@ -1677,11 +1595,8 @@ namespace Unity.Physics
                     }
                 }
 
-                // A cap can keep some of a coupling's source rows out of the boundary. The rows that stay are next to each
-                // other in the boundary, because the boundary keeps the rows' order. A held row's impulse is known before
-                // the boundary is solved, so the coupling counts it with the impulse that was applied before the solve,
-                // and the coupling only needs its range of source rows moved. A coupling whose own rows are held is left
-                // out.
+                // Move capped-out source impulses into the held contribution. Omit couplings whose own rows are
+                // held.
                 var couplings = new NativeList<BoundCoupling>(problem.CouplingCount, Allocator.Temp);
                 for (int c = 0; run.Bounded && c < problem.CouplingCount; c++)
                 {
@@ -1812,31 +1727,10 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Gives some of a vessel island's held normal rows an impulse, see <see cref="HeldRowClass"/>. Every other held
-        /// row gets no impulse. There are two cases:
-        /// <list type="bullet">
-        /// <item>
-        /// In a velocity solve (<paramref name="pushOut"/> false), a held row whose contact separates gives back its warm
-        /// start, and a held row whose contact closes pushes. The row's target is the change of its velocity that its
-        /// right-hand side asks for. When that change is negative, the row gives back at most its warm start, which is
-        /// minus its lower bound. Without the push, a body whose contacts the cap holds would get only its warm start.
-        /// That is 95% of the last step's impulse, and the next step's warm start comes from it, so the body would sink
-        /// a little more in every step.
-        /// </item>
-        /// <item>
-        /// In a push-out (<paramref name="pushOut"/> true), a held row whose contact is still too deep after the
-        /// boundary's push gets a push of its own. The row's target is the rest of the push that its right-hand side
-        /// asks for.
-        /// </item>
-        /// </list>
-        /// Each row takes the impulse that would meet its target if the row were alone: the target divided by the row's
-        /// diagonal entry of W. That entry costs one walk along the row's path to the root of the factor, as in
-        /// <see cref="BuildBoundary"/>, but no other entry of W is needed. Several held rows can move the same bodies,
-        /// for example the four points of one box, so the routine then scales all of their impulses by one factor. The
-        /// factor is the one that meets the targets best in the least-squares sense, between 0 and 1. It costs one more
-        /// solve against the factor. The routine adds the change of the sections' velocities to <paramref name="v"/>,
-        /// writes each held row's impulse, and returns how many rows got one. With
-        /// <see cref="BoundaryCaps.IdleHeldRows"/>, every held row gets no impulse.
+        /// Adjust held normal rows for separating or closing contacts, or residual penetration in push-out.
+        /// Compute independent impulses, then scale them together to best fit targets without overshoot.
+        /// Update section velocity changes in v and return the adjusted row count. IdleHeldRows disables this
+        /// correction.
         /// </summary>
         static unsafe int SolveHeldRows(ref ForestRun run, float* rhs, float* impulses, double* v, bool pushOut)
         {
@@ -1976,11 +1870,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Each body's impulse once the run's sections have their change of velocity, as <see cref="SumBodyImpulses"/>
-        /// gives it, written to <paramref name="linear"/> and <paramref name="angular"/>. A body of a section of several
-        /// takes the impulse that gives it its section's motion, rigid about the section's centre; for a solve, the
-        /// locked pairs' rows then get the impulses that carry those bodies' share, by inverse dynamics. For a push-out,
-        /// the sections start from rest and nothing else is written.
+        /// Convert section velocity changes to body impulses in linear and angular.
+        /// For velocity solves, recover locked-row impulses by inverse dynamics; push-out starts sections at rest.
         /// </summary>
         static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
@@ -2018,9 +1909,8 @@ namespace Unity.Physics
                 double3 sectionLinear = pushOut ? dLinear : run.SectionLinear[s] + dLinear;
                 double3 sectionAngular = pushOut ? dAngular : run.SectionAngular[s] + dAngular;
 
-                // A locked section at rest keeps a spin of order 1e-19 rad/s from rounding, whose squares the next step's
-                // row and Jacobian builds and the integration carry into denormal floats, several times slower to compute
-                // with. Nothing that small is a real turn.
+                // Remove negligible spin to avoid denormal arithmetic in later Jacobian construction and
+                // integration.
                 if (math.lengthsq(sectionAngular) < MinimumSpin * MinimumSpin)
                 {
                     sectionAngular = 0.0;
@@ -2089,8 +1979,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// One task's parts of a settle: each body of a section of several takes the impulse that gives it the section's
-        /// motion, and for a solve, what it still needs from its locked edges is noted.
+        /// Compute body impulses from section motion and record the remaining impulse needed from locked edges.
         /// </summary>
         static unsafe void SettleBodiesTask(ref ForestRun run, SectionTasks* tasks, int task)
         {
@@ -2162,11 +2051,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The impulses of a locked pair's rows that carry <paramref name="need"/> (an impulse and its moment about the
-        /// child's centre) into the child: the least-squares split weighted by each row's stiffness, z = W J (J^T W J)^-1
-        /// need, which is how the rows would share it if the pair were a very stiff spring. (J^T W J)^-1 is kept in the
-        /// child's own frame, where a locked pair's rows stay put, from one solve to the next while the pair stays locked
-        /// and its rows' compliances don't change.
+        /// Distribute a locked pair's required impulse by stiffness-weighted least squares:
+        /// z = W*J*(J^T*W*J)^-1*need. Cache the inverse in the child's frame while locking and compliances remain
+        /// unchanged.
         /// </summary>
         static unsafe void LockedPairImpulses(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int child,
             double6 need, float* impulses)
@@ -2226,9 +2113,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// A locked row's weight in its pair's split: its spring alone, gamma / epsilon (h^2 k), so that the rows share a load
-        /// as their springs would at rest; their compliance alone, which counts the dampers too, would give the damped rows
-        /// more than their share, and the pair would read a deflection locked that it doesn't have unlocked.
+        /// Weight a locked row by spring stiffness gamma/epsilon, excluding damper effects so that static load
+        /// sharing matches yielding rows.
         /// </summary>
         static unsafe double RowStiffness(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int k, int row) =>
             PairBlockGamma(run, k) / (double)problem.Epsilon[row];
@@ -2309,11 +2195,9 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Each tree pair's deflection under this solve's load: the largest over its rotation rows of how far the row's
-        /// spring would turn to carry its impulse, z / (h k) with k = gamma / (epsilon h^2), the spring without its damper.
-        /// Summed over a step's substeps; the
-        /// next step's first substep turns the sum into their mean, the deflection the lock tests read from then on (see
-        /// <see cref="ForestIsland.PairDeflectionSum"/>). Returns the largest deflection the lock tests now read.
+        /// Record each tree pair's maximum spring-only angular deflection from its solved load.
+        /// Accumulate across substeps and use the mean for the next step's lock tests. Return the largest current
+        /// deflection.
         /// </summary>
         static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep,
             int smoothingSteps)
@@ -2351,9 +2235,8 @@ namespace Unity.Physics
                         float angular = columns[3] * columns[3] + columns[4] * columns[4] + columns[5] * columns[5];
                         if (linear <= 1e-8f * angular)
                         {
-                            // The row's impulse is (-gamma phi / h - J v) / epsilon with v the velocities after the solve,
-                            // so its spring's turn is phi = -(z epsilon + J v) h / gamma: the damper's share, which a
-                            // vibrating pair rectifies into a load it doesn't carry, comes out. Locked, J v is zero.
+                            // Recover spring deflection without damping: phi = -(z*epsilon + J*v)*h/gamma.
+                            // Locked rows have J*v = 0.
                             double speed = rowClass == SectionRowClass ? 0.0 : SolvedRowSpeed(run, block, columns);
                             double turn = (impulses[row] * (double)problem.Epsilon[row] + speed) * h / gamma;
                             deflection = math.max(deflection, (float)math.abs(turn));
@@ -2443,10 +2326,8 @@ namespace Unity.Physics
 namespace Unity.Physics
 {
     /// <summary>
-    /// Limits on the boundary block of a vessel island, so that the dense solve of the boundary stays small. The
-    /// defaults come from the vessel solver study. A field that is zero takes its default, and a field that is negative
-    /// turns its limit off, except for <see cref="SelfContactManifolds"/>, which never goes above
-    /// <see cref="MaxSelfContactManifolds"/>. See <see cref="Solver"/>'s CapBoundary for how the caps choose rows.
+    /// Boundary size limits for vessel islands. Zero fields use defaults; negative fields disable limits,
+    /// except SelfContactManifolds, which never exceeds MaxSelfContactManifolds.
     /// </summary>
     public struct BoundaryCaps
     {
@@ -2460,9 +2341,8 @@ namespace Unity.Physics
         public int PointsPerManifold;
 
         /// <summary>
-        /// The most contact manifolds between two parts of the same vessel. The solve keeps the deepest manifolds, up to
-        /// <see cref="MaxSelfContactManifolds"/>. A manifold that the cap drops keeps the impulse that it had before the
-        /// solve.
+        /// Maximum retained self-contact manifolds, selected deepest first and limited by MaxSelfContactManifolds.
+        /// Dropped manifolds retain their previous impulses.
         /// </summary>
         public int SelfContactManifolds;
 
@@ -2470,29 +2350,24 @@ namespace Unity.Physics
         public int PivotRounds;
 
         /// <summary>
-        /// If true, every solve of the boundary starts from the guess that the rows' builder makes, instead of from the
-        /// states that the rows had at the end of the last solve. For measuring what the warm start saves.
+        /// Start boundary solves from builder guesses rather than remembered states. Benchmark option.
         /// </summary>
         public bool ColdStart;
 
         /// <summary>
-        /// If true, every round of pivoting factors its free rows from the start. If false, a round keeps what it can of
-        /// the last round's factor, see
-        /// <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting"/>. For measuring what the updates save.
+        /// Refactor the free rows every pivot round instead of updating their previous factor. Benchmark option.
         /// </summary>
         public bool RefactorEveryRound;
 
         /// <summary>
-        /// If true, and <see cref="RefactorEveryRound"/> is false, a round keeps the last round's factor up to the first
-        /// row that left the free set and inserts the rest after it, instead of deleting the rows that left wherever they
-        /// are, see <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate"/>. For measuring the two ways.
+        /// Keep the factor prefix before the first removed row and reinsert the remainder, when RefactorEveryRound
+        /// is false.
         /// </summary>
         public bool KeepFactorPrefix;
 
         /// <summary>
-        /// If true, the first factor of a vessel island's boundary solve takes its free rows in the boundary's order. If
-        /// false, it takes the rows that have kept their state for the most solves first, so that the rows that are
-        /// likely to leave the free set sit at the end of the factor, where deleting them costs little. For measuring.
+        /// Use boundary row order for the first factor instead of prioritizing rows with stable states. Benchmark
+        /// option.
         /// </summary>
         public bool UnorderedFactor;
 
@@ -2502,21 +2377,17 @@ namespace Unity.Physics
             : KeepFactorPrefix ? Unity.Numerics.Linear.Solvers.Lowlevel.FactorUpdate.KeepPrefix : Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting.DefaultUpdate;
 
         /// <summary>
-        /// If true, the key of a boundary row knows a body outside the island's vessels by its place in the world, as the
-        /// keys did before, instead of by its entity. For measuring what the entity keys keep.
+        /// Identify external boundary bodies by world index instead of stable entity identity. Benchmark option.
         /// </summary>
         public bool KeyByWorldIndex;
 
         /// <summary>
-        /// If true, every one-sided joint row stays in the boundary, even when the row is far from its stop. If false, the
-        /// solve leaves out a dormant row, see <see cref="Solver"/>'s MarkDormantRows. RETOOLED_DORMANT_ROWS=0 sets this.
+        /// Keep distant one-sided joint rows in the boundary. RETOOLED_DORMANT_ROWS=0 enables this option.
         /// </summary>
         public bool KeepDormantRows;
 
         /// <summary>
-        /// If true, a held row never takes an impulse of its own: a held normal row keeps its warm start even while its
-        /// contact separates, and it gets no push-out. If false, see <see cref="Solver"/>'s SolveHeldRows. For measuring
-        /// what the held rows' own impulses do.
+        /// Disable held-row corrections, preserving their warm impulses and omitting push-out. Benchmark option.
         /// </summary>
         public bool IdleHeldRows;
 
@@ -2539,8 +2410,7 @@ namespace Unity.Physics
         public int PointLimit => Limit(PointsPerManifold, DefaultPointsPerManifold);
 
         /// <summary>
-        /// The limit on self-contact manifolds that applies, after defaults. It is never more than 25, so a negative
-        /// setting, which turns the other limits off, gives 25 here.
+        /// Effective self-contact manifold cap, at most 25 even when a negative setting disables other caps.
         /// </summary>
         public int SelfManifoldLimit =>
             Unity.Mathematics.math.min(Limit(SelfContactManifolds, DefaultSelfContactManifolds), MaxSelfContactManifolds);
@@ -2552,10 +2422,8 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// What one island remembers of its boundary rows between solves: for each row's key, the row's state at the end of
-    /// the last solve, and the row's age, which is how many solves in a row before that one ended in the same state, up
-    /// to <see cref="MostAge"/>. Each entry is the key with the state in its two lowest bits and the age in the six bits
-    /// above them. The entries are sorted, so that a lookup is a binary search.
+    /// Sorted boundary row keys with the previous state in the low two bits and consecutive-state age in the next
+    /// six bits.
     /// </summary>
     internal unsafe struct BoundaryMemory
     {
@@ -2603,8 +2471,7 @@ namespace Unity.Physics
         public static byte Age(ulong entry) => (byte)((entry & ValueMask) >> AgeShift);
 
         /// <summary>
-        /// Replaces what <paramref name="states"/> holds with the keys, states and ages of this solve's rows. A row's age
-        /// is its remembered age plus one if it ended in its remembered state, and zero otherwise.
+        /// Store boundary keys and final states. Increment age when state is unchanged, otherwise reset it.
         /// </summary>
         public static void Remember(ref UnsafeList<ulong> states, ulong* keys, byte* rowStates, byte* ages, int count)
         {
@@ -2624,8 +2491,7 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// Counts of what the vessel islands' boundary solves did, summed over every solve since the last
-    /// <see cref="Reset"/>. Tests and benches read them between steps.
+    /// Accumulate vessel boundary solve counters since Reset. Read between steps.
     /// </summary>
     public struct BoundaryCounters
     {
@@ -2641,8 +2507,7 @@ namespace Unity.Physics
         public long CappedSolves;
 
         /// <summary>
-        /// Solves that ran out of rounds before they found any answer that met every condition. Sweeps of projected
-        /// Gauss-Seidel finished these solves, see <see cref="Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivoting"/>.
+        /// Solves reaching the round cap without a feasible answer, finished with projected Gauss-Seidel.
         /// </summary>
         public long UnsettledSolves;
 
@@ -2656,10 +2521,7 @@ namespace Unity.Physics
         /// <summary>Contact manifolds against bodies outside the vessel that the cap on outside points left with no point.</summary>
         public long EmptiedOutsideManifolds;
 
-        /// <summary>
-        /// Held normal rows that gave back some of their warm start because their contact was separating, and held
-        /// normal rows that got a push-out of their own because their contact was too deep.
-        /// </summary>
+        // Held normal rows returning warm impulses for separation, and rows receiving deep-contact push-out.
         public long HeldReleases;
         public long HeldPushes;
 
@@ -2682,34 +2544,22 @@ namespace Unity.Physics
         /// <summary>The time spent in the dense solve of the boundary, in profiler timestamp units.</summary>
         public long SolveTicks;
 
-        /// <summary>
-        /// Warm rows whose state at the end of the solve differs from the state that the island remembered for them, in
-        /// the first substep of a step (against the last solve of the step before) and in later substeps.
-        /// </summary>
+        // Warm rows whose final state differs from memory, counted separately for first and later substeps.
         public long FirstSubstepChanges;
         public long LaterSubstepChanges;
         public long FirstSubstepSolves;
 
-        /// <summary>
-        /// The dense solves of a vessel island's push-out, which reuse the boundary block with other bounds, and the
-        /// pivoting rounds and the time that they took.
-        /// </summary>
+        // Push-out boundary solve counts, pivot rounds and elapsed time.
         public long PushSolves;
         public long PushRounds;
         public long PushTicks;
 
-        /// <summary>
-        /// The time spent building vessel islands' boundary blocks: choosing the rows (the caps, the dormant rows and
-        /// the rows' keys), walking each row's path through the factor on one lane, and filling W on the team.
-        /// </summary>
+        // Time choosing boundary rows, preparing factor paths and filling W.
         public long ChooseTicks;
         public long PathTicks;
         public long FillTicks;
 
-        /// <summary>
-        /// The time spent giving a vessel island's bodies the impulses of its rows, and pushing its bodies out of deep
-        /// contacts, which includes checking whether any contact is deep.
-        /// </summary>
+        // Time applying vessel row impulses and processing deep-contact push-out.
         public long ApplyTicks;
         public long PushOutTicks;
 

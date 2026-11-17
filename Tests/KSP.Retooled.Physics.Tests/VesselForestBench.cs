@@ -23,13 +23,9 @@ using MeshCollider = UnityEngine.MeshCollider;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Whole physics steps of a large craft built from a vessel graph (Tests/VesselGraphs~) as Rigidbodies and stock-style
-    /// ConfigurableJoints, on the sparse path, the forest path and the forest path with locking, on one thread and on eight,
-    /// warm (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS pick part of the table). The "vessel" path hands the step a
-    /// vessel set that the bench builds itself, and the "compiled" path turns vessels on and lets the backend compile the
-    /// craft's joints into vessels. The craft floats
-    /// (every row a forest row) or rests on the ground (contacts make a boundary). Parts never collide with each other.
-    /// Reports the machine's CPU load when it starts. Results go to the log and to VesselForestBench.txt in Logs.
+    /// Benchmark whole craft steps on sparse, forest, locking, supplied-vessel and compiled-vessel paths.
+    /// Select configurations with RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS.
+    /// Write timings and CPU load to Logs/VesselForestBench.txt.
     /// </summary>
     [Explicit("A benchmark, minutes long")]
     [Category("Slow")]
@@ -38,8 +34,7 @@ namespace KSP.Retooled.Physics.Tests
         private const int PartLayer = 30;
         private const int WarmUp = 20;
         /// <summary>
-        /// The number of measured steps, 60 unless RETOOLED_BENCH_STEPS gives another number. Small scenes take less
-        /// than a millisecond a step, and more steps make their medians steadier.
+        /// Measured steps per configuration, from RETOOLED_BENCH_STEPS, default 60.
         /// </summary>
         private static int Measured =>
             int.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_STEPS"), out int steps) && steps > 0 ? steps : 60;
@@ -62,12 +57,8 @@ namespace KSP.Retooled.Physics.Tests
         private static bool fusedOn = true;
 
         /// <summary>
-        /// Loads a craft by its graph's name. A name that ends in "x" and a number, such as "tu160x4", names a scene of
-        /// that many whole copies of the craft side by side, so that the step has several large vessels. A name with a
-        /// part count after a colon, such as "tu160:128x16", names a scene of sixteen small crafts, each one a copy of
-        /// the first 128 parts of the Tu-160. The parts come parents first, so the first parts of a craft are one
-        /// connected tree from its root. Names joined by "+", such as "tu160+tu160:128x8", put their scenes side by
-        /// side in one scene, so that the step has large and small vessels together. ZzTimeline reads the same names.
+        /// Load vessel graph scenes. Use tu160x4 for copies, tu160:128x16 for copies of a parent-first prefix,
+        /// and + to combine scenes. ZzTimeline accepts the same names.
         /// </summary>
         internal static Graph Load(string name)
         {
@@ -167,9 +158,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Cuts a craft down to its first RETOOLED_BENCH_PARTS parts and lays out RETOOLED_BENCH_COPIES copies of it side by
-        /// side, for a scene of several smaller crafts. The parts come parents first, so the first parts of a craft are
-        /// one connected tree. Without either setting, returns the craft as it is.
+        /// Apply RETOOLED_BENCH_PARTS and RETOOLED_BENCH_COPIES to form a fleet from a connected parent-first
+        /// prefix.
         /// </summary>
         private static Graph Fleet(Graph graph)
         {
@@ -342,9 +332,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The name of the scene that puts the craft on the ground among <see cref="StaticFieldCount"/> static colliders,
-        /// for RETOOLED_BENCH_SCENE and ZzTimeline's PROFILE_SCENE. Like the buildings and props of the space centre, the
-        /// colliders never move, so the scene shows what the step spends on static bodies that don't change.
+        /// Scene name for a grounded craft among unchanged static colliders, used by the benchmark and profiler.
         /// </summary>
         internal const string StaticsScene = "statics";
 
@@ -391,11 +379,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Makes <see cref="StaticFieldCount"/> static colliders on the ground around the craft, as the space centre has
-        /// buildings and props around the launch pad: boxes and convex hulls in turn, in a grid with 5 m between their
-        /// centres, each turned by its own angle about the vertical. The cells within 10 m of the craft stay empty, so
-        /// that the craft touches only the ground. <paramref name="groundTop"/> is the height of the ground's top face,
-        /// and <paramref name="track"/> records each new object for the scene's tear-down. Returns the colliders.
+        /// Create a grid of alternating static boxes and hulls, leaving space around the craft.
+        /// groundTop sets the surface height; track registers objects for teardown.
         /// </summary>
         internal static List<Collider> StaticField(Graph graph, float groundTop, Func<GameObject, GameObject> track)
         {
@@ -453,9 +438,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The craft as one vessel for the "vessel" path: one part per body in parent-first order, an edge for every graph
-        /// edge with the bench joint's swing spring and a hard twist, and a hard closure for every strut. The parts' world
-        /// indices are found once, from the first world the backend builds, since the bench adds no bodies afterwards.
+        /// Supplied vessel set with parent-first parts, spring edges and rigid strut closures.
+        /// Resolve body indices once, since the benchmark adds no bodies after construction.
         /// </summary>
         private sealed unsafe class BenchVesselSet : IDisposable
         {
@@ -627,9 +611,7 @@ namespace KSP.Retooled.Physics.Tests
         private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
 
         /// <summary>
-        /// The CPU time that the whole machine and this process have used, summed over every logical processor, in units
-        /// of 100 ns. Two readings give the load that other processes put on the machine between them, at no cost to the
-        /// bench, so that the bench can report it for each scene.
+        /// System and process CPU times in 100 ns units, summed over logical processors.
         /// </summary>
         private struct CpuReading
         {
@@ -688,9 +670,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The number of blocks of measured steps for each scene and number of threads, 1 unless RETOOLED_BENCH_BLOCKS gives
-        /// another number. The bench reports the minimum and median over the steps of every block, and each block's median
-        /// in the set-up column, since building a scene costs much more time than measuring it.
+        /// Number of measured step blocks per scene, from RETOOLED_BENCH_BLOCKS, default one.
+        /// Report the minimum and median per block.
         /// </summary>
         private static int Blocks =>
             int.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_BLOCKS"), out int blocks) && blocks > 0 ? blocks : 1;
@@ -709,9 +690,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             double clear = Since(clock);
-            // A compiled path can name settings of the fused vessel job after a colon: "compiled:parts=64" sends vessel
-            // islands of 64 parts or more to the fused job, "compiled:nocontacts" keeps the islands with contacts or
-            // joints out of it, and "compiled:off" turns it off.
+            // Compiled path options select the fused job: parts=n, nocontacts or off.
             string[] options = path.Split(':');
             Unity.Physics.Solver.FusedVesselParts = fusedParts;
             Unity.Physics.Solver.FusedContacts = true;
@@ -737,11 +716,8 @@ namespace KSP.Retooled.Physics.Tests
             string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
             VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
 
-            // RETOOLED_BENCH_BOUNDARY=cold starts every boundary solve cold, and =uncapped also lifts the caps. Self-contact
-            // still keeps at most 25 manifolds, which is the most that the caps allow. =refactor factors the free rows from the
-            // start in every round of pivoting, and =prefix keeps the factor up to the first row that left the free set
-            // instead of deleting the rows that left. =unordered gives the first factor its rows in the boundary's order
-            // instead of the rows that kept their state longest first.
+            // Boundary modes: cold, uncapped, refactor, prefix or unordered.
+            // The uncapped mode still limits self-contact to 25 manifolds.
             string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
             VesselForest.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
@@ -914,9 +890,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The sizes of the blocks that the sparse solver factored during the measured steps: the nodes by their number
-        /// of unknowns and by their number of later neighbours, and the blocks below the diagonal by rows x columns.
-        /// The last entry of each list holds every size from <see cref="SparseBlockCounters.Largest"/> - 1 up.
+        /// Format sparse block histograms by node unknowns, later neighbours and off-diagonal block dimensions.
+        /// The final bin includes all sizes at least SparseBlockCounters.Largest - 1.
         /// </summary>
         private static unsafe string SparseHistogram(SparseBlockCounters counts, int steps)
         {
@@ -1057,11 +1032,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The lock policy's settings against churn, cost and accuracy: for each craft and scene, the forest path without
-        /// locking as the reference, then each setting of lock angle, yield angle, minimum hold and deflection smoothing
-        /// (RETOOLED_SWEEP lists them as lock:yield:hold:smoothing in mrad and steps, separated by commas). Reports lock
-        /// changes and rebuilds per step, the step's median, how far poses and joint loads end from the reference, and the
-        /// tree pairs by deflection. Results go to the log and to VesselLockSweep.txt in Logs.
+        /// Sweep lock/yield angles, hold duration and smoothing from RETOOLED_SWEEP (lock:yield:hold:smoothing).
+        /// Compare cost, lock churn, poses and loads with unlocked solving. Write Logs/VesselLockSweep.txt.
         /// </summary>
         [Test]
         [Timeout(7200000)]
@@ -1163,12 +1135,9 @@ namespace KSP.Retooled.Physics.Tests
         private static double Since(long start) => (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
 
         /// <summary>
-        /// Times Unity's three stages of the step one by one on the compiled path: Prepare (the sync of the Transforms
-        /// to the bodies), Run (the backend's step) and Publish (the read-back of the poses into the Transforms and the
-        /// results). It also times the whole step with Physics.Simulate, back to back, as Measure does. Each part gets
-        /// RETOOLED_BENCH_CHILDREN child Transforms (default 0). RETOOLED_BENCH_CRAFT (default tu160,tu160x4),
-        /// RETOOLED_BENCH_SCENE (default floating) and RETOOLED_BENCH_THREADS (default 8,1) pick the configurations.
-        /// Results go to VesselStageBench.txt in Logs.
+        /// Time Unity Prepare, Run and Publish stages separately and compare with Physics.Simulate.
+        /// Configure children, craft, scene and threads through RETOOLED_BENCH_* variables.
+        /// Write Logs/VesselStageBench.txt.
         /// </summary>
         [Test]
         [Timeout(7200000)]
@@ -1270,12 +1239,10 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Times whole steps of each craft, scene, number of threads and path (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and
-        /// _PATHS). By default each number of threads gets a new scene. With RETOOLED_BENCH_SHARE=1, the bench builds each
-        /// scene once for each path and measures it with every number of threads in turn, after new warm-up steps for each
-        /// number, because building a scene takes much longer than measuring it. RETOOLED_BENCH_BLOCKS=n measures n blocks
-        /// of RETOOLED_BENCH_STEPS steps. The last column says where the time went before the measured steps, and how much
-        /// of the machine other processes used during the set-up and during the measured steps.
+        /// Time whole steps across craft, scene, thread and path configurations.
+        /// RETOOLED_BENCH_SHARE=1 reuses scenes across thread counts; RETOOLED_BENCH_BLOCKS sets repeated
+        /// measurements.
+        /// Report setup costs and competing CPU load alongside timings.
         /// </summary>
         [Test]
         [Timeout(7200000)]

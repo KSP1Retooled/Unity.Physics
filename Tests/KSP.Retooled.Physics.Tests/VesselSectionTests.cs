@@ -5,9 +5,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The forest path with locking on: a tree edge that carries little locks, its two bodies moving as one section, and
-    /// its load comes from inverse dynamics into the joint's own rows, so joint forces and breaking read as before. Each
-    /// test runs the same scene with locking off for reference where it compares.
+    /// Test forest locking, inverse-dynamics joint loads and breaking against unlocked reference scenes.
     /// </summary>
     public class VesselSectionTests : PhysicsScene
     {
@@ -142,10 +140,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A column locks, and then it is destroyed and a new column is built in its place. The store gives the new
-        /// column's bodies the rows of the old column's bodies, so the new bodies have the same indices in the world, and
-        /// the new island has the same first body index and the same shape as the old one. But the new bodies are other
-        /// bodies, so the new column's pairs must start unlocked, rather than take over the old column's lock states.
+        /// Verify a new craft does not inherit lock states when it reuses a destroyed craft's body rows.
         /// </summary>
         [Test]
         public void ANewColumnDoesNotTakeOverTheLockStatesOfADestroyedOne()
@@ -173,9 +168,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Two floating bodies held by a swing spring, twisted apart by a torque that rises and falls again: the pair locks
-        /// while the torque is small, yields once it would bend the spring past the yield angle, and locks again as it
-        /// falls. The relative turn follows the run without locking to within the angles, with no jump at either change.
+        /// Verify a spring joint locks, yields and relocks as torque changes, without discontinuities beyond
+        /// configured angles.
         /// </summary>
         [Test]
         public void APairLocksYieldsAndLocksAgainUnderARampedLoad()
@@ -269,8 +263,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A swing spring with a strong damper under a steady torque: the deflection the forest reads for the lock tests is
-        /// the spring's, not the spring and damper's together, which would read low by 1 + c / (h k).
+        /// Verify lock deflection measures spring load without the damper contribution.
         /// </summary>
         [Test]
         public void ADampedSpringReadsItsOwnDeflection()
@@ -298,8 +291,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A part hung below another by a rigid joint with a break force, pulled down harder every step: the joint breaks
-        /// while locked at the same load as without locking, and the part falls away.
+        /// Verify a locked joint breaks under the same increasing load as an unlocked joint.
         /// </summary>
         [Test]
         public void ALockedJointBreaksAtTheLoadItWouldBreakAt()

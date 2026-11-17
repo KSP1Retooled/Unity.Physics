@@ -2,17 +2,13 @@ using Unity.Numerics.Kernels;
 
 namespace Unity.Numerics.Linear.Dense.Primitives
 {
-    // The links from Unity's matrices and vectors to the kernels in Unity.Numerics.Kernels. The BLAS-style routines in
-    // BasicRoutinesLevel1, 2 and 3 and the Cholesky factor describe their operands to the kernels with these, and keep
-    // their own loops for the storage that the kernels can't take.
+    // Adapt Matrix and Vector storage to numerical kernels. Keep wrapper loops for unsupported layouts.
 
     internal unsafe partial struct Vector
     {
         /// <summary>
-        /// The address of the entry that the BLAS loops in this file take as entry 0. With a negative stride, these
-        /// loops start at the far end of the storage and step back, as the reference BLAS does, so entry i is at
-        /// <c>KernelStart + i * Stride</c> for either sign. A kernel that takes this address and the stride sees the
-        /// entries in the same order as the loops.
+        /// Logical entry-zero address for BLAS loops. With negative stride, start at the far end so that
+        /// entry i is at <c>KernelStart + i * Stride</c>.
         /// </summary>
         internal float* KernelStart => Stride >= 0 ? data : data + (long)(1 - Dimension) * Stride;
 
@@ -26,9 +22,8 @@ namespace Unity.Numerics.Linear.Dense.Primitives
     internal unsafe partial struct Matrix
     {
         /// <summary>
-        /// Describes the matrix to the kernels, if its storage allows it: every column must have the same positive
-        /// stride and as many entries as the matrix has rows, and the columns must be the same distance apart without
-        /// sharing any entries. Every matrix that <see cref="Create"/> or <see cref="Submatrix"/> makes passes.
+        /// Create a kernel view when columns have equal positive strides, correct row counts and non-overlapping
+        /// storage.
         /// </summary>
         internal static bool TryView(in Matrix matrix, out MatrixView<float> view)
         {
@@ -83,9 +78,8 @@ namespace Unity.Numerics.Linear.Dense.Primitives
         }
 
         /// <summary>
-        /// The triangle that a routine works with, as a view for the kernels: op(A) for a routine with A on the left
-        /// of B, or op(A)^T for a routine with A on the right, since B op(A) is (op(A)^T B^T)^T. Returns whether the
-        /// view is lower triangular.
+        /// Return the effective triangle view: op(A) for left operations, op(A)^T for right operations.
+        /// Return true if the resulting view is lower triangular.
         /// </summary>
         internal static bool TriangleForKernels(MatrixView<float> a, int n, Side side, TriangularType type, Op op,
             out MatrixView<float> triangle)

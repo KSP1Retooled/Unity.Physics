@@ -19,15 +19,10 @@ namespace KSP.Retooled.Physics.Tests
 {
     using Graph = VesselForestBench.Graph;
 
-    // A profiling harness. It builds the VesselForestBench crafts, steps them with the editor profiler on, and reads the
-    // profiler's raw frames for every thread. For each marker it reports the first start, the last end and the summed
-    // CPU inside each Physics.Simulate call, as medians per step. Rows that start with "M" are the main thread, rows that
-    // start with "A" merge all threads. Rows that start with "O" are the main thread's work within 10 ms before or after
-    // the Physics.Simulate marker, with negative times before it. PROFILE_ONLY picks configurations by name, PROFILE_PATHS picks the paths
-    // (compiled by default), PROFILE_SCENE picks the scenes (floating and ground by default; "statics" is the ground among
-    // thousands of static colliders, as in VesselForestBench), and PROFILE_TAG names the output file
-    // Logs/Timeline-<tag>.txt. PROFILE_SAVE=1 also saves
-    // each configuration's profiler frames as Logs/Timeline-<tag>-<configuration>.data, which the Profiler window opens.
+    // Profile craft steps and report median marker start/end times and CPU totals.
+    // M rows cover the main thread, A all threads, and O work within 10 ms around Simulate.
+    // Use PROFILE_ONLY, _PATHS, _SCENE and _TAG to select configurations and output.
+    // PROFILE_SAVE=1 also saves Profiler data files in Logs.
     [Explicit("profiling")]
     [Category("Slow")]
     public class ZzTimeline : PhysicsScene
@@ -206,9 +201,8 @@ namespace KSP.Retooled.Physics.Tests
                                 unprofiled.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
                             }
 
-                            // The same steps with an editor frame between them, as the profiled steps have. Work that a
-                            // step leaves running when it returns finishes during the frame here, but it delays the next
-                            // step in the loop above.
+                            // Yield an editor frame between these steps so that pending background work can
+                            // finish before the next step.
                             var framed = new List<double>();
                             for (int i = 0; i < 20; i++)
                             {
@@ -450,11 +444,7 @@ namespace KSP.Retooled.Physics.Tests
         };
 
         /// <summary>
-        /// The end of the solve in each profiled frame: when the fused vessel job ends, when the last job of the
-        /// substeps ends, and when WriteBackJob starts, as medians in ms from the end of the fused job. WriteBackJob is
-        /// the first job that waits for every motion to be solved. The report also lists, for the first three frames,
-        /// every job that runs from 0.05 ms before the fused job ends until WriteBackJob starts, with its thread, its
-        /// start and its length, so that the chain of jobs between the two can be read job by job.
+        /// Report solve completion and write-back timing, with the intervening jobs for the first three frames.
         /// </summary>
         private static string SolveTail(int first, int last)
         {
@@ -530,10 +520,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// What the threads do while two or more lanes of a solver team are parked (Retooled.Physics.Island.Park), in
-        /// ms per profiled frame. A parked lane waits for its leader to publish the next stage, so this shows the work
-        /// that keeps the others waiting. Each marker gets the time of its own work, without its children's, that falls
-        /// inside those windows.
+        /// Report exclusive marker time while at least two solver lanes wait for their leader, in milliseconds per
+        /// frame.
         /// </summary>
         private static string WhileParked(int first, int last)
         {
@@ -627,8 +615,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Adds the sample's own time (its time without its children's) inside the windows to its marker's total, and
-        /// does the same for its children. Returns the index of the sample after its subtree.
+        /// Accumulate exclusive sample time within profiling windows, recurse into children and return the next
+        /// subtree index.
         /// </summary>
         private static int AddSelfOverlap(RawFrameDataView view, int index, List<(ulong from, ulong to)> windows, Dictionary<string, double> total)
         {

@@ -716,16 +716,9 @@ namespace Unity.Physics
         internal const int RotatedBoundsMinimumVertices = 8;
 
         /// <summary>
-        /// Rotates the vertices four at a time and finds the smallest and the largest of each rotated coordinate, as
-        /// the loop in <see cref="CalculateAabb(RigidTransform, float)"/> does one vertex at a time. That loop took
-        /// about 5.5 ns per vertex, so the bounds of a hull with 64 vertices took 340 ns, against 12 ns for a box.
-        /// <para>
-        /// Each rotated coordinate comes from the same operations in the same order as in math.rotate, which computes
-        /// t = 2 * cross(q.xyz, v) and then v + q.w * t + cross(q.xyz, t), so it has the same bits. The smallest and the
-        /// largest values are then the same numbers in whatever order they are found, except for the sign of a zero
-        /// and for a NaN. So the method returns false when a result has a zero or a NaN in it, and the caller uses
-        /// the loop instead.
-        /// </para>
+        /// Compute rotated vertex bounds four vertices at a time, preserving math.rotate operation order.
+        /// Return false for zero or NaN coordinates so that the caller uses the scalar loop's exact min/max
+        /// behavior.
         /// </summary>
         internal static unsafe bool RotatedBounds(quaternion rotation, BlobArray.Accessor<float3> vertices, out float3 min, out float3 max)
         {

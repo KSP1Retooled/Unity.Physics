@@ -11,11 +11,8 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Stores a manifold that survived filtering in the narrow phase. Normalize the order of its shapes regardless of
-    /// how Unity Physics built the pair: body A has the lower store row, except that a static body is always body B.
-    /// Collision.impulse is one vector shared by both sides, and PhysX defines it as pushing the body. Retain Unity
-    /// Physics' original keys to find the manifold's solver event. A pair of shapes can have several manifolds, one for
-    /// each mesh triangle.
+    /// Contact manifold retained after filtering, with shapes ordered by body row and statics assigned to body B.
+    /// Keep original collider keys to match solver events. Several manifolds may belong to one shape pair.
     /// </summary>
     internal unsafe struct ManifoldRecord
     {
@@ -117,9 +114,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Identifies a manifold from its jacobian, which contains body indices but no collider keys. Manifolds with the
-    /// same body pair and normal use the same key and share their impulse. For example, this occurs when a box rests on
-    /// two coplanar triangles.
+    /// Identify a manifold by body pair and normal when the Jacobian has no collider keys.
+    /// Coplanar manifolds with the same key share their impulse.
     /// </summary>
     internal struct JacobianKey : IEquatable<JacobianKey>
     {
@@ -173,18 +169,14 @@ namespace KSP.Retooled.Physics
         public bool Trigger;
 
         /// <summary>
-        /// For a trigger pair, whether the first shape of the pair's key is the trigger. When a shape of the pair is
-        /// removed, its memory may already be freed or reused, so <see cref="ForgetRemovedShapesJob"/> can't read the
-        /// shape's flags then. It reads this field instead to put the two shapes in the order that Unity knows them by.
+        /// Whether the first shape was the trigger. Removal events use this cached value after shape memory is
+        /// freed.
         /// </summary>
         public bool FirstIsTrigger;
 
         /// <summary>
-        /// Which of the pair's two bodies were kinematic when the pair was last seen: <see cref="FirstKinematic"/> for
-        /// the body of the first shape of the pair's key, <see cref="SecondKinematic"/> for the body of the second, and
-        /// <see cref="KinematicKnown"/> once the bits have been set. PhysX ends a touching pair and starts it again when
-        /// one of its bodies becomes kinematic or stops being kinematic, so the contact report compares these bits with
-        /// the bodies' flags.
+        /// Cached kinematic flags for both bodies, plus KinematicKnown when initialized.
+        /// Changes restart the touching pair to match PhysX.
         /// </summary>
         public byte Kinematic;
 
@@ -193,8 +185,7 @@ namespace KSP.Retooled.Physics
         internal const byte KinematicKnown = 4;
 
         /// <summary>
-        /// Returns the bits of <see cref="Kinematic"/> for the bodies of a pair's shapes as they are now. A shape that
-        /// has no body counts as on a body that isn't kinematic.
+        /// Return current kinematic flags for the pair's bodies. A shape without a body counts as nonkinematic.
         /// </summary>
         internal static unsafe byte KinematicOf(ShapePairKey key)
         {
@@ -204,9 +195,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether a body of the pair became kinematic or stopped being kinematic since the pair was last seen. A pair
-        /// that a new step state took over after a detach of the core (<see cref="TouchingHandOff"/>) may not know its
-        /// bits yet, and then nothing changed.
+        /// Return whether either body's kinematic state changed. Treat an unknown previous state as unchanged.
         /// </summary>
         internal readonly bool KinematicChanged(byte now)
         {
@@ -220,10 +209,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Caches whether every collider pair between two bodies is ignored. Records the versions of the ignored pairs and
-    /// collider builds used to calculate that result. The cache knows the pair by the two bodies' rows in the store, and
-    /// a row passes to another body when a body is destroyed. So the entry also records the serial numbers of the two
-    /// bodies: first the body in the lower row, then the body in the higher row.
+    /// Cached collision filtering result for a body pair, with filter/build versions and body serials.
+    /// Serials distinguish bodies that reused the same store rows.
     /// </summary>
     internal struct KnownBodyPair
     {
@@ -235,20 +222,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Disables collisions for overlapping body pairs when every collider pair between them is ignored through
-    /// Physics.IgnoreCollision or stopped by the colliders' collision groups (see <see cref="GroupTable"/>). This is
-    /// common among parts of one craft. Such overlaps greatly outnumber joints.
-    /// Leaving them enabled would put the craft in one crowded island and send all of them through the narrow phase
-    /// unnecessarily. Keep body pairs that still have colliders allowed to contact each other. <see
-    /// cref="ReadContactsJob"/> filters the individual collider pairs.
-    ///
-    /// Checking a body pair requires a lookup for each collider pair. Each lookup is likely to miss the cache because
-    /// the table contains all ignored pairs for the craft. Cache the result for each body pair until the ignored pairs
-    /// change or any body's shapes may have changed. A change to a collision group counts as a change to the ignored
-    /// pairs. Creating a body or changing its shapes requires a full collider
-    /// build, which increments the build counter recorded with the cached result. A body pair is checked without the
-    /// cache when one of its bodies has no collider with an ignore id, because then only the groups matter, and
-    /// reading them costs less than the cache lookup.
+    /// Remove overlapping body pairs when all collider pairs are ignored by Physics.IgnoreCollision or collision
+    /// groups.
+    /// Cache results until filters or collider builds change. ReadContactsJob filters individual collider pairs.
     /// </summary>
     [BurstCompile]
     internal unsafe struct DropIgnoredPairsJob : IJobParallelForDefer
@@ -312,12 +288,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns whether the pair's bodies are joined by an edge or closure of an active vessel whose leading joint
-        /// doesn't let them collide. No Unity Physics joint is built for such a unit, so this job drops the contact
-        /// pair in its place. The result is the same as with a joint that has no constraints: a joint pair between the
-        /// same bodies that lets them collide keeps the contact pair. SetDisableCollisionFlagsJob has already disabled
-        /// this pair if the bodies have joint pairs and none of them lets the bodies collide. So if the pair is still
-        /// enabled and the pair before it is a joint pair between the same bodies, one of the joints lets them collide.
+        /// Return whether an active vessel joint disables collision for this body pair.
+        /// Preserve the pair when another joint between the bodies allows collision.
         /// </summary>
         private bool IsVesselJointed(DispatchPairSequencer.DispatchPair pair, int index)
         {
@@ -445,9 +417,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Caches the results calculated by <see cref="DropIgnoredPairsJob"/>. Cached results remain when pairs stop
-    /// overlapping. If the number of cached and newly calculated results exceeds 32 per body plus 1024, clear the cache
-    /// before storing the new results. Later lookups recalculate any results that are needed.
+    /// Store newly computed body-pair filtering results. Clear the cache if it exceeds 32 entries per body plus
+    /// 1024.
     /// </summary>
     [BurstCompile]
     internal struct RememberBodyPairsJob : IJob
@@ -475,21 +446,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Processes every point of every manifold between the narrow phase and the solver. Applies Physics.IgnoreCollision
-    /// to collider pairs within body pairs retained by <see cref="DropIgnoredPairsJob"/>. Manifolds identify the leaf
-    /// colliders that touched, so individual pairs within a compound can be filtered here. Also sets friction and
-    /// restitution using both shapes' materials and the contact points. The retained manifolds are used for events and
-    /// sleeping during this step.
-    ///
-    /// Unity Physics generates contacts with static meshes up to one step's travel ahead of a body. PhysX generates
-    /// them only within the shapes' contact offsets. At a polygon edge, the normal of a distant contact can point back
-    /// along the body's motion. Treating that contact as a plane would stop a body sliding along the mesh. For a point
-    /// beyond the contact offsets, test whether its path during the step intersects its polygon. If the path is no
-    /// longer than the separation, leave the contact as Unity Physics generated it. The point cannot close by more
-    /// than its separation, regardless of the normal's direction.
-    ///
-    /// Read each bucket from the narrow phase into separate lists. <see cref="MergeContactBucketsJob"/> then merges
-    /// them in bucket order, preserving the order that a single pass over the stream would produce.
+    /// Filter contact manifolds, set material coefficients, and retain contacts for events and sleeping.
+    /// Reject speculative mesh contacts whose paths cannot reach their polygons this step.
+    /// Read buckets independently; MergeContactBucketsJob restores stream order.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ReadContactsJob : IJobParallelForDefer
@@ -498,9 +457,8 @@ namespace KSP.Retooled.Physics
         // diagonals are 0.021 m and 0.028 m. Points separated by at most this threshold share an anchor.
         private const float FrictionOffsetThreshold = 0.025f;
 
-        // Set this separation for solver points that cannot reach their polygons during this step. Unity Physics then
-        // allows the bodies to approach by more than they can move. The direct solver creates no row for the point
-        // because this separation exceeds Solver.ContactRowReach.
+        // Separation assigned to unreachable mesh contacts. Must exceed Solver.ContactRowReach so that no solver
+        // row is created.
         private const float OutOfReach = 1.0e6f;
 
         /// <summary>
@@ -666,16 +624,15 @@ namespace KSP.Retooled.Physics
             output.Points.Add(new ManifoldPoint { Position = position, Distance = distance });
             record.PointCount++;
 
-            // Unity Physics stops a fast body at the surface using a contact with a large separation. PhysX allows the
-            // body to enter and reports the contact next step. Mark the pair as touching during the step that applies
-            // the impact impulse so that the event includes that impulse.
+            // Report speculative impacts in the step that applies their impulse so that the event includes that
+            // impulse.
             float closing = record.Trigger ? 0.0f : math.max(ClosingSpeed(ref record, position), 0.0f);
             record.Touching |= reachable && distance - closing * DeltaTime <= touchDistance;
         }
 
         /// <summary>
-        /// Returns the static mesh polygon for a manifold in world space, along with the motion of the body in contact
-        /// with it. Returns an invalid face for any other leaf collider.
+        /// Return a static mesh contact polygon in world space and the other body's motion.
+        /// Return an invalid face for other leaf types.
         /// </summary>
         private MeshFace FaceOf(RigidBody mesh, ColliderKey key, in NativeStore.BodyData moving, bool movingIsA)
         {
@@ -709,9 +666,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Tests whether a moving point's path during this step intersects the polygon. If the path is no longer than
-        /// the separation, return true to retain Unity Physics' contact. The point cannot close by more than its
-        /// separation, regardless of the normal's direction.
+        /// Test whether the point can reach its polygon this step.
+        /// Retain Unity Physics contacts when travel is no greater than separation.
         /// </summary>
         private bool Reaches(in MeshFace face, float3 point, float distance)
         {
@@ -732,9 +688,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Sets the coefficients that PhysX would use to solve this manifold. Unity Physics material pairs cannot
-        /// express these rules: they lack a multiply mode, rank the combine modes differently, and store only one
-        /// friction coefficient. The number of friction anchors is also known only here.
+        /// Set PhysX-compatible friction and restitution, including material combine modes and friction anchor
+        /// counts.
         /// </summary>
         private void SetCoefficients(ref ContactHeader header, ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
@@ -753,9 +708,8 @@ namespace KSP.Retooled.Physics
             bool sticks = InFrictionCone(ref record, center, anchors * staticFriction);
             header.CoefficientOfFriction = anchors * (sticks ? staticFriction : dynamicFriction);
 
-            // The solver's resting test depends on gravity, but no gravity is supplied to it during this step. A
-            // resting body would therefore bounce after gaining one step's velocity from gravity. Use PhysX's speed
-            // threshold to decide whether it bounces.
+            // Use the PhysX bounce speed threshold. The solver's gravity-based resting test has no gravity
+            // input here.
             bool bounces = ClosingSpeed(ref record, center) > BounceThreshold;
             header.CoefficientOfRestitution = bounces ? Combine(a->bounciness, b->bounciness, a->bounceCombine, b->bounceCombine) : 0.0f;
 
@@ -768,11 +722,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX places friction anchors at a patch's first point and at the point farthest from it. Each anchor can
-        /// apply friction up to the coefficient times the patch's total normal impulse. Two anchors therefore provide
-        /// twice the friction implied by the coefficient alone. A sphere's single contact point provides that amount
-        /// once. Scale the coefficient for Unity Physics' single friction row at the manifold's centre to account for
-        /// both anchors.
+        /// Scale friction for PhysX's two anchors, using the first and farthest patch points.
+        /// A single-point contact, such as a sphere, has one anchor.
         /// </summary>
         private static float FrictionAnchors(ref ManifoldRecord record, ref UnsafeList<ManifoldPoint> points)
         {
@@ -787,10 +738,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Chooses static or dynamic friction by testing velocities against the cone for the given coefficient.
-        /// PhysX uses the impulse required by the solver to make this choice. This method approximates that decision
-        /// using relative velocity at the patch's centre. Compare tangential speed with the coefficient times the
-        /// nonnegative closing speed.
+        /// Approximate the static friction cone using relative tangential and closing speeds at the patch centre.
         /// </summary>
         private bool InFrictionCone(ref ManifoldRecord record, float3 center, float coefficient)
         {
@@ -860,9 +808,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Under the scene's default contact mode, PhysX reports a kinematic body paired with a static or another
-        /// kinematic body only for triggers. It never reports two static bodies. Unity Physics also applies no solver
-        /// response to these pairs, but it does generate their contacts.
+        /// Match PhysX contact reporting: exclude static-static pairs, and report kinematic-static or
+        /// kinematic-kinematic pairs only for triggers.
         /// </summary>
         private static bool CanReport(NativeStore.BodyFlags a, NativeStore.BodyFlags b, bool trigger)
         {
@@ -876,8 +823,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// PhysX culls a height field triangle using the centre of the shape in contact with it. A shape centred below
-        /// the surface therefore has no contact, whereas Unity Physics would push it farther through the surface.
+        /// Cull height field contacts when the other shape's centre lies below the surface, matching PhysX.
         /// </summary>
         private bool IsBehindField(RigidBody field, ColliderKey key, NativeStore.ShapeData* fieldShape, RigidBody other, NativeStore.ShapeData* otherShape)
         {
@@ -923,9 +869,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Allocates lists for each bucket of the narrow phase stream. The number of buckets is known only after the stream
-    /// is created. Reuse the lists between steps, so allocation is rarely needed. Also records how many buckets are
-    /// used this step for jobs that read them after the stream has been released.
+    /// Prepare reusable lists for the narrow phase stream's buckets and record the count for later jobs.
     /// </summary>
     [BurstCompile]
     internal struct PrepareContactBucketsJob : IJob
@@ -987,8 +931,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Indexes warm starts by their jacobian keys after the manifolds for this step are known. Each value contains the
-    /// total impulse and the number of contact points that share it.
+    /// Index previous total impulses and shared contact counts by Jacobian key after this step's manifolds are
+    /// known.
     /// </summary>
     [BurstCompile]
     internal struct IndexWarmStartsJob : IJob
@@ -1024,12 +968,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Starts each contact with most of its final normal impulse from the previous step. Divide the impulse evenly
-    /// among contact points, applying it only to points close enough to touch, because events report only the
-    /// manifold's total impulse. Unity Physics solves friction on every iteration, including the first. With a cold
-    /// start, the contact points move the bodies around during most iterations. The friction calculation treats this
-    /// motion as slipping and uses friction to oppose it. A body resting on another dynamic body can then retain the
-    /// remaining slip from step to step.
+    /// Warm start nearby contact points with an equal share of the previous manifold's normal impulse.
     /// </summary>
     [BurstCompile]
     internal unsafe struct WarmStartJob : IJacobiansJob
@@ -1038,11 +977,8 @@ namespace KSP.Retooled.Physics
         // cold next step.
         internal const float Fraction = 0.95f;
 
-        // Apply a share of the warm start only to points within this distance, in metres, because the impulse came from
-        // touching points. Every such point must have a solver row so that the solver can remove any warm start impulse
-        // that is no longer needed. Without a row, that impulse would push the bodies apart and increase the next
-        // step's warm start, making crash debris accelerate after each step. The direct solver creates rows up to
-        // Solver.ContactRowReach, which must be at least this distance.
+        // Maximum separation, in metres, for warm starting. Must not exceed Solver.ContactRowReach:
+        // each warmed point needs a row that can remove excess impulse.
         private const float FarthestPoint = 0.1f;
 
         [ReadOnly]
@@ -1175,11 +1111,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Removes the last impulses of manifolds that involve shapes that were detached from their bodies since the last
-    /// step. A new shape can reuse the address of such a shape, and the last impulses are kept by the shapes' addresses.
-    /// Without this job, a new contact between two new shapes could start with the impulse of a contact between the
-    /// two removed shapes whose addresses they took. This job leaves the list of removed shapes as it is, because
-    /// <see cref="ForgetRemovedShapesJob"/> reads it later in the step.
+    /// Discard cached impulses for detached shapes before their addresses can be reused.
+    /// Leave the removal list for ForgetRemovedShapesJob.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ForgetRemovedImpulsesJob : IJob
@@ -1209,10 +1142,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Counts the commands that changed whether a shape is a trigger, changed the filter that decides which shapes
-    /// collide with it, or changed whether a body is kinematic. While this version stays the same, <see cref="WakeRefilteredPairsJob"/> doesn't run. The plugin
-    /// mirrors the records in the store, so there is no space for this counter in a world's record. All worlds share it,
-    /// as they share <see cref="JointTopology"/>.
+    /// Shared version for trigger, collision filter and kinematic changes that require touching pairs to be
+    /// reevaluated.
     /// </summary>
     internal static class PairFilterVersion
     {
@@ -1230,17 +1161,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Wakes the bodies of touching pairs whose shapes no longer pair as they did: a shape became a trigger or stopped
-    /// being one, its filter no longer lets the two shapes collide, or one of the two bodies became kinematic or stopped
-    /// being kinematic. The step runs this job before it applies forces,
-    /// so that the narrow phase of the same step sees the pair as it is now.
+    /// Wake bodies whose touching pairs changed because of filters, trigger flags or kinematic state.
+    /// Run before applying forces so that the narrow phase sees the changes in the same step.
     /// </summary>
-    /// <remarks>
-    /// A pair whose bodies are both at rest stays in the touching pairs without being seen again, as a sleeping island
-    /// does in PhysX. If a static trigger turned solid while a body slept inside it, nothing ended the pair, and Unity
-    /// kept sending OnTriggerStay for it. PhysX wakes the body when the pair is filtered again: the trigger pair then
-    /// sends OnTriggerExit, and the new contact pair sends OnCollisionEnter in the same step.
-    /// </remarks>
     [BurstCompile]
     internal unsafe struct WakeRefilteredPairsJob : IJob
     {
@@ -1252,9 +1175,8 @@ namespace KSP.Retooled.Physics
 
         public void Execute()
         {
-            // The touching pairs still hold the shapes that were removed since the last step, because
-            // ForgetRemovedShapesJob drops them only later in the step. The store may have freed the memory of such a
-            // shape, so this job must not read it.
+            // Removed shapes remain in touching pairs until later cleanup, but their memory may already be
+            // freed. Do not dereference them.
             var removed = new NativeHashSet<IntPtr>((int)World->removedShapeCount, Allocator.Temp);
             for (uint i = 0; i < World->removedShapeCount; i++)
             {
@@ -1282,8 +1204,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether the filters of two shapes let them collide or trigger, by the rules that the collider build follows.
-        /// Pairs that a script ignores are left out, because ignoring a pair wakes its bodies.
+        /// Return whether shape filters permit contact or triggering. Explicit ignored pairs are handled
+        /// separately.
         /// </summary>
         private static bool Collide(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
         {
@@ -1305,21 +1227,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Removes touching pairs that involve shapes detached from their bodies. These shapes produce no exit event, and
-    /// new shapes may reuse their addresses. PhysX wakes a body when the shape supporting it is removed. Do the same
-    /// here before sleeping and contact reporting, since both depend on whether the body is awake.
+    /// Remove touching pairs for detached shapes and wake their remaining bodies.
+    /// For trigger pairs, emit TriggerEventShapeRemoved with a zero ID to clear Unity's cached pair;
+    /// ordinary exit events are ignored when a collider has already been destroyed or disabled.
     /// </summary>
-    /// <remarks>
-    /// Unity keeps each trigger pair that entered in a cache, by the addresses of the pair's two shapes, and sends
-    /// OnTriggerStay for each entry in every step. It removes an entry only when it gets an exit event whose two
-    /// colliders still exist and are enabled, or an event of type <see cref="NativeStore.TriggerEventShapeRemoved"/>
-    /// with a zero id. A removed shape's collider is usually destroyed or disabled, so Unity ignores an exit event for
-    /// its pair. For each trigger pair that this job removes, it therefore adds an event of the second kind to
-    /// <see cref="RemovedTriggerPairs"/>, as Unity's PhysX backend does for a pair that PhysX reports with
-    /// eREMOVED_SHAPE_TRIGGER or eREMOVED_SHAPE_OTHER. Without that event, Unity kept the entry: a collider that was
-    /// disabled inside a trigger and enabled again elsewhere got OnTriggerStay in every step, and a new pair whose shapes
-    /// took the two addresses got one OnTriggerStay and then no more, because Unity kept the old entry and its old ids.
-    /// </remarks>
     [BurstCompile]
     internal unsafe struct ForgetRemovedShapesJob : IJob
     {
@@ -1382,11 +1293,10 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Converts this step's manifolds into the report that Unity reads through GetLastSimulationStepResults. Matches
-    /// the PhysX report: each body pair includes its velocities before solving, its shape pairs, and their contact
-    /// points. Compare against the previous step's pairs to detect new and lost touches. Bodies at rest remain touching
-    /// without further reports, as a sleeping island does in PhysX. Report only trigger enters and exits because Unity
-    /// repeats OnTriggerStay between them.
+    /// Build Unity's simulation report from this step's manifolds, including pre-solve velocities and contact
+    /// points.
+    /// Compare with previous pairs for enter/exit events. Keep sleeping pairs and report only trigger enters and
+    /// exits.
     /// </summary>
     [BurstCompile]
     internal unsafe struct PublishContactsJob : IJob
@@ -1412,8 +1322,7 @@ namespace KSP.Retooled.Physics
         public NativeHashMap<ShapePairKey, ShapePairState> Touching;
 
         /// <summary>
-        /// The events that end trigger pairs whose shapes were removed (<see cref="ForgetRemovedShapesJob"/>). This job
-        /// reports them before this step's own trigger events and then clears the list.
+        /// Removal events for trigger pairs. Report before current trigger events, then clear the list.
         /// </summary>
         public NativeList<NativeStore.TriggerEvent> RemovedTriggerPairs;
 
@@ -1429,9 +1338,8 @@ namespace KSP.Retooled.Physics
             Records.AsArray().Sort(new ManifoldOrder());
             Reserve();
 
-            // Unity removes the old pair from its cache when it reads such an event. A new pair at the same two
-            // addresses can enter in this same step, and Unity adds an entering pair to the cache only after it has
-            // read all of the step's events, so the order of the two events doesn't matter.
+            // Removal events clear Unity's cached pair before any replacement pair is added at the same
+            // addresses.
             for (int i = 0; i < RemovedTriggerPairs.Length; i++)
             {
                 World->triggers[World->triggerCount++] = RemovedTriggerPairs[i];
@@ -1465,13 +1373,8 @@ namespace KSP.Retooled.Physics
                 byte kinematic = ShapePairState.KinematicOf(key);
                 if (!found && (state.Trigger != record.Trigger || state.KinematicChanged(kinematic)))
                 {
-                    // A shape of the pair became a trigger or stopped being one while the two shapes touched. PhysX
-                    // then ends the old pair and starts the new one in the same step: the trigger pair sends
-                    // OnTriggerExit and the contact pair sends OnCollisionEnter, or the contact pair sends
-                    // OnCollisionExit and the trigger pair sends OnTriggerEnter. Without the exit, Unity kept the
-                    // trigger pair and sent OnTriggerStay for it in every step. PhysX does the same when one of the
-                    // two bodies becomes kinematic or stops being kinematic: the pair sends its exit and then its
-                    // enter again, OnTriggerExit and OnTriggerEnter or OnCollisionExit and OnCollisionEnter.
+                    // Restart the pair when trigger or kinematic flags change, matching PhysX enter/exit
+                    // behavior.
                     EndPair(key, state);
                     found = true;
 
@@ -1642,9 +1545,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Picks the shape that Unity hears about as the trigger: the first shape if it is a trigger, else the second.
-        /// The pair's enter, exit and removal events must name the shapes in the same order, because Unity keeps the
-        /// pair by the two addresses in that order.
+        /// Select the first trigger shape, or the second if only it is a trigger.
+        /// Use the same shape order for enter, exit and removal events to match Unity's pair cache.
         /// </summary>
         private static NativeStore.ShapeData* TriggerOf(NativeStore.ShapeData* a, NativeStore.ShapeData* b)
         {
@@ -1652,8 +1554,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Adds a trigger event that names the two shapes in the order given. The caller picks the order, because the
-        /// shapes' flags may have changed since the pair entered.
+        /// Add a trigger event in the supplied shape order. Do not infer order from flags that may have changed
+        /// since entry.
         /// </summary>
         private void AddTrigger(NativeStore.ShapeData* trigger, NativeStore.ShapeData* other, uint type)
         {
@@ -1688,9 +1590,7 @@ namespace KSP.Retooled.Physics
                 int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
                 int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
 
-                // A pair whose body became kinematic or stopped being kinematic ends even when both bodies rest, as in
-                // PhysX. Otherwise a body that rested on the ground and became kinematic kept its contact pair, and
-                // when it became dynamic again, the pair sent no OnCollisionEnter.
+                // Kinematic changes restart touching pairs even when both bodies are asleep.
                 if (!IsAwake(rowFirst) && !IsAwake(rowSecond) && !state.KinematicChanged(ShapePairState.KinematicOf(key)))
                 {
                     continue;
@@ -1716,8 +1616,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Reports the end of a touching pair whose shapes both still exist: the exit of a trigger pair, or the lost
-        /// touch of a contact pair if a script asked for it.
+        /// Report a trigger exit or requested collision exit for a pair whose shapes still exist.
         /// </summary>
         private void EndPair(ShapePairKey key, ShapePairState state)
         {
@@ -1742,9 +1641,8 @@ namespace KSP.Retooled.Physics
             ushort events = (ushort)(Messages(first, second) & NotifyTouchLost);
             if (events != 0)
             {
-                // Name the shapes as the pair's enter did (see ReadContactsJob.Begin): a static body second, and else
-                // the body in the lower row first. The key's order follows the shapes' addresses, which differ from
-                // run to run.
+                // Preserve enter-event order: static body second, otherwise lower body row first. Shape
+                // addresses are not deterministic.
                 int rowFirst = (int)((NativeStore.Shape*)first)->body->index;
                 int rowSecond = (int)((NativeStore.Shape*)second)->body->index;
                 bool staticFirst = (World->bodies[rowFirst].flags & NativeStore.BodyFlags.Static) != 0;
@@ -1774,11 +1672,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Orders manifolds by body pair, then by shape pair within each body pair, so that related entries are
-        /// adjacent. The shape pairs go by the shapes' positions in their bodies, and the manifolds of one shape pair go
-        /// by their collider keys, so that the messages come in the same order in every run. The shapes' addresses, which
-        /// this order used before, differ from run to run, and so did the order of the messages for a body pair with
-        /// several shape pairs.
+        /// Order manifolds by body rows, shape positions and collider keys for deterministic contact messages.
         /// </summary>
         private struct ManifoldOrder : IComparer<ManifoldRecord>
         {
@@ -1794,9 +1688,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// A touching pair that ends in this step because it wasn't seen, with the place of each shape in the store: its
-        /// body's row and its position among the body's shapes. <see cref="ReportLostTouches"/> ends such pairs in this
-        /// order, not in the order of the map of touching pairs, which follows the shapes' addresses.
+        /// A lost touching pair with body rows and shape positions for deterministic exit event ordering.
         /// </summary>
         private struct LostPair : IComparable<LostPair>
         {

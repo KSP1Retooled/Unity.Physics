@@ -220,9 +220,8 @@ namespace Unity.Physics
             public float MaxDynamicDepenetrationVelocity;
 
             /// <summary>
-            /// Enables the iterations after position integration that remove the velocity added to separate penetrating
-            /// contacts. That velocity has already moved the bodies apart. Leaving it in their velocities would cause
-            /// them to continue moving apart.
+            /// Remove penetration correction velocity after it has moved bodies apart, preventing continued
+            /// separation.
             /// </summary>
             public bool Relaxing;
 
@@ -298,9 +297,8 @@ namespace Unity.Physics
                     IterativeSolverSchedulerInfo = solverSchedulerInfo.CouplingPairsIterativeScheduling
                 }.ScheduleUnsafeIndex0(solverSchedulerInfo.CouplingPairsIterativeScheduling.NumWorkItems, 1, inputDeps);
 
-                // Direct islands use their own substep count, which is not used by the rest of the simulation step.
-                // Divide each motor's impulse limit by that count here because the direct solver applies the limit once
-                // per substep.
+                // Divide motor limits by the direct island substep count because each substep applies its own
+                // limit.
                 int directSubsteps = input.DirectIslandSubsteps > 0 ? input.DirectIslandSubsteps : input.NumSubsteps;
                 var directJacobiansHandle = new ParallelBuildJacobiansJob
                 {
@@ -893,10 +891,8 @@ namespace Unity.Physics
 
                     if (solverTypeOverride == SolverType.Direct)
                     {
-                        // The direct solver may use smaller substeps than the iterative solver. Calculate its
-                        // regularization using its own substep duration. Within a joint, the result depends only on the
-                        // row kind, spring frequency, damping ratio and direct stiffness scale. Reuse the previous
-                        // result when these match, unless LegacyRowBuild is enabled.
+                        // Use the direct solver's substep duration for regularization.
+                        // Reuse matching row-kind and spring settings unless LegacyRowBuild is enabled.
                         uint kind = (header.IsAngular ? 1u : 0u) | (header.IsVelocityConstraint ? 2u : 0u);
                         bool same = regularized && !LegacyRowBuild && kind == regularizedKind
                             && math.asuint(constraint.SpringFrequency) == math.asuint(regularizedFrom.SpringFrequency)

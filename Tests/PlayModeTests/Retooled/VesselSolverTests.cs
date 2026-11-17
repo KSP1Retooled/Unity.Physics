@@ -12,8 +12,7 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The section solver against references it does not share code with: a dense LU of the same system built row by
-    /// row, and the same vessel with every edge live and the locked ones made very stiff.
+    /// Compare the section solver with independent dense LU and stiff live-edge references.
     /// </summary>
     public unsafe class VesselSolverTests
     {
@@ -373,13 +372,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Locked edges against the same edges made live and very stiff: the motion and each locked edge's load from
-        /// inverse dynamics must converge on the stiff edge's motion and impulses as the stiffness grows.
-        ///
-        /// A yielding edge's hard rows take their stiffness from the two parts they join, which is soft against a heavy
-        /// subtree (the study's finding about today's hard rows), so a stiff stand-in for a locked edge is a closure
-        /// between the same two parts at the same joint point, its six rows as stiff as the mass and moment of the lighter
-        /// side of the joint call for. The live edges' hard rows stiffen with the same hard period in both solves.
+        /// Compare locked motion and inverse-dynamics loads with increasingly stiff live constraints.
+        /// Use closures as stiff reference constraints so that subtree mass determines their stiffness.
         /// </summary>
         [Test]
         public void LockedEdgesMatchVeryStiffYieldingOnes([Values("pegasus", "behemoth", "tu160")] string craft,
@@ -577,8 +571,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Inverse dynamics closes each section's momentum balance: what is left at a section's first part, after every
-        /// locked edge has passed its subtree's load up and every live row's force is counted, is rounding.
+        /// Verify inverse dynamics leaves only rounding residual in each section's momentum balance.
         /// </summary>
         [Test]
         public void EverySectionBalances([Values("pegasus", "behemoth", "tu160", "epsilon", "synthetic4500")] string craft,
@@ -719,9 +712,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A boundary block's entries b1^T A^-1 b2 from forward substitutions along the elimination-tree paths of each
-        /// row's sections match the same products from full solves against the factor, and a velocity-only step leaves the
-        /// parts where they were.
+        /// Compare boundary products from elimination-tree path substitutions with full factor solves.
+        /// Verify velocity-only steps preserve positions.
         /// </summary>
         [Test]
         public void PathProductsMatchFullSolves([Values("pegasus", "tu160", "synthetic4500")] string craft,

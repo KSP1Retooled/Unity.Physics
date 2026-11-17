@@ -10,11 +10,8 @@ using PhysicsRigidBody = Unity.Physics.RigidBody;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The copies that a body's row in the store keeps of its owner's serial number and of its collider's expansion
-    /// factor (<see cref="NativeStore.BodyData.serial"/> and <see cref="NativeStore.BodyData.colliderExpansion"/>). The
-    /// body build reads these copies instead of the owner's record and the collider's memory. After each change that
-    /// can touch them, each test checks that every row's copies equal the values that they copy, and that the build
-    /// gives the same bodies and motions, to the last bit, as a build that reads the owners and the colliders.
+    /// Verify cached row serials and collider expansion factors after changes.
+    /// Require bitwise-identical bodies and motions compared with builds reading the original sources.
     /// </summary>
     public unsafe class BuildRowTests : PhysicsScene
     {
@@ -45,8 +42,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Builds the store's bodies twice, once from the rows' copies and once from the owners and the colliders, and
-        /// checks that the two builds are the same to the last bit. Returns the number of dynamic bodies.
+        /// Build from cached row fields and original sources, requiring bitwise equality. Return the dynamic body
+        /// count.
         /// </summary>
         private static int AssertBuildsAgree(string when, float deltaTime = Step)
         {

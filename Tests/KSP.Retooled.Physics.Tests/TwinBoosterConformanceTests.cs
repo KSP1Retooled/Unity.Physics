@@ -5,10 +5,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Two heavy booster columns stand on the pad with a core hung between them, the way a big asparagus craft sits before
-    /// launch. Light decoupler and truss parts carry the core, and struts that never break tie the three together. The ground
-    /// closes a loop through both columns, so how the load splits depends on how stiff each path is, and a light part must
-    /// not end up carrying far more than its share.
+    /// Test load sharing in a grounded twin-booster craft with a suspended core, light connectors and unbreakable
+    /// struts.
     /// </summary>
     public class TwinBoosterConformanceTests : PhysicsScene
     {
@@ -93,10 +91,7 @@ namespace KSP.Retooled.Physics.Tests
             return tanks;
         }
 
-        /// <summary>
-        /// A decoupler on the core and a truss on the decoupler, with the column's tank on the truss: the light parts are the
-        /// only tree path from a column to the core.
-        /// </summary>
+        // Light decoupler and truss parts form the only tree path between the booster column and core.
         private void Bridge(Rigidbody core, Rigidbody tank, float side)
         {
             float coreEdge = Width * 0.5f;

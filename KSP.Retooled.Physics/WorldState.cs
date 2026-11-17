@@ -6,9 +6,8 @@ using Unity.Physics.Systems;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Stores the managed state for one native world. This includes a Unity Physics world built from the store on
-    /// demand, plus data retained between steps. All of this state is discarded on detach. It is rebuilt for the next
-    /// step or query.
+    /// Managed state and built Unity Physics world for one native world.
+    /// Discard on detach and rebuild on the next step or query.
     /// </summary>
     internal sealed unsafe class WorldState : IDisposable
     {
@@ -56,16 +55,12 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Runs the physics system group for this world. The group does not exist before Entities starts, so no step
-        /// runs before then. Simulation for the first frame occurs after Entities starts.
+        /// Run this world's physics systems when Entities has started. Before then, skip simulation.
         /// </summary>
         internal void Step(PhysicsSystemGroup group, float deltaTime)
         {
-            // When this method returns, Unity reads the poses back, and the plugin reads them through the pointers of
-            // the store's rows (g_ReadBackWorld in the plugin). A step refreshes those pointers when it applies the
-            // forces. When no step runs, or a step throws before it applies the forces, the pointers can be stale
-            // after a structural change to a body's entity, so this method refreshes them on every path. After a step
-            // the refresh finds the rows current and returns at once.
+            // Refresh row pointers on every return path: Unity reads poses after this call, including skipped
+            // or failed steps.
             try
             {
                 if (group == null || deltaTime <= 0.0f)
@@ -85,14 +80,12 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Updates the built world to match the poses in the store without running a simulation step. Returns a
-        /// QueryWorld constant. Call this method only on the main thread.
+        /// Update built query data without simulation. Main thread only; return a QueryWorld result.
         /// </summary>
         internal int BuildForQueries()
         {
-            // The main thread can get here inside a job that it picked up while it waited for another, where completing
-            // or scheduling a job throws. It finishes the last step's refit on this thread then, and leaves any other
-            // change for a build outside the job.
+            // Inside a job, finish refit work directly and defer other world changes until a build outside the
+            // job.
             if (Unity.Jobs.LowLevel.Unsafe.JobsUtility.IsExecutingJob)
             {
                 state->HelpPendingRefit();

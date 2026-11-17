@@ -8,8 +8,7 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The force and torque on a joint during this step, collected before they are written back to the store. The load
-    /// may be for a single store joint or for a group that was built as one joint.
+    /// Force and torque collected this step for a single joint or a merged joint group.
     /// </summary>
     internal struct JointLoad
     {
@@ -18,12 +17,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// The values that the jobs for joint loads read and write for one joint in every step. While a world has a
-    /// <see cref="StepState"/>, these values sit in a dense array that <see cref="JointLoadStates"/> keeps beside the
-    /// world's list of joints, at the joint's index in that list. The jobs then don't need to reach the joint records,
-    /// which are large and spread through memory. The array holds the only current copy of the loads and of the
-    /// smoothed magnitudes. The records get them back when the world's step state is disposed. The break limits and
-    /// whether the joint is inactive are copies of the record's values, which the joint commands keep up to date.
+    /// Current joint loads and smoothed magnitudes, stored densely alongside the world's joint list.
+    /// Copy loads back to native records when StepState is disposed. Commands update cached break limits and
+    /// inactivity.
     /// </summary>
     internal struct JointLoadState
     {
@@ -60,12 +56,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Finds the dense array of <see cref="JointLoadState"/> for each world that has a <see cref="StepState"/>. The
-    /// step state registers its array when it is made and removes it when it is disposed. The joint commands use this
-    /// table to keep each world's array in the same order as the world's list of joints: a new joint gets a slot at
-    /// the end, and a destroyed joint's slot takes the last slot, as in the list. The commands that change a break
-    /// limit or a joint's bodies copy the new values into the joint's slot, and GetForces reads the loads from it.
-    /// Commands and registrations arrive on the main thread, outside a step.
+    /// Map worlds to their dense joint load arrays. Main-thread commands keep slots aligned with the joint list.
     /// </summary>
     internal static unsafe class JointLoadStates
     {
@@ -106,8 +97,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Writes the loads in a world's array back to its joint records, and takes the array out of the table. From
-        /// now on, the records hold the loads again.
+        /// Copy dense loads back to native joint records and unregister the world's array.
         /// </summary>
         internal static void Unregister(NativeStore.WorldData* world)
         {
@@ -156,8 +146,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the slot of a joint, or null if the joint's world has no step state. The command doesn't know the
-        /// joint's world, so the method looks for the world whose list holds the joint at the joint's index.
+        /// Return the joint's load slot, or null when its world has no StepState.
         /// </summary>
         internal static JointLoadState* Find(NativeStore.JointData* joint)
         {
@@ -191,8 +180,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves the last slot into the slot of a joint that is about to be destroyed, as
-        /// <see cref="JointKernel.Destroy"/> does with the world's list. Call this before the list changes.
+        /// Move the last load slot into a removed joint's slot. Call before changing the world's joint list.
         /// </summary>
         internal static void Destroying(NativeStore.WorldData* world, NativeStore.JointData* joint)
         {
@@ -226,17 +214,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Jobs that calculate joint loads from the impulse events for this step, then break joints whose loads exceed
-    /// their limits. Each constraint produces one event containing its impulse for the whole step. That impulse acts on
-    /// body A, the connected body. Unity reports the load on the joint's owner instead. As in PhysX, drives contribute
-    /// neither to reported loads nor to breaking, so they produce no events. Joints whose bodies are asleep are not
-    /// solved and continue to report their previous forces, as in PhysX. A broken joint stops constraining its bodies
-    /// from the next step. Its break record remains in the world's break list until the results of the step are
-    /// published.
-    ///
-    /// Most of the work involves converting each event into world space using the joint's bodies. That conversion runs
-    /// in parallel. The converted events for a joint are then summed in the order that the solver wrote them. This
-    /// gives the same forces regardless of how the parallel work is scheduled.
+    /// Compute joint loads from impulse events and break joints above their limits.
+    /// Convert events in parallel, then sum in solver order for deterministic results.
+    /// Exclude drives and retain sleeping joints' previous loads. Broken joints stop constraining on the next step.
     /// </summary>
     internal static unsafe class JointForceJobs
     {
@@ -253,8 +233,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Initializes each joint's load to zero, or to its previous load if both bodies are held in place and the joint is
-    /// not solved. When <see cref="Listed"/> is true, the job handles only the joints in <see cref="Joints"/>.
+    /// Initialize joint loads to zero, preserving previous loads for unsolved resting bodies.
+    /// If Listed is true, process only Joints.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SeedJointLoadsJob : IJobParallelFor
@@ -287,9 +267,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Converts each impulse event into a force or torque in world space, processing one bucket of the event stream per
-    /// work item. The result replaces the impulse in the event. No code reads the events after
-    /// <see cref="SumJointImpulsesJob"/> .
+    /// Convert impulse events to world-space forces and torques in place, one stream bucket per work item.
     /// </summary>
     [BurstCompile]
     internal unsafe struct RotateJointImpulsesJob : IJobParallelForDefer
@@ -323,8 +301,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Adds the converted events to the loads for their joints and groups, in the order that the solver wrote them. The
-    /// load on the joint's owner has the opposite sign to the load on body A.
+    /// Sum converted impulse events in solver order. Negate body A's load to report the owner's load.
     /// </summary>
     [BurstCompile]
     internal struct SumJointImpulsesJob : IJob
@@ -364,11 +341,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Distributes a group's load among its members according to their resistance to displacement at rest. Dividing the
-    /// group's torque by its stiffness gives an equivalent rotation. Each member contributes torque according to its
-    /// angular stiffness. Its linear constraints also contribute force because its anchor is offset from the group's
-    /// mean anchor. The group's net force is divided equally among the members. Each joint belongs to at most one
-    /// group, so the loads for different groups can be distributed in parallel.
+    /// Distribute group forces equally and torques by member stiffness, including forces from offset anchors.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ShareGroupLoadsJob : IJobParallelFor
@@ -403,9 +376,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Adds each member's share of the group's load to the member's load. The frame is the world rotation of the
-        /// leading joint's frame on body0, which <see cref="JointConstraints.WorldRotation0"/> gives once the poses
-        /// are written back.
+        /// Add a group member's load share in the leader's body0 joint frame.
         /// </summary>
         internal static void Share(in JointGroup group, quaternion frame, in JointLoad carried, NativeArray<JointGroupMember> members,
             NativeArray<JointLoad> jointLoads)
@@ -424,18 +395,14 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Writes each joint's load to its load state, then smooths the force and torque magnitudes used for breaking. Marks
-    /// active joints whose smoothed loads exceed their break limits in <see cref="Overloaded"/> .
+    /// Store joint loads, smooth force/torque magnitudes and mark active overloaded joints.
     /// </summary>
     [BurstCompile]
     internal unsafe struct SettleJointLoadsJob : IJobParallelFor
     {
         /// <summary>
-        /// The time constant, in seconds, for smoothing both force and torque before comparing them with the break
-        /// limits. A constant load approaches its full contribution over successive steps. The direct solver holds a
-        /// craft rigidly, so one part landing can stop all of the parts above it within a single step. Their joints
-        /// carry the force of that stop at once. PhysX spreads the stop over several steps, which reduces the peak load
-        /// and makes breakage less likely.
+        /// Smoothing time constant in seconds for break-test force and torque.
+        /// Smoothing reduces one-step load spikes when the direct solver stops a rigid craft.
         /// </summary>
         private const float BreakingTimeConstant = 0.1f;
 
@@ -468,8 +435,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Writes one joint's load to its load state and smooths it, as described for this job. Returns whether the
-        /// joint is active and its smoothed load exceeds its break limits.
+        /// Store and smooth one joint's load. Return whether the active joint exceeds a break limit.
         /// </summary>
         internal static bool Settle(NativeStore.JointData* joint, JointLoadState* state, in JointLoad load, float deltaTime)
         {
@@ -484,9 +450,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Settles the load of a joint that the caller knows has at least one moving body that is awake, as
-        /// <see cref="Settle"/> does, and returns the same result. The caller saves the reads of the joint's record
-        /// and of its two bodies, which are often not in the cache.
+        /// Settle a joint load when the caller already knows that at least one moving body is awake.
         /// </summary>
         internal static bool SettleAwake(JointLoadState* state, in JointLoad load, float deltaTime)
         {
@@ -501,8 +465,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Breaks overloaded joints and adds their break records to the world's break list in store order. A joint rarely
-    /// breaks, so the job reads the flags eight at a time and skips each group of eight that is all zero.
+    /// Break overloaded joints and emit break records in store order.
     /// </summary>
     [BurstCompile]
     internal unsafe struct BreakJointsJob : IJob

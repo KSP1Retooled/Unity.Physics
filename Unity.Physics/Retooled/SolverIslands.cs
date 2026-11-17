@@ -20,11 +20,8 @@ namespace Unity.Physics
         const int NumIslandBuckets = NumIslandPhases + 1;
 
         /// <summary>
-        /// Finds the islands in one job, then sorts their pairs into buckets in parallel across islands. The array of
-        /// phased pairs contains <see cref="NumIslandBuckets"/> equally sized buckets, each large enough to hold every
-        /// pair. Each job can therefore reserve space in its bucket independently, without a later pass to combine the
-        /// results. Returns the handle of the last job that sorts. <paramref name="disposed"/> completes when the
-        /// temporary lists are freed. Later stages don't need to wait for that.
+        /// Find islands, then bucket their pairs in parallel.
+        /// Return pair-sorting completion separately from temporary-list disposal in disposed.
         /// </summary>
         internal static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
             NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps, out JobHandle disposed)
@@ -120,22 +117,15 @@ namespace Unity.Physics
             public int OtherBodies;
 
             /// <summary>
-            /// Whether the island holds a vessel. Its bodies are joined through the vessel, not through pairs, so the
-            /// island exists even with no pairs at all, and it always goes to the direct solver.
+            /// Whether the island contains a vessel. Such islands always use direct solving, even without dispatch
+            /// pairs.
             /// </summary>
             public bool HasVessel => VesselCount > 0;
         }
 
         /// <summary>
-        /// Groups pairs into islands connected by joints, contacts or vessels. Only dynamic bodies connect islands. The
-        /// solver does not modify static bodies, so islands that share only a static body can be solved independently.
-        /// <para>
-        /// When the step has vessels, each vessel is one node of the search. The job never visits the vessel's own
-        /// edges, and it doesn't join the vessel's parts one by one. A pair that touches a part joins that part's
-        /// vessel, and the island's body list takes the vessel's parts straight from the vessel's part list. The map
-        /// from bodies to vessels is kept in the <see cref="SolverIslandCache"/> and is built again only when the
-        /// vessels or their bodies change.
-        /// </para>
+        /// Find islands connected by joints, contacts or vessels, using only dynamic bodies as links.
+        /// Treat each vessel as one node and reuse the cached body-to-vessel map.
         /// </summary>
         [BurstCompile]
         internal unsafe struct FindSolverIslandsJob : IJob
@@ -223,9 +213,8 @@ namespace Unity.Physics
                 NativeArray<DispatchPair> solvedPairs = solved.GetSubArray(0, numPairs);
                 VesselSet vessels = Vessels.IsCreated ? Vessels : default;
 
-                // Reuse the islands only if the solved pairs, the dynamic body count and the vessels match the cached
-                // values. The cache compares the vessels first, and builds its map from bodies to vessels again if they
-                // changed.
+                // Reuse islands only when pairs, dynamic body count and vessels match. Refresh the vessel map
+                // first.
                 var map = default(VesselBodyMap);
                 bool sameVessels = false;
                 if (Cache.IsCreated)
@@ -358,16 +347,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Finds the islands of a step with vessels. Node v, for v below the vessel count, is vessel v. The other
-            /// nodes are the bodies outside vessels that the pairs touch, numbered in the order in which the pairs first
-            /// touch them. The work grows with the number of pairs, vessels and islands, plus one copy of each vessel's
-            /// part list, and not with the number of vessel edges.
-            /// <para>
-            /// The islands are numbered in the order of their lowest key body. A vessel's key body is its lowest
-            /// dynamic body, and any other body is its own key. Within an island, the body list holds the parts of its
-            /// vessels first, vessel by vessel in ascending vessel index and each in part order, then the other bodies
-            /// in ascending order.
-            /// </para>
+            /// Find vessel islands, numbering by lowest dynamic body.
+            /// List vessel parts first in vessel/part order, then other bodies in ascending order.
             /// </summary>
             void FindVesselIslands(NativeArray<DispatchPair> solved, in VesselSet vessels, in VesselBodyMap map)
             {
@@ -565,14 +546,10 @@ namespace Unity.Physics
             }
         }
         /// <summary>
-        /// Assigns phases to an island's links and puts its pairs in the corresponding buckets. An island uses
-        /// iterative phases only if it has no joints or vessels and its links fit in <see cref="NumIslandPhases"/>
-        /// phases. Otherwise, all its pairs go into the direct bucket, so each body is handled by one solver. A colour
-        /// represents a phase assigned to a link (see <see cref="DispatchPair.IsSameLink"/>). Pairs on the same link
-        /// run sequentially on one thread and therefore do not conflict with each other. Islands have no dynamic bodies
-        /// in common, so jobs can use the shared <see cref="PhasesUsed"/> and <see cref="LinksInPhases"/> arrays. Each
-        /// thread reserves space in a bucket atomically. Island order within a bucket can vary between runs, but pair
-        /// order within each island is preserved.
+        /// Assign phases to links and bucket island pairs. Use iterative solving only for joint-free, vessel-free
+        /// islands
+        /// that fit within NumIslandPhases; otherwise use the direct bucket.
+        /// Keep pair order within each island; bucket reservation order may vary.
         /// </summary>
         [BurstCompile]
         unsafe struct SortIslandIntoBucketsJob : IJobParallelForDefer
@@ -639,9 +616,8 @@ namespace Unity.Physics
                 int bucketSize = PhasedDispatchPairs.Length / NumIslandBuckets;
                 if (!fits)
                 {
-                    // Build Jacobians of the direct solver's type only for joints. Keep the iterative type for contact
-                    // Jacobians: the sparse solver uses them to build contact rows, and the event export reads them
-                    // afterwards.
+                    // Keep iterative contact Jacobians for sparse row construction and event export; use direct
+                    // types for joints.
                     island.FirstDirectPair = Reserve(NumIslandPhases, pairs.Length);
                     int nextPair = NumIslandPhases * bucketSize + island.FirstDirectPair;
                     for (int pass = 0; pass < 2; pass++)
@@ -692,9 +668,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Counts bodies that participate in more links than there are phases. Links that share a body need
-            /// different phases, so any such body requires the direct solver without attempting to assign phases.
-            /// Clears <see cref="PhasesUsed"/> before returning.
+            /// Count bodies exceeding the link capacity of available phases and clear PhasesUsed.
+            /// Such bodies require direct solving without attempting coloring.
             /// </summary>
             int CountCrowdedBodies(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks)
             {
@@ -738,11 +713,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Assigns a phase to every link, or returns false. First tries an available phase for each link. If
-            /// none is available, fills <see cref="LinksInPhases"/> and attempts to free a phase by swapping colours
-            /// along chains. The total number of chain traversal steps is limited in proportion to the number of links.
-            /// If no swap succeeds or the limit is reached, the island uses the direct solver. A failed attempt can
-            /// result from an odd cycle, but reaching the limit alone does not prove that the island has one.
+            /// Assign phases greedily, then try bounded alternating-chain swaps.
+            /// Return false when no assignment is found within the traversal limit, selecting direct solving.
             /// </summary>
             bool ColourLinks(NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs, int numLinks, NativeArray<byte> phases)
             {
@@ -787,10 +759,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Finds a phase that is available on both dynamic bodies of a link, or returns -1 if none is available.
-            /// Static bodies are not modified, so any number of links can share a static body within a phase. For a
-            /// link to a static body, chooses the last available phase so constraints against the world are processed
-            /// later.
+            /// Find a phase free at both dynamic endpoints, or -1. Prefer later phases for links against static
+            /// bodies.
             /// </summary>
             int FirstFreePhase(DispatchPair pair)
             {
@@ -866,12 +836,8 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Attempts to free the same phase at both ends of a link that could not be assigned a phase. Chooses a
-            /// phase free at each end, then follows a path of links with alternating phases from one end. Swapping
-            /// those phases along the path frees a common phase unless the path reaches the other end. Reaching the
-            /// other end forms an odd cycle with the unassigned link. This obstruction cannot occur in a tree, but can
-            /// occur in a craft with cycles formed by struts or contacts. Returns -1 if every pair of phases fails or
-            /// the traversal limit is reached, including if that limit is reached on a tree.
+            /// Try alternating-phase chain swaps to free a common phase at both endpoints.
+            /// Return -1 if no swap works or the traversal limit is reached.
             /// </summary>
             int FreePhaseWithChain(DispatchPair stuck, NativeArray<DispatchPair> pairs, NativeArray<int> firstPairs,
                 NativeArray<byte> phases, NativeArray<int> chain, ref int stepsLeft)
@@ -962,9 +928,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Publishes the pairs and work items in each bucket to the solver's scheduling data. Empty buckets are
-        /// allowed. <see cref="IterativeSolverSchedulerInfo.FindPhaseId"/> handles consecutive phases with the same
-        /// offset in the work items.
+        /// Publish bucket pairs and work items. Empty buckets may have consecutive phases with identical offsets.
         /// </summary>
         [BurstCompile]
         unsafe struct PublishIslandBucketsJob : IJob
@@ -1094,9 +1058,7 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// For each dynamic body, the vessel that it is a part of, and for each vessel, the number of its parts whose bodies
-    /// are dynamic and the lowest of those bodies. <see cref="DispatchPairSequencer.FindSolverIslandsJob"/> reads it to
-    /// treat each vessel as one node.
+    /// Body-to-vessel mapping, with each vessel's dynamic part count and lowest dynamic body.
     /// </summary>
     internal unsafe struct VesselBodyMap
     {
@@ -1148,12 +1110,9 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// Caches the previous step's islands and the pairs used to find them. A craft often has the same joints across
-    /// steps, and a floating craft may have no other constraints, so the islands can often be reused. Reuse requires
-    /// matching pairs, dynamic body count and vessels. The cache also keeps the vessels' records and part bodies, and the
-    /// <see cref="VesselBodyMap"/> built from them, so that the map is built again only when they change. The caller
-    /// owns this cache and passes it in <see cref="SimulationStepInput"/>. Without a cache, islands are found again
-    /// every step.
+    /// Cache islands while pairs, dynamic body count and vessels match.
+    /// Retain vessel/body mappings until their inputs change. The caller owns the cache through
+    /// SimulationStepInput.
     /// </summary>
     public unsafe struct SolverIslandCache : IDisposable
     {
@@ -1248,9 +1207,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Compares the step's vessels and their part bodies with the ones of the last step. If they differ, keeps the
-        /// new ones and builds the map again. Returns true if they are the same, so that the cached islands can still
-        /// be valid. The comparison reads each part once, as one block of memory per vessel.
+        /// Compare vessel records and part bodies with the previous step, rebuilding the map if changed.
+        /// Return true when they match and cached islands may remain valid.
         /// </summary>
         internal bool KeepVessels(in VesselSet set, int dynamicBodies, out VesselBodyMap map)
         {
@@ -1301,8 +1259,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Copies the cached islands into the outputs if the solved pairs and dynamic body count match. The caller has
-        /// already checked with <see cref="KeepVessels"/> that the vessels match.
+        /// Reuse cached islands when solved pairs and dynamic body count match. The caller must first verify
+        /// vessels with KeepVessels.
         /// </summary>
         internal bool TryReuse(NativeArray<DispatchPairSequencer.DispatchPair> solved, int dynamicBodies,
             NativeList<DispatchPairSequencer.SolverIsland> outIslands, NativeList<DispatchPairSequencer.DispatchPair> outPairs,

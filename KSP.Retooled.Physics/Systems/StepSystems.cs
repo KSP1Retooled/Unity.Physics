@@ -9,10 +9,8 @@ using Unity.Physics.Systems;
 
 namespace KSP.Retooled.Systems.Physics;
 
-// These systems run the stages of a step that Unity.Physics does not provide. Each belongs to a group that places it
-// before or after the appropriate Unity.Physics systems. They register write access to PhysicsCollider so that their
-// jobs participate in the simulation's dependencies. The Unity.Physics systems use that component to chain their jobs.
-// Bodies are stored on entities, but these systems use the rows in the store instead of querying those entities.
+// Backend step stages placed around Unity Physics systems. Register PhysicsCollider writes to join
+// simulation dependencies; access body state through store rows.
 
 /// <summary>Integrates the forces and changes in velocity applied to bodies since the last step.</summary>
 [BurstCompile]
@@ -38,9 +36,7 @@ internal unsafe partial struct BuildBodyWorldSystem : ISystem
     private EntityQuery settings;
     private EntityQuery worlds;
 
-    // Keep this reference instead of reading BuildPhysicsWorldData each step. Querying that component would register
-    // this system's jobs as dependencies for it. Stock systems that read it through EntityManager would then have to
-    // wait for the entire build.
+    // Cache the flag reference so that reading BuildPhysicsWorldData does not add a build dependency.
     private NativeReference<int> staticsChanged;
 
     public void OnCreate(ref SystemState state)
@@ -172,10 +168,8 @@ internal unsafe partial struct FinishStepSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        // Finish the step while its solve is still running, so that FinishStep schedules the write-back and the jobs
-        // that read the solved motions before the solve ends. Those jobs then start as soon as the motions are solved.
-        // Reading the simulation singleton here would first wait for every job of the solve, and then for the jobs
-        // that free its buffers and export its events. FinishStep waits for the whole solve itself.
+        // Schedule post-solve work before waiting for the solve. Reading the singleton here would also wait for
+        // cleanup.
         if (StepKernel.FinishPreparedStep(state.WorldUnmanaged.Time.DeltaTime) != 0)
         {
             return;

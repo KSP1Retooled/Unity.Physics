@@ -14,12 +14,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Measures how long the job system takes to start the next job of a chain on this machine. A chain alternates a
-    /// serial job, which writes the lane count of the job after it, with an IJobParallelForDefer job that reads that
-    /// count when it starts, as a fused island's solve would if each of its serial parts and stages were a job of its
-    /// own. Every job spins for a short time to stand in for work. The test reports the median time from the end of a
-    /// serial job to the start of the first lane of the parallel job after it, and from the end of the last lane of a
-    /// parallel job to the start of the next serial job. Results go to the log and to JobChainHops.txt in Logs.
+    /// Measure median scheduling gaps between serial and deferred parallel jobs.
+    /// Write results to the log and Logs/JobChainHops.txt.
     /// </summary>
     [TestFixture]
     [Explicit("profiling")]

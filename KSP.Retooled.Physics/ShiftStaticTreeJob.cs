@@ -8,35 +8,15 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Determines whether to rebuild the static tree or move its bounds. KSP's floating origin moves every static body
-    /// by the same offset, often every frame. Rebuilding the tree requires calculating a bounding box for every static
-    /// body. If the bodies have only moved and nearly all share one offset, this job moves the tree's bounds and writes
-    /// 0 to <see cref="Rebuild"/>. Otherwise it writes 1.
+    /// Shift static tree bounds for a common body offset; write Rebuild = 1 when a rebuild is required.
+    /// Always shift from the last built bounds to avoid accumulated rounding. Expand bounds for pose rounding
+    /// and refit independently moving bodies when their count is small.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Unity calculates each static body's world pose using floats. A parent transform may be a planet's width away, so
-    /// floating-point rounding prevents all bodies from moving by exactly the same offset. For example, a terrain
-    /// collider parented to a planet's centre 600 km away can deviate by centimetres. This job expands each node's
-    /// bounds to cover the largest deviation among the bodies below it, plus rounding during movement. This keeps every
-    /// static body within its bounds. Each move uses the original bounds from the last build, so rounding errors do not
-    /// accumulate across moves.
-    /// </para>
-    /// <para>
-    /// Some static bodies move independently because they rotate or follow their own parent transforms. For each such
-    /// body, and each body that deviates too far from the common offset, this job recalculates the bounding box at the
-    /// new pose. It then fits the bounds of ancestor nodes around their children again. If too many bodies require this
-    /// work, rebuilding the tree is cheaper.
-    /// </para>
-    /// </remarks>
     [BurstCompile]
     internal unsafe struct ShiftStaticTreeJob : IJob
     {
         /// <summary>
-        /// Limits how many static bodies can have their bounds fitted individually during a move. Fitting one body
-        /// requires calculating its bounding box and walking up the tree. Rebuilding requires calculating boxes for all
-        /// static bodies and sorting them, so fitting up to a quarter of them is still cheaper. The limit is at least
-        /// 64 bodies. During flight, about a hundred of KSP's static bodies move independently every frame.
+        /// Maximum number of independently moving bodies to refit before rebuilding the static tree.
         /// </summary>
         private readonly int MaxStrays => math.max(64, StaticBodies.Length / 4);
 
@@ -64,11 +44,8 @@ namespace KSP.Retooled.Physics
         public NativeStore.BodyData* Store;
 
         /// <summary>
-        /// Lists the bodies whose colliders were rebuilt during the refresh for this build: new bodies and bodies whose
-        /// shapes changed. A static body's collider may have changed in ways that its pose and pointer do not reveal,
-        /// such as a change to its filter. A collider freed since the tree was built may also be replaced by another at
-        /// the same address. A build that does not refresh colliders uses the list from the last refresh. This may
-        /// cause an unnecessary rebuild of the tree, but is otherwise safe.
+        /// Bodies whose colliders were rebuilt. Treat these as changed even when pose and pointer match,
+        /// because memory may have been reused or collider settings changed.
         /// </summary>
         [ReadOnly]
         [NativeDisableContainerSafetyRestriction]
@@ -98,9 +75,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Stores data that this job retains between builds. The world's step state owns the data, but only this job
-        /// accesses it. Each build waits for the previous build, so these containers do not need safety handles, just
-        /// as the lists for the tree do not.
+        /// Persistent tree shift data owned by StepState. Only serialized build jobs access these containers.
         /// </summary>
         internal struct ShiftState
         {
@@ -208,10 +183,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Finds the common offset of most static bodies since the tree was built. Records how far each body deviated
-        /// from that offset and lists bodies that moved differently. Returns false if a collider pointer changed or too
-        /// many bodies moved differently. Bodies without colliders cannot collide with anything, so they are excluded
-        /// from the movement checks.
+        /// Find the common static body offset and record deviations and independently moving bodies.
+        /// Return false if colliders changed or too many bodies need individual refitting.
         /// </summary>
         private readonly bool FindOffset(NativeList<int> strays, NativeArray<float> misses, out float3 offset)
         {
@@ -249,9 +222,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Separates static bodies into those that followed the common offset and those that need their bounds fitted
-        /// individually. Records how far each body in the first group deviated from the offset. Returns false as soon
-        /// as too many bodies need individual fitting.
+        /// Separate bodies following the common offset from those needing individual refits.
+        /// Return false when the refit count exceeds the limit.
         /// </summary>
         private readonly bool Sort(RigidBody* bodies, TreeStatic* held, double3 moved, double3 offset, NativeList<int> strays, NativeArray<float> misses)
         {
@@ -302,10 +274,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Copies the original tree bounds and records where each node and static body is stored. Every move uses these
-        /// original bounds until the next rebuild. Building a tree on several threads leaves gaps between branches.
-        /// Nodes in those gaps may contain arbitrary data, so only nodes reachable from the root are used. Returns
-        /// false if a static body with a collider is missing from the leaves.
+        /// Save built bounds and tree locations for later shifts. Visit only reachable nodes because parallel
+        /// builds leave gaps.
+        /// Return false if a collidable static body is missing from the leaves.
         /// </summary>
         private bool CopyBuiltTree()
         {
@@ -375,11 +346,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves the bounds of reachable nodes and the mesh bounds for every body from their original positions when
-        /// the tree was built. Each node's bounds are expanded to cover deviations from the common offset and rounding
-        /// during movement. Expansion propagates from children to parents. A parent's original bounds enclose its
-        /// children's bounds, so its rounding allowance is at least as large as theirs. The expanded bounds therefore
-        /// still enclose the children after movement.
+        /// Shift original node bounds and expand them for body deviations and floating-point rounding.
+        /// Propagate expansion from children to parents to preserve containment.
         /// </summary>
         private readonly void MoveBounds(float3 offset, NativeArray<float> misses)
         {
@@ -435,9 +403,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns twice the maximum rounding error when moving a bound of this size. Rounding occurs when adding the
-        /// expansion to the offset and again when adding that result to the bound. Floating-point values are spaced
-        /// further apart far from the origin, so the allowance grows with distance.
+        /// Twice the maximum rounding error when shifting a bound, accounting for both additions.
         /// </summary>
         private static float Rounding(float largest, float distance)
         {
@@ -458,10 +424,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Recalculates the bounding box at the current pose for each body that moved differently, using the same
-        /// calculation as a tree build. Then fits the bounds of its ancestors around their children. Each fit reads the
-        /// current child bounds, so updates for bodies with a shared ancestor include the boxes that were already
-        /// recalculated.
+        /// Recompute bounds for independently moving bodies and refit their ancestors using current child bounds.
         /// </summary>
         private readonly void FitStrays(NativeList<int> strays)
         {

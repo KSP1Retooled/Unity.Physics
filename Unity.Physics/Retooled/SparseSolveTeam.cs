@@ -7,25 +7,20 @@ using Unity.Profiling.LowLevel.Unsafe;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Coordinates lanes within one job for island solving, including large direct solves and iterative phases. The
-    /// first lane to run becomes the leader. It performs the solve and publishes stages made up of independent tasks.
-    /// The leader also executes tasks, while other lanes help until the leader finishes or they exceed their idle
-    /// timeout. Helpers wait only for a leader that is already running. If a lane starts late or never starts, fewer
-    /// lanes share the work, but the solve can still finish.
+    /// Coordinate a running leader and helper lanes within one solver job.
+    /// The leader publishes independent tasks and also executes them. Late or absent helpers must not prevent
+    /// completion.
     /// </summary>
     internal unsafe struct SparseSolveTeam
     {
         /// <summary>
-        /// The time that an idle helper spins before blocking, if address waiting is available. If a stage starts while
-        /// the helper is spinning, it can work immediately. A blocked helper takes a few microseconds to wake, which is
-        /// short compared with this spin interval.
+        /// Idle helper spin duration before address waiting, in microseconds.
         /// </summary>
         const long SpinMicroseconds = 50;
 
         /// <summary>
-        /// The idle time after which a helper stops helping and returns its thread to the job system. This is checked
-        /// between waits, so a blocked helper must wake before it can leave. This returns helper threads to the job
-        /// system if the leader spends a long time on serial work. The leader can finish without those helpers.
+        /// Idle helper timeout in microseconds before returning to the job system. Checked after waking as well as
+        /// while spinning.
         /// </summary>
         const long PatienceMicroseconds = 2000;
 
@@ -95,9 +90,7 @@ namespace Unity.Physics
         long spinTicks;
         long patienceTicks;
 
-        // Leave at least one cache line between the flags written once per solve and the counters updated for every
-        // task. This separation holds regardless of the team's starting address. Reading a flag therefore avoids
-        // loading a cache line that other lanes are modifying.
+        // Separate solve flags from frequently modified task counters by at least one cache line.
         fixed byte separation[64];
 
         // The upper 32 bits store the current stage's generation; the lower 32 bits store the next task index. Check
@@ -105,9 +98,8 @@ namespace Unity.Physics
         long next;
         int done;
 
-        // The number of blocked helpers and the signal word on which they wait. The leader changes the word before
-        // waking a helper. If that helper finds a new stage, it wakes another helper. The leader therefore needs only
-        // one wake call, regardless of the number of blocked helpers.
+        // Blocked helper count and wake signal. A woken helper passes the wake to another when work is
+        // available.
         int parked;
         int signal;
 
@@ -149,9 +141,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Runs all tasks in a stage using the leader's lane and any available helpers. Returns only after every task
-        /// is complete. For sparse solver stages, the context points to the sparse solver. For the direct solver's
-        /// stages, it points to the data read and written during that stage.
+        /// Run a stage's tasks with available helpers and wait for completion.
+        /// context points to the solver or the direct stage's working data.
         /// </summary>
         public void Lead(void* context, int kind, int taskCount, double* vector)
         {
@@ -209,9 +200,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Executes tasks from each stage published by the leader until the leader finishes or this lane exceeds its
-        /// idle timeout. Between stages, the lane spins briefly. If address waiting is available, it then blocks until
-        /// signalled. It checks the idle timeout while spinning and after returning from a wait.
+        /// Help published stages until the leader finishes or the idle timeout expires.
+        /// Spin briefly, then use address waiting when available.
         /// </summary>
         public void Help()
         {
@@ -250,9 +240,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Runs the tasks that are left in the current stage, if the leader has published a stage that still has tasks
-        /// to claim, and returns whether it found such a stage. It never waits. A lane that helps several teams calls
-        /// this on each team in turn, so that it works wherever a stage is open.
+        /// Claim available tasks from the current stage without waiting. Return whether an open stage was found.
         /// </summary>
         public bool TryWork()
         {
@@ -263,9 +251,8 @@ namespace Unity.Physics
                 return false;
             }
 
-            // The leader writes a stage's slot before it publishes the stage's generation, and it doesn't write that
-            // slot again until two generations later. Work checks the generation before it claims each task, so it
-            // runs no task of a stage that has ended.
+            // Publish a generation after writing its alternating slot. Check the generation before each task
+            // claim.
             Stage stage = (generation & 1) == 0 ? even : odd;
             if ((current & uint.MaxValue) >= stage.TaskCount)
             {
@@ -414,9 +401,7 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// Counts, over every team, the stages that leaders published, the stages in which some lane other than the leader
-    /// claimed a task, and the time from a stage's publication to that lane's first claim. The bench reads them to see
-    /// how fast parked helpers arrive.
+    /// Count published/helped stages and first-helper arrival times across teams for handoff benchmarks.
     /// </summary>
     internal struct HandOffCounters
     {

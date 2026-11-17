@@ -9,8 +9,7 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// The simulation state for a world, owned by <see cref="WorldState"/>. It is stored in unmanaged memory so that
-    /// Burst can run an entire step: iterate over the bodies, schedule the stages and read their results.
+    /// Unmanaged simulation state for one world, owned by WorldState and used by Burst step entry points.
     /// </summary>
     internal unsafe struct StepState
     {
@@ -31,18 +30,16 @@ namespace KSP.Retooled.Physics
 
         private PhysicsWorld world;
 
-        // The jobs for the static tree read one of these references to determine whether to rebuild the tree. After
-        // initialization, keepStatics is never written. Only ShiftStaticTreeJob writes rebuildStatics, and each build
-        // schedules that job before the jobs for the tree.
+        // Static tree jobs read these flags. keepStatics is constant after initialization;
+        // ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
         private NativeReference<int> rebuildStatics;
         private NativeReference<int> keepStatics;
         private ShiftStaticTreeJob.ShiftState treeShift;
         private bool staticsChanged;
         private bool treeMatchesHeld;
 
-        // The store rows of the static bodies, in order, that the world's static rows were last written from. A build
-        // in which no static body changed keeps those rows, and the anchor's row after them, instead of writing them
-        // again (see KeepsStaticRows). The count is for tests: the builds that kept the rows.
+        // Store rows used for the retained static bodies. Reuse them and the anchor when KeepsStaticRows
+        // permits.
         private NativeList<int> staticRows;
         private long keptStaticRowsCount;
         private NativeList<int> dynamicIndices;
@@ -77,15 +74,11 @@ namespace KSP.Retooled.Physics
         private NativeList<int> otherGroups;
         private DirectSolverCache directSolverCache;
 
-        // The simulation whose solve PrepareSolve prepared in this step, or null when no solve has been prepared since
-        // the last FinishStep. FinishStepSystem takes it from here instead of reading the simulation singleton. Reading
-        // the singleton on this thread would wait for every job of the solve, including the jobs that free its
-        // buffers, before FinishStep could schedule the write-back.
+        // Prepared simulation, or null since the last FinishStep.
+        // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
         internal Simulation* preparedSimulation;
 
-        // The jobs that the solve waits for: every job of the step before the solve. FinishStepSystem completes them
-        // before FinishStep, because FinishStep reads lists that those jobs write, such as the joint groups, when it
-        // schedules the jobs after the solve.
+        // Pre-solve jobs that FinishStepSystem completes before FinishStep reads their lists.
         internal JobHandle preparedInputs;
 
         // The vessels compiled from the joints, and whether compilation has been completed for the current groups.
@@ -108,10 +101,8 @@ namespace KSP.Retooled.Physics
         private NativeList<QueryShape> queryShapes;
         private NativeList<int> queryFirstShapes;
 
-        // The query snapshot holds no poses, so a step can keep the last one when nothing that it copied has changed.
-        // The snapshot is kept while QuerySnapshotVersion has the value read when it was taken, and while the moving
-        // and static bodies are built from the same store rows in the same order. snapshotTaken is false from the
-        // moment a snapshot is scheduled until it completes, so a step that throws in between takes a new one.
+        // Reuse query snapshots while versions and body row order match.
+        // Mark a scheduled snapshot incomplete until it finishes so that exceptions force a fresh copy.
         private bool snapshotTaken;
         private uint snapshotVersion;
         private NativeList<int> snapshotDynamic;
@@ -149,10 +140,8 @@ namespace KSP.Retooled.Physics
         // colliders after the build.
         private bool boundsCacheBuilt;
 
-        // The refit of the dynamic tree to the solved poses, which a step leaves running when it returns, and its jobs.
-        // The refit reads the built world and writes its dynamic bodies, the dynamic tree and the bounds cache, so every
-        // entry that reads or changes them finishes it first (FinishPendingRefit). Queries help to finish it instead,
-        // through the store's refit pointer, because they can run inside a job (see Query.cpp).
+        // Pending refit to solved poses. FinishPendingRefit protects the built world and bounds cache;
+        // queries may help the refit through the native store pointer.
         private SharedDynamicTreeRefit* sharedRefit;
         private JobHandle refit;
         private bool refitPending;
@@ -160,9 +149,8 @@ namespace KSP.Retooled.Physics
         // The jobs that write the motions that the pending refit reads.
         private JobHandle refitInputs;
 
-        // The store rows of the dynamic bodies, in order, that the dynamic tree was last built for. A build whose
-        // dynamic bodies come from the same rows in the same order refits the tree instead of building it again (see
-        // RefitsDynamicTree), until treeRefits reaches MaxTreeRefits or the tree's quality falls too far.
+        // Dynamic store rows used for the current tree. Refit while row order, count and quality remain
+        // suitable.
         private NativeList<int> treeRows;
 
         // What the jobs of the last refit left: whether a filter changed, and the tree's quality.
@@ -180,28 +168,19 @@ namespace KSP.Retooled.Physics
         private long treeFilterRefitCount;
 
         /// <summary>
-        /// The most steps in a row that refit the dynamic tree instead of building it. The quality measure catches the
-        /// usual ways in which a tree goes bad, so this is only a backstop: a build every 500 steps (10 s at 50 Hz)
-        /// costs nothing that a profile would show.
+        /// Maximum consecutive refits before rebuilding the dynamic tree.
         /// </summary>
         internal const int MaxTreeRefits = 500;
 
         /// <summary>
-        /// How much worse than just after its build the dynamic tree may become before the next build builds it again,
-        /// as a factor on <see cref="DynamicTreeRefitResults.Quality"/>: the area of the tree's nodes for each unit of
-        /// area of its bodies. The cost of finding the pairs of bodies and of a query grows roughly with the area of
-        /// the nodes that it opens, and finding the pairs took about 0.06 ms of CPU time for four Tu-160s, while the
-        /// build took 0.3 to 1.2 ms. So a tree that is half as good again as a new one is still much cheaper to keep.
-        /// A body that a command moves far away makes every node above it as large as the jump, which goes far past
-        /// this factor at once.
+        /// Maximum tree quality growth relative to the first refit after rebuilding, before another rebuild is
+        /// required.
         /// </summary>
         internal const float MaxTreeQualityGrowth = 1.5f;
 
         /// <summary>
-        /// Whether a build of the dynamic tree may refit the tree that the last build left, when the dynamic bodies
-        /// are the same. RETOOLED_TREE_REUSE=0 turns it off. Burst compiles the code that reads it, so it lives in a
-        /// shared static, which holds 0 when the reuse is on, 1 when it is off, and 2 when it is on and never gives
-        /// way to a build for the tree's quality or for the number of refits (<see cref="TreeAlwaysRefitted"/>).
+        /// Enable dynamic tree reuse. RETOOLED_TREE_REUSE=0 disables it.
+        /// Stored in SharedStatic for Burst; the always-refit mode also bypasses count and quality limits.
         /// </summary>
         internal static bool TreeReuseEnabled
         {
@@ -240,10 +219,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Whether a build in which no static body changed keeps the static bodies' rows that the last build wrote into
-        /// the world, instead of writing them again from the store. RETOOLED_STATIC_REUSE=0 turns it off. Burst compiles
-        /// the code that reads it (the step kernel schedules the build), so it lives in a shared static, which holds
-        /// whether the reuse is off.
+        /// Reuse unchanged static body rows. RETOOLED_STATIC_REUSE=0 disables it.
+        /// Stored in SharedStatic because Burst reads it.
         /// </summary>
         internal static bool StaticReuseEnabled
         {
@@ -281,9 +258,7 @@ namespace KSP.Retooled.Physics
         internal readonly long TreeFilterRefitCount => treeFilterRefitCount;
 
         /// <summary>
-        /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
-        /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
-        /// so it lives in a shared static, which holds whether the cache is off.
+        /// Reuse bounds cached by the previous refit. Tests can disable this for comparison.
         /// </summary>
         internal static bool BoundsCacheEnabled
         {
@@ -298,11 +273,9 @@ namespace KSP.Retooled.Physics
         private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, BoundsCacheOffKey>();
 
         /// <summary>
-        /// Reads the switches of the bounds cache from the environment: RETOOLED_BOUNDS_CACHE=0 turns the cache off, and
-        /// RETOOLED_BOUNDS_CHECK=1 turns on the check of every body that takes its bounds from the cache
-        /// (DynamicBoundsCache.CheckEnabled), whose mismatches the step logs. RETOOLED_SHAPE_BOUNDS=0 turns off the
-        /// part of the cache that keeps what each body's collider needs to compute its bounds without reading the
-        /// collider (DynamicBoundsCache.ShapesEnabled).
+        /// Read bounds cache switches: RETOOLED_BOUNDS_CACHE=0 disables caching;
+        /// RETOOLED_BOUNDS_CHECK=1 validates cached bounds; RETOOLED_SHAPE_BOUNDS=0 disables cached collider
+        /// geometry.
         /// </summary>
         internal static void ReadBoundsCacheSwitches()
         {
@@ -515,11 +488,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The first stage of a step, which integrates forces into the store's velocities. The job that does this is
-        /// left running: <see cref="BuildWorld"/> makes every job that it schedules wait for it, so the main thread can
-        /// schedule the build while the workers apply the forces. Between the two stages, the main thread reads only
-        /// the bodies' flags, which the job doesn't write. Waking bodies through joints writes the flags, so it runs here
-        /// on the main thread before the job starts.
+        /// Wake bodies through joints, then schedule force integration.
+        /// BuildWorld waits for the force jobs; the main thread may read flags while they run.
         /// </summary>
         internal void ApplyForces(float deltaTime)
         {
@@ -540,9 +510,7 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.StepApplyForces.Auto())
             {
-                // A shape that became a trigger or stopped being one, or whose filter changed, can end a pair of two
-                // resting bodies. WakeRefilteredPairsJob wakes such bodies before the joints spread the wake and before
-                // the narrow phase, so that this step already sees the pair as it is now.
+                // Wake refiltered pairs before joint wake propagation and the narrow phase.
                 uint filterVersion = PairFilterVersion.Version;
                 if (filterVersion != seenPairFilterVersion)
                 {
@@ -578,19 +546,16 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.BuildScheduleBroadphase.Auto())
             {
-                // The joints are first read when dispatch pairs are created, after overlaps have been found. Building
-                // the joints can therefore run in parallel with building the trees and finding overlaps. Only the job
-                // that creates dispatch pairs must wait for the joints.
+                // Build joints alongside the broadphase. Only dispatch pair creation needs to wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
                 return ScheduleWheels(deltaTime, broadphase, joints);
             }
         }
 
         /// <summary>
-        /// Updates the WheelColliders after the broadphase is ready for ray queries and before any job reads the
-        /// velocities that the wheels change. All stages after the build wait for this job, so it runs only when there
-        /// are wheels and deltaTime is positive. The job adds suspension limits to the joints. Jobs that depend on the
-        /// joints must therefore also wait for the wheels.
+        /// Schedule wheel updates after the broadphase and before consumers of wheel-modified velocities and
+        /// joints.
+        /// Run only with wheels and a positive timestep.
         /// </summary>
         private JobHandle ScheduleWheels(float deltaTime, JobHandle broadphase, JobHandle joints)
         {
@@ -622,8 +587,7 @@ namespace KSP.Retooled.Physics
         internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
 
         /// <summary>
-        /// Keeps the touching pairs for the world's next step state, before this state is discarded on detach (see
-        /// <see cref="TouchingHandOff"/>).
+        /// Save touching pairs for the next StepState before discarding this one on detach.
         /// </summary>
         internal readonly void SaveTouching()
         {
@@ -637,8 +601,7 @@ namespace KSP.Retooled.Physics
         internal readonly VesselSet VesselSet => vesselSet;
 
         /// <summary>
-        /// Removes overlaps that will not be solved, then groups the remaining pairs into islands. The code that finds
-        /// islands needs the vessels for this step, so they are added to the input here.
+        /// Remove unsolved overlaps before island finding and supply this step's vessels.
         /// </summary>
         internal JobHandle SortIslands(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
@@ -690,11 +653,7 @@ namespace KSP.Retooled.Physics
             // Submit the batched jobs so that workers can run them while the main thread schedules the jobs below.
             JobHandle.ScheduleBatchedJobs();
 
-            // The store reuses the memory of a removed shape for the next shape that it makes, so a new shape can have
-            // the address of a shape that was removed since the last step. The last impulses are kept by the shapes'
-            // addresses, so a new contact would then start with the impulse of a contact that no longer exists. Drop
-            // the impulses of removed shapes before the contacts read them. ForgetRemovedShapesJob clears the list of
-            // removed shapes later in the step.
+            // Drop impulses for removed shapes before new contacts can reuse their addresses.
             if (store->removedShapeCount != 0 && lastImpulses.Count != 0)
             {
                 new ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
@@ -785,16 +744,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Reads joint loads from the step's impulse events and vessel loads, then breaks overloaded joints. See
-        /// <see cref="JointForceJobs"/>. The poses of the joint bodies must be written back first.
+        /// Read impulse and vessel loads, then break overloaded joints.
+        /// Wait for body pose write-back before converting impulse events to world space.
         /// </summary>
-        ///
-        /// <remarks>
-        /// Schedules a chain of jobs in parallel with updating the tree and creating the query snapshot. Rotating the
-        /// impulse events runs in parallel with initializing the joint loads. The impulses are added to the loads after
-        /// both jobs finish. When the step has vessels, VesselLoadsJob handles the joints of active vessels by itself,
-        /// beside that chain, and the chain handles only the other joints, which ListOtherJointsJob listed.
-        /// </remarks>
         private JobHandle ReadJointForces(NativeStream events, float deltaTime, JobHandle vesselsSettled)
         {
             const int groupsPerBatch = 16;
@@ -867,8 +819,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Converts vessel loads into joint loads, smooths them and breaks overloaded joints, as at the end of a step.
-        /// Tests use this after writing vessel loads by hand following a step.
+        /// Convert test-supplied vessel loads to joint loads and process breaking as at step completion.
         /// </summary>
         internal void ReadVesselLoads(float deltaTime)
         {
@@ -877,10 +828,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Sizes the joint loads for this step, and schedules <see cref="VesselLoadsJob"/> when the step has vessels.
-        /// Vessel joints do not produce impulse events. The solver writes their loads into the vessel set instead. The
-        /// dependency must include the solve. The job reads the poses of the vessel bodies from their solved motions,
-        /// so it doesn't need to wait for the poses to be written back.
+        /// Schedule vessel joint load extraction after solving. Read solved motion poses without waiting for
+        /// write-back.
         /// </summary>
         private JobHandle ScheduleVesselLoads(float deltaTime, JobHandle dependency)
         {
@@ -925,19 +874,15 @@ namespace KSP.Retooled.Physics
         /// <summary>Finishes the step by writing the solved world back to the store and to Unity.</summary>
         internal void FinishStep(Simulation simulation, float deltaTime)
         {
-            // This thread usually gets here long before the solve ends. Schedule the work that needs only the solved
-            // motions now, so that the workers start it as soon as the solve ends, rather than when this thread wakes
-            // up and schedules it. Solving depends on warm starting, which waits for the merged manifolds. A step with
-            // nothing to solve does not have that dependency, so add it explicitly here.
+            // Schedule post-solve work now. Include manifold and warm-start dependencies even when nothing is
+            // solved.
             JobHandle solved = JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, vesselsFilled);
 
             // The jobs below read only the solved motions, so they don't wait for the jobs that free the solve's
             // buffers and export the events of its direct islands. Those jobs only read the motions too.
             JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vesselsFilled);
 
-            // The workers start the jobs that become ready together in the order in which this thread scheduled them.
-            // Schedule the write-back first, because the step waits for it first. When the tree's jobs came first, they
-            // took the workers, and the write-back started up to 0.1 ms after the solve ended.
+            // Schedule write-back first because the main thread waits for it first.
             JobHandle writtenBack = new WriteBackJob
             {
                 Store = store->bodies,
@@ -946,33 +891,21 @@ namespace KSP.Retooled.Physics
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
-            // The loads of the vessel joints come from the solve, not from impulse events. A group shares its load in
-            // the frame of its leader's body, but the job takes that body's pose from its solved motion, so it runs
-            // beside the write-back. Neither job writes what the other reads.
+            // Vessel loads read solved motions, so they can run alongside pose write-back.
             JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
 
-            // Only queries read the dynamic tree at this stage. Move it to the solved poses while the motions are
-            // written back, and while this thread schedules the jobs that read joint loads and publishes the contacts.
-            // The build at the start of this step made the tree for the same bodies in the same order, so fitting its
-            // bounds to the new poses is enough. Queries then find the same hits as in a rebuilt tree, but they can
-            // report the hits of a query that returns many in a different order. Neither Unity nor PhysX promises an
-            // order for those queries, and the order already changed from step to step as the bodies moved.
-            // The step doesn't wait for the refit: it runs on the workers while Unity reads the poses back on this
-            // thread. The refit clears the store's treeReady word now and sets it when it has finished. Until then,
-            // every entry that reads the tree or the built world finishes the refit first (FinishPendingRefit), and a
-            // query helps to finish it (see Query.cpp).
-            // The query snapshot reads only the store, so it doesn't wait for the tree either. The snapshot also
-            // runs while WriteBackJob and ForgetRemovedShapesJob write the bodies' flags. Of those flags, the snapshot
-            // reads only Static, and neither job changes it.
+            // Refit the dynamic tree to solved poses alongside write-back. The step returns without waiting for
+            // the refit.
+            // Clear treeReady until completion; later world access must finish the refit, and queries can help
+            // it.
+            // Snapshot copying reads only Static flags, which these concurrent jobs do not change.
             refit = SharedDynamicTreeRefit.Schedule(sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
                 boundsCacheBuilt ? boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
             refitPending = true;
             refitInputs = motionsSolved;
 
-            // A query that finds the refit pending helps with it, and the refit reads the solved motions, so a thread
-            // may help only after the solve has written them. Queries can't run during the step, but a step that throws
-            // between here and the wait for the solve returns with the solve's jobs still running. So on that path the
-            // main thread waits for the solved motions before the exception goes on.
+            // If the step throws, wait for solved motions before returning: queries helping the pending refit
+            // read them.
             JobHandle snapshot;
             bool waitedForSolve = false;
             try
@@ -1034,11 +967,9 @@ namespace KSP.Retooled.Physics
                 forces = ReadJointForces(simulation.ImpulseEvents.EventDataStream, deltaTime, vesselsSettled);
             }
 
-            // Removing a shape wakes bodies that it supported. Do this after the joint jobs read which bodies are
-            // asleep, but before the sleep jobs and contact report read that state. Waiting here is needed only in the
-            // rare case of removed shapes. The remaining sleep jobs and query snapshot do not need the impulses or
-            // contact report, so workers can run them while this thread waits for the tree and publishes contacts.
-            // SleepJob groups bodies through unbroken joints, so it must wait for BreakJointsJob.
+            // Wake bodies affected by shape removal after joint load reads but before sleep and contact
+            // reporting.
+            // Sleep grouping must also wait for joint breaking.
             if (store->removedShapeCount != 0)
             {
                 forces.Complete();
@@ -1089,10 +1020,8 @@ namespace KSP.Retooled.Physics
                 }.Run();
             }
 
-            // The built world matches the motions written back during this step unless a body received a different pose
-            // during write-back. In that case, queries need a rebuild. The store cannot otherwise change during a step.
-            // Otherwise the published world is current once the refit has finished, and a main-thread query finishes it
-            // through a build.
+            // Publish as current unless write-back changed poses. Queries finish the pending refit before
+            // reading.
             using (BackendMarkers.StepPublishQueryWorld.Auto())
             {
                 snapshot.Complete();
@@ -1154,12 +1083,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Waits for the refit of the dynamic tree that the last step left running, if there is one. Call it on the main
-        /// thread, outside a job, before anything reads or changes the built world, the dynamic tree or the bounds
-        /// cache: the next step, a build for queries, and disposal. While the main thread waits in JobHandle.Complete,
-        /// it runs the jobs in the refit's dependency chain that no worker has taken, and only those, so it helps with
-        /// the refit itself. A query job that the main thread picked up can't complete a job at all, so the queries use
-        /// <see cref="HelpPendingRefit"/> and the plugin's helpRefit instead.
+        /// Complete the pending dynamic tree refit on the main thread before reading or modifying the built world
+        /// or bounds cache.
+        /// Call outside jobs; query jobs use HelpPendingRefit instead.
         /// </summary>
         internal void FinishPendingRefit()
         {
@@ -1184,9 +1110,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// After a refit that failed with an exception, which the thread that threw has reported, marks the published
-        /// world stale, so that the next query on the main thread builds the world again. Until then, a query on a
-        /// worker can find the hits of the poses before the step.
+        /// Invalidate the published world after a refit fails. The next main-thread query rebuilds it;
+        /// workers may continue querying pre-step poses until then.
         /// </summary>
         private void NoteFailedRefit()
         {
@@ -1210,9 +1135,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Finishes the refit that the last step left running on this thread, without completing a job: for the main
-        /// thread inside a job that it picked up while it waited, where completing a job throws. The refit's jobs stay
-        /// pending until <see cref="FinishPendingRefit"/>, but they have no work left.
+        /// Finish pending refit work without completing a job handle, for callers already inside a job.
+        /// FinishPendingRefit later completes the now-empty scheduled jobs.
         /// </summary>
         internal void HelpPendingRefit()
         {
@@ -1241,8 +1165,7 @@ namespace KSP.Retooled.Physics
         internal readonly bool RefitPending => refitPending;
 
         /// <summary>
-        /// Whether the jobs that write the motions that the pending refit reads have completed, so that a query may
-        /// help with the refit. Used by tests.
+        /// Whether solved motions are ready for pending refit helpers. Used by tests.
         /// </summary>
         internal readonly bool RefitInputsComplete => !refitPending || refitInputs.IsCompleted;
 
@@ -1311,9 +1234,8 @@ namespace KSP.Retooled.Physics
         internal readonly bool OnlyRefitPending => store->queryDirty == StoreOps.QueryTreePending && builtWhole && store->queryWorld != null;
 
         /// <summary>
-        /// Sets the store's treeReady word after a step that threw, unless a refit is pending, whose jobs set it. A step
-        /// that throws after it cleared the word and before it scheduled the refit would otherwise leave every query
-        /// waiting.
+        /// Set treeReady after a failed step unless a pending refit owns completion, preventing queries from
+        /// waiting forever.
         /// </summary>
         internal void ReleaseTreeAfterThrow()
         {
@@ -1345,8 +1267,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Updates the built static bodies and static tree to match the poses in the store. Recording the version
-        /// avoids repeating this work next step unless more static bodies move first.
+        /// Update built statics and their tree from store poses, recording the version to avoid redundant work.
         /// </summary>
         private void PoseStatics()
         {
@@ -1396,30 +1317,15 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Decides whether this build refits the dynamic tree that the last build left (see
-        /// Broadphase.ScheduleDynamicTreeRefitBuildJobs) instead of building it from scratch. The refit gives the
-        /// leaves the bounds that a build would give them, so the step finds the same pairs of bodies and the queries
-        /// find the same hits either way. Whether the tree is refitted changes only how fast those are found, and how
-        /// long the build takes.
-        /// <para>
-        /// A refit needs a tree with a leaf for each of the world's dynamic bodies, which the last build left only if
-        /// it completed (treeMatchesHeld) and had as many dynamic bodies. The tree is only good while each leaf holds
-        /// bodies that are close together, so the build refits only when the dynamic bodies come from the same store
-        /// rows in the same order as when the tree was built. Any body that is added, removed, made static or no
-        /// longer simulated changes the rows, and so does a body that moves to another row. A body that keeps its row
-        /// can still get a new collider or filter, or be moved by a command; the refit handles all of those, and a
-        /// move far enough to matter shows in the tree's quality. The tree is built again after
-        /// <see cref="MaxTreeRefits"/> refits, or when the last refit found the tree's quality more than
-        /// <see cref="MaxTreeQualityGrowth"/> times what it was after the first refit since the build.
-        /// </para>
+        /// Reuse the dynamic tree while the build completed, dynamic body rows and order match, and count and
+        /// quality limits permit.
+        /// Refitting preserves collision/query results, though traversal and multi-hit ordering can change.
         /// </summary>
         private bool RefitsDynamicTree()
         {
             if (treeRefitted && treeMatchesHeld)
             {
-                // The last build's refit has completed: this build waits for the jobs of the last step and of the last
-                // build for queries, which waited for the refit. The first refit after a build of the tree measures
-                // the quality that later refits compare with.
+                // The prior refit has completed. Use the first refit after a build as the quality baseline.
                 if (treeRefitResults->FiltersChanged != 0)
                 {
                     treeFilterRefitCount++;
@@ -1441,26 +1347,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Decides whether this build keeps the rows of the static bodies that the world holds from the last build, and
-        /// the anchor's row after them, instead of writing them again from the store (BuildBodiesJob.KeepStatics). A
-        /// scene such as the space centre has thousands of static bodies that never change, and writing their rows
-        /// costs CPU time in every build.
-        /// <para>
-        /// The rows are still right when no static body has changed since the last build (staticsChanged is false)
-        /// and the static bodies come from the same store rows in the same order. Every change to a static body moves
-        /// the store's statics version: a new pose for the body or for its posed shape (StoreOps.MarkStaticMoved), a
-        /// shape that is added, removed or changed, which builds the collider again (StoreOps.MarkColliderDirty), a
-        /// change to the body's flags, which covers a body that is made static, dynamic or kinematic, or that stops or
-        /// starts being simulated (BodyKernel.SetFlags), a static body that is made or destroyed, or that moves to
-        /// another store row (WorldKernel), a change to a material, which builds every collider again (see
-        /// RefreshColliders), and a collider build that failed and is tried again (ColliderBuilder.AskAgainForFailed).
-        /// staticsChanged is also true when the last build didn't complete. The comparison of the store rows only
-        /// guards against a change that missed the version.
-        /// </para>
-        /// <para>
-        /// The world can only keep the rows if it keeps its memory for the bodies, which the caller checks after the
-        /// world's reset.
-        /// </para>
+        /// Reuse static body rows and the anchor when the previous build completed, staticsVersion is unchanged,
+        /// and static row order matches. The caller must also verify that body storage was retained.
         /// </summary>
         private readonly bool KeepsStaticRows()
         {
@@ -1468,11 +1356,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves the rows of the static bodies and the anchor that the last build left after its
-        /// <paramref name="dynamicBefore"/> dynamic bodies to their place after this build's dynamic bodies. The rows
-        /// only move when the number of dynamic bodies changed. Nothing reads or writes the world's bodies while this
-        /// thread schedules a build: the last step's refit has finished, and no query reads the world until the build
-        /// publishes it again.
+        /// Move retained static rows and the anchor after the new dynamic body range when its size changes.
+        /// Call only while the built world is inaccessible to queries and jobs.
         /// </summary>
         private void MoveStaticRows(int dynamicBefore)
         {
@@ -1513,17 +1398,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns false when safety checks prevent writes to the containers. This happens when the main thread runs a
-        /// job while waiting for other work: the safety system releases containers from completed jobs only when the
-        /// main thread accesses them outside a job. Checking before starting a build leaves the published world
-        /// readable for the rest of the current job. With safety checks disabled, the build can proceed and the current
-        /// job sees the completed build.
-        /// <para>
-        /// Checking access outside a job releases the containers being checked. Every build must therefore pass those
-        /// containers to a job again. Both a full build and <see cref="PoseStatics"/> pass the static indices to jobs.
-        /// Checking the dynamic indices also covers worlds with no static bodies, which always require a full build.
-        /// </para>
-        ///
+        /// Return whether safety handles permit container writes before starting a build.
+        /// A main-thread query inside a job must keep using the published world if access is denied.
+        /// After checking access outside jobs, pass the containers to build jobs again to restore ownership.
         /// </summary>
         internal bool CanWriteContainers()
         {
@@ -1543,10 +1420,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Copies the store data needed by queries for <see cref="PublishQueryWorld"/>. Workers read this snapshot
-        /// until the next publication, so it must not contain pointers to memory that the store can move or free.
-        /// Returns <paramref name="dependency"/> without scheduling anything when the last snapshot still matches the
-        /// store. The caller must call <see cref="FinishQuerySnapshot"/> after the returned handle completes.
+        /// Copy query data from the store, or return dependency unchanged if the snapshot is still current.
+        /// Do not retain pointers into movable store memory. Call FinishQuerySnapshot after completion.
         /// </summary>
         private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
         {
@@ -1600,8 +1475,8 @@ namespace KSP.Retooled.Physics
         internal readonly long KeptSnapshots => keptSnapshots;
 
         /// <summary>
-        /// Makes the built world and completed snapshot available to query functions. Sharing the colliders is safe
-        /// because they are released only during the next build, while the query lock is held exclusively.
+        /// Publish the built world and completed snapshot for queries.
+        /// Colliders remain valid until the next build acquires the exclusive query lock.
         /// </summary>
         private void PublishQueryWorld()
         {
@@ -1614,8 +1489,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Schedules the collider updates requested by the store. The bodies have their updated colliders when the
-        /// returned handle completes. No collider is read before the jobs that depend on that handle run.
+        /// Schedule requested collider updates. Consumers must wait for the returned handle before reading
+        /// colliders.
         /// </summary>
         private JobHandle RefreshColliders(JobHandle dependency)
         {
@@ -1626,9 +1501,8 @@ namespace KSP.Retooled.Physics
             ColliderBuilder.AskAgainForFailed(store, colliderWork, colliderResults);
             ReleaseDeadColliders();
 
-            // A change to a material builds every body's collider again, the static bodies' too. The new colliders can
-            // take the addresses of the colliders that they replace, so the build has to know that the static bodies
-            // changed, both for the static tree and for the static bodies' rows (see KeepsStaticRows).
+            // Material changes can replace colliders at the same addresses. Invalidate static rows and the
+            // static tree.
             uint materialVersion = globals->materialVersion;
             bool all = materialVersion != builtMaterialVersion;
             if (all)
@@ -1653,14 +1527,12 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Schedules the body build, the broadphase trees and the joint build. Returns the handle for the trees and
-        /// supplies the joint handle separately, so the broadphase does not need to wait for the joints.
+        /// Schedule body, broadphase and joint builds. Return tree completion and provide joint completion
+        /// separately.
         /// </summary>
         private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
         {
-            // FinishStep waits for the jobs that fill the vessels' edges and closures. A step that threw before
-            // FinishStep leaves them running, and this build compiles the vessels again and resizes their lists. In the
-            // usual case, the jobs have already finished.
+            // An interrupted step may leave vessel fill jobs running. Finish them before resizing vessel lists.
             vesselsFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
@@ -1683,9 +1555,8 @@ namespace KSP.Retooled.Physics
                 builtWhole = false;
             }
 
-            // The bounds cache holds the bounds of the bodies that the world holds now. The body build compares each
-            // dynamic body with the body that it overwrites, but only if the world keeps its bodies' memory and the
-            // same number of dynamic bodies, and if the last build and refit kept the cache.
+            // Compare cached bounds only when body storage and dynamic count are retained and the cache remains
+            // valid.
             void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
             bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == dynamicIndices.Length;
             int dynamicBefore = world.NumDynamicBodies;
@@ -1715,10 +1586,8 @@ namespace KSP.Retooled.Physics
 
             DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(dynamicIndices.Length) : default;
 
-            // The bodies and the broadphase trees lead the longest chain before the solve: the pairs and islands wait
-            // for the trees, and the trees wait for the bodies. Schedule them before this thread groups and compiles
-            // the joints and chooses the step's vessels, and before the joint and vessel fill jobs, so that the workers
-            // take them first. The joint jobs read none of what these jobs write, and the trees don't need the joints.
+            // Schedule bodies and trees first: pair creation and island finding depend on them.
+            // Joint compilation and vessel work can proceed alongside them.
             JobHandle broadphase;
             using (BackendMarkers.BuildScheduleBodies.Auto())
             {
@@ -1742,9 +1611,8 @@ namespace KSP.Retooled.Physics
                 JobHandle.ScheduleBatchedJobs();
             }
 
-            // Queries do not run the solver, so build joints only for a simulation step, which also supplies the time
-            // step for motors. Like the body build jobs, the joint build jobs wait for collider jobs because those jobs
-            // write body flags that the joint build reads.
+            // Queries need no solver joints. During simulation, joint builds wait for collider jobs that write
+            // body flags.
             joints = dependency;
             if (deltaTime > 0.0f)
             {
@@ -1774,11 +1642,9 @@ namespace KSP.Retooled.Physics
                     groupedForest = forest;
                 }
 
-                // Vessels are compiled from joint groups and forest roles. Compile them when vessel support is first
-                // enabled or when the groups are rebuilt because the topology or forest setting changed. Compilation
-                // runs synchronously because the vessel count must be known before scheduling the jobs that find
-                // islands.
-                // A tombstone also needs a compilation when it expires.
+                // Recompile vessels when topology or forest settings change, support is enabled, or a tombstone
+                // expires.
+                // Run synchronously because island scheduling needs the vessel count.
                 bool tombstoneExpired = tombstoneExpiry >= 0 && (int)stepCount >= tombstoneExpiry;
                 bool compiledThisStep = false;
                 if (vessels && (!compiled || regrouped || tombstoneExpired))
@@ -1839,15 +1705,13 @@ namespace KSP.Retooled.Physics
                     VesselActive = vesselBuild.Active.AsArray(),
                 }.Schedule(jointUnits, JointBatchSize, allocated);
 
-                // Only the solve reads the edges and closures, so these jobs run beside the joint build and the
-                // broadphase, and only the solve waits for them (see PrepareSolve). They prepare the groups of active
-                // vessels, which BuildJointsJob skips.
+                // Fill vessel constraints alongside joint and broadphase work; only the solve needs their
+                // results.
                 vesselsFilled = default;
                 if (vesselSet.IsCreated)
                 {
-                    // Reuse the edges and closures from earlier steps unless the vessels were compiled again. The fill
-                    // jobs compute an entry again when a body's motion frame changed, or when the settings of one of its
-                    // joints changed. They look at the joints' settings stamps only when the version moved.
+                    // Reuse vessel constraints unless motion frames or joint settings changed.
+                    // Check per-joint settings stamps only when the shared version changes.
                     uint settings = JointSettings.Version;
                     bool resized = vesselBuild.SizeCaches();
                     bool refillAll = resized || compiledThisStep || !cacheFilled;

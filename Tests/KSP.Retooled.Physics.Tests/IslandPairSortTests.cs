@@ -4,9 +4,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A step that solves by island sorts its pairs in one job when the last step had few pairs, and with a chain of
-    /// parallel jobs otherwise. Both must give the same pairs in the same order, with the same contacts disabled by
-    /// joints that don't allow collision.
+    /// Require serial and parallel island pair sorts to produce identical ordering and collision-disable flags.
     /// </summary>
     public class IslandPairSortTests : PhysicsScene
     {

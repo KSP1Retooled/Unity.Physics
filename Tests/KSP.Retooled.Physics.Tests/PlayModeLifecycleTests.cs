@@ -9,9 +9,8 @@ using UnityEngine.TestTools;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests scenes during script reloads and play mode using the engine's own loop. Other fixtures step scenes
-    /// explicitly and skip that loop. A reload clears the fixture's fields, so these tests store state in the scene and
-    /// SessionState.
+    /// Test script reloads and play mode through Unity's engine loop.
+    /// Keep test state in the scene and SessionState because reloads clear fixture fields.
     /// </summary>
     public class PlayModeLifecycleTests
     {

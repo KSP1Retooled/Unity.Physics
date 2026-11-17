@@ -17,10 +17,8 @@ using static Unity.Physics.BoundingVolumeHierarchy;
 namespace Unity.Physics.Tests.Collision.World
 {
     /// <summary>
-    /// The step fits the dynamic tree to the solved poses in parallel, one subtree at a time, instead of in one job
-    /// that walks the whole tree. These tests check that the parallel refit leaves every node exactly as the serial
-    /// refit (<see cref="BoundingVolumeHierarchy.RefitFromRoot"/>) leaves it, for trees from the serial and the parallel
-    /// build, small trees whose leaves sit above the cut, and a deep tree that overflows the walk's inline stack.
+    /// Compare parallel subtree refits with RefitFromRoot, requiring identical nodes across serial, parallel, small
+    /// and deep trees.
     /// </summary>
     class DynamicTreeRefitTests
     {
@@ -149,10 +147,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Builds the dynamic tree, moves the bodies, refits the tree as the step does, and refits a copy of the tree
-        /// from before the step's refit with the serial refit. Every byte of every node must match, including the
-        /// nodes that the root doesn't reach, which neither refit may touch. Returns the number of nodes in the tree's
-        /// list that the root doesn't reach.
+        /// Move bodies and compare parallel and serial refits byte for byte, including untouched unreachable nodes.
+        /// Return the unreachable node count.
         /// </summary>
         static unsafe int CheckRefit(int count, int threads, uint seed)
         {
@@ -166,9 +162,7 @@ namespace Unity.Physics.Tests.Collision.World
             var before = new NativeArray<Node>(tree.Nodes.AsArray(), Allocator.TempJob);
             world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default).Complete();
 
-            // The step's refit has moved the bodies to their motions' poses, so the bounds can be computed from them.
-            // A Burst job computes them, as the step does, because code that Burst compiles can round differently
-            // from the same code in C#.
+            // Recompute bounds in Burst to match the refit's rounding after it updates body poses.
             var aabbs = new NativeArray<Aabb>(count, Allocator.TempJob);
             new BoundsJob
             {
@@ -232,8 +226,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The parallel build gives each branch a range of nodes that is large enough for any branch, so the tree's
-        /// list holds unused nodes between the branches. Neither refit may touch them.
+        /// Verify refits leave unused nodes between parallel-built branches untouched.
         /// </summary>
         [Test]
         public void RefitMatchesTheSerialRefitForATreeWithUnusedNodes()
@@ -243,8 +236,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// A chain of internal nodes, each with one leaf, is far deeper than any tree from the builder. Walking it
-        /// moves the walk's stack from the stack frame to the heap.
+        /// Use a deep internal-node chain to exercise heap growth of the traversal stack.
         /// </summary>
         [Test]
         public unsafe void RefitMatchesTheSerialRefitForADeepTree()
@@ -373,9 +365,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Does to the bodies what the step's write-back and the next build do to them: each body gets its motion's
-        /// pose, with the rotation normalized if <paramref name="normalize"/> is true, and a new velocity, as gravity
-        /// and forces give it.
+        /// Copy solved motion poses to bodies, optionally normalize rotations, and assign new velocities for the
+        /// next build.
         /// </summary>
         static void WriteBack(ref PhysicsWorld world, uint seed, bool normalize = true)
         {
@@ -408,8 +399,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Does what the backend's body build does for the cache: marks each body that has exactly the collider and pose
-        /// that the refit left at its index.
+        /// Mark exact body collider/pose matches as the backend build does for bounds reuse.
         /// </summary>
         static unsafe void MarkSame(NativeArray<Physics.RigidBody> bodies, Physics.RigidBody[] refitted, DynamicBoundsCache cache)
         {
@@ -421,8 +411,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// A new body at the index of a destroyed body can get a collider at the address of the destroyed body's
-        /// collider, at the same pose. It isn't the same body, so it must not take the old body's bounds from the cache.
+        /// Verify a new body cannot reuse cached bounds solely because its index, pose and collider address match.
         /// </summary>
         [Test]
         public void ANewBodyWithAColliderAtTheOldAddressDoesNotMatch()
@@ -450,9 +439,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// An entry that held a destroyed body's collider takes the filter again when it is written for a new body
-        /// whose collider has the same address. The test changes the filter of one collider between the two writes,
-        /// in place of a new collider that the heap put at the old address.
+        /// Verify cached filters refresh when a different body reuses a collider address.
         /// </summary>
         [Test]
         public unsafe void AnEntryWrittenForANewBodyAtTheOldColliderAddressTakesTheNewFilter()
@@ -487,8 +474,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Computes the bounds of one body at many poses, through the cache's shape entry and from the collider, and
-        /// counts the poses where the two differ in any bit. The first call makes the entry from the collider.
+        /// Count bitwise differences between cached and collider-computed bounds across poses.
         /// </summary>
         [BurstCompile(CompileSynchronously = true)]
         unsafe struct ShapeBoundsJob : IJob
@@ -579,9 +565,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The bounds that the cache computes from what it keeps of a body's collider are the bounds that the collider
-        /// computes, to the last bit, at poses near and far from the origin. A convex hull and a cylinder keep reading
-        /// the collider.
+        /// Require cached bounds to match colliders bit for bit near and far from the origin.
+        /// Convex hulls and cylinders continue reading collider geometry.
         /// </summary>
         [TestCase("box", true)]
         [TestCase("sphere", true)]
@@ -633,8 +618,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The cache makes a body's shape entry again from the collider when the index gets another collider or
-        /// another body, or when any body's collider changed since the entry was made, and only then.
+        /// Verify shape cache entries refresh only when body identity, collider or collider version changes.
         /// </summary>
         [Test]
         public unsafe void AShapeEntryIsMadeAgainForAnotherColliderBodyOrColliderVersion()
@@ -696,8 +680,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Computes the bounds of a hull at many poses and scales with ConvexCollider.CalculateAabb, and with the loop
-        /// that computed them one vertex at a time before, and counts the poses where the two differ in any bit.
+        /// Compare convex hull bounds with the scalar vertex reference across poses and scales, counting bitwise
+        /// mismatches.
         /// </summary>
         [BurstCompile(CompileSynchronously = true)]
         unsafe struct HullBoundsJob : IJob
@@ -741,10 +725,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The bounds of a convex hull, which the hull now computes four vertices at a time, are the bounds that the
-        /// loop over one vertex at a time computed, to the last bit: for hulls of 4 to 255 vertices, with and without
-        /// a convex radius, at random poses near and far from the origin, at poses that put vertices on a coordinate
-        /// plane, where a rotated coordinate is zero, and at a position of negative zero.
+        /// Require bitwise-identical convex bounds from vector and scalar vertex loops across hull sizes, radii and
+        /// extreme poses.
         /// </summary>
         [TestCase(4, 0.0f)]
         [TestCase(9, 0.0f)]
@@ -792,10 +774,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// An entry that is written again for the same body takes the filter of the body's collider, even when the
-        /// collider has the address that the entry held. A body whose collider is gone for a build leaves its entry
-        /// as it was, and its next collider can get the old collider's address from the heap, with another filter. The
-        /// test changes the filter of one collider between the two writes, in place of that new collider.
+        /// Verify cached filters refresh when the same body loses and recreates its collider at the same address.
         /// </summary>
         [Test]
         public unsafe void AnEntryWrittenAgainForTheSameBodyTakesTheColliderFilter()
@@ -835,8 +814,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The pairs of bodies that the step's parallel search finds in the trees, each with the lower index first,
-        /// with the pair's solver type, sorted.
+        /// Return sorted overlap pairs with lower body index first and each pair's solver type.
         /// </summary>
         static List<(int, int, int)> OverlapPairs(ref PhysicsWorld world)
         {
@@ -869,13 +847,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// A build that refits the tree of the last build (<see cref="Broadphase.ScheduleDynamicTreeRefitBuildJobs"/>),
-        /// after the bodies have moved and some bodies' filters have changed, gives every body the bounds that a build
-        /// from scratch gives it, to the last bit, and the search finds exactly the pairs that it finds in the tree of
-        /// a build from scratch, though the two trees have different shapes. Some bodies first collide with nothing,
-        /// so that the nodes above them exclude everything, and then collide with everything, so that a pair is lost
-        /// unless the refit builds the nodes' filters again. Other bodies go the other way, or join a group that never
-        /// collides with itself.
+        /// Compare refit-build bounds and overlap pairs with a fresh build after pose and filter changes.
         /// </summary>
         [Test]
         public unsafe void ARefitBuildFindsThePairsOfABuildFromScratch([Values(1, 8)] int threads, [Values(false, true)] bool changeFilters)
@@ -952,11 +924,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// With the bounds cache, a refit build reads a body's filter from the cache only for the body that the cache
-        /// holds. A body at the same index whose collider keeps its address, but which is another body (another
-        /// entity) with another filter, as when the heap gives a new body's collider the address of a destroyed body's
-        /// collider, gets its own filter, and the refit builds the nodes' filters again. The search then finds exactly
-        /// the pairs of a build from scratch.
+        /// Verify body identity prevents reuse of another body's cached collider filter at the same index and
+        /// address.
         /// </summary>
         [Test]
         public unsafe void ARefitBuildWithTheCacheTellsANewBodyAtAnOldColliderAddress()
@@ -1015,9 +984,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// The refit leaves each body's collider bounds in the cache at the body's new pose, and the next build takes
-        /// them from there for each body that is still at that pose. That build gives every body the same bounds, to the
-        /// last bit, and the same filter, as a build without the cache.
+        /// Require cached refit bounds and filters in the next build to match uncached results bit for bit.
         /// </summary>
         [Test]
         public unsafe void ABuildWithTheBoundsFromTheRefitMatchesABuildWithout([Values(1, 8)] int threads)
@@ -1073,9 +1040,7 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// A body takes its collider bounds from the cache only when the cache holds its collider at exactly its pose,
-        /// and only while no collider has changed since the cache recorded the colliders' version. The test fills the
-        /// cache with bounds that no collider has, so that the bounds in the tree show where they came from.
+        /// Verify cached bounds require exact body pose/collider matches and an unchanged collider version.
         /// </summary>
         [Test]
         public unsafe void ABodyTakesItsBoundsFromTheCacheOnlyForItsColliderAndPose()
@@ -1269,9 +1234,8 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
-        /// Times the parts of the dynamic tree's refit on a fleet of four Tu-160s (10,868 boxes), with the caches
-        /// flushed before each run (as at the end of a step, after the solve has used the caches) and without.
-        /// Results go to the log and to Logs/DynamicTreeRefitBench.txt.
+        /// Benchmark dynamic refit stages on four Tu-160s with warm and flushed CPU caches.
+        /// Write Logs/DynamicTreeRefitBench.txt.
         /// </summary>
         [Test]
         [Explicit("A benchmark")]

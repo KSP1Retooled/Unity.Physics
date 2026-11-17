@@ -9,23 +9,11 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Validates a source mesh and copies it into a cooked mesh. The result is one relocatable block containing a <see
-    /// cref="NativeStore.MeshData"/> header, vertices, triangles, and bounds. <see cref="ColliderBuilder"/> uses Unity
-    /// Physics to create the geometry for each shape, since the scale, filter, and material stored in its blobs are not
-    /// known during cooking.
+    /// Validate and copy mesh data into a relocatable block used for cooking and baked mesh assets.
+    /// Cooking may run on import workers: do not allocate memory, access shared state or call Unity Physics.
+    /// Use strict floating-point operations so that Burst and Mono produce identical bytes.
+    /// Increment StreamVersion when the layout changes.
     /// </summary>
-    /// <remarks>
-    /// Cooking runs on import workers and through Physics.BakeMesh in jobs, so this code must not access shared state.
-    /// It must not allocate memory or call Unity Physics either. Unity Physics creation functions use Allocator.Temp,
-    /// which is unavailable on threads outside the job system. As with query functions, the plugin stores Burst
-    /// function pointers. Until asynchronous compilation finishes, these refer to stubs that run the same code in Mono.
-    ///
-    /// The block is also the stream that Unity stores in a pre-baked mesh asset (m_BakedConvexCollisionMesh and
-    /// m_BakedTriangleCollisionMesh). Unity treats the bytes as opaque and returns them when loading, so we define the
-    /// format. The output must be the same whether cooking runs in Burst or Mono. Thickening a flat mesh calculates new
-    /// vertices, so use strict floating-point operations. Burst's default mode could fuse a multiply and an add,
-    /// producing different bytes from Mono. Change <see cref="StreamVersion"/> when the layout changes.
-    /// </remarks>
     [BurstCompile]
     internal static unsafe class MeshCook
     {
@@ -214,10 +202,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Copies the triangles and reverses their winding if flipped normals are requested. Retains degenerate
-        /// triangles for Unity Physics to remove. The test for a usable triangle only checks that its three vertices
-        /// have distinct positions; it does not check for collinearity. Reports the mesh as empty if no triangle passes
-        /// that test, as Unity expects from cooking.
+        /// Copy triangles, reversing winding when requested. Return empty if no triangle has three distinct
+        /// positions.
+        /// Leave degenerate triangles for Unity Physics to remove.
         /// </summary>
         private static int CookTriangles(NativeStore.CookInput* input, float3* vertices, long indexCount, int3* triangles, ref int triangleCount)
         {
@@ -257,9 +244,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns how many points are needed to span the input: 4 for a solid, 3 for a plane, or fewer for a line or a
-        /// point, which cannot form a hull. For a plane, seeds contains the three points. Uses double precision to
-        /// avoid additional errors when testing float input.
+        /// Return the input's span: four points for a solid, three for a plane, fewer for a line or point.
+        /// For a plane, store its three seed points. Use double precision for the test.
         /// </summary>
         private static int FindSeeds(float3* vertices, int count, out int3 seeds)
         {
@@ -332,9 +318,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Thickens a flat convex mesh into a slab, as PhysX does. The slab extends on each side of the plane by 5% of
-        /// the smallest extent greater than 1e-6. Unity Physics would otherwise produce zero volume and therefore no
-        /// mass. Returns the new vertex count, which is twice the original count.
+        /// Thicken a planar convex mesh into a slab to match PhysX and provide nonzero mass.
+        /// Extend each side by 5% of the smallest extent above 1e-6. Return twice the original vertex count.
         /// </summary>
         private static int Thicken(float3* vertices, int count, int3 seeds)
         {

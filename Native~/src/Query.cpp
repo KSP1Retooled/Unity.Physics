@@ -1,14 +1,6 @@
-// Query commands. The geometry work happens in the managed core, in a Burst function native code calls directly, against
-// a query world that holds nothing of the live store. Each handler here only unpacks a command into a QueryInput.
-//
-// Only the main thread rebuilds that world: it does so after a step, on a main-thread query, and when managed asks. A
-// worker reads the world last published, because it can't build one, and waiting for the main thread could deadlock with
-// the main thread completing the worker's job. So a worker sees the scene as of the last rebuild.
-//
-// A step publishes its world while the refit of the dynamic tree to the solved poses still runs (WorldData::treeReady).
-// A query that finds the refit pending does the refit's remaining work itself, through helpRefit, and then waits for
-// the threads that run its last pieces. It never waits for a job that may not run, so it can't deadlock, also on the
-// main thread inside a job that it picked up while it waited, where managed can't complete a job.
+// Unpack queries for Burst kernels against the published query snapshot.
+// Only the main thread rebuilds snapshots; workers use the last publication without accessing the live store.
+// Queries help pending tree refits directly, then wait for active pieces, avoiding job dependency deadlocks.
 
 #include <cstdio>
 #include <mutex>
@@ -89,9 +81,9 @@ namespace Retooled
         LogInfo(text);
     }
 
-    // Finishes the refit of the dynamic tree that the last step left running, with queryLock held shared, so that no step
-    // or build can start a new refit meanwhile. The refit's last pieces may be running on other threads, so this thread
-    // then waits for the word. Without a managed core, which finishes every pending refit when it detaches, it only waits.
+    // Finish the pending dynamic tree refit with queryLock held shared.
+    // Help remaining work through managed code, then wait for active pieces. Detach already completes pending
+    // refits.
     static void FinishRefit(World* world)
     {
         std::atomic_ref<uint32_t> ready(world->data.treeReady);

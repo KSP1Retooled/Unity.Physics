@@ -7,11 +7,10 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Builds the rigs described in the joint plan to measure how joints feel: stacks and a cantilever made with
-    /// Rigidbody and ConfigurableJoint, as stock parts are. The rigs use real part masses and spacing, with units of
-    /// tonnes, kilonewtons and metres. Run with <c>RetooledCli unity exec --method
-    /// KSP.Retooled.Physics.JointFeelBench.Run</c> on either backend. The benchmark writes
-    /// Library/RetooledPhysics/joint-feel-&lt;backend&gt;.csv.
+    /// Benchmark stacks and cantilevers built with Rigidbody and ConfigurableJoint, using KSP masses and
+    /// spacing.
+    /// Run RetooledCli unity exec --method KSP.Retooled.Physics.JointFeelBench.Run on either backend.
+    /// Write results to Library/RetooledPhysics/joint-feel-&lt;backend&gt;.csv.
     /// </summary>
     public static class JointFeelBench
     {

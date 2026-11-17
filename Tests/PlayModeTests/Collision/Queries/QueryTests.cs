@@ -18,9 +18,7 @@ namespace Unity.Physics.Tests.Collision.Queries
         const float tolerance = 1.1e-3f;
 
         /// <summary>
-        /// Returns how many random cases a test runs. The random tests below take about a minute with Unity's counts,
-        /// and we rarely change the query code that they check, so an everyday run uses a fifth of each count. Set
-        /// the environment variable RETOOLED_FULL_FUZZ to 1 to run Unity's full counts.
+        /// Return reduced fuzz counts by default. RETOOLED_FULL_FUZZ=1 restores Unity's full counts.
         /// </summary>
         static int FuzzCount(int full)
         {

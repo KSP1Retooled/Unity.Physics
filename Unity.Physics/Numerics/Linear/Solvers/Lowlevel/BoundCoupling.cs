@@ -1,16 +1,10 @@
 namespace Unity.Numerics.Linear.Solvers.Lowlevel
 {
     /// <summary>
-    /// Describes a group of rows in a problem for <see cref="BlockPrincipalPivoting"/> whose bounds depend on the
-    /// values of other rows. The rows are impulses in the physics solvers that use it, so the fields speak of impulses.
-    /// The solver widens the problem bounds of the rows from FirstRow up to, but not including, FirstRow + RowCount. It
-    /// widens them by <see cref="Factor"/> times the total source impulse, or by zero if that total is negative. The
-    /// total source impulse is the sum of the impulses that the solve finds for the source rows, plus <see
-    /// cref="HeldSourceImpulse"/>. For contact friction, the friction rows are the coupled rows and the normal row is
-    /// the source, and the factor is the friction coefficient. Both the normal
-    /// impulse and the friction impulse count over the whole step. The problem bounds of a friction row are therefore
-    /// the negative of the impulse that the row already applied earlier in the step. If the total normal impulse is
-    /// zero, the total friction impulse for the step is also zero.
+    /// Coupled row bounds for block principal pivoting.
+    /// Expand problem bounds on [FirstRow, FirstRow + RowCount) by Factor times the nonnegative total source
+    /// impulse,
+    /// including HeldSourceImpulse. Friction bounds account for impulses already applied earlier in the step.
     /// </summary>
     public struct BoundCoupling
     {
@@ -21,9 +15,8 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
         public float Factor;
 
         /// <summary>
-        /// The source impulse that was already applied before this solve, through warm starting or in an earlier
-        /// substep of the same step. It counts toward the coupled bounds together with the impulse that this solve
-        /// finds.
+        /// Source impulse already applied by warm starting or earlier substeps, added to newly solved impulses for
+        /// coupled bounds.
         /// </summary>
         public float HeldSourceImpulse;
     }

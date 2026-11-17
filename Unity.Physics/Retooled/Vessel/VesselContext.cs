@@ -26,10 +26,7 @@ namespace Unity.Physics
         public double3 AngularImpulse;
     }
 
-    /// <summary>
-    /// The six rows of a link as built this step, kept from the factor to the substitution so the impulses come out
-    /// without rebuilding them. Rows 0 to 2 are linear along the axes, rows 3 to 5 angular about them.
-    /// </summary>
+    // Cached link rows: three linear axes followed by three angular axes, reused after factorization.
     internal struct VesselRows
     {
         /// <summary>The world axes, as columns.</summary>
@@ -57,9 +54,8 @@ namespace Unity.Physics
     }
 
     /// <summary>
-    /// Everything one step's jobs read and write, as raw pointers into the solver's arrays: a structure rebuild can move
-    /// the arrays, so the solver makes a fresh context after each one and the jobs never hold the containers themselves.
-    /// The kernels are methods here, so that the single-threaded and job paths run the same code.
+    /// Raw pointers to one step's solver arrays, shared by serial and job paths.
+    /// Recreate after structural rebuilds that may move storage.
     /// </summary>
     internal unsafe struct VesselContext
     {
@@ -107,10 +103,9 @@ namespace Unity.Physics
         public int* RhsBufferTarget;
         public int* EliminationParent;
 
-        // Rows handed in by the caller in place of the edges' own, as the direct island solve builds them: 12 floats
-        // (body A's linear and angular columns, then body B's), the regularization and the right-hand side per row. Each
-        // link's rows run from LinkRowStart[k] in LinkRowList, as row * 2 + 1 when body A is the link's parent side. With
-        // rows handed in, sections start at rest with no impulse, so the solution is the change of velocity the rows make.
+        // Caller-supplied rows: twelve Jacobian floats plus regularization and right-hand side per row.
+        // LinkRowList encodes row*2, plus one when body A is the parent. Sections start at rest, so results are
+        // velocity changes.
         public float* RowJacobian;
         public float* RowEpsilon;
         public float* RowRhs;
@@ -138,9 +133,8 @@ namespace Unity.Physics
         public bool FactorOnly;
 
         /// <summary>
-        /// When this is set, <see cref="FinishSection"/> computes only the loads. It skips the state test and does not
-        /// move the parts. The vessel island sets it, because it tests the lock states itself and fills the parts from
-        /// the bodies in every substep.
+        /// Compute loads only in FinishSection, skipping lock tests and integration.
+        /// Vessel islands perform those operations separately.
         /// </summary>
         public bool LoadsOnly;
 
@@ -155,9 +149,8 @@ namespace Unity.Physics
         // ------------------------------------------------------------------ section properties
 
         /// <summary>
-        /// A section's composite mass, centre, world inertia, momentum-conserving velocity and external impulse, from its
-        /// parts' current state. Recomputing these every step costs one pass over the parts and absorbs any velocity the
-        /// game wrote to a single part as an impulse on its section.
+        /// Compute composite section mass, centre, world inertia, momentum-conserving velocity and external impulse
+        /// from current part states.
         /// </summary>
         public void ComputeSection(int s)
         {
@@ -200,8 +193,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Sums the mass terms over the section's parts from position <paramref name="start"/> up to, but not
-        /// including, position <paramref name="end"/> in <see cref="SectionParts"/>.
+        /// Sum mass terms over SectionParts[start .. end).
         /// </summary>
         public MassSums SumMass(int start, int end)
         {
@@ -219,8 +211,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Sums the inertia terms about <paramref name="center"/> over the section's parts from position
-        /// <paramref name="start"/> up to, but not including, position <paramref name="end"/> in <see cref="SectionParts"/>.
+        /// Sum inertia about center over SectionParts[start .. end).
         /// </summary>
         public InertiaSums SumInertia(int start, int end, double3 center)
         {
@@ -258,9 +249,8 @@ namespace Unity.Physics
         // ------------------------------------------------------------------ factor
 
         /// <summary>
-        /// Sets a column's diagonal block to the section's mass matrix (plus any extra term the caller added), its
-        /// right-hand side to the momentum plus external impulse, and zeroes its off-diagonal blocks for the links and the
-        /// eliminations below it to add into.
+        /// Initialize a column's mass diagonal and momentum/impulse right-hand side, then zero off-diagonal blocks
+        /// for accumulation.
         /// </summary>
         public void InitializeColumn(int s)
         {
@@ -441,8 +431,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Adds a link's handed-in rows: w J^T J into the two sections' blocks and their coupling, and w J^T r into their
-        /// right-hand sides, w being one over the row's regularization.
+        /// Add supplied rows' w*J^T*J blocks and w*J^T*r targets, with w equal to reciprocal regularization.
         /// </summary>
         void BuildLinkFromRows(int k)
         {
@@ -489,10 +478,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The sections whose rows the forward substitution of a right-hand side nonzero only at <paramref name="seeds"/>
-        /// can touch: the seeds and their elimination-tree ancestors, written ascending to <paramref name="path"/>. Marks
-        /// them with <paramref name="stamp"/> in <paramref name="mark"/>, which must not hold that stamp yet. Returns how
-        /// many there are.
+        /// Collect seeds and their elimination-tree ancestors in ascending path order.
+        /// Mark with stamp, which must be unused in mark. Return the path length.
         /// </summary>
         public int CollectPath(int* seeds, int seedCount, int* path, int* mark, int stamp)
         {
@@ -524,9 +511,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// y = L^-1 y in place against the current factor A = L D L^T, for a right-hand side nonzero only on a path that
-        /// <see cref="CollectPath"/> gave: every other section's entry stays zero, so only the path is walked. With z the
-        /// inverse pivot blocks times y on the path, b1^T A^-1 b2 is the sum over the sections both paths share of y1 . z2.
+        /// Compute y = L^-1*y along a CollectPath result; all other entries must be zero.
+        /// Boundary products sum y1 dot (D^-1*y2) over shared path sections.
         /// </summary>
         public void ForwardPath(double* y, int* path, int count)
         {
@@ -546,9 +532,8 @@ namespace Unity.Physics
         public double6 InverseDiagonal(int s, double6 y) => ((double6x6*)(Inverse + VesselBlocks.Size * s))->Mul(y);
 
         /// <summary>
-        /// Eliminates column s: inverts its diagonal block, sends every update to the later rows its structure couples,
-        /// and carries the right-hand side forward. The column's off-diagonal blocks U (row s, column r) are replaced by
-        /// inv(D) U, which is what both substitutions need.
+        /// Eliminate column s, propagate block and right-hand-side updates, and replace off-diagonal U by inv(D)*U
+        /// for substitution.
         /// </summary>
         public void EliminateColumn(int s, double* scratch)
         {
@@ -630,8 +615,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The top: its columns are initialized, take every chunk's buffered share, are eliminated, and then substituted
-        /// backward, after which every link the top owns gets its impulses.
+        /// Combine buffered chunk updates into the top, eliminate and back-substitute, then recover owned link
+        /// impulses.
         /// </summary>
         public void SolveTop(double* scratch)
         {
@@ -685,8 +670,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// A chunk's share of a forward substitution of <see cref="Rhs"/> against the current factor, without factoring:
-        /// what the elimination does to the right-hand side, with a chunk's updates of the top sent to its buffers.
+        /// Forward-substitute a chunk's Rhs using the current factor, buffering contributions to the top.
         /// </summary>
         public void ForwardChunk(int chunk)
         {
@@ -713,8 +697,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The top's part of a substitution after <see cref="ForwardChunk"/>: the chunks' buffered shares, the top's
-        /// forward and backward substitution. <see cref="SubstituteChunk"/> then finishes each chunk into <see cref="Solution"/>.
+        /// Combine chunk buffers and substitute the top. SubstituteChunk then completes each chunk's Solution.
         /// </summary>
         public void SubstituteTop()
         {
@@ -756,8 +739,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solves against the current factor for another right-hand side, one 6-vector per section, in place, on one
-        /// thread. The factor stays valid until the next step's factor.
+        /// Solve another six-vector-per-section right-hand side in place on one thread, using the current factor.
         /// </summary>
         public void Solve(double* rhs)
         {
@@ -786,9 +768,9 @@ namespace Unity.Physics
         // ------------------------------------------------------------------ back out
 
         /// <summary>
-        /// Computes the force and torque that part i needs from its edge toward its parent, so that it moves with its
-        /// section: its mass times its acceleration, minus its external impulse over the step. The torque is about the
-        /// section's centre. Also stores the part's joint point toward its parent in <see cref="ChildPoint"/>.
+        /// Compute the force and torque needed from part i's parent edge to follow section motion, excluding
+        /// external impulses.
+        /// Express torque about the section centre and store the joint point in ChildPoint.
         /// </summary>
         public void PartLoad(int i, double3 center, double3 linear, double3 angular, out double3 force, out double3 torque)
         {
@@ -810,8 +792,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Computes the force and the torque about section s's centre that the live rows of incident link number e give
-        /// to the link's part in section s. Returns that part.
+        /// Compute incident link e's force and torque about section s's centre and return the affected part.
         /// </summary>
         public int LiveRowLoad(int s, int e, out double3 force, out double3 torque)
         {
@@ -829,8 +810,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Stores the load on part i's locked edge from the sums over its subtree. The torque in those sums is about
-        /// the section's centre, so this moves it to the joint point.
+        /// Store a locked-edge subtree load, shifting torque from the section centre to the joint point.
         /// </summary>
         public void StoreEdgeLoad(int i, double3 center, double3 force, double3 torque)
         {
@@ -842,9 +822,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Stores the load at section s's first part. The force that is left there after the subtree sums is the
-        /// section's momentum balance, in kN, which is zero up to rounding when every force is accounted for. The first
-        /// part's own edge load comes from its live link, if it has one.
+        /// Store section momentum-balance residual at its first part, in kN. This should be zero up to rounding.
         /// </summary>
         public void StoreRootLoad(int s, double3 leftover)
         {
@@ -895,12 +873,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Everything left for one section once the velocities are known: the loads on its locked edges by inverse
-        /// dynamics, every edge's state test, and the integration of its parts.
-        ///
-        /// The load a locked edge carries is what the parts beyond it need to move as they did: the sum over those parts of
-        /// m a minus the external force, minus the live rows' forces on them, with the matching torques. Each part's share
-        /// is taken about the section's centre so that subtree sums need no shifting, and moved to the joint point once.
+        /// Recover locked-edge loads by inverse dynamics, test edge states and integrate section parts.
+        /// Sum subtree force/torque about the section centre, then shift once to the joint point.
         /// </summary>
         public void FinishSection(int s)
         {

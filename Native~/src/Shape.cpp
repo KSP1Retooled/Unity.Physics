@@ -133,9 +133,8 @@ namespace Retooled
     {
     }
 
-    // Answered here rather than in the kernel, because Unity asks it twice for every trigger pair that stays touching, each
-    // step, and from job workers while it fills in query hits. It reads only what a worker may: the cold records and the
-    // flags the row holds itself.
+    // Answer frequent actor descriptor reads natively using only cold records and row-owned flags, which workers
+    // may read.
     static void GetActorDescriptor(void* object, const Context&, Command& base)
     {
         Physics::ActorDescriptor& descriptor = static_cast<ShapeCmd::GetActorDescriptor&>(base).value;

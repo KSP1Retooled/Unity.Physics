@@ -334,8 +334,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// The bounds of a capsule with the given ends and radius at the transform. The bounds cache of the
-        /// broadphase keeps the ends and radius for each body, and computes the bounds without the collider.
+        /// Calculate capsule bounds from endpoints and radius at the supplied transform, without reading a
+        /// collider.
         /// </summary>
         internal static Aabb CalculateAabb(float3 vertex0, float3 vertex1, float radius, RigidTransform transform, float uniformScale)
         {

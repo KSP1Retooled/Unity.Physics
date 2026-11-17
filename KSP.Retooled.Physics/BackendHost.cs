@@ -14,16 +14,11 @@ using UnityEditor;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Connects the managed core to the plugin. The plugin's store survives a domain reload, and all managed state can
-    /// be rebuilt from it. A reload therefore detaches the core to free managed state, then attaches it again. While
-    /// the core is detached, the plugin performs no simulation and reports no hits. Commands that require the core do
-    /// nothing and return zero. Detaching also moves body components back from entities, because the entities do not
-    /// survive the domain reload.
+    /// Connect the managed core to the native plugin. Detaching frees managed state; the native store survives
+    /// domain reloads.
+    /// While detached, simulation and queries are disabled, and commands that require the core return zero.
+    /// Callbacks must catch exceptions before returning across the native boundary.
     /// </summary>
-    /// <remarks>
-    /// The player runs on Mono, so callbacks use delegates that are kept alive in static fields and marked for reverse
-    /// P/Invoke. Exceptions must not cross the native boundary, so each entry point catches them here.
-    /// </remarks>
     public static unsafe class BackendHost
     {
         private const string Tag = "[RetooledPhysics] ";
@@ -34,8 +29,7 @@ namespace KSP.Retooled.Physics
 
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
-        // The Mono versions of the kernels. In the editor, the plugin calls these until Burst has compiled the kernels.
-        // The static fields keep the delegates alive while the plugin holds pointers to them.
+        // Keep Mono delegates alive while the plugin uses their function pointers during Burst compilation.
         private static readonly QueryKernel.QueryFunction MonoQuery = QueryKernel.Run;
         private static readonly MeshCook.CookFunction MonoCookMesh = MeshCook.Cook;
         private static readonly MeshCook.ValidateFunction MonoValidateMesh = MeshCook.Validate;
@@ -61,46 +55,43 @@ namespace KSP.Retooled.Physics
         private static long managedSteps;
 
         /// <summary>
-        /// Counts bodies processed by the Mono version of the force job. The job runs in Mono until asynchronous Burst
-        /// compilation finishes.
+        /// Number of bodies processed by the Mono force job while Burst compilation is pending.
         /// </summary>
         public static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
 
         /// <summary>
-        /// Counts queries that ran in Mono while the query functions were waiting for asynchronous Burst compilation.
+        /// Number of queries executed in Mono while Burst compilation is pending.
         /// </summary>
         public static long ManagedQueries => Interlocked.Read(ref managedQueries);
 
         /// <summary>
-        /// Counts mesh cooks that ran in Mono while the cook function was waiting for asynchronous Burst compilation.
+        /// Number of meshes cooked in Mono while Burst compilation is pending.
         /// </summary>
         public static long ManagedCooks => Interlocked.Read(ref managedCooks);
 
         /// <summary>
-        /// Counts body, shape, world, joint and vehicle commands that ran in Mono while their kernels were waiting for
-        /// asynchronous Burst compilation.
+        /// Number of body, shape, world, joint and vehicle commands executed in Mono while Burst compilation is
+        /// pending.
         /// </summary>
         public static long ManagedCommands => Interlocked.Read(ref managedCommands);
 
         /// <summary>
-        /// Counts steps and query world builds that ran in Mono while the step functions were waiting for asynchronous
-        /// Burst compilation.
+        /// Number of steps and query world builds executed in Mono while Burst compilation is pending.
         /// </summary>
         public static long ManagedSteps => Interlocked.Read(ref managedSteps);
 
         /// <summary>
-        /// Records the managed ID of the thread that most recently ran a step. The value is zero before the first step.
+        /// Managed thread ID of the most recent step, or zero before the first step.
         /// </summary>
         public static int LastStepThreadId { get; private set; }
 
         /// <summary>
-        /// Counts steps that have run in this domain. Detaching and attaching again within the same domain does not
-        /// reset the count.
+        /// Number of steps in this domain. Detaching and reattaching does not reset the count.
         /// </summary>
         public static long StepCount { get; private set; }
 
         /// <summary>
-        /// Records the thread that attached the core. All paths that attach the core run on the main thread.
+        /// ID of the main thread that attached the core.
         /// </summary>
         public static int MainThreadId { get; private set; }
 
@@ -172,11 +163,9 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            // Finish every world's pending refit of the dynamic tree while the plugin can still call into this core.
-            // A query on a worker that finds a refit pending helps with it through the plugin's helpRefit. The detach
-            // clears helpRefit and then waits for each world's query lock. A query that took the lock after that
-            // waited for the refit with no way to help, and when no free worker ran the refit's jobs, the query and
-            // the detach waited for each other.
+            // Finish refits before clearing helpRefit. Otherwise a worker holding a query lock can wait for a
+            // refit
+            // that it can no longer help, while detach waits for that lock.
             lock (Worlds)
             {
                 foreach (WorldState state in Worlds.Values)
@@ -213,7 +202,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves body components to entities in <paramref name="world"/>, unless an Entities world is already bound.
+        /// Move body components to entities in world, unless an Entities world is already bound.
         /// </summary>
         internal static void BindWorld(World world)
         {
@@ -230,7 +219,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Moves body components back from <paramref name="world"/> before it is disposed, if that world is bound.
+        /// Move body components out of the bound world before it is disposed.
         /// </summary>
         internal static void UnbindWorld(World world)
         {
@@ -272,10 +261,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Waits on the main thread until Burst has compiled the query, mesh and command kernels, then gives the
-        /// compiled kernels to the plugin. Returns false if the compile did not finish within <paramref name="seconds"/>.
-        /// Tests and benchmarks that check or measure compiled kernels call this first, because in the editor the
-        /// kernels run in Mono until their compile finishes. Outside the editor, the kernels are compiled from the start.
+        /// Wait on the main thread for Burst kernel compilation and install the compiled kernels.
+        /// Return false if compilation does not finish within seconds. In players, the kernels are already
+        /// compiled.
         /// </summary>
         public static bool WaitForCompiledKernels(double seconds)
         {
@@ -292,8 +280,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives the plugin the current kernels with the other callbacks. The plugin can be given new kernels while it is
-        /// attached. A thread that is running a kernel at that moment finishes with the version it started.
+        /// Install the current kernels and callbacks. Calls already in progress finish with the previous
+        /// kernels.
         /// </summary>
         private static void AttachToPlugin()
         {
@@ -319,9 +307,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the compiled kernels once they exist, and the Mono kernels until then. In the editor, this starts the
-        /// compile in the background. In a player, Burst only looks up the code that the build compiled. That lookup is
-        /// quick, so this asks for the compiled kernels right away.
+        /// Return the compiled kernels if available, otherwise the Mono kernels.
+        /// Start compilation in the background in the editor; look up precompiled code in players.
         /// </summary>
         private static Kernels CurrentKernels()
         {
@@ -339,9 +326,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Requests a function pointer from Burst for each kernel. In the editor, the first request after a code change
-        /// can block for a minute or more while Burst catches up. A returned pointer can still refer to a stub that runs
-        /// the kernel in Mono until Burst finishes its code. If Burst is disabled, the stub keeps running in Mono.
+        /// Request Burst function pointers for all kernels. The pointers may use Mono stubs until compilation
+        /// finishes.
         /// </summary>
         private static Kernels CompileKernels()
         {
@@ -379,9 +365,7 @@ namespace KSP.Retooled.Physics
 
 #if UNITY_EDITOR
         /// <summary>
-        /// Starts the compile of the kernels on a background thread, once per domain. If the main thread made the first
-        /// request to Burst after a code change, the domain reload would wait for it. The plugin calls the Mono kernels
-        /// in the meantime, and an editor update gives it the compiled kernels once the thread has finished.
+        /// Start kernel compilation once per domain on a background thread to avoid blocking the main thread.
         /// </summary>
         private static void StartKernelCompile()
         {
@@ -415,8 +399,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives the compiled kernels to the plugin once the compile thread has finished. If the compile failed, the
-        /// plugin keeps the Mono kernels. Runs on the main thread, because attaching records the main thread.
+        /// Install compiled kernels on the main thread when compilation finishes. Keep the Mono kernels if
+        /// compilation fails.
         /// </summary>
         private static void InstallCompiledKernels()
         {
@@ -433,7 +417,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Waits for the compile thread before the domain unloads, so that no thread is inside Burst at that point.
+        /// Wait for kernel compilation before unloading the domain.
         /// </summary>
         private static void FinishKernelCompile()
         {
@@ -457,10 +441,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Updates the query worlds to include all changes made on the main thread. Workers cannot rebuild a query
-        /// world, so they read the last published version. Main-thread code calls this after moving objects and before
-        /// scheduling query jobs, following any Physics.SyncTransforms call. Simulation steps and main-thread queries
-        /// already perform this update. Call this method on the main thread only.
+        /// Publish main-thread changes to the query worlds before scheduling queries on workers.
+        /// Call on the main thread after Physics.SyncTransforms. Steps and main-thread queries already perform
+        /// this update.
         /// </summary>
         public static void SyncQueryWorlds()
         {

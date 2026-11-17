@@ -11,8 +11,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// A vessel graph from Tests/VesselGraphs~ (written by export_vessel_graphs.py there) and the solver inputs made from
-    /// it under one of the study's lock rules, with gravity and a thrust load.
+    /// Load a vessel graph from Tests/VesselGraphs~ and prepare solver inputs under a lock rule, gravity and
+    /// thrust.
     /// </summary>
     public sealed class VesselGraph
     {
@@ -126,9 +126,9 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The solver's inputs: parts at rest with the identity orientation, gravity on every part and a thrust of 1.5 g
-        /// times the vessel's mass with a small torque on the root. Every spring rate is scaled by
-        /// <paramref name="stiffnessScale"/>, and dampers are 2% of their spring.
+        /// Build rest-state solver inputs with gravity and root thrust of 1.5 times vessel weight plus a small
+        /// torque.
+        /// Scale springs by stiffnessScale; dampers are 2% of their spring.
         /// </summary>
         public void Build(LockRule rule, double timeStep, double stiffnessScale, Allocator allocator,
             out NativeArray<VesselPart> parts, out NativeArray<VesselEdge> edges, out NativeArray<VesselClosure> closures,

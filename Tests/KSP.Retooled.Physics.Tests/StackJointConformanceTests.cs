@@ -4,8 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Stock joins parts on a large stack node with three joints spread around the node. Each one reports its own force,
-    /// and part joints break on those, so together they must carry the load and each its share of it.
+    /// Test load sharing across the three joints used by large stock stack nodes, including each joint's break
+    /// load.
     /// </summary>
     public class StackJointConformanceTests : PhysicsScene
     {

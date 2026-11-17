@@ -4,9 +4,8 @@ using Unity.Mathematics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Handles height field commands. Stores a copy of Unity's samples on the store's heap so that they survive a
-    /// domain reload, along with a list of shapes that use the field. <see cref="ColliderBuilder"/> creates the
-    /// geometry separately for each shape because the scale is stored on the shape.
+    /// Store height field samples and attached shapes on the native heap across domain reloads.
+    /// ColliderBuilder builds geometry for each shape's scale.
     /// </summary>
     internal static unsafe class HeightFields
     {
@@ -36,9 +35,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Applies an edit to a height field. Unity's descriptor contains the entire grid with the edit applied, even
-        /// when the specified region is small. It contains no hole data until the terrain has had a hole. Each collider
-        /// contains a copy of the grid, so mark the bodies of all attached shapes for a rebuild.
+        /// Update height field samples and mark every attached body's collider for rebuilding.
+        /// Unity supplies the entire edited grid, even for a partial update.
         /// </summary>
         internal static void Update(NativeStore.CommandArgs* a, NativeStore.StoreGlobals* globals)
         {

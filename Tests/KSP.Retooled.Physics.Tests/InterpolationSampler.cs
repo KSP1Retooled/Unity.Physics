@@ -7,8 +7,8 @@ using UnityEngine.LowLevel;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Records, at the end of each frame, where a transform and its body are. It joins the player loop rather than being
-    /// a component, because play mode does not attach behaviours from the editor assembly that tests compile into.
+    /// Record body and transform positions at frame end through the player loop.
+    /// Test editor assemblies cannot attach the needed behaviours in play mode.
     /// </summary>
     public sealed class InterpolationSampler : IDisposable
     {

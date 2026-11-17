@@ -19,10 +19,8 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Solves all problems saved by <see cref="SolverCapture"/> again, using one thread in Burst. Writes the time for
-    /// each stage of each problem to Library/SolverCapture/bench.csv. Also reports the difference between the new
-    /// impulses and those recorded during the flight, to check whether a faster solver produces the same answer. Run it
-    /// with `unity exec --method`.
+    /// Replay captured solver problems on one Burst thread. Write stage timings and impulse differences to
+    /// Library/SolverCapture/bench.csv.
     /// </summary>
     public static unsafe class SolverCaptureBench
     {
@@ -106,10 +104,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Repeatedly solves one run's captures in order on this thread, so a sampling profiler can observe steady
-        /// work. Logs the time per solve. The argument specifies the run under Library/SolverCapture and the duration
-        /// in seconds, separated by a colon, as in "pegasus/004:30". Each pass starts with a fresh solver, so the first
-        /// solve analyzes and factorizes the problem as it would during a flight.
+        /// Replay captures repeatedly for a sampling profiler. Use run:seconds, for example pegasus/004:30.
+        /// Start each pass with a fresh solver.
         /// </summary>
         public static void Loop(string argument)
         {

@@ -11,9 +11,7 @@ using PhysicsJoint = Unity.Physics.Joint;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Sleeping bodies are treated as immovable during the step. Before the step, wake sleeping dynamic bodies that are
-    /// connected to awake dynamic bodies by active joints, as PhysX does for an island. Repeat the pass until no more
-    /// bodies wake. Depending on the order of joints, one pass can propagate waking across several joints in a chain.
+    /// Wake sleeping dynamic bodies connected to awake bodies by active joints. Repeat until no more bodies wake.
     /// </summary>
     [BurstCompile]
     internal unsafe struct WakeJointedBodiesJob : IJob
@@ -74,17 +72,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Builds Unity Physics joints for each store joint or group found by <see cref="GroupJointsJob"/> . A single store
-    /// joint may require several Unity Physics joints: each Unity Physics joint can contain three constraints, all
-    /// using the same pair of frames. Each work item writes the joints for one unit to a separate section of the stream
-    /// and records their count. <see cref="LayOutJointsJob"/> and <see cref="CopyJointsJob"/> then place those sections
-    /// in order.
+    /// Build Unity Physics joints for store joints and groups, writing each unit to a separate stream section.
+    /// Body A is body1 (connected); body B is body0 (owner), matching Unity's relative frame convention.
     /// </summary>
-    /// <remarks>
-    /// Body A of a built joint is the store's body1, the connected body. Body B is body0, the joint's owner. Unity
-    /// sends limits for frame 1 relative to frame 0, while Unity Physics measures A relative to B, so this ordering
-    /// matches the two conventions.
-    /// </remarks>
     [BurstCompile]
     internal unsafe struct BuildJointsJob : IJobParallelForDefer
     {
@@ -100,8 +90,7 @@ namespace KSP.Retooled.Physics
         public NativeStore.WorldData* World;
 
         /// <summary>
-        /// The load state of each joint, at the joint's index in the world's list. Locking reads the smoothed loads
-        /// from it. See <see cref="JointLoadStates"/>.
+        /// Joint load states indexed by the world's joint list. Locking reads their smoothed loads.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public JointLoadState* States;
@@ -133,11 +122,9 @@ namespace KSP.Retooled.Physics
         public NativeArray<JointForestRole> Roles;
 
         /// <summary>
-        /// Whether locking is enabled for pairs in the forest. For each forest unit between two moving bodies,
-        /// calculate whether the pair may lock or remain locked. The load used for breaking must be below
-        /// <see cref="LockFraction"/> of the break limits to lock, or below <see cref="YieldFraction"/> to remain
-        /// locked. A joint with all three angular axes locked permits both regardless of load, until it breaks. Loads
-        /// change every step, so these permissions are calculated here rather than when the groups are built.
+        /// Enable load-based locking for forest pairs. Lock below LockFraction and remain locked below
+        /// YieldFraction.
+        /// Fully locked angular joints permit both until they break.
         /// </summary>
         public bool Locking;
         public float LockFraction;
@@ -259,11 +246,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns whether the joint can be merged with other joints between the same two bodies. Its anchors must be
-        /// held together. Each angular axis may be locked, held at rest by a spring, or free; nearby angular limits and
-        /// nonzero rotation or angular velocity targets prevent merging unless all angular axes are locked. Eligible
-        /// joints can be represented together as one joint. A stock part joint locks its twist because Unity locks an
-        /// axis when both limits are equal. Drives resist its swing.
+        /// Return whether joints between the same bodies can be merged.
+        /// Require held anchors, compatible angular constraints and no conflicting targets or nearby limits.
         /// </summary>
         internal static bool Mergeable(NativeStore.JointData* joint)
         {
@@ -324,9 +308,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns whether a limit that <see cref="AddAngularDof"/> would build is within <see cref="UnreachedAngle"/>
-        /// of the joint's rest orientation. Stock part joints have swing limits near half a turn. A joint that holds
-        /// its anchors together is not expected to reach those limits.
+        /// Return whether an angular limit lies within UnreachedAngle of the rest orientation.
         /// </summary>
         private static bool HasNearAngularLimit(NativeStore.JointData* joint)
         {
@@ -350,11 +332,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds one joint at the mean of the members' anchors, with their combined stiffness. The direct solver caps
-        /// the stiffness of each row, so the merged rows use multiples of that cap. Each linear row uses one cap per
-        /// member. For each angular row, add the members' angular stiffness and the resistance to rotation from their
-        /// offset linear constraints. For small rotations, that additional stiffness is the linear cap times the
-        /// squared perpendicular distance from the axis through the mean anchor.
+        /// Build a group joint at the mean anchor with combined angular stiffness.
+        /// Include rotational resistance from offset linear constraints.
         /// </summary>
         private void AppendGroup(int index)
         {
@@ -382,9 +361,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Prepares the group of a unit in an active vessel, if the unit is a group. The vessel solver handles the
-        /// unit's constraints, so no joint is built for it. <see cref="ShareGroupLoadsJob"/> still needs the group's
-        /// stiffness and the offsets of its members to distribute the group's load after the step.
+        /// Prepare stiffness and member offsets for a vessel group so that ShareGroupLoadsJob can distribute its
+        /// load.
         /// </summary>
         internal static void PrepareVesselGroup(NativeStore.WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
             NativeArray<JointGroupMember> members)
@@ -401,9 +379,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Calculates the mean anchors and angular stiffness for a group, and the offset and angular stiffness for each
-        /// member. Angular stiffness is expressed as a multiple of the direct solver's cap. Stores the results in the
-        /// group and member records.
+        /// Compute group mean anchors, angular stiffness and member offsets.
+        /// Express angular stiffness as multiples of the direct solver cap.
         /// </summary>
         private static JointGroup PrepareGroup(NativeStore.WorldData* world, NativeArray<JointGroup> groups, NativeArray<JointGroupMember> members,
             int index, out float3 anchor0, out float3 anchor1)
@@ -443,8 +420,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The angular stiffness of a member for each axis, expressed as a multiple of the cap. Compare the spring
-        /// stiffness supplied by Unity directly with the cap, limiting the result to one.
+        /// Angular stiffness per axis as a fraction of the direct solver cap, limited to one.
         /// </summary>
         private static float3 AngularStiffness(NativeStore.JointData* joint, float angularCap)
         {
@@ -531,8 +507,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Initializes the joint before adding constraints. Returns false if the joint cannot be built or both bodies
-        /// are held in place. In the latter case, writes a joint with no constraints to preserve its collision setting.
+        /// Initialize joint construction. Return false if unavailable or both bodies are immovable;
+        /// still emit an empty joint in the latter case to preserve collision settings.
         /// </summary>
         private bool Begin(NativeStore.JointData* joint, float3 anchor0, float3 anchor1, Entity entity)
         {
@@ -642,10 +618,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Treats a linear drive as a lock when both its spring and force limit meet the unlimited threshold and its
-        /// position and velocity targets are zero. Stock part joints hold their anchors together this way. Representing
-        /// such a drive as a lock also reports the force needed for breaking; drive constraints do not report that
-        /// force.
+        /// Treat an unlimited linear drive with zero targets as a lock so that its force contributes to joint
+        /// breaking.
         /// </summary>
         private static bool HeldByDrive(NativeStore.JointData* joint, int index)
         {
@@ -682,8 +656,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a linear constraint for any selection of axes. The package's constraint helpers use fixed selections,
-        /// but a joint may lock or limit any combination.
+        /// Build a linear constraint for any locked or limited axis combination.
         /// </summary>
         private static Constraint LinearAxes(bool3 axes, float min, float max, float frequency, float damping)
         {
@@ -748,10 +721,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Constrains each selected angular axis to zero with a separate 1D constraint. Only these constraints
-        /// accumulate a usable torque. AngularLimit3DJacobian accumulates its error instead of its impulse.
-        /// AngularLimit2DJacobian accumulates along an axis that changes with the error, so the sum does not represent
-        /// a meaningful torque. The reported joint torque and the break test require a usable torque.
+        /// Use separate 1D constraints for locked angular axes so that accumulated impulses give usable torques for
+        /// reporting and breaking.
         /// </summary>
         private void AddLockedAngles(bool3 locked, float frequency, float damping, float3 impulseThreshold)
         {
@@ -776,10 +747,8 @@ namespace KSP.Retooled.Physics
                     continue;
                 }
 
-                // F = k(x* - x) + c(v* - v) = k(x* + (c/k)v* - x) - cv. This expresses the drive using the single
-                // spring and damper supported by a motor, with a position offset for the target velocity. For a pure
-                // damper, use the current joint position as the spring target before adding that offset, so the weak
-                // spring has a negligible effect.
+                // Express target velocity as a spring target offset: F = k(x* + (c/k)v* - x) - cv.
+                // For a pure damper, target the current position before applying the offset.
                 float spring = math.max(axis->driveSpring, axis->driveDamper * PureDamperSpringRatio);
                 float velocityOffset = axis->driveDamper / spring * joint->targetLinearVelocity[i];
                 float target = (axis->driveSpring > 0.0f ? joint->targetPosition[i] : current[i]) + velocityOffset;
@@ -807,8 +776,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds a spring and damper to hold the whole rotation at its target. Uses the same constraints as a locked
-        /// joint rather than three separate motors. These are drive constraints, so they produce no impulse events.
+        /// Build whole-rotation spring and damper constraints at the target. Drives emit no impulse events.
         /// </summary>
         private void AddSoftRotation(NativeStore.JointData* joint, NativeStore.JointAxis* drive)
         {
@@ -850,9 +818,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Changes a motor to act along the selected joint axis. The package's motors are initially configured for x.
-        /// The motor Jacobian uses the axis selected by the constraint, while the impulse limit remains in the first
-        /// slot regardless of the axis.
+        /// Select the motor's joint axis. Keep the impulse limit in the first slot, as required by the motor
+        /// Jacobian.
         /// </summary>
         private static Constraint OnAxis(int index, Constraint motor)
         {
@@ -879,10 +846,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Converts spring stiffness in N/m (or N m/rad) and damping into the frequency and damping ratio required by
-        /// Unity Physics. These values depend on the supplied effective mass, which is recalculated each step, because
-        /// a constraint has no mass of its own. For an acceleration drive, use an effective mass of one so that the
-        /// response is independent of body mass.
+        /// Convert stiffness and damping to frequency and damping ratio using this step's effective mass.
+        /// Use unit mass for acceleration drives.
         /// </summary>
         private static void Softness(float spring, float damper, float mass, bool acceleration, out float frequency, out float dampingRatio)
         {
@@ -905,8 +870,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Lists the units for <see cref="BuildJointsJob"/> : one unit for each ungrouped store joint and one for each
-    /// group. Units follow store order, and the built joints retain that order.
+    /// List ungrouped joints and joint groups as build units, preserving store order.
     /// </summary>
     [BurstCompile]
     internal unsafe struct GroupJointsJob : IJob
@@ -946,12 +910,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Builds spanning trees for the vessel forest using Kruskal's algorithm. Processes mergeable units (
-        /// <see cref="BuildJointsJob.Mergeable"/> ) in store order, so part joints precede struts that were added
-        /// later. A unit that connects two trees becomes a tree edge. A unit between bodies already in the same tree
-        /// becomes a closure. A unit connected to an immobile body is marked as a tree edge without joining trees.
-        /// Other units are excluded from the forest. This takes approximately linear time in the number of joints, as
-        /// does grouping.
+        /// Build the vessel spanning forest with Kruskal's algorithm in store order.
+        /// Mergeable units joining trees become edges; units within a tree become closures.
         /// </summary>
         private void FindForest()
         {
@@ -1018,11 +978,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Groups eligible joints between the same two bodies so that they can be solved as one joint. In stock KSP, a
-        /// stack node of size 2 or greater uses three joints between the same parts. Those joints require 18 rows where
-        /// 6 would suffice. Redundant rows account for most of the work in a large craft's direct solve. A joint is
-        /// grouped with the first eligible joint found between its bodies if their frame orientations and flags match.
-        /// A group must contain at least two joints.
+        /// Merge compatible joints between the same bodies into groups of at least two, avoiding redundant solver
+        /// rows.
         /// </summary>
         private NativeArray<int> FindGroups()
         {
@@ -1088,8 +1045,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Calculates the start index for each unit's joints from the counts written by <see cref="BuildJointsJob"/> .
-    /// Resizes the world's joint array to hold all of them.
+    /// Compute joint output offsets from per-unit counts and resize the world's joint array.
     /// </summary>
     [BurstCompile]
     internal struct LayOutJointsJob : IJob
@@ -1154,9 +1110,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Store joints between the same two bodies that are built as one joint. See <see cref="BuildJointsJob"/> .
-    /// Stiffness is stored for each axis of the joint frame, as a multiple of the direct solver's angular stiffness
-    /// cap.
+    /// Joints between the same bodies represented as one unit, with per-axis stiffness relative to the direct
+    /// solver cap.
     /// </summary>
     internal struct JointGroup
     {
@@ -1239,10 +1194,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns a drive that can constrain the whole rotation together, or null if separate motors are needed for
-        /// each axis. Unity leaves the other drives configured when switching to slerp, so a slerp drive with any
-        /// strength takes precedence. Soft constraints cannot enforce a force limit. If the force limit matters, use
-        /// motors instead.
+        /// Return a drive for the whole rotation, or null when separate motors are required.
+        /// An active slerp drive takes precedence. Use motors when force limits must be enforced.
         /// </summary>
         internal static NativeStore.JointAxis* WholeRotationDrive(NativeStore.JointData* joint)
         {
@@ -1307,8 +1260,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The target angular velocity of frame 1 relative to frame 0. PhysX uses the opposite sign to the value that
-        /// Unity sends for this target. Position, rotation and linear velocity targets do not need this sign change.
+        /// Target angular velocity of frame 1 relative to frame 0. Negate Unity's target to match PhysX;
+        /// other drive targets keep their signs.
         /// </summary>
         internal static float3 TargetAngularVelocity(NativeStore.JointData* joint)
         {

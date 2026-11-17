@@ -4,13 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Stores the collider pairs disabled by Physics.IgnoreCollision, using each collider's 16-bit ignore id. Unity
-    /// stores the id on the Collider and initially sets it to 0, meaning no id. The backend assigns ids when a pair is
-    /// first ignored, and Unity sends them to the shapes through their filter data. A collider keeps its id until it is
-    /// destroyed, even when collisions are restored. During a step, contacts between shapes with ids require lookups. A
-    /// large craft can ignore a few hundred thousand pairs, so lookups use a hash table. Each id also has a linked list
-    /// of its edges, so destroying a collider only requires processing its own pairs. Everything is allocated on the
-    /// store's heap so that ignored pairs survive a domain reload.
+    /// Store collider pairs disabled by Physics.IgnoreCollision, keyed by persistent 16-bit ignore IDs.
+    /// Use a hash table for lookups and per-ID edge lists for removal. Native allocations survive domain reloads.
     /// </summary>
     internal unsafe struct IgnoreTable
     {
@@ -35,9 +30,7 @@ namespace KSP.Retooled.Physics
         private uint freeEdge;
 
         /// <summary>
-        /// Marks a table that has the fields after <see cref="lastId"/>. The field sits in the four bytes of padding
-        /// before <see cref="slots"/>, so it doesn't move any field, and every table that older code made has it, with a
-        /// value of zero. See <see cref="Upgrade"/>.
+        /// Layout marker in the original table's padding. A zero value identifies an older layout; see Upgrade.
         /// </summary>
         private uint layoutMark;
 
@@ -51,8 +44,8 @@ namespace KSP.Retooled.Physics
         private uint lastId;
 
         /// <summary>
-        /// The collision groups, or null until the first shape or group is entered. See <see cref="GroupTable"/>. Read
-        /// it through <see cref="GroupsOf"/> unless a shape's group record shows that the groups exist.
+        /// Collision groups, or null before the first entry. Access through GroupsOf unless a shape record proves
+        /// they exist.
         /// </summary>
         internal GroupTable* Groups;
 
@@ -169,9 +162,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Places every pair in the table again using the current domain's hash function. The table survives a domain
-        /// reload. If the previous code used a different hash function, lookups would otherwise fail to find those
-        /// pairs.
+        /// Rehash stored pairs after domain reload so that lookups use the current hash function.
         /// </summary>
         internal static void Reslot(NativeStore.StoreGlobals* globals)
         {
@@ -210,16 +201,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Gives a table that older code made the fields that it lacks. <see cref="BackendHost.Attach"/> calls this
-        /// through <see cref="Reslot"/>, after a domain reload and before anything else reads the table.
-        ///
-        /// A table made by code older than the groups is 64 bytes long. The code before this one put its layout mark
-        /// after those 64 bytes, so to check the mark it read 8 bytes past an older table. Those bytes can hold anything
-        /// that the heap left there, including the mark and a groups pointer of a table that was freed. This code keeps
-        /// its mark inside the first 64 bytes, where every older table has zero. A table without the mark is moved to a
-        /// block of the current size, which keeps its first 64 bytes, and it starts with no groups. A table that the
-        /// code before this one made loses its groups once, when the editor first reloads into this code; the game sets
-        /// them again when it next loads a vessel. Its old group table stays on the heap.
+        /// Upgrade tables created before collision groups. Check the marker within the original 64 bytes before
+        /// reading new fields.
+        /// Copy those bytes into a table of the current size and initialize it without groups when the marker is
+        /// absent.
         /// </summary>
         internal static void Upgrade(NativeStore.StoreGlobals* globals)
         {
@@ -247,9 +232,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Mixes all bits of the key into the slot index. Ids are assigned in order, so keys for pairs in one craft
-        /// differ in only a few bits of each half. Masking a simple product preserves only the low bits. Pairs with the
-        /// same higher id would then start at just a few slots, requiring long sequences of probes.
+        /// Mix both halves of pair keys to avoid clustering sequential collider IDs in the same probe chains.
         /// </summary>
         private static uint Mix(uint key)
         {

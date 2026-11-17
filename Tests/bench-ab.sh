@@ -1,32 +1,32 @@
 #!/bin/sh
-# Times the whole-step bench (VesselForestBench.Measure) in two projects, the base and a change, in alternating rounds,
-# and prints a summary of the two.
+# Compare whole-step benchmarks between base and changed Unity projects.
 #
-# usage: Tests/bench-ab.sh <base project> <change project> <output folder> [rounds] [crafts] [scenes] [threads]
+# Usage:
+#   Tests/bench-ab.sh <base project> <change project> <output folder> [rounds] [crafts] [scenes] [threads]
 #
-#   rounds   the number of rounds, 4 by default. Each round runs the bench once in each project.
-#   crafts   RETOOLED_BENCH_CRAFT, by default tu160,synthetic4500,tu160x4,tu160:128x16
-#   scenes   RETOOLED_BENCH_SCENE, by default floating,ground
-#   threads  RETOOLED_BENCH_THREADS, by default 8,1
+# Arguments:
+#   rounds   Alternating measurement rounds (default 4).
+#   crafts   Default: tu160,synthetic4500,tu160x4,tu160:128x16.
+#   scenes   Default: floating,ground.
+#   threads  Default: 8,1.
 #
-#   AB_STEPS (default 60) and AB_BLOCKS (default 2) set RETOOLED_BENCH_STEPS and RETOOLED_BENCH_BLOCKS, and AB_PATHS
-#   (default compiled) sets RETOOLED_BENCH_PATHS. AB_KEEP=1 leaves both editors open at the end.
+# Environment:
+#   AB_STEPS   Steps per measurement block (default 60).
+#   AB_BLOCKS  Blocks per configuration (default 2).
+#   AB_PATHS   Solver paths (default compiled).
+#   AB_KEEP=1  Leave both editors open after the benchmark.
 #
-# The script first stops both projects' editors and starts them again, at the same time, with a short test, so that
-# neither editor has run anything else before it is timed. Both editors stay open for the whole run. Each run of the
-# bench builds each scene once and measures it with every number of threads in turn (RETOOLED_BENCH_SHARE=1), because
-# building a scene of 10,000 bodies takes much longer than measuring 60 steps of it. Every run in one project has the
-# same environment variables, so that the editor doesn't reload its scripts between runs. The rounds alternate which
-# project goes first (base and change, then change and base), so that a slow drift of the machine's speed affects both
-# sides alike.
+# Restart both editors before measuring and reuse them for all rounds.
+# Alternate which project runs first to reduce bias from changing machine load.
+# Reuse each scene across thread counts, with a fresh warm-up for each count.
 #
-# Each run's table goes to <output folder>/<side>-<round>.txt, where side is base or change. The summary at the end
-# (Tests/bench-ab-summary.py) gives, per scene and number of threads, the minimum and the median of the runs' medians
-# on each side, and the CPU load that other processes put on the machine during each run.
+# Output:
+#   <output folder>/<side>-<round>.txt, where side is base or change.
+#   The summary compares minimum and median timings and competing CPU load.
 #
-# The filter ends in "$" because Unity's test filters are regular expressions: without it,
-# VesselForestBench.Measure also matches VesselForestBench.MeasureStages, which then runs after it and takes longer
-# than Measure does.
+# Test filters end in $ so that Measure does not also match MeasureStages.
+# Stop other editor instances before running against these projects.
+#
 
 set -u
 

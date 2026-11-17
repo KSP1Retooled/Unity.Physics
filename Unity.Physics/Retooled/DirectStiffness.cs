@@ -3,16 +3,14 @@ using Unity.Mathematics;
 namespace Unity.Physics
 {
     /// <summary>
-    /// Defines the maximum joint stiffness for a direct solve. At this stiffness, the effective mass would oscillate
-    /// with <see cref="Period"/> as its period. A constraint can raise the maximum using
-    /// <see cref="Constraint.DirectStiffnessScale"/> .
+    /// Joint stiffness cap for direct solving, based on the effective mass and Period.
+    /// Constraint.DirectStiffnessScale can raise the cap.
     /// </summary>
     public static class DirectStiffness
     {
         /// <summary>
-        /// The oscillation period in seconds. This is fixed independently of the substep duration. A joint's static sag
-        /// is the load divided by its stiffness. If the stiffness cap depended on substep duration, the sag would vary
-        /// with the square of that duration, making the craft's stiffness depend on the number of substeps.
+        /// Oscillation period in seconds used for the stiffness cap, independent of substep duration to keep static
+        /// sag consistent.
         /// </summary>
         public const float Period = 0.005f;
 

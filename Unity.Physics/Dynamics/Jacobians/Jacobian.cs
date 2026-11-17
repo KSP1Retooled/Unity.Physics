@@ -762,10 +762,7 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Returns the maximum joint stiffness; see <see cref="DirectStiffness"/>. A single stiffness limit for all
-        /// joints would be too soft between heavy parts and too stiff between light parts. Light parts would then carry
-        /// too much load in joint loops. The limit uses the pair's effective mass, or effective inertia for angular
-        /// rows, so the lighter part largely determines it when joined to a heavy part.
+        /// Return the joint stiffness cap from the pair's effective mass or angular inertia; see DirectStiffness.
         /// </summary>
         static float MaximumDirectStiffness(in JacobianHeader header, in MotionVelocity velocityA, in MotionVelocity velocityB)
         {

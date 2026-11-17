@@ -4,9 +4,8 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests <see cref="CollisionGroups"/>, which stops collisions inside a group without an ignored pair for every two
-    /// colliders. Two weightless boxes start apart, and the first moves through the place of the second. If the pair
-    /// collides, the first box pushes the second along. If the pair is ignored, the second box stays where it was.
+    /// Test collision groups by moving one box through another: collisions push it; ignored pairs leave it
+    /// stationary.
     /// </summary>
     public class CollisionGroupTests : PhysicsScene
     {
@@ -302,10 +301,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// The group table keeps a collider's group by the collider's engine id, and it keeps the group after the
-        /// collider's shape is gone. That is only safe if Unity never gives the id of a destroyed collider to a new one
-        /// within a session. This creates and destroys many colliders, on one game object and on many, and checks that
-        /// no id comes back.
+        /// Verify that Unity does not reuse destroyed collider engine IDs within a session, as required by group
+        /// records.
         /// </summary>
         [Test]
         public void UnityNeverGivesADestroyedCollidersIdToANewOne()
@@ -337,10 +334,8 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// A table made by code older than the groups is 64 bytes long. The bytes after it on the heap can hold anything,
-        /// here the layout mark that the code before this one used and a pointer that leads nowhere, as a freed table
-        /// would leave them. After a domain reload into this code, the backend must not take those bytes for the
-        /// table's groups. It grows the table, and the table keeps its ignored pairs.
+        /// Verify safe upgrade of a 64-byte ignore table with misleading bytes beyond its allocation, preserving
+        /// ignored pairs.
         /// </summary>
         [Test]
         public unsafe void AnIgnoreTableFromBeforeTheGroupsGrowsAndKeepsItsPairs()
@@ -350,9 +345,7 @@ namespace KSP.Retooled.Physics.Tests
             NativeStore.StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
             IgnoreTable* current = globals->ignoreTable;
 
-            // The old table holds the first 64 bytes of the current one, so it shares the current table's arrays. Fill a
-            // larger block first and then shrink it, so that the bytes after the old table are likely to hold the stale
-            // mark and pointer.
+            // Seed bytes beyond the old table with a stale marker and pointer before shrinking the allocation.
             const int oldSize = IgnoreTable.OldSize;
             var block = (byte*)StoreOps.Reallocate(globals, null, oldSize + 16);
             Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCpy(block, current, oldSize);

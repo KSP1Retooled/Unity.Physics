@@ -17,16 +17,14 @@ namespace KSP.Retooled.Physics
         int NumHits { get; }
 
         /// <summary>
-        /// Returns false when no more hits should be sent to this sink. The serial number is the hit body's (its
-        /// RigidBody.Entity.Version), which a sink that keeps the closest hit uses to break a tie.
+        /// Return false to stop sending hits. serial is the body's Entity.Version, used for distance tie-breaking.
         /// </summary>
         bool Add(in T hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart);
     }
 
     /// <summary>
-    /// Keeps the closest hit. Of two hits at the same distance, it keeps the one that <see
-    /// cref="QueryCollectors.Precedes"/> picks, so that the result doesn't depend on the order in which the world's tree
-    /// visits the bodies. A tree that the step refitted can visit them in another order than a tree built from scratch.
+    /// Retain the closest hit, breaking distance ties with QueryCollectors.Precedes regardless of tree traversal
+    /// order.
     /// </summary>
     internal unsafe struct ClosestSink<T> : IQuerySink<T>
         where T : unmanaged, IQueryResult
@@ -39,9 +37,7 @@ namespace KSP.Retooled.Physics
         public bool EarlyOut => false;
 
         /// <summary>
-        /// Before the first hit, the length of the query. After it, the next float above the closest hit's fraction,
-        /// so that the queries, which pass on only the hits closer than this value, also pass on a hit at the same
-        /// distance.
+        /// Initial query length, then the next float above the nearest hit fraction to admit equal-distance ties.
         /// </summary>
         public float MaxFraction { get; set; }
 
@@ -187,12 +183,9 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Filters hits using rules that a collision filter cannot express: whether to include static or dynamic bodies,
-    /// whether to include triggers, whether a shape participates in queries, and which side of a triangle was hit.
-    /// Unity Physics reports mesh hits per triangle, whereas PhysX reports them per shape. With
-    /// <paramref name="groupByShape"/>, this collector combines hits for each shape. It does not need a separate
-    /// buffer because Unity Physics finishes reporting one shape before reporting another. The caller must call
-    /// <see cref="Finish"/> after the query.
+    /// Filter hits by body type, trigger/query flags and triangle side.
+    /// When grouping by shape, combine triangle hits into one shape hit. The caller must call Finish after the
+    /// query.
     /// </summary>
     internal unsafe struct QueryCollector<T, S> : ICollector<T>
         where T : unmanaged, IQueryResult
@@ -348,11 +341,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Refines the contact reported by a cast. Unity Physics stops a cast after ten advances and reports the position
-    /// reached as a hit. When a cast grazes a shape, that position can be well short of the shape, or the cast may
-    /// never touch it. This collector continues the cast against that leaf to move the reported hit closer to contact
-    /// or reject it if the cast passes by. Refinement is limited to four additional passes. If that limit is reached,
-    /// the latest hit is retained even if contact has not been confirmed.
+    /// Refine cast hits that Unity Physics reports before reaching contact, rejecting casts that pass the shape.
+    /// Keep the latest hit after at most four additional passes, even if contact is still unconfirmed.
     /// </summary>
     internal unsafe struct RefinedCastCollector<C> : ICollector<ColliderCastHit>
         where C : struct, ICollector<ColliderCastHit>
@@ -441,9 +431,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Collects hits from a ray or cast against one shape. PhysX treats this as a query of a scene containing only that
-    /// shape. A ray that starts inside the shape misses it. A cast that starts inside the shape reports the overlap
-    /// only when the caller requests initial overlaps.
+    /// Collect ray or cast hits against one shape. Rays starting inside miss; casts report initial overlaps only
+    /// when requested.
     /// </summary>
     internal unsafe struct SingleShapeCollector<T> : ICollector<T>
         where T : unmanaged, IQueryResult
@@ -496,8 +485,7 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Finds the deepest overlap between a convex collider and its target. PhysX pushes a shape out through the front
-    /// of a mesh triangle only. Triangles whose back faces the shape's centre are excluded.
+    /// Find the deepest convex overlap, excluding mesh triangles facing away from the shape's centre as PhysX does.
     /// </summary>
     internal unsafe struct PenetrationCollector : ICollector<DistanceHit>
     {
@@ -538,11 +526,8 @@ namespace KSP.Retooled.Physics
     internal static unsafe class QueryCollectors
     {
         /// <summary>
-        /// Decides which of two hits at the same distance a query that keeps the closest hit reports. The tree of the
-        /// world's bodies may visit two such bodies in either order, so the query can't keep the first hit that it
-        /// found. Of two bodies, the one with the higher serial number wins: that is the body created later, which is
-        /// also the body that PhysX reports when nothing was removed in between. Of two leaves of one body, the leaf with
-        /// the lower collider key wins; nobody measured what PhysX does in that case.
+        /// Order closest hits by distance, then higher body serial, then lower collider key.
+        /// Higher serial matches PhysX's preference for later-created bodies; the leaf tie-break is deterministic.
         /// </summary>
         internal static bool Precedes(float fraction, uint serial, ColliderKey key, float bestFraction, uint bestSerial, ColliderKey bestKey)
         {
@@ -560,9 +545,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the smallest float that is greater than a fraction. A collector that keeps the closest hit reports
-        /// this value as its MaxFraction, because the queries pass on only the hits that are closer than MaxFraction,
-        /// and the collector needs to see a hit at the same distance too.
+        /// Return the next representable float above fraction so that a closest-hit collector also receives
+        /// equal-distance hits.
         /// </summary>
         internal static float JustAbove(float fraction)
         {
@@ -589,12 +573,9 @@ namespace KSP.Retooled.Physics
         internal const uint NoFace = uint.MaxValue;
 
         /// <summary>
-        /// Converts a hit to the plugin API's format. The hit identifies a primitive in the collider blob, where
-        /// triangles have been merged and reordered. Nothing in the game reads the source triangle or barycentric
-        /// coordinates, so the code avoids the memory cost of mapping back to the source mesh. Triangle meshes report
-        /// face 0, and other geometry reports no face. For a hit on the back of a triangle, PhysX uses the triangle's
-        /// own normal. Unity Physics instead returns a normal that faces the query, so this method reverses it for
-        /// backface hits.
+        /// Convert a hit to the plugin format and restore the polygon normal for backface hits.
+        /// Report face zero for triangle meshes and no face for other geometry; source triangle mapping is not
+        /// retained.
         /// </summary>
         internal static NativeStore.RayCastHit Record(float3 position, float3 normal, float distance, QueryShape* shape, bool backface)
         {
@@ -610,9 +591,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Determines whether movement in a world-space direction hits a polygon from behind. Unity Physics reports
-        /// hits on both sides of a polygon and turns the hit normal to face the query. The polygon's winding is
-        /// therefore needed to determine which side was hit. Rejecting a backface hit allows the query to continue.
+        /// Determine the polygon's hit side from winding, since Unity Physics turns hit normals toward the query.
         /// </summary>
         internal static bool IsBackface(Collider* root, ColliderKey key, RigidTransform worldFromRoot, float3 direction)
         {
@@ -653,9 +632,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the direction that a polygon faces, in the coordinate frame of its leaf collider. For a mesh, this
-        /// direction follows the winding of the vertices. Terrain triangles have the opposite winding, so their normal
-        /// is reversed to point up from the surface.
+        /// Return the leaf polygon's front direction. Reverse terrain winding so that its normal points above the
+        /// surface.
         /// </summary>
         private static float3 FrontOf(Collider* root, ColliderKey key, Collider* polygon)
         {

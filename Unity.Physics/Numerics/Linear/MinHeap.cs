@@ -4,8 +4,7 @@ using Unity.Collections;
 namespace Unity.Numerics.Linear
 {
     /// <summary>
-    /// Stores 64-bit priorities in a binary heap, so that the smallest priority comes out first. The sparse constraint
-    /// solver uses this heap to pick the next node for its minimum-degree order.
+    /// Binary min-heap of 64-bit priorities, used for sparse minimum-degree ordering.
     /// </summary>
     public struct MinHeap : IDisposable
     {

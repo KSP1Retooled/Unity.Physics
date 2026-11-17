@@ -9,10 +9,8 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Sorts the store's simulated bodies into the dynamic and static bodies of the build, and gives each store row its
-    /// index in the built world, or -1 if the row isn't built. The built world has the dynamic bodies first, so a
-    /// static body's index starts after them. The main thread runs this job, because the step needs the counts before
-    /// it schedules anything else. Burst runs the loops about ten times as fast as the same code in C#.
+    /// Partition simulated bodies into dynamic and static lists and assign built indices to store rows.
+    /// Run on the main thread because scheduling needs the counts.
     /// </summary>
     [BurstCompile]
     internal unsafe struct PartitionBodiesJob : IJob
@@ -73,10 +71,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Updates velocities before the solver runs, as PhysX does, by applying accumulated forces, gravity, damping and
-    /// velocity limits. The backend therefore passes zero gravity to Unity Physics. When the solver resolves contacts,
-    /// the velocities already include the acceleration for the whole step. Positions are then updated by <c> v * dt
-    /// </c> , using the semi-implicit integration that PhysX uses.
+    /// Apply forces, gravity, damping and velocity limits before solving, matching PhysX semi-implicit integration.
+    /// Pass zero gravity to Unity Physics to avoid applying it twice.
     /// </summary>
     [BurstCompile]
     internal unsafe struct ApplyForcesJob : IJobParallelFor
@@ -153,10 +149,8 @@ namespace KSP.Retooled.Physics
     }
 
     /// <summary>
-    /// Copies bodies and motion data from the store into the built world. Dynamic bodies come first, as Unity Physics
-    /// requires. Kinematic and sleeping bodies are included among them with infinite mass. The last static body is the
-    /// anchor for the world. When <see cref="DeltaTime"/> is zero, kinematic velocities remain zero, as required for a
-    /// world built for queries.
+    /// Copy store bodies and motion data into the built world, with dynamic bodies first and the world anchor last.
+    /// Treat sleeping and kinematic bodies as infinite mass. Use zero kinematic velocities when DeltaTime is zero.
     /// </summary>
     [BurstCompile]
     internal unsafe struct BuildBodiesJob : IJobParallelFor
@@ -177,9 +171,8 @@ namespace KSP.Retooled.Physics
         public float DeltaTime;
 
         /// <summary>
-        /// The flags of the bounds cache (DynamicBoundsCache.View.Same) for the dynamic bodies, or null. The job sets
-        /// a body's flag when the body has exactly the collider and pose of the body that it overwrites, and when
-        /// <see cref="CompareBodies"/> is true.
+        /// Optional per-body bounds cache flags. Set when CompareBodies is true and the overwritten body's pose and
+        /// collider match exactly.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public byte* Same;
@@ -188,23 +181,18 @@ namespace KSP.Retooled.Physics
         public bool CompareBodies;
 
         /// <summary>
-        /// Whether the job reads the serial number from the body's owner and the expansion factor from the body's
-        /// collider, as the build did before the rows held copies of them (<see cref="NativeStore.BodyData.serial"/>
-        /// and <see cref="NativeStore.BodyData.colliderExpansion"/>). Only tests set it, to check that the copies give
-        /// the same built world to the last bit.
+        /// Read serials and expansion factors from their original sources instead of cached row fields.
+        /// Used by tests to verify identical built worlds.
         /// </summary>
         public bool ReadSources;
 
         /// <summary>
-        /// Whether the world already holds the rows of the static bodies and of the anchor, from the last build, so
-        /// that the job writes only the rows of the dynamic bodies (see StepState.KeepsStaticRows).
+        /// Reuse retained static rows and the anchor, writing only dynamic bodies when true.
         /// </summary>
         public bool KeepStatics;
 
         /// <summary>
-        /// The number of bodies that the job writes: every built body, including the anchor, or only the dynamic
-        /// bodies when <see cref="KeepStatics"/> is true. The dynamic bodies come first, so the job's indices are the
-        /// built indices either way.
+        /// Number of bodies to write. Include statics and the anchor unless KeepStatics is true.
         /// </summary>
         public int Count => KeepStatics ? DynamicIndices.Length : DynamicIndices.Length + StaticIndices.Length + 1;
 
@@ -248,16 +236,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The version of a built body's entity. The entity's index is the body's row in the store. That row can change
-        /// while the body lives, and the store gives a destroyed body's row to the next body that it makes. So the
-        /// version is the body's serial number, which the store never gives to a second body, and Unity Physics can
-        /// tell bodies apart by it alone (see DirectSolverCache.BodyIdentity). The island cache uses it to keep a craft's
-        /// slot and lock states when its bodies move to other rows, and to drop the lock states of a destroyed body. The
-        /// solver keys the boundary rows of bodies outside a vessel by it. The version is never zero, because the code
-        /// that reads these bodies treats a version of zero as a body that is not in the store, such as the world's
-        /// anchor. A row that a test builds by hand has no owner and no serial number. Its version is made from its row
-        /// and is negative, so that two such rows, or such a row and a body, never share a version. The job reads the
-        /// serial number from the row's copy of it, unless <paramref name="readSources"/> is true.
+        /// Return a stable, nonzero body identity from its serial number, independent of its store row.
+        /// Ownerless test rows use negative identities derived from their indices. Read the cached serial unless
+        /// readSources is true.
         /// </summary>
         private static int EntityVersion(ref NativeStore.BodyData body, int index, bool readSources)
         {
@@ -400,9 +381,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// The store index of a built body, or -1 for the anchor. <see cref="BuildBodiesJob"/> builds the moving bodies
-        /// first, then the static bodies, then the anchor. Reading the indices instead of the built bodies lets the
-        /// snapshot run while the dynamic tree is rebuilt, which writes the built bodies.
+        /// Map a built index to its store row, or -1 for the anchor. Dynamic bodies precede statics and the anchor.
         /// </summary>
         internal static int StoreRow(NativeArray<int> dynamicIndices, NativeArray<int> staticIndices, int builtIndex)
         {
@@ -524,8 +503,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Calculates the pose that this job writes back for a moving body that is awake. Jobs that run before or during
-        /// this job can call it to get the same pose, to the last bit, from the solved motion.
+        /// Compute the exact awake-body pose that write-back will store, for jobs reading solved motion
+        /// concurrently.
         /// </summary>
         internal static void SolvedPose(in MotionData motion, out float3 position, out quaternion rotation)
         {

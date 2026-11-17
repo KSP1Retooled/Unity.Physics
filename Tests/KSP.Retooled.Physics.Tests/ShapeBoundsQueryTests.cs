@@ -10,11 +10,7 @@ using UnityEngine;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The bounds cache keeps, for each dynamic body, what the body's collider needs to compute its bounds at a new pose
-    /// (Unity.Physics.DynamicBoundsCache.ShapeBounds), and the refit at the end of each step and the build at its start compute the
-    /// bounds from that instead of from the collider. These tests run the same scene with that part of the cache on and
-    /// off, with queries between the steps, and check that the queries find the same hits, and that every bounds that
-    /// came from the cache equals, to the last bit, the bounds that the collider computes.
+    /// Compare queries and bitwise bounds with cached shape geometry enabled and disabled.
     /// </summary>
     public unsafe class ShapeBoundsQueryTests : PhysicsScene
     {
@@ -105,9 +101,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Writes what the queries find after a step: for each body, the closest hit of a ray down onto its center, the
-        /// closest hit of a sphere cast down, and the bodies that a small sphere at its center overlaps; and the hits of
-        /// the same rays from job workers.
+        /// Record centre-directed ray/sphere casts, sphere overlaps and worker ray hits after the step.
         /// </summary>
         private static void Query(Scene scene, StringBuilder log)
         {

@@ -8,8 +8,7 @@ using UnityEngine.TestTools;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Tests physics stepping after Burst compilation. If compilation fails, the step still works in Mono but runs more
-    /// slowly, so behavioural tests would not detect the failure. Most fixtures finish before compilation completes.
+    /// Verify stepping uses compiled Burst code rather than silently falling back to Mono.
     /// </summary>
     public class StepBurstTests : PhysicsScene
     {

@@ -9,10 +9,8 @@ using Debug = UnityEngine.Debug;
 namespace KSP.Retooled.Physics.Editor
 {
     /// <summary>
-    /// Measures the time per physics step as the craft size increases, in milliseconds. Each craft has a central stack
-    /// and pairs of radial parts braced by struts. Parts are joined as in stock KSP, and thrust is applied to the
-    /// bottom part. Run it on each backend with `unity exec --backend`. The benchmark writes
-    /// Library/RetooledPhysics/solver-scale-(backend).csv and stops increasing the craft size when steps take too long.
+    /// Measure physics step time as craft size increases on the selected backend.
+    /// Run with `unity exec --backend`. Write results to Library/RetooledPhysics/solver-scale-(backend).csv.
     /// </summary>
     public static class SolverScaleBench
     {
@@ -63,8 +61,7 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Steps a small craft while Burst compiles in the background. Stops when the median time improves by less than
-        /// ten percent after at least ten seconds, or when the wait times out.
+        /// Warm up a small craft until median step time stabilizes after ten seconds, or the wait times out.
         /// </summary>
         private static void WaitForBurst()
         {
@@ -164,8 +161,7 @@ namespace KSP.Retooled.Physics.Editor
         }
 
         /// <summary>
-        /// Creates a joint configured as in stock KSP: large linear and angular limits, drives that hold the parts
-        /// together, and one locked angular axis.
+        /// Create a joint with stock KSP limits, drives and one locked angular axis.
         /// </summary>
         private static void Join(Rigidbody host, Rigidbody target, Vector3 worldAnchor, Craft craft)
         {

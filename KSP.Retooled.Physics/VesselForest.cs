@@ -5,17 +5,9 @@ using Unity.Physics;
 namespace KSP.Retooled.Physics
 {
     /// <summary>
-    /// Selects how the direct solver solves an island. When disabled, the sparse solver handles every row. When
-    /// enabled, joints that constrain their bodies like part joints form a vessel forest. The section solver eliminates
-    /// the forest rows using that structure. All other rows in the island form a boundary block, which is solved
-    /// against the forest (see <see cref="ForestSettings"/>). These settings are stored in a SharedStatic so that Burst
-    /// code can read them during a step. Setting RETOOLED_FOREST=1 in the environment enables the forest when the
-    /// backend attaches, allowing an entire test run to use it.
-    ///
-    /// <see cref="Locking"/> allows the forest solver to lock a tree edge when its joints carry little load. Locking is
-    /// disabled by default; RETOOLED_LOCK=1 enables it when the backend attaches. The two bodies then move as one rigid
-    /// section until their load would deflect the joint springs beyond <see cref="YieldAngle"/> or exceed
-    /// <see cref="YieldFraction"/> of their break limits. See <see cref="ForestSettings"/>.
+    /// Control forest solving and optional load-based locking of vessel joints.
+    /// RETOOLED_FOREST=1 enables the forest at attach; RETOOLED_LOCK=1 enables locking.
+    /// Locked bodies form a rigid section until deflection or load exceeds the configured yield limits.
     /// </summary>
     public static class VesselForest
     {
@@ -142,9 +134,9 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns cumulative counts for the world most recently stepped, measured since it was built: island solves
-        /// using the forest, solves with the forest enabled that fell back to the sparse solver, and forest structures
-        /// built. Call on the main thread between steps.
+        /// Return cumulative forest solves, sparse fallbacks and structure builds for the most recently stepped
+        /// world.
+        /// Call on the main thread between steps.
         /// </summary>
         internal static unsafe void GetCounts(out long solves, out long fallbacks, out long builds)
         {
@@ -171,10 +163,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns lock diagnostics for the world most recently stepped: changes to locks on pairs involved in
-        /// contacts, the largest number of boundary rows in an island that fell back to the sparse solver, and
-        /// deflection histograms for all tree pairs and locked tree pairs. Each histogram has 10 bins; see
-        /// DirectSolverCache.DeflectionHistogram.
+        /// Return lock changes for contact pairs, maximum fallback boundary rows and ten-bin deflection histograms.
+        /// See DirectSolverCache.DeflectionHistogram for bins.
         /// </summary>
         internal static unsafe void GetLockDiagnostics(out long contactChanges, out long fallbackBoundary, long[] all, long[] locked)
         {
@@ -198,9 +188,7 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Returns the cumulative time in milliseconds spent in serial stages of the forest solver for the world most
-        /// recently stepped. Times are measured since the world was built and cover row classification, lock decisions,
-        /// sums for sections, sums of body impulses and sums for subtrees.
+        /// Cumulative milliseconds in serial forest stages for the most recently stepped world.
         /// </summary>
         internal static unsafe double[] SerialMilliseconds()
         {
@@ -218,9 +206,8 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Clears the cached island forests and their lock states for the world most recently stepped. This prevents
-        /// the next scene from reusing lock states from an earlier scene with the same structure. Call on the main
-        /// thread between steps.
+        /// Clear cached island forests and lock states for the most recently stepped world.
+        /// Call on the main thread between steps.
         /// </summary>
         internal static unsafe void ForgetIslands()
         {
