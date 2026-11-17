@@ -205,6 +205,96 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// Two kinematic boxes overlap so that their tops are at the same height, and a ray, a sphere cast and a box
+        /// cast come down on the line where they overlap, so both boxes are hit at the same distance. The boxes swap
+        /// places after the first step. A tree that every build refits keeps the shape of the first build, so it visits
+        /// the two boxes in the other order than a tree built from scratch. The closest hit must be the same with both
+        /// trees, and it must be the box that was created later, which is the box that PhysX reports.
+        /// </summary>
+        [Test]
+        public void AClosestHitAtEqualDistancesDoesNotDependOnTheTree()
+        {
+            bool wasEnabled = StepState.TreeReuseEnabled;
+            bool wasAlways = StepState.TreeAlwaysRefitted;
+            try
+            {
+                string built = TieScene(refitted: false);
+                string refitted = TieScene(refitted: true);
+                Debug.Log($"[TreeReuseTests] ties with a tree built from scratch: {built}");
+                Assert.That(refitted, Is.EqualTo(built));
+                Assert.That(built, Does.Not.Contain("first"), "every query reports the box created later, as PhysX does");
+            }
+            finally
+            {
+                StepState.TreeReuseEnabled = wasEnabled;
+                if (wasAlways)
+                {
+                    StepState.TreeAlwaysRefitted = true;
+                }
+            }
+        }
+
+        private string TieScene(bool refitted)
+        {
+            TearDownScene();
+            SetUpScene();
+            VesselForest.ForgetIslands();
+            Rigidbody Kinematic(string name, Vector3 position)
+            {
+                Rigidbody body = DynamicBox(position);
+                body.isKinematic = true;
+                body.name = name;
+                return body;
+            }
+
+            Rigidbody first = Kinematic("first", new Vector3(-0.25f, 0.0f, 0.0f));
+            Rigidbody second = Kinematic("second", new Vector3(0.25f, 0.0f, 0.0f));
+            for (int i = 0; i < 20; i++)
+            {
+                Kinematic($"other {i}", new Vector3(3.0f + 1.5f * i, 0.3f * (i % 4), 2.0f * (i % 3)));
+            }
+
+            // The first step makes the world's state, which reads the switches from the environment, so the test sets
+            // them after that step. The first step builds the tree from scratch either way.
+            Simulate();
+            StepState.TreeReuseEnabled = refitted;
+            if (refitted)
+            {
+                StepState.TreeAlwaysRefitted = true;
+            }
+
+            first.position = new Vector3(0.25f, 0.0f, 0.0f);
+            second.position = new Vector3(-0.25f, 0.0f, 0.0f);
+            first.transform.position = first.position;
+            second.transform.position = second.position;
+            Simulate(2);
+
+            long builds = StepKernel.Current->TreeBuildCount;
+            Simulate();
+            Assert.That(StepKernel.Current->TreeBuildCount != builds, Is.EqualTo(!refitted), refitted ? "the step refits the tree" : "the step builds the tree");
+
+            var found = new List<string>();
+            var origin = new Vector3(0.0f, 5.0f, 0.0f);
+            if (UnityEngine.Physics.Raycast(origin, Vector3.down, out RaycastHit ray, 20.0f))
+            {
+                found.Add($"ray {ray.collider.name} {ray.distance:R} {ray.point.x:R} {ray.point.y:R} {ray.point.z:R} {ray.normal.y:R}");
+            }
+
+            if (UnityEngine.Physics.SphereCast(origin, 0.1f, Vector3.down, out RaycastHit sphere, 20.0f))
+            {
+                found.Add($"sphere {sphere.collider.name} {sphere.distance:R} {sphere.point.x:R} {sphere.point.y:R} {sphere.point.z:R}");
+            }
+
+            if (UnityEngine.Physics.BoxCast(origin, new Vector3(0.1f, 0.1f, 0.1f), Vector3.down, out RaycastHit box, Quaternion.identity, 20.0f))
+            {
+                found.Add($"box {box.collider.name} {box.distance:R} {box.point.x:R} {box.point.y:R} {box.point.z:R}");
+            }
+
+            Assert.That(found.Count, Is.EqualTo(3), "every query hits a box");
+            return string.Join("; ", found);
+        }
+
         private static IEnumerable<int> Enumerable(List<bool> built)
         {
             for (int step = 0; step < built.Count; step++)

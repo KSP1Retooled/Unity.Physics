@@ -409,7 +409,14 @@ namespace Unity.Physics
             }
 
             Material material = Material.Default;
-            float fraction = collector.MaxFraction;
+
+            // Test the whole ray, not only the part of it up to the collector's MaxFraction, and compare the result with
+            // MaxFraction afterwards. The tests of a box, a convex hull, a triangle and a quad compute the fraction of the
+            // segment that they are given, so a shorter segment gives a fraction that can differ in its last bits. The
+            // collector's MaxFraction depends on the hits that came before, and so on the order in which the world's tree
+            // visits the bodies. With the whole ray, a collider's hit has the same fraction in any order, and a collector
+            // that keeps the closest hit can break a tie the same way whatever the shape of the tree.
+            float fraction = 1.0f;
             float3 normal;
             bool hadHit;
             switch (collider->Type)
@@ -458,7 +465,9 @@ namespace Unity.Physics
                     return default;
             }
 
-            if (hadHit)
+            // A test of the part of the ray up to MaxFraction accepted a hit at MaxFraction itself, so this comparison
+            // accepts that hit too.
+            if (hadHit && fraction <= collector.MaxFraction)
             {
                 normal = math.select(normal, -normal, input.QueryContext.TargetScale < 0.0f);
                 var hit = new RaycastHit
@@ -565,7 +574,9 @@ namespace Unity.Physics
 #if BVH_COLLECT_METRICS
                     BVHTraversalMetrics.MeshLeaf.TriangleTests++;
 #endif
-                    float fraction = collector.MaxFraction;
+                    // As in RayCollider, test the whole ray and compare the fraction with MaxFraction afterwards, so that
+                    // the fraction doesn't depend on the hits that came before.
+                    float fraction = 1.0f;
                     if (RayQuad(input.Ray.Origin, input.Ray.Displacement, ref vertices, ref fraction, out float3 normal)
                         && fraction < collector.MaxFraction)
                     {
@@ -582,7 +593,7 @@ namespace Unity.Physics
 #if BVH_COLLECT_METRICS
                     BVHTraversalMetrics.MeshLeaf.TriangleTests++;
 #endif
-                    float fraction = collector.MaxFraction;
+                    float fraction = 1.0f;
                     if (RayTriangle(input.Ray.Origin, input.Ray.Displacement,
                             vertices[0], vertices[1], vertices[2], ref fraction, out float3 normal)
                         && fraction < collector.MaxFraction)
@@ -599,12 +610,12 @@ namespace Unity.Physics
 #if BVH_COLLECT_METRICS
                 BVHTraversalMetrics.MeshLeaf.TriangleTests += 2;
 #endif
-                float fraction0 = collector.MaxFraction;
+                float fraction0 = 1.0f;
                 bool hit0 = RayTriangle(input.Ray.Origin, input.Ray.Displacement,
                               vertices[0], vertices[1], vertices[2], ref fraction0, out float3 normal0)
                     && fraction0 < collector.MaxFraction;
 
-                float fraction1 = collector.MaxFraction;
+                float fraction1 = 1.0f;
                 bool hit1 = RayTriangle(input.Ray.Origin, input.Ray.Displacement,
                               vertices[0], vertices[2], vertices[3], ref fraction1, out float3 normal1)
                     && fraction1 < collector.MaxFraction;
@@ -744,7 +755,8 @@ namespace Unity.Physics
                         for (int iTriangle = 0; iTriangle < 2; iTriangle++)
                         {
                             // Cast
-                            float fraction = collector.MaxFraction;
+                            // As in RayCollider, test the whole ray, so that the fraction doesn't depend on earlier hits.
+                            float fraction = 1.0f;
                             bool triangleHit = RayTriangle(input.Ray.Origin, input.Ray.Displacement, a, b, c, ref fraction, out float3 unnormalizedNormal);
 
                             if (triangleHit && fraction < collector.MaxFraction)

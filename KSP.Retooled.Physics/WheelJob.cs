@@ -308,6 +308,7 @@ namespace KSP.Retooled.Physics
         private readonly uint ignoreId;
         private readonly uint groupRecord;
         private readonly float3 direction;
+        private uint closestSerial;
 
         internal WheelRayCollector(NativeArray<RigidBody> bodies, NativeStore.BodyData* rows, NativeStore.StoreGlobals* globals, int ownRow,
             uint collidesWith, uint belongsTo, uint ignoreId, uint groupRecord, float3 direction)
@@ -323,6 +324,7 @@ namespace KSP.Retooled.Physics
             this.direction = direction;
             Closest = default;
             Shape = null;
+            closestSerial = 0;
             MaxFraction = 1.0f;
             NumHits = 0;
         }
@@ -368,9 +370,20 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
+            // The step may have refitted the tree of the world's bodies instead of building it from scratch, and the two
+            // trees can visit the bodies in different orders. So a tie between two hits at the same distance is broken
+            // by the bodies and leaves, not by the order in which they come, and MaxFraction lets a hit at the same
+            // distance through to this collector.
+            uint serial = (uint)body.Entity.Version;
+            if (Shape != null && !QueryCollectors.Precedes(hit.Fraction, serial, hit.ColliderKey, Closest.Fraction, closestSerial, Closest.ColliderKey))
+            {
+                return false;
+            }
+
             Closest = hit;
             Shape = shape;
-            MaxFraction = hit.Fraction;
+            closestSerial = serial;
+            MaxFraction = QueryCollectors.JustAbove(hit.Fraction);
             NumHits = 1;
             return true;
         }
