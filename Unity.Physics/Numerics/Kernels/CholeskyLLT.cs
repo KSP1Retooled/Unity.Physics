@@ -1,46 +1,36 @@
 // Ported from faer 0.19.4 (https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md):
-//   src/linalg/cholesky/llt/compute.rs          (the recursive factor)
-//   src/linalg/cholesky/ldlt_diagonal/compute.rs (new_cholesky, the base case of the factor, LLT variant)
-//   src/linalg/cholesky/llt/solve.rs             (the solve: a lower solve, then a solve with L^T)
-//   (the updates are in CholeskyLLTUpdate.cs)
-// The algorithms are faer's. The code is written for raw double pointers, with double4 in place of faer's SIMD types,
-// and calls the BLAS-style routines in Blas. What was adapted is listed in each summary.
+//   src/linalg/cholesky/llt/compute.rs
+//   src/linalg/cholesky/ldlt_diagonal/compute.rs (new_cholesky, LLT variant)
+//   src/linalg/cholesky/llt/solve.rs
 
 using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
 {
     /// <summary>
-    /// The Cholesky factor A = L L^T of a symmetric positive definite matrix, and changes to it. L is lower triangular.
-    /// The factor and the solves take a <see cref="MatrixView{T}"/> in any layout, or a pointer to a matrix that is
-    /// stored column by column with a leading dimension: entry (i, j) of L is then l[i + j * ldl]. The changes to the
-    /// factor take only the second form. The factor reads and writes only the lower triangle, so the entries above the
-    /// diagonal keep their values, unless the caller lets it write some of them to save time (keepUpper false).
+    /// Cholesky factorization, solves and updates for symmetric, positive definite matrices:
+    ///   A = L*L^T
+    /// where L is lower triangular.
     /// </summary>
     public static unsafe partial class CholeskyLLT
     {
         /// <summary>
-        /// The smallest value that a pivot can take. faer stops with an error at a pivot that is not positive. The
-        /// physics solver's matrices are positive definite in theory, and a pivot that rounding makes zero or negative
-        /// is raised to this value instead, as the solver's own factor did before this port.
+        /// Minimum pivot value used to avoid division by zero when factoring nearly singular matrices.
         /// </summary>
         public const double SmallestPivot = 1e-300;
 
         /// <summary>
-        /// The largest matrix that the base case factors. faer's base case takes a matrix whose columns fit in four
-        /// SIMD vectors, which is 16 rows of doubles with 256-bit vectors.
+        /// Maximum number of rows for the base case (four double4 vectors).
         /// </summary>
         const int BaseCaseRows = 16;
 
         /// <summary>
-        /// Factors the n by n matrix in the lower triangle of <paramref name="a"/> in place, as faer's LLT factor does:
-        /// a matrix of up to 16 rows goes to the base case. A larger one is split in half: the routine factors the
-        /// upper left block, solves for the block below it, takes that block's product with itself out of the lower
-        /// right block, and factors the lower right block. A pivot that is not larger than
-        /// <see cref="SmallestPivot"/> is raised to it, and the routine goes on. Returns how many pivots were raised.
-        /// If <paramref name="keepUpper"/> is false, the products may write entries above the diagonal, which is
-        /// faster for the small blocks of the recursion; see <see cref="Blas.SyrkLower(double, MatrixView{double}, MatrixView{double}, bool)"/>.
+        /// Compute in-place Cholesky factorization A = L*L^T.
+        /// Pivots at or below <see cref="SmallestPivot"/> are replaced with that value.
         /// </summary>
+        /// <param name="a">Square matrix to factor. The lower triangle is read and overwritten with L.</param>
+        /// <param name="keepUpper">Preserve the upper triangle. Set to false to allow faster writes that may overwrite it.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int Factor(MatrixView<double> a, bool keepUpper = true)
         {
             int raised = 0;
@@ -49,26 +39,31 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// Factors the matrix as <see cref="Factor(MatrixView{double})"/> does, but stops at the first pivot that is
-        /// not positive, as faer does, and returns its index. Returns -1 if every pivot is positive. When the routine
-        /// stops, the columns before that index hold their part of the factor and the rest of the matrix is changed.
+        /// Compute in-place Cholesky factorization A = L*L^T, stopping at the first nonpositive pivot.
         /// </summary>
+        /// <param name="a">Square matrix to factor. The lower triangle is read and overwritten with L.
+        /// On failure, only columns before the failed pivot contain L; the remaining columns may have been modified.</param>
+        /// <param name="keepUpper">Preserve the upper triangle. Set to false to allow faster writes that may overwrite it.</param>
+        /// <returns>-1 on success. Otherwise, the index of the first nonpositive pivot.</returns>
         public static int TryFactor(MatrixView<double> a, bool keepUpper = true)
         {
             int raised = 0;
             return Factor(a, true, keepUpper, ref raised);
         }
 
-        /// <summary>The factor of a matrix that is stored column by column with leading dimension <paramref name="lda"/>.</summary>
+        /// <summary>Compute in-place Cholesky factorization of an n by n matrix stored in column-major order.</summary>
+        /// <param name="a">Matrix to factor. The lower triangle is read and overwritten with L.</param>
+        /// <param name="lda">Leading dimension of a, in elements.</param>
+        /// <param name="keepUpper">Preserve the upper triangle. Set to false to allow faster writes that may overwrite it.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int Factor(int n, double* a, int lda, bool keepUpper = true)
         {
             return Factor(MatrixView<double>.ColumnMajor(a, n, n, lda), keepUpper);
         }
 
         /// <summary>
-        /// The recursion of <see cref="Factor(MatrixView{double})"/>. If <paramref name="stop"/> is true, it returns
-        /// the index of the first pivot that is not positive, or -1. Otherwise it raises small pivots, counts them in
-        /// <paramref name="raised"/>, and returns -1.
+        /// Factor recursively. If stop is true, return the first nonpositive pivot index; otherwise raise small pivots.
+        /// Return -1 on success and accumulate the number of raised pivots in raised.
         /// </summary>
         static int Factor(MatrixView<double> a, bool stop, bool keepUpper, ref int raised)
         {
@@ -87,7 +82,7 @@ namespace Unity.Numerics.Kernels
                 return failed;
             }
 
-            // A_10 := A_10 L_00^-T, which is the lower solve on A_10^T.
+            // Solve L_00 * L_10^T = A_10^T for L_10.
             MatrixView<double> a10 = a.Block(bs, 0, n - bs, bs);
             Blas.TrsmLeftLower(a.Block(0, 0, bs, bs), a10.Transpose);
             Blas.SyrkLower(-1.0, a10, a.Block(bs, bs, n - bs, n - bs), keepUpper);
@@ -96,18 +91,7 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// faer's base case (new_cholesky, LLT variant), for a matrix whose columns are contiguous. It works from the
-        /// left, one column at a time. The column's entries from the diagonal down stay in registers while every
-        /// earlier column k takes its share out of them, with a multiplier of -L[j, k]. Then the diagonal entry becomes
-        /// its square root, and the entries below it are multiplied by the root's reciprocal.
-        /// <para>
-        /// faer copies the matrix into a buffer that is aligned to the vectors and keeps the windows aligned. This port
-        /// works in place with unaligned loads. The entries past the last whole vector, fewer than four, go in one more
-        /// vector whose window ends at the last row, so it also covers some rows above them. Those rows hold entries
-        /// that the other vectors also compute, or entries above the diagonal, whose results are thrown away; only the
-        /// entries past the last whole vector are stored from it. This needs at least 4 rows. A smaller matrix builds
-        /// that vector one entry at a time.
-        /// </para>
+        /// Factor a small matrix with contiguous columns, using up to four double4 vectors per column.
         /// </summary>
         static int FactorBaseCase(int n, double* a, int lda, bool stop, ref int raised)
         {
@@ -123,7 +107,8 @@ namespace Unity.Numerics.Kernels
                 double4 c2 = vectors > 2 ? *(double4*)(aj + 8) : 0.0;
                 double4 c3 = vectors > 3 ? *(double4*)(aj + 12) : 0.0;
 
-                // The last vector: rows n - 4 to n - 1 with a window, or the rest of the rows from lane 0 without one.
+                // Load the last four rows to keep the vector within the matrix. Only the remaining lanes are stored.
+                // For matrices with fewer than four rows, load the remaining entries individually.
                 int first = window ? n - 4 : j + 4 * vectors;
                 int lane = window ? 4 - rest : 0;
                 double* tail = a + first + (long)j * lda;
@@ -234,9 +219,7 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The base case for a matrix whose columns are not contiguous. It works down the rows, one column at a time:
-        /// entry (i, j) takes out the dot product of rows i and j to the left of column j. A matrix that is stored row
-        /// by row has contiguous rows, so these dot products run in vectors; any other layout runs them in a plain loop.
+        /// Factor a small matrix whose columns are not contiguous, using dot products of rows.
         /// </summary>
         static int FactorBaseCaseByRows(MatrixView<double> a, bool stop, ref int raised)
         {
@@ -270,23 +253,30 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// Solves L L^T x = b in place, where x has n entries that are <paramref name="incx"/> apart: x := L^-1 x, then
-        /// x := L^-T x.
+        /// Solve L*L^T*x = b, overwriting b with x.
         /// </summary>
+        /// <param name="l">Lower triangular Cholesky factor.</param>
+        /// <param name="x">Right-hand side on entry; solution on return.</param>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
         public static void Solve(MatrixView<double> l, double* x, int incx)
         {
             Blas.TrsvLower(l, x, incx);
             Blas.TrsvUpper(l.Transpose, x, incx);
         }
 
-        /// <summary>Solves L L^T X = B in place for every column of B: B := L^-1 B, then B := L^-T B.</summary>
+        /// <summary>Solve L*L^T*X = B, overwriting B with X.</summary>
+        /// <param name="l">Lower triangular Cholesky factor.</param>
+        /// <param name="b">Right-hand sides on entry; solutions on return, one per column.</param>
         public static void Solve(MatrixView<double> l, MatrixView<double> b)
         {
             Blas.TrsmLeftLower(l, b);
             Blas.TrsmLeftUpper(l.Transpose, b);
         }
 
-        /// <summary>Solves L L^T x = b in place, for L stored column by column with leading dimension <paramref name="ldl"/>.</summary>
+        /// <summary>Solve L*L^T*x = b, with L stored in column-major order.</summary>
+        /// <param name="l">Lower triangular Cholesky factor.</param>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="x">Right-hand side on entry; solution on return.</param>
         public static void Solve(int n, double* l, int ldl, double* x)
         {
             Solve(MatrixView<double>.ColumnMajor(l, n, n, ldl), x, 1);

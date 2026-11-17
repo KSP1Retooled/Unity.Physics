@@ -1,6 +1,5 @@
-// faer 0.19.4 has no routine of its own for this; it is the column update that the solves use, written in faer's style.
+// Vector updates and scaling, following the column updates in faer 0.19.4.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version, written for vectors of eight floats (float8), which fill a 256-bit register.
 
 using Unity.Mathematics;
 
@@ -8,9 +7,7 @@ namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>
-        /// y += alpha x, for the first <paramref name="count"/> floats: eight at a time, then four, then one at a time.
-        /// </summary>
+        /// <summary>Compute y += alpha*x for count entries.</summary>
         public static void Axpy(int count, float alpha, float* x, float* y)
         {
             float8 alpha8 = alpha;
@@ -32,11 +29,9 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// y += alpha x, for <paramref name="count"/> floats of two vectors that are <paramref name="incx"/> and
-        /// <paramref name="incy"/> entries apart. Two vectors with a stride of 1 take the fast path above; any other
-        /// strides take a plain loop.
-        /// </summary>
+        /// <summary>Compute y += alpha*x for count entries.</summary>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="incy">Stride between entries of y, in elements.</param>
         public static void Axpy(int count, float alpha, float* x, int incx, float* y, int incy)
         {
             if (incx == 1 && incy == 1)
@@ -52,7 +47,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>x := alpha x, for the first <paramref name="count"/> floats.</summary>
+        /// <summary>Scale count entries of x by alpha.</summary>
         public static void Scale(int count, float alpha, float* x)
         {
             float8 alpha8 = alpha;
@@ -74,7 +69,8 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>x := alpha x, for <paramref name="count"/> floats that are <paramref name="incx"/> entries apart.</summary>
+        /// <summary>Scale count entries of x by alpha.</summary>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
         public static void Scale(int count, float alpha, float* x, int incx)
         {
             if (incx == 1)

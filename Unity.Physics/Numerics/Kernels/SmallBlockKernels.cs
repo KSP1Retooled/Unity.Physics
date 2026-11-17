@@ -4,32 +4,17 @@ using Unity.Mathematics;
 namespace Unity.Numerics.Kernels
 {
     /// <summary>
-    /// Holds dense kernels for small blocks: the Cholesky factor of a block, a triangular solve with that factor, the
-    /// inverse of a 6 by 6 factor, and products that are subtracted from a target. Every block is a dense matrix of
-    /// doubles that is stored row by row, with no gap between the rows. The routines are written for blocks of about
-    /// 6 by 6, the size of <see cref="double6x6"/>.
-    /// <para>
-    /// The sparse constraint solver is the main user. Almost every block in that solver is 6 by 6, one row and column
-    /// per body's unknowns. At that size, these routines are faster than the general kernels in this assembly, which
-    /// take the blocks as row-major views (SmallBlockKernelBench times both): the factor by about 10%, the products and
-    /// the solves by 25% to 3 times. <see cref="AddScaled"/> runs the same loop as the general kernel, so it calls that
-    /// kernel.
-    /// </para>
+    /// Dense operations for small blocks, optimized for 6 by 6 matrices.
+    /// All matrices use row-major order with no padding between rows.
     /// </summary>
     public static unsafe class SmallBlockKernels
     {
-        /// <summary>
-        /// The smallest pivot that <see cref="CholeskyInPlace"/> accepts. The routine raises a smaller pivot to this
-        /// value before it takes the square root.
-        /// </summary>
+        /// <summary>Minimum pivot value used by CholeskyInPlace.</summary>
         public const double SmallestPivot = 1e-30;
 
-        /// <summary>
-        /// Computes the lower Cholesky factor of sign * a in place. The block a is square, has <paramref name="size"/>
-        /// rows, and is stored row by row. The routine reads and writes only the lower half of the block. It writes the
-        /// reciprocal of each diagonal entry of the factor to <paramref name="inverse"/>. Later columns multiply by
-        /// these reciprocals, because a division would delay the sum for the next column.
-        /// </summary>
+        /// <summary>Compute the lower Cholesky factor of sign*a in place, clamping small pivots to SmallestPivot.</summary>
+        /// <param name="a">A size by size matrix. Only the lower triangle is read and overwritten.</param>
+        /// <param name="inverse">Output reciprocal of each diagonal entry of the factor.</param>
         public static void CholeskyInPlace(double* a, double* inverse, int size, double sign)
         {
             for (int row = 0; row < size; row++)
@@ -47,12 +32,10 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Multiplies each row of <paramref name="block"/> by C^-T in place. The block has <paramref name="rows"/> rows
-        /// of <paramref name="size"/> entries. C is a lower triangular factor with <paramref name="size"/> rows, and
-        /// <paramref name="inverse"/> holds the reciprocal of each diagonal entry of C. The routine multiplies by these
-        /// reciprocals, because a division would delay the sum for the next column.
-        /// </summary>
+        /// <summary>Compute block = block*C^-T in place.</summary>
+        /// <param name="block">A rows by size matrix. Overwritten with the solution.</param>
+        /// <param name="c">Lower triangular size by size factor.</param>
+        /// <param name="inverse">Reciprocal of each diagonal entry of c.</param>
         public static void SolveAgainstTranspose(double* block, int rows, double* c, double* inverse, int size)
         {
             for (int row = 0; row < rows; row++)
@@ -67,12 +50,8 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Replaces the lower triangular factor C of a 6x6 block with the full inverse of C. <paramref name="inverse"/>
-        /// holds the reciprocal of each diagonal entry of C. A triangular solve has to find each unknown after the one
-        /// before it, so every node along a branch of a tree waits on a chain of results. A multiplication by the full
-        /// inverse finds all six unknowns at the same time.
-        /// </summary>
+        /// <summary>Replace the lower triangular 6 by 6 matrix c with its inverse. The upper triangle is set to zero.</summary>
+        /// <param name="inverse">Reciprocal of each diagonal entry of c.</param>
         public static void InvertTriangle(double* c, double* inverse)
         {
             const int size = double6x6.Size;
@@ -99,14 +78,8 @@ namespace Unity.Numerics.Kernels
             UnsafeUtility.MemCpy(c, result, size * size * sizeof(double));
         }
 
-        /// <summary>
-        /// Computes target -= sign * left * right^T. The matrix left has <paramref name="rows"/> rows, the matrix right
-        /// has <paramref name="columns"/> rows, and every row of both matrices has <paramref name="inner"/> entries.
-        /// Each entry of the result is the dot product of a row of left with a row of right, so the routine reads both
-        /// rows in order. It updates four entries of a row of the target at a time. If <paramref name="lowerOnly"/> is
-        /// true, the target is square and the routine updates its lower half. In that case, the routine can also write
-        /// a few entries just above the diagonal, which the caller doesn't use.
-        /// </summary>
+        /// <summary>Compute target -= sign*left*right^T. The target is rows by columns; left and right have inner columns.</summary>
+        /// <param name="lowerOnly">Update only the lower triangle of a square target. Some entries above the diagonal may also be overwritten.</param>
         public static void SubtractProductTranspose(double* target, int rows, int columns, double* left, double* right,
             int inner, double sign, bool lowerOnly)
         {
@@ -117,8 +90,7 @@ namespace Unity.Numerics.Kernels
                 int last = lowerOnly ? row + 1 : columns;
                 int column = 0;
 
-                // A group of four entries can reach past the diagonal into the upper half, which the caller doesn't
-                // use. This lets the short rows of a diagonal block still use all four vector lanes.
+                // Allow vector writes past the diagonal into the unused upper triangle.
                 for (; column < last && column + 4 <= columns; column += 4)
                 {
                     double* r = right + column * inner;
@@ -133,10 +105,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Computes target -= sign * block * x. The block is stored row by row and has <paramref name="rows"/> rows of
-        /// <paramref name="inner"/> entries. The routine handles four rows at a time.
-        /// </summary>
+        /// <summary>Compute target -= sign*block*x, where block is rows by inner.</summary>
         public static void SubtractProduct(double* target, double* block, double* x, int rows, int inner, double sign)
         {
             int row = 0;
@@ -153,12 +122,9 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Computes into -= block * source, where the block has <paramref name="rows"/> rows of <paramref
-        /// name="inner"/> entries. If <paramref name="six"/> is true and the block is 6x6, the routine adds the product
-        /// to <paramref name="owed"/> instead. The caller then subtracts <paramref name="owed"/> from <paramref
-        /// name="into"/> at the end. Otherwise, the routine subtracts the product immediately.
-        /// </summary>
+        /// <summary>Compute into -= block*source for a rows by inner block.</summary>
+        /// <param name="six">True if the block has six rows. If it also has six columns, add the product to owed instead of subtracting from into.</param>
+        /// <param name="owed">Accumulated products that the caller must subtract from into.</param>
         public static void SubtractOrDefer(ref double6 owed, bool six, double* into, double* block, double* source,
             int rows, int inner)
         {
@@ -171,11 +137,7 @@ namespace Unity.Numerics.Kernels
             SubtractProduct(into, block, source, rows, inner, 1.0);
         }
 
-        /// <summary>
-        /// Computes the dot product of <paramref name="shared"/> with each of four other vectors of the same length,
-        /// and returns one product in each lane. The routine reads each vector in order, and it uses each load of the
-        /// shared vector in all four products.
-        /// </summary>
+        /// <summary>Return the dot products of shared with b0, b1, b2 and b3, one per lane, for count entries.</summary>
         static double4 ProductSums(double* shared, double* b0, double* b1, double* b2, double* b3, int count)
         {
             double4 s0 = 0.0;
@@ -192,7 +154,7 @@ namespace Unity.Numerics.Kernels
                 s3 = FusedMath.Fma(*(double4*)(b3 + k), a, s3);
             }
 
-            // Use a two-lane vector when two entries remain. This case is common, because a body has six columns.
+            // Handle the last two entries of a six-column block with a double2.
             if (k + 2 <= count)
             {
                 double2 a = *(double2*)(shared + k);
@@ -203,8 +165,7 @@ namespace Unity.Numerics.Kernels
                 k += 2;
             }
 
-            // Each accumulator holds the partial sums for one vector. After the transpose, each column holds one
-            // partial sum from each vector. Adding the columns gives the total for each vector in its own lane.
+            // Transpose the partial sums so that each lane gives one dot product after reduction.
             double4x4 partial = math.transpose(new double4x4(s0, s1, s2, s3));
             double4 sum = (partial.c0 + partial.c1) + (partial.c2 + partial.c3);
 
@@ -216,10 +177,7 @@ namespace Unity.Numerics.Kernels
             return sum;
         }
 
-        /// <summary>
-        /// Computes into += scale * from for <paramref name="count"/> entries, with the kernel's
-        /// <see cref="Blas.Axpy(int, double, double*, double*)"/>, which runs the same loop.
-        /// </summary>
+        /// <summary>Compute into += scale*from for count entries.</summary>
         public static void AddScaled(double* into, double* from, double scale, int count)
         {
             Blas.Axpy(count, scale, from, into);

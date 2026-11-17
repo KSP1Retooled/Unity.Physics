@@ -3,7 +3,7 @@ using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
 {
-    /// <summary>Represents a 6x6 matrix of doubles, stored row by row.</summary>
+    /// <summary>A 6 by 6 matrix of doubles in row-major order.</summary>
     public unsafe struct double6x6
     {
         public const int Size = 6;
@@ -36,8 +36,7 @@ namespace Unity.Numerics.Kernels
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static double4 Products(double6 row, double6 x)
         {
-            // Add the high pair as a whole vector, rather than adding into two individual lanes, to prevent the
-            // compiler from splitting the sum.
+            // Add the high pair as a vector to prevent the compiler from splitting the sum.
             return FusedMath.Fma(row.Low, x.Low, new double4(row.High * x.High, 0.0, 0.0));
         }
 
@@ -50,9 +49,7 @@ namespace Unity.Numerics.Kernels
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static double6 SumLanes(double4 p0, double4 p1, double4 p2, double4 p3, double4 p4, double4 p5)
         {
-            // Interleave neighbouring lanes from two vectors, then add to compute partial sums and transpose the data
-            // together. Each row has two partial sums, one in each half. Add across the halves to finish each row's
-            // sum.
+            // Interleave pairs of rows, then add their low and high halves to finish each row's sum.
             double4 first = UnpackSum(p0, p1);
             double4 second = UnpackSum(p2, p3);
             double4 low = new double4(first.xy, second.zw) + new double4(first.zw, second.xy);

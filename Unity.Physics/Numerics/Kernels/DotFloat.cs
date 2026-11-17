@@ -1,6 +1,5 @@
-// faer 0.19.4 has no routine of its own for this; it is the dot product that the solves use, written in faer's style.
+// Dot products for the triangular solves, following faer 0.19.4's SIMD style.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version, written for vectors of eight floats (float8), which fill a 256-bit register.
 
 using Unity.Mathematics;
 
@@ -8,12 +7,7 @@ namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>Returns the dot product of the first <paramref name="count"/> entries of two arrays of floats.</summary>
-        /// <remarks>
-        /// It keeps four vector sums of eight entries each, so one pass of the loop takes 32 entries. A vector sum has
-        /// to wait for the last addition to it before it can take the next one, so four sums that take turns keep the
-        /// processor busy. After the whole vectors, a vector of four and then single entries take the rest.
-        /// </remarks>
+        /// <summary>Return the dot product of the first count entries of a and b.</summary>
         public static float Dot(int count, float* a, float* b)
         {
             float8 s0 = 0f, s1 = 0f, s2 = 0f, s3 = 0f;
@@ -48,11 +42,9 @@ namespace Unity.Numerics.Kernels
             return sum;
         }
 
-        /// <summary>
-        /// Returns the dot product of <paramref name="count"/> entries of two vectors of floats that are
-        /// <paramref name="incx"/> and <paramref name="incy"/> entries apart. Two vectors with a stride of 1 take the
-        /// fast path above; any other strides take a plain loop.
-        /// </summary>
+        /// <summary>Return the dot product of count entries of x and y.</summary>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="incy">Stride between entries of y, in elements.</param>
         public static float Dot(int count, float* x, int incx, float* y, int incy)
         {
             if (incx == 1 && incy == 1)

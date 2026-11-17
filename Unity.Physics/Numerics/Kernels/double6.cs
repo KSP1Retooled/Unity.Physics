@@ -3,10 +3,7 @@ using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
 {
-    /// <summary>
-    /// Six doubles, held as a double4 and a double2, for one row of a <see cref="double6x6"/> or one block of a vector
-    /// with six entries per block.
-    /// </summary>
+    /// <summary>Six doubles stored as a double4 and a double2.</summary>
     public unsafe struct double6
     {
         public double4 Low;

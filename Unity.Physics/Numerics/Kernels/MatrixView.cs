@@ -1,18 +1,13 @@
-// The shape of faer 0.19.4's MatRef and MatMut (src/mat/matref.rs): a pointer, the numbers of rows and columns, and a
-// stride for each. faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the
-// package root.
+// Based on faer 0.19.4 MatRef and MatMut (src/mat/matref.rs).
+// faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
 
 using System.Runtime.CompilerServices;
 
 namespace Unity.Numerics.Kernels
 {
     /// <summary>
-    /// A view of a dense matrix of floats or doubles that the kernels read or write in place. Entry (i, j) is at
-    /// <c>Data[i * RowStride + j * ColumnStride]</c>. A matrix that is stored column by column with a leading dimension
-    /// ld has a row stride of 1 and a column stride of ld. Its transpose is the same memory with the two strides
-    /// swapped, and a block of it is the same strides with the pointer moved to the block's first entry. Strides may be
-    /// any value, including negative ones, as in faer. The kernels have a fast path for the layouts that they are
-    /// written for, mostly a row stride of 1, and a plain path for every other layout.
+    /// A view of a dense matrix with arbitrary strides, including negative strides.
+    /// Entry (i, j) is at <c>Data[i * RowStride + j * ColumnStride]</c>. Strides are measured in elements.
     /// </summary>
     public unsafe struct MatrixView<T> where T : unmanaged
     {
@@ -31,13 +26,13 @@ namespace Unity.Numerics.Kernels
             ColumnStride = columnStride;
         }
 
-        /// <summary>A matrix that is stored column by column, with <paramref name="leadingDimension"/> between columns.</summary>
+        /// <summary>Create a column-major view, with leadingDimension elements between columns.</summary>
         public static MatrixView<T> ColumnMajor(T* data, int rows, int columns, int leadingDimension)
         {
             return new MatrixView<T>(data, rows, columns, 1, leadingDimension);
         }
 
-        /// <summary>A matrix that is stored row by row, with <paramref name="leadingDimension"/> between rows.</summary>
+        /// <summary>Create a row-major view, with leadingDimension elements between rows.</summary>
         public static MatrixView<T> RowMajor(T* data, int rows, int columns, int leadingDimension)
         {
             return new MatrixView<T>(data, rows, columns, leadingDimension, 1);
@@ -49,32 +44,29 @@ namespace Unity.Numerics.Kernels
             get => ref Data[(long)row * RowStride + (long)column * ColumnStride];
         }
 
-        /// <summary>The address of entry (row, column).</summary>
+        /// <summary>Address of entry (row, column).</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public T* At(int row, int column) => Data + (long)row * RowStride + (long)column * ColumnStride;
 
-        /// <summary>The block of <paramref name="rows"/> by <paramref name="columns"/> entries that starts at (row, column).</summary>
+        /// <summary>View of a rows by columns block starting at (row, column). Shares the original storage.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public MatrixView<T> Block(int row, int column, int rows, int columns)
         {
             return new MatrixView<T>(At(row, column), rows, columns, RowStride, ColumnStride);
         }
 
-        /// <summary>The transpose: the same memory, with the rows and columns and their strides swapped.</summary>
+        /// <summary>Transposed view of the same storage.</summary>
         public MatrixView<T> Transpose => new MatrixView<T>(Data, Columns, Rows, ColumnStride, RowStride);
 
-        /// <summary>
-        /// Whether each column is a line of entries in memory. A matrix with one row counts, whatever its row stride,
-        /// because the kernels never step from its first row to a second one.
-        /// </summary>
+        /// <summary>True if entries within each column are contiguous. A single row is always contiguous.</summary>
         public bool ColumnsAreContiguous => RowStride == 1 || Rows <= 1;
 
-        /// <summary>Whether each row is a line of entries in memory. A matrix with one column counts, as above.</summary>
+        /// <summary>True if entries within each row are contiguous. A single column is always contiguous.</summary>
         public bool RowsAreContiguous => ColumnStride == 1 || Columns <= 1;
 
         /// <summary>
-        /// The distance between columns, for a kernel that takes a matrix with contiguous columns and a leading
-        /// dimension. A matrix with one column gives its number of rows, so that the value is never smaller than that.
+        /// Stride between columns, for use with contiguous columns.
+        /// For a single column, return the number of rows.
         /// </summary>
         public int LeadingDimension => Columns <= 1 ? Rows : ColumnStride;
     }

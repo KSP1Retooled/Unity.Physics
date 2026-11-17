@@ -1,15 +1,15 @@
-// Ported from faer 0.19.4 src/linalg/triangular_solve.rs, with one right-hand side.
+// Ported from faer 0.19.4 src/linalg/triangular_solve.rs.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version, with the float blocks of TrsmFloat.cs and the float matrix-vector product.
 
 namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>
-        /// x := L^-1 x for floats, where L is n by n and lower triangular, and x has n entries that are
-        /// <paramref name="incx"/> apart. The recursion is the one of the double version, with the float blocks.
-        /// </summary>
+        /// <summary>Solve L*x = b, overwriting b with x.</summary>
+        /// <param name="l">Lower triangular n by n matrix.</param>
+        /// <param name="x">Right-hand side on entry; solution on return.</param>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsvLower(MatrixView<float> l, float* x, int incx, bool unitDiagonal = false)
         {
             int n = l.Rows;
@@ -35,10 +35,11 @@ namespace Unity.Numerics.Kernels
             TrsvLower(l.Block(bs, bs, n - bs, n - bs), x + (long)bs * incx, incx, unitDiagonal);
         }
 
-        /// <summary>
-        /// x := U^-1 x for floats, where U is n by n and upper triangular: the lower block of rows first, then
-        /// x_0 -= U_01 x_1, then the upper block. The solve with L^T is this routine on L's transpose.
-        /// </summary>
+        /// <summary>Solve U*x = b, overwriting b with x.</summary>
+        /// <param name="u">Upper triangular n by n matrix.</param>
+        /// <param name="x">Right-hand side on entry; solution on return.</param>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsvUpper(MatrixView<float> u, float* x, int incx, bool unitDiagonal = false)
         {
             int n = u.Rows;

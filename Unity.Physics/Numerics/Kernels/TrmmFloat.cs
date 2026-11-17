@@ -1,17 +1,14 @@
-// The product of a triangular matrix with a general one, B := T B, for floats. faer 0.19.4 computes it in
-// src/linalg/matmul/triangular.rs by splitting the triangle in half and recursing, and this file follows that shape with
-// the float blocks of TrsmFloat.cs.
+// Based on faer 0.19.4 src/linalg/matmul/triangular.rs.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version, written for vectors of eight floats (float8).
 
 namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>
-        /// B := L B for floats, where L is n by n and lower triangular, and B is n by nrhs, with the recursion of the
-        /// double version: B_1 := L_11 B_1, then B_1 += L_10 B_0, then B_0 := L_00 B_0.
-        /// </summary>
+        /// <summary>Compute B = L*B in place.</summary>
+        /// <param name="l">Lower triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix. Overwritten with the product.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrmmLeftLower(MatrixView<float> l, MatrixView<float> b, bool unitDiagonal = false)
         {
             int n = l.Rows;
@@ -33,10 +30,10 @@ namespace Unity.Numerics.Kernels
             TrmmLeftLower(l.Block(0, 0, bs, bs), b.Block(0, 0, bs, nrhs), unitDiagonal);
         }
 
-        /// <summary>
-        /// B := U B for floats, where U is n by n and upper triangular: B_0 := U_00 B_0, then B_0 += U_01 B_1, then
-        /// B_1 := U_11 B_1.
-        /// </summary>
+        /// <summary>Compute B = U*B in place.</summary>
+        /// <param name="u">Upper triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix. Overwritten with the product.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrmmLeftUpper(MatrixView<float> u, MatrixView<float> b, bool unitDiagonal = false)
         {
             int n = u.Rows;
@@ -59,8 +56,8 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The float base case, for 8 rows or fewer, in the same order as the double one: whole rows of B in vectors
-        /// if its rows are contiguous and its columns are not, and otherwise each column of B.
+        /// Multiply a triangle with at most eight rows by B in place.
+        /// Process lower triangles bottom to top and upper triangles top to bottom to preserve input values.
         /// </summary>
         static void TrmmBaseCase(MatrixView<float> t, MatrixView<float> b, bool unitDiagonal, bool upper)
         {

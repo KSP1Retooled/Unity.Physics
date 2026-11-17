@@ -1,8 +1,7 @@
-// Ported from gemm-f64 0.18.0 src/microkernel.rs (https://github.com/sarah-ek/gemm, MIT license): the FMA f64 micro-kernel
-//   shape, 8 rows in two vectors of four by 6 columns; faer 0.19.4 src/linalg/matmul/triangular.rs for the
-//   lower-triangle product.
+// Based on gemm-f64 0.18.0 src/microkernel.rs (8 by 6 FMA kernel).
+// gemm: https://github.com/sarah-ek/gemm, MIT license.
+// Triangular products follow faer 0.19.4 src/linalg/matmul/triangular.rs.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The code is written for raw double pointers, with double4 in place of the SIMD types.
 
 using System.Runtime.CompilerServices;
 using Unity.Mathematics;
@@ -11,14 +10,14 @@ namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>C += alpha A B, where A is m by k, B is k by n and C is m by n, all stored column by column.</summary>
+        /// <summary>Compute C += alpha*A*B. A is m by k, B is k by n and C is m by n, all in column-major order.</summary>
         public static void GemmNN(int m, int n, int k, double alpha, double* a, int lda, double* b, int ldb, double* c, int ldc)
         {
             Gemm(alpha, MatrixView<double>.ColumnMajor(a, m, k, lda), MatrixView<double>.ColumnMajor(b, k, n, ldb),
                 MatrixView<double>.ColumnMajor(c, m, n, ldc));
         }
 
-        /// <summary>C += alpha A B^T, where A is m by k, B is n by k and C is m by n, all stored column by column.</summary>
+        /// <summary>Compute C += alpha*A*B^T. A is m by k, B is n by k and C is m by n, all in column-major order.</summary>
         public static void GemmNT(int m, int n, int k, double alpha, double* a, int lda, double* b, int ldb, double* c, int ldc)
         {
             Gemm(alpha, MatrixView<double>.ColumnMajor(a, m, k, lda), MatrixView<double>.ColumnMajor(b, n, k, ldb).Transpose,
@@ -26,27 +25,22 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The lower triangle of C += alpha A A^T, where A is n by k and C is n by n, both stored column by column. See
-        /// <see cref="SyrkLower(double, MatrixView{double}, MatrixView{double})"/>.
+        /// Update the lower triangle of C += alpha*A*A^T. A is n by k and C is n by n, both in column-major order.
+        /// Preserve the upper triangle of C.
         /// </summary>
         public static void SyrkLowerNT(int n, int k, double alpha, double* a, int lda, double* c, int ldc)
         {
             SyrkLower(alpha, MatrixView<double>.ColumnMajor(a, n, k, lda), MatrixView<double>.ColumnMajor(c, n, n, ldc));
         }
 
-        /// <summary>C += alpha A B, where A is m by k, B is k by n and C is m by n, in any layout.</summary>
+        /// <summary>Compute C += alpha*A*B. A is m by k, B is k by n and C is m by n.</summary>
         public static void Gemm(double alpha, MatrixView<double> a, MatrixView<double> b, MatrixView<double> c)
         {
             Gemm(alpha, a, b, c, Triangle.All, null);
         }
 
-        /// <summary>
-        /// The lower triangle of C += alpha A A^T, where A is n by k and C is n by n. If <paramref name="keepUpper"/> is
-        /// true, the entries above the diagonal of C keep their values, as in faer's triangular matrix product. If it
-        /// is false, the routine also writes some entries above the diagonal, in the tiles that the diagonal crosses,
-        /// which saves time on small matrices; a caller that keeps nothing there, such as a factor stored as a lower
-        /// triangle, can let it.
-        /// </summary>
+        /// <summary>Update the lower triangle of C += alpha*A*A^T, where A is n by k and C is n by n.</summary>
+        /// <param name="keepUpper">Preserve the upper triangle. Set to false to allow faster writes that may overwrite it.</param>
         public static void SyrkLower(double alpha, MatrixView<double> a, MatrixView<double> c, bool keepUpper = true)
         {
             if (keepUpper)
@@ -60,13 +54,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// C += alpha A B for any layout. The tiles below need the columns of C to be contiguous. If the rows of C are
-        /// contiguous instead, the routine computes C^T += alpha B^T A^T, whose columns are, and the lower triangle of C
-        /// is then the upper triangle of C^T. If the columns of A are contiguous, the tiles read A in place; if not,
-        /// for example for a transposed A, they read A from a copy, as the gemm crate does. B may have any layout.
-        /// Every other layout of C takes a plain loop.
-        /// </summary>
+        /// <summary>Compute C += alpha*A*B for the requested region, choosing a kernel for the matrix layout.</summary>
         static void Gemm(double alpha, MatrixView<double> a, MatrixView<double> b, MatrixView<double> c, Triangle triangle, double* saved)
         {
             int m = c.Rows;
@@ -102,17 +90,9 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Runs the tiles of C, 8 rows by 6 columns, over A as it is stored. Entry (p, j) of B is
-        /// b[p * bRow + j * bColumn].
-        /// <para>
-        /// This follows the shape of the gemm crate's FMA micro-kernel for doubles: a tile of C of 8 rows by 6
-        /// columns stays in twelve vector registers while the loop runs over the inner dimension. Each step loads two
-        /// vectors of four rows of A and multiplies them by six single entries of B. The edges use the same kernel
-        /// with fewer rows or columns. The gemm crate packs A and B into buffers first; this port reads them in place,
-        /// because the solver's matrices are small enough to stay in the caches.
-        /// </para>
-        /// </summary>
+        /// <summary>Compute C += alpha*A*B in 8 by 6 tiles. A and C have contiguous columns.</summary>
+        /// <param name="bRow">Row stride of b, in elements.</param>
+        /// <param name="bColumn">Column stride of b, in elements.</param>
         static void GemmTiles(int m, int n, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
             double* c, int ldc, Triangle triangle, double* saved)
         {
@@ -132,21 +112,10 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// How many steps of the inner dimension one copy of 8 rows of A holds at most: 8 by 256 doubles are 16 KiB,
-        /// which fits in the stack and in the first-level cache. A product with a shorter inner dimension takes only
-        /// what it needs, because Burst clears the memory that a stackalloc takes, and clearing 16 KiB costs more than
-        /// a small product.
-        /// </summary>
+        /// <summary>Maximum panel depth. An 8 by 256 panel occupies 16 KiB of stack space.</summary>
         const int PanelDepth = 256;
 
-        /// <summary>
-        /// Runs the tiles of C over a copy of A, for an A whose columns are not contiguous. The gemm crate packs A
-        /// into panels of the kernel's height; this port copies 8 rows of A at a time, for up to
-        /// <see cref="PanelDepth"/> steps of the inner dimension, into a buffer where the panel's columns are
-        /// contiguous, and runs every tile of those rows of C over it. A transposed A that is stored column by column
-        /// has contiguous rows, so the copy reads each of its rows in a line.
-        /// </summary>
+        /// <summary>Compute C += alpha*A*B by copying A into panels of 8 rows with contiguous columns.</summary>
         static void GemmPacked(double alpha, MatrixView<double> a, MatrixView<double> b, double* c, int ldc, Triangle triangle, double* saved)
         {
             int m = a.Rows;
@@ -182,14 +151,9 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// One tile of C, of up to 8 rows and 6 columns, whose first entry is <paramref name="offset"/> rows below the
-        /// diagonal of C. In a product of one triangle, a tile that the diagonal crosses also holds entries outside the
-        /// triangle. faer computes such a tile into a buffer and copies the triangle's part. If
-        /// <paramref name="saved"/> is not null, this port saves the entries outside the triangle there, writes the
-        /// whole tile, and puts the saved entries back, which touches only those few entries. So the product leaves
-        /// every entry of C outside the triangle as it was. If it is null, the whole tile is written.
-        /// </summary>
+        /// <summary>Update a tile of C with at most 8 rows and six columns.</summary>
+        /// <param name="offset">Row index minus column index of the tile within C.</param>
+        /// <param name="saved">Workspace to preserve entries outside the requested triangle. If null, overwrite the whole tile.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void Tile(int rows, int columns, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
             double* c, int ldc, int offset, Triangle triangle, double* saved)
@@ -216,11 +180,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// Copies the entries of a tile that lie outside the triangle into <paramref name="saved"/>, or back from it if
-        /// <paramref name="restore"/> is true. Entry (r, s) of the tile is in the lower triangle if r + offset >= s, and
-        /// in the upper one if r + offset &lt;= s, so in each column the entries outside are one run of rows.
-        /// </summary>
+        /// <summary>Save tile entries outside the requested triangle, or restore them if restore is true.</summary>
         static void Outside(int rows, int columns, int offset, Triangle triangle, double* c, int ldc, double* saved, bool restore)
         {
             int count = 0;
@@ -243,7 +203,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>The plain path, for a C whose rows and columns are both not contiguous.</summary>
+        /// <summary>Compute C += alpha*A*B with scalar loops for arbitrary strides.</summary>
         static void GemmPlain(double alpha, MatrixView<double> a, MatrixView<double> b, MatrixView<double> c, Triangle triangle)
         {
             int k = a.Columns;
@@ -264,7 +224,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>The full tile: 8 rows of C by 6 columns, in twelve vector sums.</summary>
+        /// <summary>Update an 8 by 6 tile of C.</summary>
         static void Kernel8x6(int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn, double* c, int ldc)
         {
             double4 c00 = 0.0, c01 = 0.0, c02 = 0.0, c03 = 0.0, c04 = 0.0, c05 = 0.0;
@@ -310,10 +270,7 @@ namespace Unity.Numerics.Kernels
             *(double4*)(c + 4) = FusedMath.Fma(alpha, bottom, *(double4*)(c + 4));
         }
 
-        /// <summary>
-        /// A tile at an edge of C, with up to 8 rows and up to 6 columns. Each column of the tile is one pass over the
-        /// inner dimension with two vector sums, and the rows past the last full vector are summed one at a time.
-        /// </summary>
+        /// <summary>Update a partial tile of C with at most eight rows and six columns.</summary>
         static void KernelEdge(int rows, int columns, int k, double alpha, double* a, int lda, double* b, int bRow, int bColumn,
             double* c, int ldc)
         {

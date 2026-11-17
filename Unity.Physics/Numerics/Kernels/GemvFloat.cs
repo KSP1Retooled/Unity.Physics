@@ -1,18 +1,13 @@
-// Ported from faer 0.19.4 src/linalg/matmul (a matrix product with one column), as the triangular solves call it.
+// Ported from faer 0.19.4 src/linalg/matmul (matrix product with one column).
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version: the loops are the same as for doubles, and the float Axpy and Dot that it calls run in vectors of
-// eight floats.
 
 namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>
-        /// y += alpha A x for floats, where A is m by n, x has n entries that are <paramref name="incx"/> apart, and y
-        /// has m entries that are <paramref name="incy"/> apart. As for doubles: if the columns of A and y are
-        /// contiguous, the routine adds alpha x_j times each column j of A to y; if the rows of A and x are contiguous,
-        /// entry i of y takes the dot product of row i of A with x; any other layout takes a plain loop.
-        /// </summary>
+        /// <summary>Compute y += alpha*A*x, where A is m by n, x has n entries and y has m entries.</summary>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="incy">Stride between entries of y, in elements.</param>
         public static void Gemv(float alpha, MatrixView<float> a, float* x, int incx, float* y, int incy)
         {
             int m = a.Rows;

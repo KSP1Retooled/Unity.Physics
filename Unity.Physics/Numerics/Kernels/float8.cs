@@ -3,11 +3,7 @@ using Unity.Mathematics;
 
 namespace Unity.Numerics.Kernels
 {
-    /// <summary>
-    /// Eight floats, which fill one 256-bit vector register. Unity.Mathematics has no type of this width, and the float
-    /// kernels need one to hold a tile of eight rows. The layout matches the register's, so that
-    /// <see cref="FusedMath.Fma(float8, float8, float8)"/> can pass it to the FMA instruction as it is.
-    /// </summary>
+    /// <summary>Eight floats stored as two float4 vectors, with the same layout as a 256-bit vector register.</summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct float8
     {

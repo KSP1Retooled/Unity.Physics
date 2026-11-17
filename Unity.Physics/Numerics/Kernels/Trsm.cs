@@ -1,6 +1,5 @@
-// Ported from faer 0.19.4 src/linalg/triangular_solve.rs (the recursive triangular solves and their block sizes).
+// Ported from faer 0.19.4 src/linalg/triangular_solve.rs.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The code is written for raw double pointers, with double4 in place of the SIMD types.
 
 using Unity.Mathematics;
 
@@ -9,9 +8,8 @@ namespace Unity.Numerics.Kernels
     public static unsafe partial class Blas
     {
         /// <summary>
-        /// faer's block size for the recursive triangular solve: the lower part of the split is about half of the
-        /// rows, rounded up to a multiple of 16, 8 or 4 rows as the matrix gets smaller, so that it fills whole
-        /// vectors. Returns the size of the upper part.
+        /// Size of the leading block for a recursive triangular solve.
+        /// Round the trailing block to a multiple of the vector width.
         /// </summary>
         static int TriangularBlock(int n)
         {
@@ -32,17 +30,10 @@ namespace Unity.Numerics.Kernels
             return n - rest;
         }
 
-        /// <summary>
-        /// B := L^-1 B, where L is n by n and lower triangular, and B is n by nrhs. This is faer's
-        /// solve_lower_triangular_in_place: for more than 4 rows it solves the upper block of rows, takes its share out
-        /// of the lower block with a matrix product, and solves the lower block. faer also splits B by columns when it
-        /// has more than 64; this port leaves that out, because the solver's B has few columns. If
-        /// <paramref name="unitDiagonal"/> is true, the routine takes every diagonal entry of L as 1 and never reads it.
-        /// <para>
-        /// The solve X L^T = B, for B m by n, is this routine on the transposes: L X^T = B^T. faer solves it that way,
-        /// and so does <see cref="TrsmRightLowerTranspose(int, int, double*, int, double*, int)"/>.
-        /// </para>
-        /// </summary>
+        /// <summary>Solve L*X = B, overwriting B with X.</summary>
+        /// <param name="l">Lower triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix of right-hand sides. Overwritten with the solutions.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsmLeftLower(MatrixView<double> l, MatrixView<double> b, bool unitDiagonal = false)
         {
             int n = l.Rows;
@@ -64,12 +55,7 @@ namespace Unity.Numerics.Kernels
             TrsmLeftLower(l.Block(bs, bs, n - bs, n - bs), b.Block(bs, 0, n - bs, nrhs), unitDiagonal);
         }
 
-        /// <summary>
-        /// The base case of <see cref="TrsmLeftLower(MatrixView{double}, MatrixView{double}, bool)"/>, for 4 rows or
-        /// fewer. If the rows of B are contiguous and its columns are not, it works along the rows of B in vectors, see
-        /// <see cref="TrsmLeftLowerByRows"/>. Otherwise it computes the reciprocals of the diagonal once and runs the
-        /// forward substitution down each column of B.
-        /// </summary>
+        /// <summary>Forward substitution for a triangle with at most four rows.</summary>
         static void TrsmLeftLowerBaseCase(MatrixView<double> l, MatrixView<double> b, bool unitDiagonal)
         {
             int n = l.Rows;
@@ -104,13 +90,7 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// The base case for a B whose rows are contiguous, such as the transpose of a matrix stored column by column.
-        /// It takes four entries of every row of B at a time into registers, solves for them there, and stores them,
-        /// so each entry of B is read and written once. Row i is x_i = (b_i - sum over p of L[i, p] x_p) times the
-        /// reciprocal of L[i, i], with the products taken out in the order of p, as a column update of each earlier
-        /// row would take them out.
-        /// </summary>
+        /// <summary>Forward substitution for right-hand sides with contiguous rows.</summary>
         static void TrsmLeftLowerByRows(MatrixView<double> l, MatrixView<double> b, bool unitDiagonal)
         {
             int n = l.Rows;
@@ -169,12 +149,10 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// B := U^-1 B, where U is n by n and upper triangular, and B is n by nrhs. faer reverses the rows and columns
-        /// into a lower solve. This routine writes the same recursion for U as it is: it solves the lower block of
-        /// rows first, takes its share out of the upper block with B_0 -= U_01 X_1, and solves the upper block. The
-        /// solve with L^T, for a lower triangular L, is this routine on L's <see cref="MatrixView{T}.Transpose"/>.
-        /// </summary>
+        /// <summary>Solve U*X = B, overwriting B with X.</summary>
+        /// <param name="u">Upper triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix of right-hand sides. Overwritten with the solutions.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsmLeftUpper(MatrixView<double> u, MatrixView<double> b, bool unitDiagonal = false)
         {
             int n = u.Rows;
@@ -196,7 +174,7 @@ namespace Unity.Numerics.Kernels
             TrsmLeftUpper(u.Block(0, 0, bs, bs), b.Block(0, 0, bs, nrhs), unitDiagonal);
         }
 
-        /// <summary>The base case of <see cref="TrsmLeftUpper"/>: the lower one, run from the last row up.</summary>
+        /// <summary>Backward substitution for a triangle with at most four rows.</summary>
         static void TrsmLeftUpperBaseCase(MatrixView<double> u, MatrixView<double> b, bool unitDiagonal)
         {
             int n = u.Rows;
@@ -244,20 +222,17 @@ namespace Unity.Numerics.Kernels
             }
         }
 
-        /// <summary>
-        /// B := L^-1 B, for L (n by n) and B (n by nrhs) stored column by column with leading dimensions
-        /// <paramref name="ldl"/> and <paramref name="ldb"/>.
-        /// </summary>
+        /// <summary>Solve L*X = B in place. L is n by n and B is n by nrhs, both in column-major order.</summary>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="ldb">Leading dimension of b, in elements.</param>
         public static void TrsmLeftLower(int n, int nrhs, double* l, int ldl, double* b, int ldb)
         {
             TrsmLeftLower(MatrixView<double>.ColumnMajor(l, n, n, ldl), MatrixView<double>.ColumnMajor(b, n, nrhs, ldb));
         }
 
-        /// <summary>
-        /// B := B L^-T, where L is n by n and lower triangular and B is m by n, both stored column by column. This is
-        /// the lower solve on B^T, whose rows are contiguous, so the base case runs in vectors down the columns of B
-        /// and the products take B as it is stored.
-        /// </summary>
+        /// <summary>Solve X*L^T = B in place. L is n by n and B is m by n, both in column-major order.</summary>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="ldb">Leading dimension of b, in elements.</param>
         public static void TrsmRightLowerTranspose(int m, int n, double* l, int ldl, double* b, int ldb)
         {
             TrsmLeftLower(MatrixView<double>.ColumnMajor(l, n, n, ldl), MatrixView<double>.ColumnMajor(b, m, n, ldb).Transpose);

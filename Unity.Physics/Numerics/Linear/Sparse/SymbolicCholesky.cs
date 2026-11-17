@@ -3,23 +3,23 @@ using Unity.Collections;
 namespace Unity.Numerics.Linear.Sparse
 {
     /// <summary>
-    /// Works out the structure of a sparse Cholesky factor from the graph of a symmetric matrix and an elimination
-    /// order, without the values of the matrix: which entries of the factor are nonzero, and the elimination tree. The
-    /// order usually comes from <see cref="MinimumDegreeOrdering"/>. The graph uses the compressed layout that
-    /// <see cref="MinimumDegreeOrdering"/> describes. The vessel solver lays out the factor of a vessel's sections with
-    /// it.
+    /// Symbolic Cholesky factorization of a symmetric sparse matrix.
+    /// Compute the factor's sparsity pattern and elimination tree without using matrix values.
     /// </summary>
     public static class SymbolicCholesky
     {
         /// <summary>
-        /// Computes which entries of the factor are nonzero when the vertices are eliminated in the given order. Column j
-        /// of the factor has a row for each neighbour of j that comes later in the order. It also has every row of each
-        /// of its children in the elimination tree, when that row comes after j. The routine writes the position of each
-        /// vertex in the order to <paramref name="position"/>. It appends the rows of each column to
-        /// <paramref name="rows"/>, sorted, and writes where each column's rows start to <paramref name="columnStart"/>,
-        /// which needs one entry more than there are vertices. It also writes the elimination tree: the parent of each
-        /// column (or -1 for a root), its first child, and its next sibling (or -1 for none).
+        /// Compute the strictly lower triangular sparsity pattern and elimination tree for the given elimination order.
         /// </summary>
+        /// <param name="order">Vertex labels in elimination order, usually from <see cref="MinimumDegreeOrdering"/>.</param>
+        /// <param name="position">Output position of each vertex in order.</param>
+        /// <param name="adjacency">Neighbour labels for each vertex, in the layout described by <see cref="MinimumDegreeOrdering"/>.</param>
+        /// <param name="adjacencyStart">Start of each vertex's neighbours in adjacency, plus the final end offset.</param>
+        /// <param name="columnStart">Output offsets into rows, with one entry per column plus the final end offset.</param>
+        /// <param name="rows">Sorted row indices appended for each column, excluding the diagonal. Indices refer to elimination order.</param>
+        /// <param name="parentOf">Output parent of each column in the elimination tree, or -1 for a root.</param>
+        /// <param name="firstChild">Output first child of each column, or -1 if none.</param>
+        /// <param name="nextSibling">Output next sibling of each column, or -1 if none.</param>
         public static void FactorStructure(NativeList<int> order, NativeArray<int> position, NativeArray<int> adjacency,
             NativeArray<int> adjacencyStart, NativeArray<int> columnStart, NativeList<int> rows, NativeArray<int> parentOf,
             NativeArray<int> firstChild, NativeArray<int> nextSibling)
@@ -41,8 +41,7 @@ namespace Unity.Numerics.Linear.Sparse
             var column = new NativeList<int>(Allocator.Temp);
             for (int j = 0; j < count; j++)
             {
-                // Set the start of column j before reading its children. The rows of column j - 1 end at this index.
-                // If column j - 1 is a child of column j, the loop below reads that child's rows up to this index.
+                // Set the end offset of column j - 1 before reading it as a possible child of j.
                 columnStart[j] = rows.Length;
                 column.Clear();
                 int label = order[j];

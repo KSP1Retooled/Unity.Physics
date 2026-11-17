@@ -4,11 +4,8 @@ using Unity.Mathematics;
 namespace Unity.Numerics.Kernels
 {
     /// <summary>
-    /// Provides fused multiply-add operations: a * b + c with one rounding. <see cref="math.fma(float, float, float)"/>
-    /// fuses only when Burst permits fast math. Fast math also permits reordering sums and assuming that infinities do
-    /// not occur wherever the function is inlined. These methods explicitly use x86 FMA instructions when supported.
-    /// Otherwise, they use separate multiplication and addition, with two roundings. Results can therefore differ in
-    /// their last bits between CPUs and between Burst and Mono.
+    /// Compute a*b + c using x86 FMA when supported, without requiring fast math.
+    /// The fallback uses separate multiplication and addition. Rounding may differ between CPUs and runtimes.
     /// </summary>
     public static unsafe class FusedMath
     {
@@ -59,7 +56,7 @@ namespace Unity.Numerics.Kernels
         {
             if (X86.Fma.IsFmaSupported)
             {
-                // float8 and v256 have the same layout, so the vectors pass through without being taken apart.
+                // Matching layouts allow a direct cast to v256.
                 v256 result = X86.Fma.mm256_fmadd_ps(*(v256*)&a, *(v256*)&b, *(v256*)&c);
                 return *(float8*)&result;
             }
@@ -103,7 +100,7 @@ namespace Unity.Numerics.Kernels
         {
             if (X86.Fma.IsFmaSupported)
             {
-                // double4 and v256 have the same layout, so the vectors pass through without being taken apart.
+                // Matching layouts allow a direct cast to v256.
                 v256 result = X86.Fma.mm256_fmadd_pd(*(v256*)&a, *(v256*)&b, *(v256*)&c);
                 return *(double4*)&result;
             }
@@ -111,9 +108,7 @@ namespace Unity.Numerics.Kernels
             return a * b + c;
         }
 
-        /// <summary>
-        /// Computes <c>sum(a[i] * b[i])</c>.
-        /// </summary>
+        /// <summary>Compute <c>sum(a[i] * b[i])</c> for count entries.</summary>
         public static double ArrayProductSum(double* a, double* b, int count)
         {
             double4x4 sum4x4 = 0.0;

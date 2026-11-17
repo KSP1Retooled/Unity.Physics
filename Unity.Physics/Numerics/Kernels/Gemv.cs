@@ -1,21 +1,13 @@
-// Ported from faer 0.19.4 src/linalg/matmul (a matrix product with one column), as the triangular solves call it.
+// Ported from faer 0.19.4 src/linalg/matmul (matrix product with one column).
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The code is written for raw double pointers, with double4 in place of the SIMD types.
 
 namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>
-        /// y += alpha A x, where A is m by n, x has n entries that are <paramref name="incx"/> apart, and y has m
-        /// entries that are <paramref name="incy"/> apart. faer picks the loop by A's layout, and so does this port:
-        /// <list type="bullet">
-        /// <item>If the columns of A and y are contiguous, the routine adds alpha x_j times each column j of A to y.</item>
-        /// <item>If the rows of A and x are contiguous, entry i of y takes the dot product of row i of A with x.</item>
-        /// <item>Any other layout takes a plain loop.</item>
-        /// </list>
-        /// The transposed product y += alpha A^T x is this routine on <see cref="MatrixView{T}.Transpose"/>.
-        /// </summary>
+        /// <summary>Compute y += alpha*A*x, where A is m by n, x has n entries and y has m entries.</summary>
+        /// <param name="incx">Stride between entries of x, in elements.</param>
+        /// <param name="incy">Stride between entries of y, in elements.</param>
         public static void Gemv(double alpha, MatrixView<double> a, double* x, int incx, double* y, int incy)
         {
             int m = a.Rows;

@@ -1,7 +1,5 @@
 // Ported from faer 0.19.4 (https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md):
 //   src/linalg/cholesky/llt/update.rs (rank_r_update_clobber, insert_rows_and_cols_clobber, delete_rows_and_cols_clobber)
-// The algorithms are faer's. The code is written for raw double pointers, with double4 in place of faer's SIMD types,
-// and calls the BLAS-style routines in Blas. What was adapted is listed in each summary.
 
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -11,20 +9,14 @@ namespace Unity.Numerics.Kernels
     public static unsafe partial class CholeskyLLT
     {
         /// <summary>
-        /// Changes the factor L of A, n by n, into the factor of A + W diag(alpha) W^T, as faer's rank_r_update_clobber
-        /// does. W is n by k and is overwritten, and so is alpha. If <paramref name="firstRows"/> is not null, column c of
-        /// W is zero above row firstRows[c], the rows are in increasing order, and column j of the factor only takes
-        /// the columns of W that start at or above row j. faer gets the same count from a function; this port takes
-        /// the rows instead.
-        /// <para>
-        /// For each column j of L, the update takes the columns of W four at a time. For each of the four, a few
-        /// scalars give the new diagonal entry, and then one pass down the column below the diagonal changes the
-        /// column of L and the four columns of W together. Each row's chain goes through the four columns in turn,
-        /// and the rows are independent. If the columns of L and W are contiguous, the pass runs four rows at a time
-        /// in vectors; otherwise it runs one row at a time.
-        /// </para>
-        /// Returns how many pivots were raised to <see cref="SmallestPivot"/>; faer returns an error there instead.
+        /// Update the Cholesky factor in place for A + W*diag(alpha)*W^T.
         /// </summary>
+        /// <param name="l">Lower triangular factor of the n by n matrix A. Overwritten with the updated factor.</param>
+        /// <param name="w">An n by k matrix of update vectors. Overwritten.</param>
+        /// <param name="alpha">One weight per column of w. Overwritten.</param>
+        /// <param name="firstRows">First nonzero row of each column of w, in nondecreasing order.
+        /// Entries above these rows must be zero. Pass null to use all rows.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int RankUpdate(MatrixView<double> l, MatrixView<double> w, double* alpha, int* firstRows)
         {
             const int BlockSize = 4;
@@ -44,9 +36,7 @@ namespace Unity.Numerics.Kernels
                 for (int r = 0; r < active; r += BlockSize)
                 {
                     int count = math.min(BlockSize, active - r);
-                    // faer divides by the old and the new diagonal entry three times for each column of W. Each
-                    // division waits on the square root before it, so this port takes one reciprocal of each new entry
-                    // and multiplies by it, which leaves one square root and one division on the chain.
+                    // Reuse each diagonal's reciprocal to avoid repeated divisions after the square root.
                     double ljj = l[j, j];
                     double inverse = 1.0 / ljj;
                     for (int t = 0; t < count; t++)
@@ -120,7 +110,15 @@ namespace Unity.Numerics.Kernels
             return raised;
         }
 
-        /// <summary>The rank update of a factor and a W that are both stored column by column.</summary>
+        /// <summary>Update the Cholesky factor for A + W*diag(alpha)*W^T, with L and W in column-major order.</summary>
+        /// <param name="l">Lower triangular factor of the n by n matrix A. Overwritten with the updated factor.</param>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="w">An n by k matrix of update vectors. Overwritten.</param>
+        /// <param name="ldw">Leading dimension of w, in elements.</param>
+        /// <param name="alpha">One weight per column of w. Overwritten.</param>
+        /// <param name="firstRows">First nonzero row of each column of w, in nondecreasing order.
+        /// Entries above these rows must be zero. Pass null to use all rows.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int RankUpdate(int n, double* l, int ldl, int k, double* w, int ldw, double* alpha, int* firstRows)
         {
             return RankUpdate(MatrixView<double>.ColumnMajor(l, n, n, ldl), MatrixView<double>.ColumnMajor(w, n, k, ldw), alpha, firstRows);
@@ -134,31 +132,22 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The number of doubles of scratch that <see cref="InsertRowsAndColumns(int, MatrixView{double}, int, int, MatrixView{double}, double*)"/>
-        /// needs.
+        /// Required scratch space in doubles to insert r rows and columns at index p into an n by n factor.
         /// </summary>
         public static int InsertScratch(int n, int p, int r) => (n - p) * r + r;
 
         /// <summary>
-        /// Inserts r rows and columns at place p, as faer's insert_rows_and_cols_clobber does. On input, the lower
-        /// triangle of the first n rows and columns of <paramref name="l"/> holds the factor of the n by n matrix A,
-        /// and B, (n + r) by r, holds the new columns of the larger matrix: row i of B is entry i of the new matrix, in
-        /// the new matrix's order. <paramref name="l"/> must have room for n + r rows and columns. On output, it holds
-        /// the factor of the (n + r) by (n + r) matrix, and B is overwritten.
-        /// <para>
-        /// The routine moves the rows and columns from p on down and to the right by r. Then it solves
-        /// X = L_00^-1 B_0, which is the new rows' part in the first p columns. The new diagonal block is the factor of
-        /// B_1 - X^T X. The new rows' part below it is (B_2 - L_20 X) L_11^-T. Last, the factor of the rows below takes
-        /// out the product of that part with itself, which is a rank-r update with weights of -1. faer keeps the
-        /// weights and the copy of that part in B's storage; this port takes a scratch array of
-        /// <see cref="InsertScratch"/> doubles for them. If p equals n, nothing moves and the last step has no rows.
-        /// </para>
-        /// <para>
-        /// The product and the factor of the new diagonal block write the whole tiles that its diagonal crosses, so
-        /// some entries above the diagonal of the factor change, as they did before the factor learned to keep them.
-        /// </para>
-        /// Returns how many pivots were raised to <see cref="SmallestPivot"/>.
+        /// Update the Cholesky factor in place after inserting r rows and columns into A.
+        /// Entries above the diagonal of L may be overwritten.
         /// </summary>
+        /// <param name="n">Size of A before insertion.</param>
+        /// <param name="l">Lower triangular factor of A in the first n rows and columns.
+        /// Must have room for the resulting (n + r) by (n + r) factor.</param>
+        /// <param name="p">Insertion index, from 0 to n. Use n to append.</param>
+        /// <param name="r">Number of rows and columns to insert.</param>
+        /// <param name="b">The r new columns of A, with n + r rows in the order after insertion. Overwritten.</param>
+        /// <param name="scratch">Workspace of at least InsertScratch(n, p, r) doubles.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int InsertRowsAndColumns(int n, MatrixView<double> l, int p, int r, MatrixView<double> b, double* scratch)
         {
             if (r == 0)
@@ -166,8 +155,7 @@ namespace Unity.Numerics.Kernels
                 return 0;
             }
 
-            // Move the old factor's rows and columns from p on to make room, from the right so that nothing is
-            // overwritten before it moves.
+            // Make room from the bottom right to avoid overwriting entries before they move.
             for (int j = n - 1; j >= p; j--)
             {
                 for (int i = n - 1; i >= j; i--)
@@ -195,7 +183,7 @@ namespace Unity.Numerics.Kernels
             MatrixView<double> l21 = l.Block(p + r, p, below, r);
             MatrixView<double> l22 = l.Block(p + r, p + r, below, below);
 
-            // X = L_00^-1 B_0, and the new rows' part in the first p columns is X^T.
+            // Solve L_00 * X = B_0, then store L_10 = X^T.
             Blas.TrsmLeftLower(l00, x);
             for (int j = 0; j < p; j++)
             {
@@ -205,7 +193,7 @@ namespace Unity.Numerics.Kernels
                 }
             }
 
-            // The new diagonal block: the factor of B_1 - X^T X.
+            // Factor the new diagonal block: L_11 * L_11^T = B_1 - X^T * X.
             for (int j = 0; j < r; j++)
             {
                 for (int i = j; i < r; i++)
@@ -217,8 +205,7 @@ namespace Unity.Numerics.Kernels
             Blas.SyrkLower(-1.0, l10, l11, false);
             int raised = Factor(l11, false);
 
-            // The new rows' part below the diagonal block: (B_2 - L_20 X) L_11^-T, which is the lower solve on its
-            // transpose.
+            // Compute L_21 = (B_2 - L_20 * X) * L_11^-T.
             for (int j = 0; j < r; j++)
             {
                 for (int i = 0; i < below; i++)
@@ -230,7 +217,7 @@ namespace Unity.Numerics.Kernels
             Blas.Gemm(-1.0, l20, x, l21);
             Blas.TrsmLeftLower(l11, l21.Transpose);
 
-            // The rows below take out the product of that part with itself.
+            // Downdate the trailing factor for A_22 - L_21 * L_21^T.
             if (below > 0)
             {
                 double* weights = scratch;
@@ -250,7 +237,17 @@ namespace Unity.Numerics.Kernels
             return raised;
         }
 
-        /// <summary>The insertion into a factor and a B that are both stored column by column.</summary>
+        /// <summary>Insert r rows and columns at index p, with L and B in column-major order.</summary>
+        /// <param name="n">Size of A before insertion.</param>
+        /// <param name="l">Lower triangular factor of A, with room for the resulting (n + r) by (n + r) factor.
+        /// Updated in place; entries above the diagonal may be overwritten.</param>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="p">Insertion index, from 0 to n. Use n to append.</param>
+        /// <param name="r">Number of rows and columns to insert.</param>
+        /// <param name="b">The r new columns of A, with n + r rows in the order after insertion. Overwritten.</param>
+        /// <param name="ldb">Leading dimension of b, in elements.</param>
+        /// <param name="scratch">Workspace of at least InsertScratch(n, p, r) doubles.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int InsertRowsAndColumns(int n, double* l, int ldl, int p, int r, double* b, int ldb, double* scratch)
         {
             return InsertRowsAndColumns(n, MatrixView<double>.ColumnMajor(l, n + r, n + r, ldl), p, r,
@@ -258,26 +255,20 @@ namespace Unity.Numerics.Kernels
         }
 
         /// <summary>
-        /// The number of doubles of scratch that <see cref="DeleteRowsAndColumns(MatrixView{double}, int*, int, double*)"/>
-        /// needs, with <paramref name="first"/> the first deleted index.
+        /// Required scratch space in doubles to delete r rows and columns from an n by n factor.
         /// </summary>
+        /// <param name="first">Index of the first row and column to delete.</param>
         public static int DeleteScratch(int n, int first, int r) => (n - first - r) * r + r + (r + 1) / 2;
 
         /// <summary>
-        /// Deletes r rows and columns from the factor of the n by n matrix in <paramref name="l"/>, as faer's
-        /// delete_rows_and_cols_clobber does. The indices must be in increasing order. On output, the lower triangle
-        /// of the first n - r rows and columns holds the factor of A without them.
-        /// <para>
-        /// Before anything moves, the routine copies the parts of the deleted columns that lie in the kept rows below
-        /// the first deleted index. Then it closes the gaps in the stored triangle. The kept rows below the first
-        /// deleted index lost those columns' parts, so their factor takes a rank-r update with weights of +1 and the
-        /// copied parts as its vectors. Column c of the copy starts at the first kept row after deleted index c, so
-        /// each column of the factor only takes the copies that have started. faer computes that count in a function;
-        /// this port keeps each copy's first row in the scratch array, which holds
-        /// <see cref="DeleteScratch"/> doubles.
-        /// </para>
-        /// Returns how many pivots were raised to <see cref="SmallestPivot"/>.
+        /// Update the Cholesky factor in place after deleting r rows and columns from A.
         /// </summary>
+        /// <param name="l">Lower triangular factor of the n by n matrix A.
+        /// The resulting factor occupies the first n - r rows and columns.</param>
+        /// <param name="indices">Indices to delete, in strictly increasing order.</param>
+        /// <param name="r">Number of rows and columns to delete.</param>
+        /// <param name="scratch">Workspace of at least DeleteScratch(n, indices[0], r) doubles. Unused if r is zero.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int DeleteRowsAndColumns(MatrixView<double> l, int* indices, int r, double* scratch)
         {
             if (r == 0)
@@ -292,8 +283,8 @@ namespace Unity.Numerics.Kernels
             double* alpha = scratch + (long)rows * r;
             int* firstRows = (int*)(alpha + r);
 
-            // Copy the deleted columns' parts in the kept rows. Row i of the old matrix, with c deleted indices
-            // before it, is row i - c - first of the copy.
+            // Save the deleted columns in the retained rows for the rank update.
+            // Subtract c deleted rows and the first unchanged rows to get the scratch row index.
             for (int k = 0; k < r; k++)
             {
                 alpha[k] = 1.0;
@@ -309,17 +300,15 @@ namespace Unity.Numerics.Kernels
                     }
                 }
 
-                // The copy is zero above its first row; the update never reads those rows.
+                // Zero the rows before this update vector starts.
                 for (int i = 0; i < firstRows[k] && i < rows; i++)
                 {
                     w[i, k] = 0.0;
                 }
             }
 
-            // Close the gaps. Every entry moves up, to the left, or both, so a pass that takes the columns in order,
-            // and each column from the top down, never overwrites an entry that has yet to move. In the columns before
-            // the first deleted index, the rows before that index stay where they are. If the columns are contiguous,
-            // each run of kept rows between two deleted indices moves as one block.
+            // Close the gaps from the top left to avoid overwriting entries before they move.
+            // Leave the leading block before the first deleted index unchanged.
             bool contiguous = l.ColumnsAreContiguous;
             int column = 0;
             int nextDeletedColumn = 0;
@@ -368,7 +357,14 @@ namespace Unity.Numerics.Kernels
             return RankUpdate(l.Block(first, first, rows, rows), w, alpha, firstRows);
         }
 
-        /// <summary>The deletion from a factor that is stored column by column.</summary>
+        /// <summary>Delete r rows and columns from A, updating its Cholesky factor in column-major order.</summary>
+        /// <param name="l">Lower triangular factor of the n by n matrix A.
+        /// The resulting factor occupies the first n - r rows and columns.</param>
+        /// <param name="ldl">Leading dimension of l, in elements.</param>
+        /// <param name="indices">Indices to delete, in strictly increasing order.</param>
+        /// <param name="r">Number of rows and columns to delete.</param>
+        /// <param name="scratch">Workspace of at least DeleteScratch(n, indices[0], r) doubles. Unused if r is zero.</param>
+        /// <returns>Number of pivots raised to SmallestPivot.</returns>
         public static int DeleteRowsAndColumns(int n, double* l, int ldl, int* indices, int r, double* scratch)
         {
             return DeleteRowsAndColumns(MatrixView<double>.ColumnMajor(l, n, n, ldl), indices, r, scratch);

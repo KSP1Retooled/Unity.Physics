@@ -1,19 +1,16 @@
-// Ported from faer 0.19.4 src/linalg/triangular_solve.rs (the recursive triangular solves and their block sizes).
+// Ported from faer 0.19.4 src/linalg/triangular_solve.rs.
 // faer: https://github.com/sarah-quinones/faer-rs, MIT license, see Third Party Notices.md at the package root.
-// The float version, written for vectors of eight floats (float8): the blocks are rounded to whole vectors of eight,
-// so they are twice as large as for doubles, and the base case takes up to 8 rows.
 
 namespace Unity.Numerics.Kernels
 {
     public static unsafe partial class Blas
     {
-        /// <summary>The largest triangle that the float solves handle without splitting it: one vector of eight rows.</summary>
+        /// <summary>Maximum number of rows for the float base case (one float8 vector).</summary>
         const int FloatTriangleBaseRows = 8;
 
         /// <summary>
-        /// faer's block size for the recursive triangular solve of floats: the lower part of the split is about half
-        /// of the rows, rounded up to a multiple of 32, 16 or 8 rows as the matrix gets smaller, so that it fills
-        /// whole vectors of eight floats. Returns the size of the upper part.
+        /// Size of the leading block for a recursive triangular solve.
+        /// Round the trailing block to a multiple of eight rows.
         /// </summary>
         static int TriangularBlockFloat(int n)
         {
@@ -34,11 +31,10 @@ namespace Unity.Numerics.Kernels
             return n - rest;
         }
 
-        /// <summary>
-        /// B := L^-1 B for floats, where L is n by n and lower triangular, and B is n by nrhs. The recursion is the
-        /// same as for doubles, with the float blocks. If <paramref name="unitDiagonal"/> is true, the routine takes
-        /// every diagonal entry of L as 1 and never reads it.
-        /// </summary>
+        /// <summary>Solve L*X = B, overwriting B with X.</summary>
+        /// <param name="l">Lower triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix of right-hand sides. Overwritten with the solutions.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsmLeftLower(MatrixView<float> l, MatrixView<float> b, bool unitDiagonal = false)
         {
             int n = l.Rows;
@@ -60,10 +56,10 @@ namespace Unity.Numerics.Kernels
             TrsmLeftLower(l.Block(bs, bs, n - bs, n - bs), b.Block(bs, 0, n - bs, nrhs), unitDiagonal);
         }
 
-        /// <summary>
-        /// B := U^-1 B for floats, where U is n by n and upper triangular: the lower block of rows first, then
-        /// B_0 -= U_01 X_1, then the upper block, as for doubles.
-        /// </summary>
+        /// <summary>Solve U*X = B, overwriting B with X.</summary>
+        /// <param name="u">Upper triangular n by n matrix.</param>
+        /// <param name="b">An n by nrhs matrix of right-hand sides. Overwritten with the solutions.</param>
+        /// <param name="unitDiagonal">Treat diagonal entries as 1 without reading them.</param>
         public static void TrsmLeftUpper(MatrixView<float> u, MatrixView<float> b, bool unitDiagonal = false)
         {
             int n = u.Rows;
@@ -85,12 +81,7 @@ namespace Unity.Numerics.Kernels
             TrsmLeftUpper(u.Block(0, 0, bs, bs), b.Block(0, 0, bs, nrhs), unitDiagonal);
         }
 
-        /// <summary>
-        /// The base case of the float solves, for 8 rows or fewer, with the lower triangle or, if
-        /// <paramref name="upper"/> is true, the upper one. It takes the reciprocals of the diagonal once, into one
-        /// vector of eight. If the rows of B are contiguous and its columns are not, it works on whole rows of B, which
-        /// runs in vectors along the row. Otherwise it runs the substitution down each column of B.
-        /// </summary>
+        /// <summary>Forward or backward substitution for a triangle with at most eight rows.</summary>
         static void TrsmBaseCase(MatrixView<float> t, MatrixView<float> b, bool unitDiagonal, bool upper)
         {
             int n = t.Rows;

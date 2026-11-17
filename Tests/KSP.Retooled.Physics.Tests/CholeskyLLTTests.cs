@@ -5,16 +5,13 @@ using Unity.Numerics.Kernels;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// The port of faer's LLT factor and its changes, in <see cref="CholeskyLLT"/>, against plain arithmetic: the factor
-    /// times its transpose gives the matrix back, a solve gives the right-hand side back, and inserting or deleting rows
-    /// and columns gives the same factor as factoring the changed matrix from the start, up to rounding. The matrices
-    /// are J J^T plus a small diagonal, with random J, at sizes that reach both the base case and the blocked path.
+    /// Tests for Cholesky factorization, solves, insertion and deletion, covering the base case and recursive path.
     /// </summary>
     public unsafe class CholeskyLLTTests
     {
         private const double Tolerance = 1e-9;
 
-        /// <summary>A random symmetric positive definite matrix, n by n, stored with a column stride of n.</summary>
+        /// <summary>Create a random n by n positive definite matrix A = J*J^T + 0.01*I in column-major order.</summary>
         private static double[] Matrix(int n, uint seed)
         {
             var random = new Random(seed);
@@ -43,7 +40,7 @@ namespace KSP.Retooled.Physics.Tests
             return a;
         }
 
-        /// <summary>Factors the m by m matrix a[index, index] from the start, into a factor with a column stride of ld.</summary>
+        /// <summary>Factor the principal submatrix selected by index, with leading dimension ld.</summary>
         private static double[] FreshFactor(double[] a, int n, int[] index, int ld)
         {
             int m = index.Length;
@@ -64,7 +61,7 @@ namespace KSP.Retooled.Physics.Tests
             return l;
         }
 
-        /// <summary>The largest difference between the lower triangles of two factors, against the largest entry.</summary>
+        /// <summary>Maximum absolute difference in the lower triangles, divided by the largest absolute entry of y.</summary>
         private static double Difference(double[] x, double[] y, int m, int ld)
         {
             double largest = 0.0, size = 1e-300;
@@ -111,7 +108,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.That(largest, Is.LessThan(Tolerance * size), $"n = {n}");
 
-            // A solve gives the right-hand side back.
+            // Check the solve by computing the residual A*x - b.
             var random = new Random(7);
             var b = new double[n];
             var x = new double[n];
@@ -143,8 +140,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
-        /// Inserting r rows and columns at place p gives the factor of the larger matrix, for places at the start, in
-        /// the middle and at the end.
+        /// Compare insertion at the start, middle and end with a fresh factorization of the larger matrix.
         /// </summary>
         [Test]
         public void InsertingRowsGivesTheFactorOfTheLargerMatrix([Values(5, 40, 100)] int n, [Values(1, 3, 9)] int r,
@@ -154,7 +150,7 @@ namespace KSP.Retooled.Physics.Tests
             double[] a = Matrix(total, (uint)(n * 31 + r));
             int p = (int)(where * n);
 
-            // The old matrix is the larger one without rows p to p + r.
+            // Exclude rows and columns p through p + r - 1 to form the original matrix.
             var oldIndex = new int[n];
             for (int i = 0, k = 0; i < total; i++)
             {
@@ -191,7 +187,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(Difference(l, fresh, total, ld), Is.LessThan(Tolerance), $"n = {n}, r = {r}, p = {p}");
         }
 
-        /// <summary>Deleting rows and columns anywhere gives the factor of the smaller matrix.</summary>
+        /// <summary>Compare deletion with a fresh factorization of the retained principal submatrix.</summary>
         [Test]
         public void DeletingRowsGivesTheFactorOfTheSmallerMatrix([Values(6, 40, 119)] int n, [Values(1, 2, 5)] int r,
             [Values(1u, 2u, 3u)] uint seed)
@@ -201,7 +197,7 @@ namespace KSP.Retooled.Physics.Tests
             var deleted = new System.Collections.Generic.SortedSet<int>();
             if (seed == 1)
             {
-                // Rows at the very start, which changes the whole factor.
+                // Delete the first r rows and columns to exercise an update of the whole remaining factor.
                 for (int k = 0; k < r; k++)
                 {
                     deleted.Add(k);
