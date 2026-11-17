@@ -10,6 +10,7 @@ using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Collision.Colliders.Building;
 
 namespace KSP.Retooled.Physics
 {
@@ -177,7 +178,7 @@ namespace KSP.Retooled.Physics
                     break;
                 case ShapeCommand.GetBoundsAtPose:
                     // The supplied pose replaces the shape's entire world pose, so ignore the shape's local pose.
-                    ShapeMath.WorldBounds(&shape->data, float3.zero, quaternion.identity, a->position, a->rotation, out float3 lower, out float3 upper);
+                    ShapeMassProperties.WorldBounds(&shape->data, float3.zero, quaternion.identity, a->position, a->rotation, out float3 lower, out float3 upper);
                     WriteBounds(a, lower, upper);
                     break;
                 case ShapeCommand.ShouldIgnoreCollision:
@@ -257,7 +258,7 @@ namespace KSP.Retooled.Physics
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.SetGeometry.Auto();
 
-            void* previousMesh = ShapeMath.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
+            void* previousMesh = ShapeMassProperties.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
             if (shape->data.geometryType == StoreConstants.GeometryHeightField)
             {
                 HeightFields.Release(shape, globals);
@@ -266,7 +267,7 @@ namespace KSP.Retooled.Physics
             shape->data.geometryType = a->mode;
             shape->data.extents = a->vector;
             shape->data.mesh = a->pointer;
-            if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
+            if (ShapeMassProperties.IsMeshGeometry(shape->data.geometryType))
             {
                 StoreMemory.RetainMesh(globals, shape->data.mesh);
             }
@@ -303,7 +304,7 @@ namespace KSP.Retooled.Physics
                 StoreOps.RemoveShape(shape->body, shape, globals);
             }
 
-            if (ShapeMath.IsMeshGeometry(shape->data.geometryType))
+            if (ShapeMassProperties.IsMeshGeometry(shape->data.geometryType))
             {
                 StoreMemory.ReleaseMesh(globals, shape->data.mesh);
             }
@@ -407,7 +408,7 @@ namespace KSP.Retooled.Physics
                 rotation = (*hot).Pose()->Rotation;
             }
 
-            ShapeMath.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);
+            ShapeMassProperties.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);
             WriteBounds(a, lower, upper);
         }
 

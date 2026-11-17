@@ -18,6 +18,8 @@ using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Collision.Colliders.Building;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics
 {
@@ -489,10 +491,10 @@ namespace KSP.Retooled.Physics
             {
                 PhysicsStep settings = PhysicsStep.Default;
                 settings.Gravity = float3.zero;
-                settings.DirectIslandSubsteps = WorldState.DirectIslandSubsteps;
-                settings.SolverIterationCount = WorldState.SolverIterations;
-                settings.MaxDynamicDepenetrationVelocity = WorldState.MaxDepenetrationVelocity;
-                settings.MaxStaticDepenetrationVelocity = WorldState.MaxDepenetrationVelocity;
+                settings.DirectIslandSubsteps = SolverConstants.DirectIslandSubsteps;
+                settings.SolverIterationCount = SolverConstants.SolverIterations;
+                settings.MaxDynamicDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;
+                settings.MaxStaticDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;
 
                 // FinishStep synchronizes the collision world while reading the results of the step.
                 settings.SynchronizeCollisionWorld = 0;

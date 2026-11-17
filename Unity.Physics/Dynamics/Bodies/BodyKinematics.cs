@@ -1,6 +1,8 @@
 using Unity.Mathematics;
 using Unity.Physics.Stepping;
 using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.World;
 
 namespace Unity.Physics.Dynamics.Bodies
 {
@@ -41,6 +43,26 @@ namespace Unity.Physics.Dynamics.Bodies
             float3 angular = WorldAngularVelocity(body);
             body.Mass()->Transform.rot = rotation;
             SetWorldAngularVelocity(body, angular);
+        }
+
+        internal static void Wake(BodyData* hot)
+        {
+            hot->flags &= ~BodyFlags.Sleeping;
+            (*hot).Sleep()->WakeCounter = math.max((*hot).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
+        }
+
+        internal static void WakeIfAsked(BodyData* hot, CommandArgs* a)
+        {
+            if (a->enabled != 0)
+            {
+                Wake(hot);
+            }
+        }
+
+        internal static float3 VelocityAt(BodyData* hot, float3 worldPoint)
+        {
+            float3 worldCenter = (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, (*hot).Mass()->Transform.pos);
+            return (*hot).Velocity()->Linear + math.cross(WorldAngularVelocity(*hot), worldPoint - worldCenter);
         }
     }
 }

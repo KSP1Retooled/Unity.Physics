@@ -10,7 +10,6 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker Step = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step");
         internal static readonly ProfilerMarker BuildQueryWorld = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BuildQueryWorld");
         internal static readonly ProfilerMarker RefreshColliders = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.RefreshColliders");
-        internal static readonly ProfilerMarker BuildMeshCollider = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BuildMeshCollider");
         internal static readonly ProfilerMarker Query = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Query");
         internal static readonly ProfilerMarker BodyCommand = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand");
         internal static readonly ProfilerMarker ShapeCommand = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand");
@@ -32,8 +31,6 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker ShapesByLayerMask = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.WorldCommand.ShapesByLayerMask");
         internal static readonly ProfilerMarker AttachShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.AttachShape");
         internal static readonly ProfilerMarker DetachShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.DetachShape");
-        internal static readonly ProfilerMarker RecomputeMassProperties = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.RecomputeMassProperties");
-        internal static readonly ProfilerMarker ClosestPointOnBounds = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.ClosestPointOnBounds");
         internal static readonly ProfilerMarker CreateShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.CreateShape");
         internal static readonly ProfilerMarker DestroyShape = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.DestroyShape");
         internal static readonly ProfilerMarker SetGeometry = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.SetGeometry");
@@ -52,7 +49,6 @@ namespace KSP.Retooled.Physics
         internal static readonly ProfilerMarker BuildScheduleBodies = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
         internal static readonly ProfilerMarker BuildScheduleBroadphase = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
         internal static readonly ProfilerMarker ShiftStaticTree = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
-        internal static readonly ProfilerMarker StepScheduleSolve = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ScheduleSolve");
         internal static readonly ProfilerMarker StepWaitForSolve = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
         internal static readonly ProfilerMarker StepWriteBack = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
         internal static readonly ProfilerMarker StepReadJointForces = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");

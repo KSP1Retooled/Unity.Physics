@@ -4,22 +4,25 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
-using Unity.Physics;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
-using Mesh = Unity.Physics.Store.Shapes.Mesh;
+using StoreMesh = Unity.Physics.Store.Shapes.Mesh;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Profiling;
+using Unity.Physics.Dynamics.Bodies;
 
-namespace KSP.Retooled.Physics
+namespace Unity.Physics.Collision.Colliders.Building
 {
     /// <summary>
     /// Build a Unity Physics collider from a body's shapes.
     /// Compound children store shape indices in ColliderBlobInstance.Entity.
     /// </summary>
     [BurstCompile]
-    internal static unsafe class ColliderBuilder
+    internal static unsafe partial class ColliderBuilder
     {
+        private static readonly ProfilerMarker BuildMeshCollider = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BuildMeshCollider");
+
         // PhysX permits a degenerate extent, but Unity Physics requires a positive extent.
         private const float MinimumExtent = 1e-4f;
 
@@ -199,56 +202,6 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        [BurstCompile]
-        private struct BuildCollidersJob : IJobParallelForDefer
-        {
-            [NativeDisableUnsafePtrRestriction]
-            public BodyData* Bodies;
-
-            [ReadOnly]
-            public NativeArray<Work> Work;
-
-            public NativeArray<long> Results;
-
-            public void Execute(int index)
-            {
-                BodyData* body = Bodies + Work[index].Body;
-                void* collider = Work[index].Whole ? null : Repose(body);
-                Results[index] = (long)(collider != null ? collider : Build(body));
-            }
-        }
-
-        /// <summary>
-        /// Assigns each body's newly built collider and releases its previous collider.
-        /// </summary>
-        [BurstCompile]
-        private struct SwapCollidersJob : IJob
-        {
-            [NativeDisableUnsafePtrRestriction]
-            public BodyData* Bodies;
-
-            [ReadOnly]
-            public NativeArray<Work> Work;
-
-            [ReadOnly]
-            public NativeArray<long> Results;
-
-            public void Execute()
-            {
-                for (int i = 0; i < Results.Length; i++)
-                {
-                    if (Results[i] == Failed)
-                    {
-                        continue;
-                    }
-
-                    BodyData* body = Bodies + Work[i].Body;
-                    Release((*body).Collider()->Value.GetUnsafePtr());
-                    SetCollider(body, FromPointer((void*)Results[i]));
-                }
-            }
-        }
-
         /// <summary>
         /// Assign a collider and update the row's cached expansion factor. An uncreated collider clears both.
         /// </summary>
@@ -332,7 +285,7 @@ namespace KSP.Retooled.Physics
 
                 // Use a single-child compound for an offset mesh so that pose changes do not rebuild its
                 // geometry.
-                if (!ShapeMath.IsMeshGeometry(shape->geometryType) || IsAtOrigin(shape))
+                if (!ShapeMassProperties.IsMeshGeometry(shape->geometryType) || IsAtOrigin(shape))
                 {
                     return Create(shape, shape->localPosition, shape->localRotation).GetUnsafePtr();
                 }
@@ -453,7 +406,7 @@ namespace KSP.Retooled.Physics
                 case StoreConstants.GeometryConvexMesh:
                 case StoreConstants.GeometryTriangleMesh:
                 {
-                    MeshData* mesh = Mesh.MeshOf(shape);
+                    MeshData* mesh = StoreMesh.MeshOf(shape);
                     return mesh != null && mesh->vertexCount != 0 && math.all(shape->extents != 0.0f);
                 }
 
@@ -563,12 +516,12 @@ namespace KSP.Retooled.Physics
             CollisionFilter filter,
             Material material)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildMeshCollider.Auto();
+            using Unity.Profiling.ProfilerMarker.AutoScope span = BuildMeshCollider.Auto();
 
             void* collider = null;
             new MeshColliderJob
             {
-                Mesh = Mesh.MeshOf(shape),
+                Mesh = StoreMesh.MeshOf(shape),
                 Scale = shape->extents,
                 Center = center,
                 Orientation = orientation,
@@ -677,140 +630,6 @@ namespace KSP.Retooled.Physics
             moments->centroid = mass.MassDistribution.Transform.pos;
             moments->covarianceDiagonal = halfTrace - new float3(inertia.c0.x, inertia.c1.y, inertia.c2.z);
             moments->covarianceOffDiagonal = -new float3(inertia.c1.x, inertia.c2.x, inertia.c2.y);
-        }
-
-        /// <summary>
-        /// Build a mesh collider with the shape's scale and pose baked into its vertices.
-        /// </summary>
-        [BurstCompile]
-        private struct MeshColliderJob : IJob
-        {
-            [NativeDisableUnsafePtrRestriction]
-            public MeshData* Mesh;
-
-            public float3 Scale;
-            public float3 Center;
-            public quaternion Orientation;
-            public CollisionFilter Filter;
-            public Material Material;
-
-            [NativeDisableUnsafePtrRestriction]
-            public void** Result;
-
-            public void Execute()
-            {
-                int vertexCount = (int)Mesh->vertexCount;
-                var vertices = new NativeArray<float3>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                float3* source = MeshData.VerticesOf(Mesh);
-                for (int i = 0; i < vertexCount; i++)
-                {
-                    vertices[i] = Center + math.rotate(Orientation, source[i] * Scale);
-                }
-
-                BlobAssetReference<Collider> collider;
-                if (Mesh->convex != 0)
-                {
-                    collider = CreateConvex(vertices, Filter, Material);
-                }
-                else
-                {
-                    // A scale that mirrors the mesh reverses triangle orientation, so reverse the winding as well.
-                    bool mirrored = Scale.x * Scale.y * Scale.z < 0.0f;
-                    int triangleCount = (int)Mesh->triangleCount;
-                    var triangles = new NativeArray<int3>(triangleCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                    int3* sourceTriangles = MeshData.TrianglesOf(Mesh);
-                    for (int i = 0; i < triangleCount; i++)
-                    {
-                        int3 triangle = sourceTriangles[i];
-                        triangles[i] = mirrored ? triangle.xzy : triangle;
-                    }
-
-                    collider = MeshCollider.Create(vertices, triangles, Filter, Material);
-                }
-
-                *Result = collider.GetUnsafePtr();
-            }
-        }
-
-        /// <summary>
-        /// Build a height field collider with the grid orientation from ShapeFromGrid.
-        /// Use a triangle mesh when cells contain holes, since Unity Physics terrain cannot represent them.
-        /// Use triangle collisions to match PhysX.
-        /// </summary>
-        [BurstCompile]
-        private struct HeightFieldColliderJob : IJob
-        {
-            // Raise one corner slightly to avoid division by zero when scaling an all-zero height field.
-            private const float FlatFieldRise = 1.0f / 1024.0f;
-
-            [NativeDisableUnsafePtrRestriction]
-            public HeightField* Field;
-
-            public float3 Scale;
-            public CollisionFilter Filter;
-            public Material Material;
-
-            [NativeDisableUnsafePtrRestriction]
-            public void** Result;
-
-            public void Execute()
-            {
-                int size = (int)Field->resolution;
-                var heights = new NativeArray<float>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int j = 0; j < size; j++)
-                {
-                    for (int i = 0; i < size; i++)
-                    {
-                        heights[j * size + i] = Field->heights[(size - 1 - i) * size + j];
-                    }
-                }
-
-                BlobAssetReference<Collider> collider;
-                if (Field->holeCount != 0)
-                {
-                    collider = CreateMesh(heights, size);
-                }
-                else
-                {
-                    if (Field->lowest == 0 && Field->highest == 0)
-                    {
-                        heights[0] = FlatFieldRise;
-                    }
-
-                    collider = TerrainCollider.Create(heights, new int2(size), Scale, TerrainCollider.CollisionMethod.Triangles, Filter, Material);
-                }
-
-                *Result = collider.GetUnsafePtr();
-            }
-
-            private BlobAssetReference<Collider> CreateMesh(NativeArray<float> heights, int size)
-            {
-                var vertices = new NativeArray<float3>(size * size, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int j = 0; j < size; j++)
-                {
-                    for (int i = 0; i < size; i++)
-                    {
-                        vertices[j * size + i] = new float3(i, heights[j * size + i], j) * Scale;
-                    }
-                }
-
-                int cells = size - 1;
-                var triangles = new NativeList<int3>(2 * cells * cells, Allocator.Temp);
-                for (int j = 0; j < cells; j++)
-                {
-                    for (int i = 0; i < cells; i++)
-                    {
-                        if (Field->cells[(cells - 1 - i) * cells + j] != 0)
-                        {
-                            int corner = j * size + i;
-                            triangles.Add(new int3(corner, corner + size, corner + 1));
-                            triangles.Add(new int3(corner + 1, corner + size, corner + size + 1));
-                        }
-                    }
-                }
-
-                return MeshCollider.Create(vertices, triangles.AsArray(), Filter, Material);
-            }
         }
 
         private static Material MaterialOf(ShapeData* shape)

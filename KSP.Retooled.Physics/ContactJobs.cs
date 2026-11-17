@@ -16,6 +16,7 @@ using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Collision.Colliders.Building;
 
 namespace KSP.Retooled.Physics
 {
@@ -842,7 +843,7 @@ namespace KSP.Retooled.Physics
             }
 
             ref BodyData row = ref Store[other.Entity.Index];
-            ShapeMath.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.Pose()->Position, row.Pose()->Rotation, out float3 lower, out float3 upper);
+            ShapeMassProperties.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.Pose()->Position, row.Pose()->Rotation, out float3 lower, out float3 upper);
             float3 centre = math.transform(math.inverse(field.WorldFromBody), (lower + upper) * 0.5f);
             return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
         }

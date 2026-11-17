@@ -9,6 +9,7 @@ using PhysicsRigidBody = Unity.Physics.RigidBody;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Dynamics.Bodies;
 
 namespace KSP.Retooled.Physics.Tests
 {

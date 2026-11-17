@@ -1,13 +1,14 @@
+using StoreMesh = Unity.Physics.Store.Shapes.Mesh;
 using Unity.Mathematics;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 
-namespace KSP.Retooled.Physics
+namespace Unity.Physics.Collision.Colliders.Building
 {
     /// <summary>
     /// Provides a shape's geometry for mass calculations and bounds calculations.
     /// </summary>
-    internal static unsafe class ShapeMath
+    internal static unsafe class ShapeMassProperties
     {
         /// <summary>
         /// Return the capsule's straight length. The API's height field stores half this length, like
@@ -90,7 +91,7 @@ namespace KSP.Retooled.Physics
             center = float3.zero;
             inertiaPerUnitMass = default;
 
-            Mesh* mesh = (Mesh*)shape->mesh;
+            StoreMesh* mesh = (StoreMesh*)shape->mesh;
             if (mesh == null || mesh->data == null || mesh->data->vertexCount == 0)
             {
                 return false;
@@ -167,7 +168,7 @@ namespace KSP.Retooled.Physics
                 case StoreConstants.GeometryConvexMesh:
                 case StoreConstants.GeometryTriangleMesh:
                 {
-                    MeshData* mesh = Mesh.MeshOf(shape);
+                    MeshData* mesh = StoreMesh.MeshOf(shape);
                     if (mesh == null)
                     {
                         break;

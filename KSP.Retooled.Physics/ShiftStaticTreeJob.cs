@@ -5,6 +5,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Physics.Store.Bodies;
+using Unity.Physics.Collision.Colliders.Building;
 
 namespace KSP.Retooled.Physics
 {

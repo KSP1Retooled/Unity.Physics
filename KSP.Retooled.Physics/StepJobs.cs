@@ -10,6 +10,7 @@ using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Collision.Colliders.Building;
 
 namespace KSP.Retooled.Physics
 {

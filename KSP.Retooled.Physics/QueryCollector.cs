@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Queries;
 using Unity.Physics.Store.World;
