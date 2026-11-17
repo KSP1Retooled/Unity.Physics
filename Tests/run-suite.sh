@@ -25,6 +25,7 @@ if [ $# -lt 2 ]; then
     exit 2
 fi
 
+here=$(cd "$(dirname "$0")" && pwd)
 project=$1
 name=$2
 shift 2
@@ -43,16 +44,10 @@ log="$logs/$name.log"
 mkdir -p "$logs"
 rm -f "$results"
 
-# Keep the moved fixtures and their parent namespaces in the retooled selections.
-# Use an exclusion so that NUnit keeps [Explicit] tests out of the default run.
-moved_simulation='Simulation(?:$|\.LinkedWorkItemTests(?:\.|$)|\.Islands(?:$|\.IslandNodeTests(?:\.|$)))'
-moved_solver='Solver(?:$|\.Islands(?:$|\.DirectSolverCacheTests(?:\.|$))|\.Sparse(?:$|\.SparseConstraintSolverTests(?:\.|$)))'
-moved_vessels='Vessels(?:$|\.(?:VesselSolverBench|VesselSolverTests)(?:\.|$))'
-moved_physics="Unity\.Physics\.Tests\.Dynamics(?:$|\.(?:$moved_simulation|$moved_solver|$moved_vessels))"
-moved_kernels='Kernels(?:$|\.Tests(?:$|\.(?:BlasTests|CholeskyLLTTests|FloatKernelTests|SixKernelBench|SmallBlockKernelBench|StridedKernelTests)(?:\.|$)))'
-moved_lowlevel='Linear(?:$|\.Solvers(?:$|\.Lowlevel(?:$|\.Tests(?:$|\.(?:BlockPrincipalPivotingTests|BoundaryFactorBench)(?:\.|$)))))'
-moved_numerics="Unity\.Numerics\.(?:$moved_kernels|$moved_lowlevel)"
-retooled_filter="!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^(?!$moved_physics|$moved_numerics)(?:Unity\.Physics\.Tests\.|Unity\.Numerics\.)"
+# Exclude the upstream fixtures by name so new Retooled fixtures are selected automatically.
+# NUnit keeps explicit tests out of runs that use exclusions.
+upstream=$(sed -e '/^#/d' -e '/^$/d' -e 's/[.]/\\./g' "$here/upstream-tests.txt" | paste -sd '|' -)
+retooled_filter="!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^(?:$upstream)(?:\\.|\\(|$)"
 
 case "$mode" in
     full)
