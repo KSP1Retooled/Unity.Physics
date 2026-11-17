@@ -7,6 +7,7 @@ using Unity.Jobs.LowLevel.Unsafe;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.TestTools;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -75,6 +76,61 @@ namespace KSP.Retooled.Physics.Tests
         public void LetTheJobsWorkAgain()
         {
             Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+            Unity.Physics.SharedDynamicTreeRefit.ThrowForTestsEnabled = false;
+            LogAssert.ignoreFailingMessages = false;
+        }
+
+        /// <summary>
+        /// A thread that throws while it does a piece of the refit marks the refit failed, so that the threads that
+        /// wait for that piece stop waiting: the refit's other jobs, a query that helps, and the main thread. The next
+        /// query on the main thread builds the world again, and finds the hits at the solved poses. Burst leaves the
+        /// injected throw out, so the test is inconclusive with Burst on; run it with Burst compilation off.
+        /// </summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        [Timeout(120000)]
+        public void AThrowInTheRefitEndsTheWaitAndTheNextQueryBuildsTheWorld(bool queriesDoTheWork)
+        {
+            Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            List<Rigidbody> bodies = FallingBoxes(Count);
+            UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
+            int throws = Unity.Physics.SharedDynamicTreeRefit.ThrowsForTests;
+
+            // The thread that throws reports the exception in the log.
+            LogAssert.ignoreFailingMessages = true;
+            Unity.Physics.SharedDynamicTreeRefit.ThrowForTestsEnabled = true;
+            scene.RunSimulationStages(Step, SimulationStage.PrepareSimulation | SimulationStage.RunSimulation, SimulationOption.All);
+            using (NativeArray<RaycastCommand> rays = RaysOnto(bodies))
+            using (var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob))
+            {
+                // The queries on workers end, though one piece of the refit was never done. Their hits can be at the
+                // poses before the step, so the test doesn't check them.
+                RaycastCommand.ScheduleBatch(rays, hits, 16).Complete();
+            }
+
+            scene.RunSimulationStages(Step, SimulationStage.PublishSimulationResults, SimulationOption.All);
+            Unity.Physics.SharedDynamicTreeRefit.ThrowForTestsEnabled = false;
+            Assume.That(Unity.Physics.SharedDynamicTreeRefit.ThrowsForTests, Is.GreaterThan(throws), "the refit ran in Mono and threw");
+
+            // A query on the main thread finishes the failed refit and builds the world again.
+            for (int i = 0; i < Count; i += 7)
+            {
+                Vector3 above = bodies[i].position + new Vector3(0.0f, 5.0f, 0.0f);
+                Assert.That(UnityEngine.Physics.Raycast(above, Vector3.down, out RaycastHit hit, 10.0f), Is.True, $"ray {i}");
+                Assert.That(hit.rigidbody, Is.SameAs(bodies[i]), $"ray {i}");
+                Assert.That(hit.point.y, Is.EqualTo(bodies[i].position.y + 0.5f).Within(1e-3f), $"ray {i}");
+            }
+
+            // The next steps refit the tree again.
+            LogAssert.ignoreFailingMessages = false;
+            for (int step = 0; step < 3; step++)
+            {
+                Simulate(1);
+                using NativeArray<RaycastCommand> rays = RaysOnto(bodies);
+                using var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
+                RaycastCommand.ScheduleBatch(rays, hits, 16).Complete();
+                AssertHitsOnTop(bodies, hits, $"step {step} after the failed refit");
+            }
         }
 
         /// <param name="queriesDoTheWork">

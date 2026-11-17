@@ -1025,7 +1025,10 @@ namespace KSP.Retooled.Physics
             {
                 snapshot.Complete();
                 FinishQuerySnapshot();
-                store->queryDirty = !motionsMatchStore ? StoreOps.QueryStale : store->treeReady == 0 ? StoreOps.QueryTreePending : 0u;
+                // A refit that failed has set the ready word too, and leaves the world stale.
+                bool treeReady = store->treeReady != 0;
+                store->queryDirty = !motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreOps.QueryStale
+                    : !treeReady ? StoreOps.QueryTreePending : 0u;
                 PublishQueryWorld();
             }
 
@@ -1095,6 +1098,8 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.StepWaitForTree.Auto())
             {
+                // A job whose refit threw is complete too: the thread that threw marked the refit failed, and the
+                // other threads stopped waiting for its piece.
                 refit.Complete();
 
                 // The jobs have done all of the work unless a test told them to leave it.
@@ -1103,6 +1108,33 @@ namespace KSP.Retooled.Physics
 
             refit = default;
             refitPending = false;
+            NoteFailedRefit();
+        }
+
+        /// <summary>
+        /// After a refit that failed with an exception, which the thread that threw has reported, marks the published
+        /// world stale, so that the next query on the main thread builds the world again. Until then, a query on a
+        /// worker can find the hits of the poses before the step.
+        /// </summary>
+        private void NoteFailedRefit()
+        {
+            if (!sharedRefit->Failed)
+            {
+                return;
+            }
+
+            // The refit may have stopped between moving a body and writing the body's bounds, so no entry of the
+            // bounds cache can be trusted. The next build computes every body's bounds again.
+            if (boundsCache.IsCreated)
+            {
+                boundsCache.Resize(0);
+            }
+
+            if (store->queryDirty == StoreOps.QueryTreePending)
+            {
+                store->queryDirty = StoreOps.QueryStale;
+                UnityEngine.Debug.LogError("[StepState] the refit of the dynamic tree after the step failed; the next query on the main thread builds the world again");
+            }
         }
 
         /// <summary>
