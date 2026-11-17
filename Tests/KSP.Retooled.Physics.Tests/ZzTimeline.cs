@@ -14,6 +14,7 @@ using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.TestTools;
 using Debug = UnityEngine.Debug;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -135,11 +136,11 @@ namespace KSP.Retooled.Physics.Tests
             JobsUtility.JobDebuggerEnabled = false;
             Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
             int workers = JobsUtility.JobWorkerCount;
-            bool wasForest = VesselForest.Enabled;
-            bool wasLocking = VesselForest.Locking;
-            bool wasVessels = VesselPipeline.Enabled;
+            bool wasForest = ForestSwitches.Enabled;
+            bool wasLocking = ForestSwitches.Locking;
+            bool wasVessels = VesselSwitches.Enabled;
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            VesselForest.Initialize();
+            ForestSwitches.Initialize();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
             UnityEngine.Profiling.Profiler.maxUsedMemory = 1 << 30;
             // PROFILE_CRAFT lists the crafts, separated by commas, in the names that VesselForestBench reads: "tu160x2"
@@ -178,12 +179,12 @@ namespace KSP.Retooled.Physics.Tests
                                 Unity.Physics.Solver.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
                             }
 
-                            VesselForest.Enabled = path != "sparse";
-                            VesselPipeline.Enabled = options[0] == "compiled";
-                            VesselForest.ForgetIslands();
-                            VesselForest.Locking = path == "locked";
-                            VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
-                            VesselForest.MinimumHoldSteps = -1;
+                            ForestSwitches.Enabled = path != "sparse";
+                            VesselSwitches.Enabled = options[0] == "compiled";
+                            ForestDiagnostics.ForgetIslands();
+                            ForestSwitches.Locking = path == "locked";
+                            ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
+                            ForestSwitches.MinimumHoldSteps = -1;
                             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
                             Build(graph, scene);
                             for (int i = 0; i < 30; i++)
@@ -191,8 +192,8 @@ namespace KSP.Retooled.Physics.Tests
                                 UnityEngine.Physics.Simulate(Step);
                             }
 
-                            VesselForest.GetCounts(out long solves0, out _, out _);
-                            VesselForest.GetSectionCounts(out long sections0, out long locked0, out long builds0, out _, out _, out _, out _, out _);
+                            ForestDiagnostics.GetCounts(out long solves0, out _, out _);
+                            ForestDiagnostics.GetSectionCounts(out long sections0, out long locked0, out long builds0, out _, out _, out _, out _, out _);
                             var unprofiled = new List<double>();
                             for (int i = 0; i < 20; i++)
                             {
@@ -212,8 +213,8 @@ namespace KSP.Retooled.Physics.Tests
                                 framed.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
                             }
 
-                            VesselForest.GetCounts(out long solves1, out _, out _);
-                            VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out _, out _, out _, out _, out _);
+                            ForestDiagnostics.GetCounts(out long solves1, out _, out _);
+                            ForestDiagnostics.GetSectionCounts(out long sections1, out long locked1, out long builds1, out _, out _, out _, out _, out _);
                             long solved = Math.Max(1, solves1 - solves0);
                             report.Append($"# {craft} {scene} {threads}T: {solves1 - solves0} vessel solves in 40 steps, " +
                                 $"{(sections1 - sections0) / (double)solved:F0} sections and {(locked1 - locked0) / (double)solved:F0} locked edges per solve, " +
@@ -263,9 +264,9 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            VesselForest.Enabled = wasForest;
-            VesselForest.Locking = wasLocking;
-            VesselPipeline.Enabled = wasVessels;
+            ForestSwitches.Enabled = wasForest;
+            ForestSwitches.Locking = wasLocking;
+            VesselSwitches.Enabled = wasVessels;
             Unity.Physics.Solver.FusedContacts = true;
             Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);

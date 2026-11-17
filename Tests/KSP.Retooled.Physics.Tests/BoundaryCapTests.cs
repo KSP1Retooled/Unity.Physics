@@ -3,6 +3,7 @@ using NUnit.Framework;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Forest;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -25,30 +26,30 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselPipeline.Initialize();
-            VesselForest.Initialize();
-            wasVessels = VesselPipeline.Enabled;
-            wasForest = VesselForest.Enabled;
-            wasCaps = VesselForest.Caps;
+            VesselSwitches.Initialize();
+            ForestSwitches.Initialize();
+            wasVessels = VesselSwitches.Enabled;
+            wasForest = ForestSwitches.Enabled;
+            wasCaps = ForestSwitches.Caps;
             Fresh(default);
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselPipeline.Enabled = wasVessels;
-            VesselForest.Enabled = wasForest;
-            VesselForest.Caps = wasCaps;
+            VesselSwitches.Enabled = wasVessels;
+            ForestSwitches.Enabled = wasForest;
+            ForestSwitches.Caps = wasCaps;
         }
 
         private void Fresh(BoundaryCaps caps)
         {
             TearDownScene();
             SetUpScene();
-            VesselPipeline.Enabled = true;
-            VesselForest.Enabled = true;
-            VesselForest.Caps = caps;
-            VesselForest.ForgetIslands();
+            VesselSwitches.Enabled = true;
+            ForestSwitches.Enabled = true;
+            ForestSwitches.Caps = caps;
+            ForestDiagnostics.ForgetIslands();
         }
 
         /// <summary>

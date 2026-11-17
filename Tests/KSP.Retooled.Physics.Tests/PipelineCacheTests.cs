@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Store.Versions;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -25,17 +26,17 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("The caches are part of the Unity Physics backend.");
             }
 
-            wasEnabled = VesselForest.Enabled;
+            wasEnabled = ForestSwitches.Enabled;
 
             // The columns here have six parts. Let them compile into vessels when vessels are on.
-            VesselPipeline.MinimumParts = 2;
+            VesselSwitches.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselForest.Enabled = wasEnabled;
-            VesselPipeline.MinimumParts = 0;
+            ForestSwitches.Enabled = wasEnabled;
+            VesselSwitches.MinimumParts = 0;
         }
 
         /// <summary>A stock part joint: three joints over a stack node, which the step builds as one group.</summary>
@@ -113,10 +114,10 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = forest;
+            ForestSwitches.Enabled = forest;
 
             // Islands keep their pairs' lock states by their first body, which the run before had too.
-            VesselForest.ForgetIslands();
+            ForestDiagnostics.ForgetIslands();
             List<Rigidbody> bodies = Column(5.0f, true);
             bodies[0].linearVelocity = new Vector3(1.0f, 0.0f, 0.5f);
             ConfigurableJoint strut = null;
@@ -167,7 +168,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             // With vessels on, the stack joints are hard, so the weak joint across them carries almost nothing and holds.
-            Assert.That(weak == null, Is.EqualTo(!VesselPipeline.Enabled), "the weak joint breaks only where the stack joints flex");
+            Assert.That(weak == null, Is.EqualTo(!VesselSwitches.Enabled), "the weak joint breaks only where the stack joints flex");
             return Poses(bodies);
         }
 
@@ -195,7 +196,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = forest;
+            ForestSwitches.Enabled = forest;
             Ground();
             List<Rigidbody> bodies = Column(0.3f, false);
             bodies[Parts - 1].linearVelocity = new Vector3(0.5f, 0.0f, 0.2f);
@@ -258,7 +259,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             StepState.BoundsCacheEnabled = boundsCache;
-            VesselForest.ForgetIslands();
+            ForestDiagnostics.ForgetIslands();
             GameObject ground = Ground();
             List<Rigidbody> bodies = Column(0.3f, false);
             bodies[Parts - 1].linearVelocity = new Vector3(0.5f, 0.0f, 0.2f);

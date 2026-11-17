@@ -3,6 +3,7 @@ using NUnit.Framework;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Sections;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -27,21 +28,21 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselForest.Initialize();
-            VesselPipeline.Initialize();
-            wasVessels = VesselPipeline.Enabled;
-            wasMinimumParts = VesselPipeline.MinimumParts;
+            ForestSwitches.Initialize();
+            VesselSwitches.Initialize();
+            wasVessels = VesselSwitches.Enabled;
+            wasMinimumParts = VesselSwitches.MinimumParts;
             wasStrutLoads = StrutLoads.Enabled;
             wasFused = Unity.Physics.Solver.VesselFused;
             wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
-            VesselPipeline.MinimumParts = 2;
+            VesselSwitches.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitches()
         {
-            VesselPipeline.Enabled = wasVessels;
-            VesselPipeline.MinimumParts = wasMinimumParts;
+            VesselSwitches.Enabled = wasVessels;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             StrutLoads.Enabled = wasStrutLoads;
             Unity.Physics.Solver.VesselFused = wasFused;
             Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
@@ -51,8 +52,8 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselPipeline.Enabled = vessels;
-            VesselForest.ForgetIslands();
+            VesselSwitches.Enabled = vessels;
+            ForestDiagnostics.ForgetIslands();
         }
 
         /// <summary>
@@ -258,7 +259,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
 
                 LargestLoad(craft, out broken[pass], out _);
-                VesselForest.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out locked[pass]);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out locked[pass]);
                 Debug.Log($"[StrutLoadTests] ground, {passes[pass]}: largest joint force {largest[pass]:F1} N on the {which[pass]}, " +
                     $"rings {rings[pass]:F1} N, struts {struts[pass]:F1} N, {broken[pass]} broken joints, {locked[pass]} locked edges");
             }
@@ -290,7 +291,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Simulate(30);
-            VesselForest.GetSectionCounts(out _, out _, out _, out _, out _, out _, out long sections, out long locked);
+            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out long sections, out long locked);
             Debug.Log($"[StrutLoadTests] floating, fused {fused}: {sections} sections, {locked} locked edges before the blows");
             Assert.That(locked, Is.GreaterThan(0), "the craft's edges lock before the blows");
 

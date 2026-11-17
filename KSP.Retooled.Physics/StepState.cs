@@ -21,6 +21,10 @@ using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Configuration;
 using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Dynamics.Joint.Translation;
+using Unity.Physics.Dynamics.Joint.Grouping;
+using Unity.Physics.Dynamics.Joint.Loads;
+using Unity.Physics.Dynamics.Vessels.Detection;
 
 namespace KSP.Retooled.Physics
 {
@@ -76,7 +80,7 @@ namespace KSP.Retooled.Physics
         private NativeList<JointLoad> jointLoads;
         private NativeList<JointLoad> groupLoads;
 
-        // For each joint, 1 if its smoothed load exceeded its break limits in this step, for BreakJointsJob. The jobs
+        // For each joint, 1 if its smoothed load exceeded its break limits in this step, for JointBreaking.BreakJointsJob. The jobs
         // that settle the loads write the flags. A byte for each joint is much less memory to write and to scan than
         // a load.
         private NativeList<byte> jointsOverloaded;
@@ -85,7 +89,7 @@ namespace KSP.Retooled.Physics
         // order between steps. See JointLoadStates.
         private UnsafeList<JointLoadState>* jointStates;
 
-        // The joints and groups outside the active vessels of this step. See ListOtherJointsJob.
+        // The joints and groups outside the active vessels of this step. See VesselLoads.ListOtherJointsJob.
         private NativeList<int> otherJoints;
         private NativeList<int> otherGroups;
         private IslandSolverCache directSolverCache;
@@ -103,14 +107,14 @@ namespace KSP.Retooled.Physics
         private bool compiled;
 
         // Whether the vessel build holds cached edges and closures, and the joint settings version that they were
-        // computed from. See FillVesselEdgesJob.RefillAll.
+        // computed from. See VesselEdgeFill.FillVesselEdgesJob.RefillAll.
         private bool cacheFilled;
         private uint cachedSettings;
 
         // The jobs that fill the vessels' edges and closures for this step. Only the solve waits for them.
         private JobHandle vesselsFilled;
 
-        // The step at which the oldest tombstone in the vessels expires, or -1. See CompileVesselsJob.
+        // The step at which the oldest tombstone in the vessels expires, or -1. See VesselCompiler.CompileVesselsJob.
         private int tombstoneExpiry;
         private SolverIslandCache solverIslandCache;
         private NativeList<QueryBody> queryBodies;
@@ -738,14 +742,14 @@ namespace KSP.Retooled.Physics
 
             directSolverCache.Forest = new ForestSettings
             {
-                Enabled = VesselForest.Enabled || VesselPipeline.Enabled,
-                BoundaryRowCap = VesselForest.BoundaryRowCap,
-                Locking = VesselForest.Locking,
-                LockAngle = VesselForest.LockAngle,
-                YieldAngle = VesselForest.YieldAngle,
-                MinimumHoldSteps = VesselForest.MinimumHoldSteps,
-                DeflectionSmoothingSteps = VesselForest.DeflectionSmoothingSteps,
-                Caps = VesselForest.Caps,
+                Enabled = ForestSwitches.Enabled || VesselSwitches.Enabled,
+                BoundaryRowCap = ForestSwitches.BoundaryRowCap,
+                Locking = ForestSwitches.Locking,
+                LockAngle = ForestSwitches.LockAngle,
+                YieldAngle = ForestSwitches.YieldAngle,
+                MinimumHoldSteps = ForestSwitches.MinimumHoldSteps,
+                DeflectionSmoothingSteps = ForestSwitches.DeflectionSmoothingSteps,
+                Caps = ForestSwitches.Caps,
             };
             input.IslandSolverCache = directSolverCache;
             input.VesselSet = vesselSet;
@@ -775,7 +779,7 @@ namespace KSP.Retooled.Physics
             bool listed = vesselSet.IsCreated;
             int seededJoints = listed ? otherJoints.Length : jointCount;
             int sharedGroups = listed ? otherGroups.Length : jointGroups.Length;
-            JobHandle loaded = new SeedJointLoadsJob
+            JobHandle loaded = new JointLoads.SeedJointLoadsJob
             {
                 World = store,
                 States = jointStates->Ptr,
@@ -785,7 +789,7 @@ namespace KSP.Retooled.Physics
             }.Schedule(seededJoints, ParallelBatchSize);
             if (events.IsCreated)
             {
-                JobHandle rotated = new RotateJointImpulsesJob
+                JobHandle rotated = new JointLoads.RotateJointImpulsesJob
                 {
                     Events = events.AsReader(),
                     World = store,
@@ -793,7 +797,7 @@ namespace KSP.Retooled.Physics
                     DeltaTime = deltaTime,
                 }.ScheduleUnsafe(events, 1, default);
 
-                loaded = new SumJointImpulsesJob
+                loaded = new JointLoads.SumJointImpulsesJob
                 {
                     Events = events.AsReader(),
                     JointLoads = jointLoads.AsArray(),
@@ -801,7 +805,7 @@ namespace KSP.Retooled.Physics
                 }.Schedule(JobHandle.CombineDependencies(loaded, rotated));
             }
 
-            JobHandle shared = new ShareGroupLoadsJob
+            JobHandle shared = new JointLoads.ShareGroupLoadsJob
             {
                 World = store,
                 Groups = jointGroups.AsArray(),
@@ -812,7 +816,7 @@ namespace KSP.Retooled.Physics
                 Listed = listed,
             }.Schedule(sharedGroups, groupsPerBatch, loaded);
 
-            JobHandle settled = new SettleJointLoadsJob
+            JobHandle settled = new JointLoads.SettleJointLoadsJob
             {
                 World = store,
                 States = jointStates->Ptr,
@@ -824,7 +828,7 @@ namespace KSP.Retooled.Physics
             }.Schedule(seededJoints, ParallelBatchSize, shared);
 
             settled = JobHandle.CombineDependencies(settled, vesselsSettled);
-            return new BreakJointsJob
+            return new JointBreaking.BreakJointsJob
             {
                 World = store,
                 Globals = globals,
@@ -865,7 +869,7 @@ namespace KSP.Retooled.Physics
                 return default;
             }
 
-            return new VesselLoadsJob
+            return new VesselLoads.VesselLoadsJob
             {
                 World = store,
                 States = jointStates->Ptr,
@@ -1636,14 +1640,14 @@ namespace KSP.Retooled.Physics
 
                 // Reuse the groups if the topology and forest setting have not changed since they were found. The joint
                 // build refreshes group data that depends on other state.
-                bool vessels = VesselPipeline.Enabled;
-                bool forest = VesselForest.Enabled || vessels;
+                bool vessels = VesselSwitches.Enabled;
+                bool forest = ForestSwitches.Enabled || vessels;
                 uint topology = JointTopology.Version;
                 JobHandle groupsFound = dependency;
                 bool regrouped = !grouped || topology != groupedTopology || forest != groupedForest;
                 if (regrouped)
                 {
-                    groupsFound = new GroupJointsJob
+                    groupsFound = new JointGrouping.GroupJointsJob
                     {
                         World = store,
                         Groups = jointGroups,
@@ -1667,7 +1671,7 @@ namespace KSP.Retooled.Physics
                 {
                     compiledThisStep = true;
                     groupsFound.Complete();
-                    new CompileVesselsJob
+                    new VesselCompiler.CompileVesselsJob
                     {
                         World = store,
                         Units = jointUnits.AsArray(),
@@ -1676,11 +1680,11 @@ namespace KSP.Retooled.Physics
                         Members = jointGroupMembers.AsArray(),
                         Build = vesselBuild,
                         Step = (int)stepCount,
-                        TombstoneSteps = VesselPipeline.TombstoneSteps,
-                        MinimumParts = VesselPipeline.MinimumParts,
+                        TombstoneSteps = VesselSwitches.TombstoneSteps,
+                        MinimumParts = VesselSwitches.MinimumParts,
                     }.Run();
                     compiled = true;
-                    tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselPipeline.TombstoneSteps);
+                    tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselSwitches.TombstoneSteps);
                 }
                 else if (!vessels && compiled)
                 {
@@ -1696,10 +1700,10 @@ namespace KSP.Retooled.Physics
                     vesselSet = vesselBuild.Set();
                 }
 
-                // The number of joints produced by each unit is not known in advance. BuildJointsJob therefore writes a
+                // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
                 // separate stream range for each unit.
                 JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, jointUnits, groupsFound, Allocator.TempJob);
-                JobHandle emitted = new BuildJointsJob
+                JobHandle emitted = new JointTranslation.BuildJointsJob
                 {
                     World = store,
                     States = jointStates->Ptr,
@@ -1713,9 +1717,9 @@ namespace KSP.Retooled.Physics
                     AnchorIndex = dynamicIndices.Length + staticIndices.Length,
                     DeltaTime = deltaTime,
                     Roles = jointRoles.AsDeferredJobArray(),
-                    Locking = forest && VesselForest.Locking,
-                    LockFraction = VesselForest.LockFraction,
-                    YieldFraction = VesselForest.YieldFraction,
+                    Locking = forest && ForestSwitches.Locking,
+                    LockFraction = ForestSwitches.LockFraction,
+                    YieldFraction = ForestSwitches.YieldFraction,
                     Vessels = vesselSet.IsCreated,
                     UnitVessels = vesselBuild.UnitVessels.AsArray(),
                     VesselActive = vesselBuild.Active.AsArray(),
@@ -1734,7 +1738,7 @@ namespace KSP.Retooled.Physics
                     bool settingsChanged = settings != cachedSettings;
                     cacheFilled = true;
                     cachedSettings = settings;
-                    JobHandle edgesFilled = new FillVesselEdgesJob
+                    JobHandle edgesFilled = new VesselEdgeFill.FillVesselEdgesJob
                     {
                         World = store,
                         Units = jointUnits.AsDeferredJobArray(),
@@ -1755,7 +1759,7 @@ namespace KSP.Retooled.Physics
                         EdgeCacheStamps = vesselBuild.EdgeCacheStamps.AsArray(),
                     }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, groupsFound);
 
-                    JobHandle closuresFilled = new FillVesselClosuresJob
+                    JobHandle closuresFilled = new VesselClosureFill.FillVesselClosuresJob
                     {
                         World = store,
                         Units = jointUnits.AsDeferredJobArray(),
@@ -1775,9 +1779,9 @@ namespace KSP.Retooled.Physics
                         ClosureCacheFrames = vesselBuild.ClosureCacheFrames.AsArray(),
                         ClosureCacheStamps = vesselBuild.ClosureCacheStamps.AsArray(),
                     }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, groupsFound);
-                    // The joint loads at the end of the step need this list. Waiting for BuildJointsJob keeps the job
-                    // from reading a group while BuildJointsJob writes it.
-                    JobHandle listed = new ListOtherJointsJob
+                    // The joint loads at the end of the step need this list. Waiting for JointTranslation.BuildJointsJob keeps the job
+                    // from reading a group while JointTranslation.BuildJointsJob writes it.
+                    JobHandle listed = new VesselLoads.ListOtherJointsJob
                     {
                         Units = jointUnits.AsDeferredJobArray(),
                         Groups = jointGroups.AsDeferredJobArray(),
@@ -1791,13 +1795,13 @@ namespace KSP.Retooled.Physics
                     vesselsFilled = JobHandle.CombineDependencies(JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed), loadsCleared);
                 }
 
-                JobHandle laidOut = new LayOutJointsJob
+                JobHandle laidOut = new JointGrouping.LayOutJointsJob
                 {
                     Written = jointsWritten,
                     Output = world.DynamicsWorld.InternalJointsList,
                 }.Schedule(emitted);
 
-                JobHandle copied = new CopyJointsJob
+                JobHandle copied = new JointGrouping.CopyJointsJob
                 {
                     Input = stream.AsReader(),
                     FirstJoints = jointsWritten.AsDeferredJobArray(),

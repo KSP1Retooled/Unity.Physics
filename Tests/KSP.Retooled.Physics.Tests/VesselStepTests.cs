@@ -4,6 +4,7 @@ using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -34,13 +35,13 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselPipeline.Initialize();
-            VesselForest.Initialize();
-            wasVessels = VesselPipeline.Enabled;
-            wasForest = VesselForest.Enabled;
+            VesselSwitches.Initialize();
+            ForestSwitches.Initialize();
+            wasVessels = VesselSwitches.Enabled;
+            wasForest = ForestSwitches.Enabled;
 
             // These crafts are small, so let them compile into vessels.
-            VesselPipeline.MinimumParts = 2;
+            VesselSwitches.MinimumParts = 2;
             wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
             if (FusedParts > 0)
             {
@@ -53,9 +54,9 @@ namespace KSP.Retooled.Physics.Tests
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselPipeline.Enabled = wasVessels;
-            VesselForest.Enabled = wasForest;
-            VesselPipeline.MinimumParts = 0;
+            VesselSwitches.Enabled = wasVessels;
+            ForestSwitches.Enabled = wasForest;
+            VesselSwitches.MinimumParts = 0;
             Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
         }
 
@@ -63,9 +64,9 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselPipeline.Enabled = vessels;
-            VesselForest.Enabled = vessels;
-            VesselForest.ForgetIslands();
+            VesselSwitches.Enabled = vessels;
+            ForestSwitches.Enabled = vessels;
+            ForestDiagnostics.ForgetIslands();
         }
 
         /// <summary>
@@ -369,7 +370,7 @@ namespace KSP.Retooled.Physics.Tests
         public void TheIslandsLeaveTheSharedIndexOfBodiesEmpty()
         {
             // The three-part column stays on Unity joints, and the five-part column is a vessel.
-            VesselPipeline.MinimumParts = 4;
+            VesselSwitches.MinimumParts = 4;
             Ground();
             StandingColumn(5, 0.0f);
             StandingColumn(3, 3.0f);
@@ -401,7 +402,7 @@ namespace KSP.Retooled.Physics.Tests
             for (int pass = 0; pass < 2; pass++)
             {
                 Fresh(true);
-                VesselPipeline.MinimumParts = pass == 0 ? 1000 : 0;
+                VesselSwitches.MinimumParts = pass == 0 ? 1000 : 0;
                 Ground();
                 var bodies = new List<Rigidbody>();
                 for (int c = 0; c < craft; c++)

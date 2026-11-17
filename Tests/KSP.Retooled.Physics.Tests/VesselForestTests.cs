@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -29,27 +30,27 @@ namespace KSP.Retooled.Physics.Tests
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
-            VesselForest.Initialize();
-            VesselPipeline.Initialize();
-            wasVessels = VesselPipeline.Enabled;
+            ForestSwitches.Initialize();
+            VesselSwitches.Initialize();
+            wasVessels = VesselSwitches.Enabled;
 
             // These test the forest path with Unity's joint rows, which vessels replace.
-            VesselPipeline.Enabled = false;
-            wasEnabled = VesselForest.Enabled;
-            wasLocking = VesselForest.Locking;
-            wasCap = VesselForest.BoundaryRowCap;
+            VesselSwitches.Enabled = false;
+            wasEnabled = ForestSwitches.Enabled;
+            wasLocking = ForestSwitches.Locking;
+            wasCap = ForestSwitches.BoundaryRowCap;
 
             // These compare the forest's solve with the sparse one, so nothing locks (VesselSectionTests covers locking).
-            VesselForest.Locking = false;
+            ForestSwitches.Locking = false;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselForest.Enabled = wasEnabled;
-            VesselPipeline.Enabled = wasVessels;
-            VesselForest.Locking = wasLocking;
-            VesselForest.BoundaryRowCap = wasCap;
+            ForestSwitches.Enabled = wasEnabled;
+            VesselSwitches.Enabled = wasVessels;
+            ForestSwitches.Locking = wasLocking;
+            ForestSwitches.BoundaryRowCap = wasCap;
         }
 
         /// <summary>A stock part joint: limits far away, drives doing the holding, three of them over a stack node.</summary>
@@ -106,7 +107,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = forest;
+            ForestSwitches.Enabled = forest;
             if (standing)
             {
                 Ground();
@@ -139,9 +140,9 @@ namespace KSP.Retooled.Physics.Tests
         public void AHangingColumnSwingsAsOnTheSparsePath()
         {
             Vector3[] sparse = Run(false, false, 100);
-            VesselForest.GetCounts(out long solvesBefore, out _, out _);
+            ForestDiagnostics.GetCounts(out long solvesBefore, out _, out _);
             Vector3[] forest = Run(true, false, 100);
-            VesselForest.GetCounts(out long solves, out long fallbacks, out long builds);
+            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out long builds);
             float difference = Largest(sparse, forest);
             Debug.Log($"[VesselForestTests] hanging: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
                 $"largest difference {difference:E2} m, bottom moved {(sparse[0] - new Vector3(0, 6, 0)).magnitude:F3} m");
@@ -153,9 +154,9 @@ namespace KSP.Retooled.Physics.Tests
         public void AStandingColumnRocksAsOnTheSparsePath()
         {
             Vector3[] sparse = Run(false, true, 100);
-            VesselForest.GetCounts(out long solvesBefore, out _, out _);
+            ForestDiagnostics.GetCounts(out long solvesBefore, out _, out _);
             Vector3[] forest = Run(true, true, 100);
-            VesselForest.GetCounts(out long solves, out long fallbacks, out long builds);
+            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out long builds);
             float difference = Largest(sparse, forest);
             Debug.Log($"[VesselForestTests] standing: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
                 $"largest difference {difference:E2} m, top at {sparse[Parts - 1]:F3}");
@@ -181,11 +182,11 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ATooBigBoundaryFallsBackToTheSparsePath()
         {
-            VesselForest.BoundaryRowCap = 1;
-            VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
+            ForestSwitches.BoundaryRowCap = 1;
+            ForestDiagnostics.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
             Vector3[] capped = Run(true, true, 20);
-            VesselForest.GetCounts(out long solves, out long fallbacks, out _);
-            VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
+            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out _);
+            ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
             Vector3[] sparse = Run(false, true, 20);
             Assert.Greater(fallbacks, fallbacksBefore);
             Assert.Less(Largest(sparse, capped), 1e-4f);

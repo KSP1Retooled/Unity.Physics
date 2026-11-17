@@ -5,6 +5,7 @@ using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Dynamics.Joint.Loads;
 
 namespace KSP.Retooled.Physics.Tests
 {

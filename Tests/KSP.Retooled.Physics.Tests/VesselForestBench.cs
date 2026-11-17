@@ -23,6 +23,7 @@ using Collider = UnityEngine.Collider;
 using Debug = UnityEngine.Debug;
 using Mesh = UnityEngine.Mesh;
 using MeshCollider = UnityEngine.MeshCollider;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -711,19 +712,19 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             path = options[0];
-            VesselForest.Enabled = path != "sparse";
-            VesselPipeline.Enabled = path == "compiled";
-            VesselForest.ForgetIslands();
-            VesselForest.Locking = path == "locked";
+            ForestSwitches.Enabled = path != "sparse";
+            VesselSwitches.Enabled = path == "compiled";
+            ForestDiagnostics.ForgetIslands();
+            ForestSwitches.Locking = path == "locked";
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
-            VesselForest.BoundaryRowCap = string.IsNullOrEmpty(cap) ? VesselForest.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
+            ForestSwitches.BoundaryRowCap = string.IsNullOrEmpty(cap) ? ForestSwitches.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
             string hold = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HOLD");
-            VesselForest.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
+            ForestSwitches.MinimumHoldSteps = string.IsNullOrEmpty(hold) ? -1 : int.Parse(hold, CultureInfo.InvariantCulture);
 
             // Boundary modes: cold, uncapped, refactor, prefix or unordered.
             // The uncapped mode still limits self-contact to 25 manifolds.
             string boundaryMode = Environment.GetEnvironmentVariable("RETOOLED_BENCH_BOUNDARY");
-            VesselForest.Caps = boundaryMode == "uncapped"
+            ForestSwitches.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
                 : new BoundaryCaps { ColdStart = boundaryMode == "cold", RefactorEveryRound = boundaryMode == "refactor", KeepFactorPrefix = boundaryMode == "prefix", UnorderedFactor = boundaryMode == "unordered" };
             JobsUtility.JobWorkerCount = threadCounts[0] > 1 ? threadCounts[0] - 1 : 0;
@@ -775,12 +776,12 @@ namespace KSP.Retooled.Physics.Tests
             Simulate(warmUp);
             double warm = Since(clock);
             int steps = Measured * Blocks;
-            VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
-            VesselForest.GetTimes(out double s0, out double a0, out double b0, out double c0, out double f0, out double w0, out double d0);
-            VesselForest.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
+            ForestDiagnostics.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
+            ForestDiagnostics.GetTimes(out double s0, out double a0, out double b0, out double c0, out double f0, out double w0, out double d0);
+            ForestDiagnostics.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
                 out _, out _, out _);
-            double settle0 = VesselForest.SettleMilliseconds;
-            double[] serial0 = VesselForest.SerialMilliseconds();
+            double settle0 = ForestDiagnostics.SettleMilliseconds;
+            double[] serial0 = ForestDiagnostics.SerialMilliseconds();
             BoundaryCounters.Reset();
             WorkTeamCounters.Reset();
 
@@ -811,19 +812,19 @@ namespace KSP.Retooled.Physics.Tests
             double measureLoad = CpuReading.Take().OthersLoadSince(measureStart);
             setUp += $"warm-up {warm:F0} ms ({warmUp} steps), measured {measured:F0} ms ({steps} steps), " +
                 $"other processes' load {measureLoad:F0}%; block medians {string.Join(" ", blockMedians)}";
-            VesselForest.GetCounts(out long solves, out long fallbacks, out _);
-            VesselForest.GetTimes(out double s1, out double a1, out double b1, out double c1, out double f1, out double w1, out double d1);
-            VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
+            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out _);
+            ForestDiagnostics.GetTimes(out double s1, out double a1, out double b1, out double c1, out double f1, out double w1, out double d1);
+            ForestDiagnostics.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
                 out double residual, out _, out _);
             long forestSolves = System.Math.Max(1, solves - solvesBefore);
             lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / steps:F2}"
                 : $"start {(a1 - a0) / steps:F2} (factor {(f1 - f0) / steps:F2}, boundary {(w1 - w0) / steps:F2}), " +
-                $"solve {(b1 - b0) / steps:F2}, finish {(c1 - c0) / steps:F2} (settle {(VesselForest.SettleMilliseconds - settle0) / steps:F2}, " +
+                $"solve {(b1 - b0) / steps:F2}, finish {(c1 - c0) / steps:F2} (settle {(ForestDiagnostics.SettleMilliseconds - settle0) / steps:F2}, " +
                 $"drift aim {(d1 - d0) / steps:F2}), " +
                 $"fallback sparse {(s1 - s0) / steps:F2}";
             if (path != "sparse")
             {
-                double[] serial1 = VesselForest.SerialMilliseconds();
+                double[] serial1 = ForestDiagnostics.SerialMilliseconds();
                 lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / steps:F2}, decide {(serial1[1] - serial0[1]) / steps:F2}, " +
                     $"section sums {(serial1[2] - serial0[2]) / steps:F2}, body impulses {(serial1[3] - serial0[3]) / steps:F2}, " +
                     $"subtree {(serial1[4] - serial0[4]) / steps:F2}";
@@ -946,15 +947,15 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = true;
-            VesselForest.ForgetIslands();
+            ForestSwitches.Enabled = true;
+            ForestDiagnostics.ForgetIslands();
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
-            VesselForest.BoundaryRowCap = string.IsNullOrEmpty(cap) ? VesselForest.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
-            VesselForest.Locking = locking;
-            VesselForest.LockAngle = lockAngle;
-            VesselForest.YieldAngle = yieldAngle;
-            VesselForest.MinimumHoldSteps = hold;
-            VesselForest.DeflectionSmoothingSteps = smoothing;
+            ForestSwitches.BoundaryRowCap = string.IsNullOrEmpty(cap) ? ForestSwitches.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
+            ForestSwitches.Locking = locking;
+            ForestSwitches.LockAngle = lockAngle;
+            ForestSwitches.YieldAngle = yieldAngle;
+            ForestSwitches.MinimumHoldSteps = hold;
+            ForestSwitches.DeflectionSmoothingSteps = smoothing;
             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
             List<Rigidbody> bodies = Build(graph, ground);
             var joints = new List<ConfigurableJoint>();
@@ -964,12 +965,12 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Simulate(WarmUp);
-            VesselForest.GetCounts(out long solves0, out long fallbacks0, out _);
-            VesselForest.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
+            ForestDiagnostics.GetCounts(out long solves0, out long fallbacks0, out _);
+            ForestDiagnostics.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
                 out _, out _, out _);
             var all = new long[10];
             var lockedBins = new long[10];
-            VesselForest.GetLockDiagnostics(out long contact0, out _, all, lockedBins);
+            ForestDiagnostics.GetLockDiagnostics(out long contact0, out _, all, lockedBins);
             var samples = new List<double>(Measured);
             var forces = new Vector3[joints.Count];
             var torques = new Vector3[joints.Count];
@@ -989,10 +990,10 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             JobsUtility.JobWorkerCount = workers;
-            VesselForest.GetCounts(out long solves1, out long fallbacks1, out _);
-            VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
+            ForestDiagnostics.GetCounts(out long solves1, out long fallbacks1, out _);
+            ForestDiagnostics.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
                 out _, out _, out _);
-            VesselForest.GetLockDiagnostics(out long contact1, out long fallbackBoundary, all, lockedBins);
+            ForestDiagnostics.GetLockDiagnostics(out long contact1, out long fallbackBoundary, all, lockedBins);
             samples.Sort();
             long forestSolves = System.Math.Max(1, solves1 - solves0);
             return new SweepRun
@@ -1049,9 +1050,9 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            bool wasEnabled = VesselForest.Enabled, wasLocking = VesselForest.Locking;
-            float wasLock = VesselForest.LockAngle, wasYield = VesselForest.YieldAngle;
-            int wasHold = VesselForest.MinimumHoldSteps, wasSmoothing = VesselForest.DeflectionSmoothingSteps;
+            bool wasEnabled = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            float wasLock = ForestSwitches.LockAngle, wasYield = ForestSwitches.YieldAngle;
+            int wasHold = ForestSwitches.MinimumHoldSteps, wasSmoothing = ForestSwitches.DeflectionSmoothingSteps;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
             bool jobDebugger = JobsUtility.JobDebuggerEnabled;
@@ -1109,13 +1110,13 @@ namespace KSP.Retooled.Physics.Tests
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                VesselForest.Enabled = wasEnabled;
-                VesselForest.Locking = wasLocking;
-                VesselForest.LockAngle = wasLock;
-                VesselForest.YieldAngle = wasYield;
-                VesselForest.MinimumHoldSteps = wasHold;
-                VesselForest.DeflectionSmoothingSteps = wasSmoothing;
-                VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
+                ForestSwitches.Enabled = wasEnabled;
+                ForestSwitches.Locking = wasLocking;
+                ForestSwitches.LockAngle = wasLock;
+                ForestSwitches.YieldAngle = wasYield;
+                ForestSwitches.MinimumHoldSteps = wasHold;
+                ForestSwitches.DeflectionSmoothingSteps = wasSmoothing;
+                ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 
@@ -1154,7 +1155,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            bool wasVessels = VesselPipeline.Enabled, wasEnabled = VesselForest.Enabled, wasLocking = VesselForest.Locking;
+            bool wasVessels = VesselSwitches.Enabled, wasEnabled = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
             bool jobDebugger = JobsUtility.JobDebuggerEnabled;
@@ -1167,9 +1168,9 @@ namespace KSP.Retooled.Physics.Tests
             report.Append("craft | bodies | scene | threads | prepare | run | publish | whole step\n");
             try
             {
-                VesselForest.Enabled = true;
-                VesselPipeline.Enabled = true;
-                VesselForest.Locking = false;
+                ForestSwitches.Enabled = true;
+                VesselSwitches.Enabled = true;
+                ForestSwitches.Locking = false;
                 foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,tu160x4"))
                 {
                     Graph graph = Fleet(Load(craft));
@@ -1180,7 +1181,7 @@ namespace KSP.Retooled.Physics.Tests
                             TearDownScene();
                             SetUpScene();
                             UnityEngine.Physics.autoSyncTransforms = false;
-                            VesselForest.ForgetIslands();
+                            ForestDiagnostics.ForgetIslands();
                             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
                             List<Rigidbody> bodies = Build(graph, ground);
                             foreach (Rigidbody body in bodies)
@@ -1232,9 +1233,9 @@ namespace KSP.Retooled.Physics.Tests
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                VesselForest.Enabled = wasEnabled;
-                VesselForest.Locking = wasLocking;
-                VesselPipeline.Enabled = wasVessels;
+                ForestSwitches.Enabled = wasEnabled;
+                ForestSwitches.Locking = wasLocking;
+                VesselSwitches.Enabled = wasVessels;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 
@@ -1252,7 +1253,7 @@ namespace KSP.Retooled.Physics.Tests
         [Timeout(7200000)]
         public void Measure()
         {
-            bool wasVessels = VesselPipeline.Enabled;
+            bool wasVessels = VesselSwitches.Enabled;
             if (!BackendInfo.IsRetooled)
             {
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
@@ -1262,15 +1263,15 @@ namespace KSP.Retooled.Physics.Tests
             long benchStart = Stopwatch.GetTimestamp();
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             double kernelWait = Since(benchStart);
-            bool wasEnabled = VesselForest.Enabled;
-            bool wasLocking = VesselForest.Locking;
+            bool wasEnabled = ForestSwitches.Enabled;
+            bool wasLocking = ForestSwitches.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
             bool jobDebugger = JobsUtility.JobDebuggerEnabled;
             JobsUtility.JobDebuggerEnabled = false;
             Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
             int workers = JobsUtility.JobWorkerCount;
-            VesselPipeline.Initialize();
+            VesselSwitches.Initialize();
             fusedParts = Unity.Physics.Solver.FusedVesselParts;
             fusedOn = Unity.Physics.Solver.VesselFused;
             double load = SampleLoad();
@@ -1349,9 +1350,9 @@ namespace KSP.Retooled.Physics.Tests
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                VesselForest.Enabled = wasEnabled;
-                VesselForest.Locking = wasLocking;
-                VesselPipeline.Enabled = wasVessels;
+                ForestSwitches.Enabled = wasEnabled;
+                ForestSwitches.Locking = wasLocking;
+                VesselSwitches.Enabled = wasVessels;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 

@@ -7,6 +7,7 @@ using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -175,9 +176,9 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselForest.Initialize();
-            wasEnabled = VesselForest.Enabled;
-            VesselForest.Enabled = true;
+            ForestSwitches.Initialize();
+            wasEnabled = ForestSwitches.Enabled;
+            ForestSwitches.Enabled = true;
             wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
             if (FusedParts > 0)
             {
@@ -192,7 +193,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             vessels?.Dispose();
             vessels = null;
-            VesselForest.Enabled = wasEnabled;
+            ForestSwitches.Enabled = wasEnabled;
             Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
         }
 
@@ -294,7 +295,7 @@ namespace KSP.Retooled.Physics.Tests
             {
                 TearDownScene();
                 SetUpScene();
-                VesselForest.Enabled = true;
+                ForestSwitches.Enabled = true;
                 vessels.Dispose();
                 vessels = new TestVessels();
                 Rigidbody root = Box(new Vector3(0.0f, 5.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
@@ -488,7 +489,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
+                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : 2;
@@ -543,7 +544,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
+                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : 2;
@@ -607,8 +608,8 @@ namespace KSP.Retooled.Physics.Tests
                     Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = pass == 0 ? 0 : System.Math.Max(workers, 3);
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
-                    VesselForest.ForgetIslands();
+                    ForestSwitches.Enabled = true;
+                    ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
                     Unity.Physics.Solver.FusedVesselParts = 2;
@@ -671,7 +672,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
+                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     for (int c = 0; c < columns; c++)
@@ -715,8 +716,8 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
-                    VesselForest.ForgetIslands();
+                    ForestSwitches.Enabled = true;
+                    ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
                     Unity.Physics.Solver.FusedVesselParts = pass == 0 ? 1000 : Unity.Physics.Solver.DefaultFusedVesselParts;
@@ -802,10 +803,10 @@ namespace KSP.Retooled.Physics.Tests
 
                 Begin(vessels);
                 vessels.Step(3);
-                VesselForest.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
                 long before = Unity.Physics.Solver.FusedIslandSolves;
                 vessels.Step(5);
-                VesselForest.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
                 Assert.That(Unity.Physics.Solver.FusedIslandSolves - before, Is.EqualTo(columns * 5), "every vessel is a fused island in every step");
                 Assert.That(builds1 - builds0, Is.EqualTo(0), "no fused island builds its structure again");
             }
@@ -842,11 +843,11 @@ namespace KSP.Retooled.Physics.Tests
 
                 Begin(vessels);
                 vessels.Step(3);
-                VesselForest.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
                 long fusedBefore = Unity.Physics.Solver.FusedIslandSolves;
                 long foldedBefore = Unity.Physics.Solver.UnfusedFoldedSteps;
                 vessels.Step(5);
-                VesselForest.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
                 Assert.That(Unity.Physics.Solver.FusedIslandSolves - fusedBefore, Is.EqualTo(0), "the substeps solve every vessel");
                 Assert.That(Unity.Physics.Solver.UnfusedFoldedSteps - foldedBefore, Is.EqualTo(folded ? 5 : 0),
                     "one thread does the substeps' work in every step only when the test asks for it");
@@ -884,8 +885,8 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     TearDownScene();
                     SetUpScene();
-                    VesselForest.Enabled = true;
-                    VesselForest.ForgetIslands();
+                    ForestSwitches.Enabled = true;
+                    ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
                     Unity.Physics.Solver.FusedVesselParts = 5;

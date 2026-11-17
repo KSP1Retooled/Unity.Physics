@@ -9,6 +9,7 @@ using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Dynamics.Joint.Translation;
 
 namespace KSP.Retooled.Physics
 {

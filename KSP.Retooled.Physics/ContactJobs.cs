@@ -19,6 +19,8 @@ using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Collision.Queries.Collectors;
+using Unity.Physics.Dynamics.Joint.Grouping;
+using Unity.Physics.Dynamics.Vessels.Detection;
 
 namespace KSP.Retooled.Physics
 {

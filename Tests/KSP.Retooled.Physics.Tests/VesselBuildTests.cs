@@ -7,6 +7,9 @@ using UnityEngine;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
+using Unity.Physics.Dynamics.Joint.Translation;
+using Unity.Physics.Configuration;
+using Unity.Physics.Dynamics.Vessels.Detection;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -29,19 +32,19 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselPipeline.Initialize();
-            wasEnabled = VesselPipeline.Enabled;
-            VesselPipeline.Enabled = true;
+            VesselSwitches.Initialize();
+            wasEnabled = VesselSwitches.Enabled;
+            VesselSwitches.Enabled = true;
 
             // These crafts are small, so let them compile into vessels.
-            VesselPipeline.MinimumParts = 2;
+            VesselSwitches.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselPipeline.Enabled = wasEnabled;
-            VesselPipeline.MinimumParts = 0;
+            VesselSwitches.Enabled = wasEnabled;
+            VesselSwitches.MinimumParts = 0;
         }
 
         private static StepState* State => StepKernel.Current;
@@ -350,7 +353,7 @@ namespace KSP.Retooled.Physics.Tests
             Object.DestroyImmediate(strut);
             Simulate();
             Assert.That(OnlyVessel().Id, Is.EqualTo(strutted), "a removed strut stays in its vessel as a tombstone for a while");
-            Simulate(VesselPipeline.TombstoneSteps);
+            Simulate(VesselSwitches.TombstoneSteps);
             ulong unstrutted = OnlyVessel().Id;
             Assert.That(OnlyVessel().ClosureCount, Is.Zero, "the tombstone has expired");
             Assert.That(unstrutted, Is.Not.EqualTo(strutted).And.Not.EqualTo(first), "Ids are never reused");
@@ -364,7 +367,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Simulate();
             Assert.That(OnlyVessel().Id, Is.EqualTo(unstrutted), "the removed edge is a tombstone");
-            Simulate(VesselPipeline.TombstoneSteps);
+            Simulate(VesselSwitches.TombstoneSteps);
             List<List<Rigidbody>> vessels = VesselsOf(bodies);
             Assert.That(vessels.Count, Is.EqualTo(2));
             for (int v = 0; v < 2; v++)
@@ -464,7 +467,7 @@ namespace KSP.Retooled.Physics.Tests
                 Object.DestroyImmediate(joint);
             }
 
-            for (int step = 0; step <= VesselPipeline.TombstoneSteps; step++)
+            for (int step = 0; step <= VesselSwitches.TombstoneSteps; step++)
             {
                 SleepAll();
                 Simulate();
@@ -565,7 +568,7 @@ namespace KSP.Retooled.Physics.Tests
 
             Assert.That(broken, Is.EqualTo(1), "its edge is broken");
 
-            Simulate(VesselPipeline.TombstoneSteps);
+            Simulate(VesselSwitches.TombstoneSteps);
             Assert.That(OnlyVessel().PartCount, Is.EqualTo(3), "after the tombstone expires, the loose part is no longer a part");
             Assert.That(OnlyVessel().Id, Is.Not.EqualTo(id));
         }
@@ -748,7 +751,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ACraftBelowTheMinimumSizeStaysOnUnityJoints()
         {
-            VesselPipeline.MinimumParts = 4;
+            VesselSwitches.MinimumParts = 4;
             List<Rigidbody> bodies = Column(3);
             bodies[2].linearVelocity = new Vector3(1.0f, 0.0f, 0.0f);
             Simulate(20);
@@ -775,10 +778,10 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void ACraftOfTheMinimumSizeIsAVessel()
         {
-            VesselPipeline.MinimumParts = 0;
-            Column(VesselPipeline.DefaultMinimumParts);
+            VesselSwitches.MinimumParts = 0;
+            Column(VesselSwitches.DefaultMinimumParts);
             Simulate();
-            Assert.That(OnlyVessel().PartCount, Is.EqualTo(VesselPipeline.DefaultMinimumParts));
+            Assert.That(OnlyVessel().PartCount, Is.EqualTo(VesselSwitches.DefaultMinimumParts));
         }
 
         [Test]
@@ -907,7 +910,7 @@ namespace KSP.Retooled.Physics.Tests
             // the column comes apart into two parts that are no vessel.
             Simulate();
             Assert.That(State->VesselSet.Edges[childPart].State, Is.EqualTo(VesselEdgeState.Broken), "the edge is broken in place");
-            Simulate(VesselPipeline.TombstoneSteps);
+            Simulate(VesselSwitches.TombstoneSteps);
             Assert.That(State->VesselSet.VesselCount, Is.Zero);
         }
 
@@ -967,7 +970,7 @@ namespace KSP.Retooled.Physics.Tests
             for (uint i = 0; i < store->jointCount; i++)
             {
                 JointData* joint = store->joints[i];
-                quaternion fromMotion = VesselLoadsJob.LeaderFrame(joint, world.MotionDatas, State->BuiltIndices.AsArray());
+                quaternion fromMotion = VesselLoads.VesselLoadsJob.LeaderFrame(joint, world.MotionDatas, State->BuiltIndices.AsArray());
                 quaternion writtenBack = JointConstraints.WorldRotation0(joint);
                 Assert.That(fromMotion.value.Equals(writtenBack.value), Is.True, $"joint {i}: {fromMotion} and {writtenBack}");
                 checkedJoints++;
@@ -998,7 +1001,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void WithVesselsOffNothingIsCompiled()
         {
-            VesselPipeline.Enabled = false;
+            VesselSwitches.Enabled = false;
             Column(3);
             Simulate();
             Assert.That(State->VesselSet.IsCreated, Is.False);

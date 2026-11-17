@@ -4,6 +4,7 @@ using NUnit.Framework;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using UnityEngine;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -32,22 +33,22 @@ namespace KSP.Retooled.Physics.Tests
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top of
             // what this fixture sets.
-            VesselForest.Initialize();
-            wasEnabled = VesselForest.Enabled;
-            wasLocking = VesselForest.Locking;
+            ForestSwitches.Initialize();
+            wasEnabled = ForestSwitches.Enabled;
+            wasLocking = ForestSwitches.Locking;
             wasLegacy = Solver.LegacyRowBuild;
 
             // A locked section depends on what the steps before it carried, so the second of two runs would start from what
             // the first left. Locking only reads the rows, which are the same either way.
-            VesselForest.Locking = false;
+            ForestSwitches.Locking = false;
         }
 
         [TearDown]
         public void RestoreSwitches()
         {
             SparseProblemObserver.Set(null);
-            VesselForest.Enabled = wasEnabled;
-            VesselForest.Locking = wasLocking;
+            ForestSwitches.Enabled = wasEnabled;
+            ForestSwitches.Locking = wasLocking;
             Solver.LegacyRowBuild = wasLegacy;
         }
 
@@ -121,7 +122,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = forest;
+            ForestSwitches.Enabled = forest;
             Solver.LegacyRowBuild = legacy;
             if (ground)
             {

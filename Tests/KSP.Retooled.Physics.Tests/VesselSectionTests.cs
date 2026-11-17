@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Dynamics.Vessels.Sections;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -24,34 +25,34 @@ namespace KSP.Retooled.Physics.Tests
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
-            VesselForest.Initialize();
-            VesselPipeline.Initialize();
-            wasVessels = VesselPipeline.Enabled;
+            ForestSwitches.Initialize();
+            VesselSwitches.Initialize();
+            wasVessels = VesselSwitches.Enabled;
 
             // These test the forest path with Unity's joint rows, which vessels replace.
-            VesselPipeline.Enabled = false;
-            wasEnabled = VesselForest.Enabled;
-            wasLocking = VesselForest.Locking;
-            VesselForest.Enabled = true;
+            VesselSwitches.Enabled = false;
+            wasEnabled = ForestSwitches.Enabled;
+            wasLocking = ForestSwitches.Locking;
+            ForestSwitches.Enabled = true;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselForest.Enabled = wasEnabled;
-            VesselPipeline.Enabled = wasVessels;
-            VesselForest.Locking = wasLocking;
+            ForestSwitches.Enabled = wasEnabled;
+            VesselSwitches.Enabled = wasVessels;
+            ForestSwitches.Locking = wasLocking;
         }
 
         private void Fresh(bool locking)
         {
             TearDownScene();
             SetUpScene();
-            VesselForest.Enabled = true;
-            VesselForest.Locking = locking;
+            ForestSwitches.Enabled = true;
+            ForestSwitches.Locking = locking;
 
             // Islands keep their lock states by their first body, which the last scene's islands had too.
-            VesselForest.ForgetIslands();
+            ForestDiagnostics.ForgetIslands();
         }
 
         /// <summary>A joint with every axis locked, as a rigid attachment.</summary>
@@ -104,7 +105,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private static void Sections(out long lastSections, out long lastLocked)
         {
-            VesselForest.GetSectionCounts(out _, out _, out _, out _, out _, out _, out lastSections, out lastLocked);
+            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out lastSections, out lastLocked);
         }
 
         [Test]
@@ -186,8 +187,8 @@ namespace KSP.Retooled.Physics.Tests
 
             // The lock test reads each step's deflection alone here: this tests locking, yielding and locking again, not
             // the smoothing, which would hold the yield and the relock back by its time constant.
-            int wasSmoothing = VesselForest.DeflectionSmoothingSteps;
-            VesselForest.DeflectionSmoothingSteps = 0;
+            int wasSmoothing = ForestSwitches.DeflectionSmoothingSteps;
+            ForestSwitches.DeflectionSmoothingSteps = 0;
             for (int pass = 0; pass < 2; pass++)
             {
                 Fresh(pass == 1);
@@ -209,7 +210,7 @@ namespace KSP.Retooled.Physics.Tests
                     turn[pass][i] = 2.0f * Mathf.Asin(Mathf.Min(1.0f, new Vector3(relative.x, relative.y, relative.z).magnitude));
                     if (pass == 0)
                     {
-                        estimate[i] = (float)VesselForest.LastDeflection;
+                        estimate[i] = (float)ForestDiagnostics.LastDeflection;
                     }
 
                     if (pass == 1)
@@ -220,7 +221,7 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
-            VesselForest.DeflectionSmoothingSteps = wasSmoothing;
+            ForestSwitches.DeflectionSmoothingSteps = wasSmoothing;
             int changes = 0;
             int firstYield = -1, relock = -1;
             for (int i = 1; i < steps; i++)
@@ -255,12 +256,12 @@ namespace KSP.Retooled.Physics.Tests
             Debug.Log($"[VesselSectionTests] ramp: locked at 1 {lockedAt[1]}, yields at {firstYield}, locks again at {relock}, " +
                 $"{changes} changes; peak turn {peakTurn * 1e3f:F2} mrad, largest difference {largest * 1e3f:F3} mrad, " +
                 $"largest extra step {jump * 1e3f:F3} mrad");
-            Assert.That(peakTurn, Is.GreaterThan(VesselForest.YieldAngle), "the torque bends the spring past the yield angle");
+            Assert.That(peakTurn, Is.GreaterThan(ForestSwitches.YieldAngle), "the torque bends the spring past the yield angle");
             Assert.That(lockedAt[2], Is.True, "the pair locks while the torque is small");
             Assert.That(firstYield, Is.GreaterThan(0), "the pair yields");
             Assert.That(relock, Is.GreaterThan(firstYield), "the pair locks again");
-            Assert.That(largest, Is.LessThan(VesselForest.YieldAngle + 0.5e-3f), "locked or not, the pair turns alike");
-            Assert.That(jump, Is.LessThan(VesselForest.YieldAngle), "nothing jumps when the pair yields or locks: it bends by no more than it held back");
+            Assert.That(largest, Is.LessThan(ForestSwitches.YieldAngle + 0.5e-3f), "locked or not, the pair turns alike");
+            Assert.That(jump, Is.LessThan(ForestSwitches.YieldAngle), "nothing jumps when the pair yields or locks: it bends by no more than it held back");
         }
 
         /// <summary>
@@ -286,7 +287,7 @@ namespace KSP.Retooled.Physics.Tests
                 turn = 2.0f * Mathf.Asin(Mathf.Min(1.0f, new Vector3(relative.x, relative.y, relative.z).magnitude));
             }
 
-            float read = (float)VesselForest.LastDeflection;
+            float read = (float)ForestDiagnostics.LastDeflection;
             Debug.Log($"[VesselSectionTests] damped: turn {turn * 1e3f:F3} mrad, read {read * 1e3f:F3} mrad");
             Assert.That(read, Is.EqualTo(turn).Within(0.05f * turn));
         }

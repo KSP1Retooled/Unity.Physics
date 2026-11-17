@@ -4,6 +4,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Systems;
 using Unity.Physics.Store.World;
 using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics
 {
@@ -20,8 +21,8 @@ namespace KSP.Retooled.Physics
         internal WorldState(WorldData* store)
         {
             this.store = store;
-            VesselForest.Initialize();
-            VesselPipeline.Initialize();
+            ForestSwitches.Initialize();
+            VesselSwitches.Initialize();
             StepState.ReadBoundsCacheSwitches();
             StepState.ReadTreeReuseSwitch();
             StepState.ReadStaticReuseSwitch();

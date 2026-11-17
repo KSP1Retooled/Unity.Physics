@@ -84,7 +84,7 @@ namespace KSP.Retooled.Physics.Tests
             TearDownScene();
             SetUpScene();
             StepState.StaticReuseEnabled = reuse;
-            VesselForest.ForgetIslands();
+            ForestDiagnostics.ForgetIslands();
             var run = new Run();
             GameObject ground = Ground();
             var names = new Dictionary<Collider, string> { [ground.GetComponent<Collider>()] = "ground" };

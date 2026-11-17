@@ -11,6 +11,7 @@ using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
+using Unity.Physics.Dynamics.Joint.Translation;
 
 namespace KSP.Retooled.Physics
 {
@@ -390,20 +391,10 @@ namespace KSP.Retooled.Physics
             }
 
             MotionVelocity velocity = MotionVelocities[index];
-            SolvedPose(MotionDatas[index], out body.Pose()->Position, out body.Pose()->Rotation);
+            BodyKinematics.SolvedPose(MotionDatas[index], out body.Pose()->Position, out body.Pose()->Rotation);
             body.Velocity()->Linear = ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.Limits()->MaxLinearVelocity);
             body.Velocity()->Angular = ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.Limits()->MaxAngularVelocity);
         }
 
-        /// <summary>
-        /// Compute the exact awake-body pose that write-back will store, for jobs reading solved motion
-        /// concurrently.
-        /// </summary>
-        internal static void SolvedPose(in MotionData motion, out float3 position, out quaternion rotation)
-        {
-            RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
-            position = worldFromBody.pos;
-            rotation = math.normalize(worldFromBody.rot);
-        }
     }
 }
