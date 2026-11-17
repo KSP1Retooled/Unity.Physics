@@ -12,6 +12,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Dynamics.Joint.Translation;
 using Unity.Physics.Dynamics.Joint.Loads;
+using Unity.Physics.Dynamics.Bodies;
 
 namespace KSP.Retooled.Physics
 {
@@ -371,14 +372,8 @@ namespace KSP.Retooled.Physics
         {
             if (body != null)
             {
-                WakeRow(StoreOps.Hot(body));
+                BodyKinematics.Wake(StoreOps.Hot(body));
             }
-        }
-
-        internal static void WakeRow(BodyData* hot)
-        {
-            hot->flags &= ~BodyFlags.Sleeping;
-            (*hot).Sleep()->WakeCounter = math.max((*hot).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
         }
 
         internal static JointData* Create(WorldData* world, CommandArgs* a, StoreGlobals* globals)

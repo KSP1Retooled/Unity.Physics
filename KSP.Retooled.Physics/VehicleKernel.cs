@@ -56,7 +56,7 @@ namespace KSP.Retooled.Physics
 
     /// <summary>
     /// Handle WheelCollider commands on the main thread outside simulation.
-    /// Store vehicle settings, wheel slots and last-step hits; WheelJob updates them during the step.
+    /// Store vehicle settings, wheel slots and last-step hits; WheelSolver.WheelJob updates them during the step.
     /// </summary>
     [BurstCompile]
     internal static unsafe class VehicleKernel
@@ -429,24 +429,6 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Save pre-force vehicle velocities for suspension damping so that this step's gravity is not counted as
-        /// compression.
-        /// </summary>
-        internal static void RecordStartVelocities(WorldData* world)
-        {
-            for (uint v = 0; v < world->vehicleCount; v++)
-            {
-                VehicleData* vehicle = world->vehicles[v];
-                if (vehicle != null && vehicle->body != null)
-                {
-                    BodyData* hot = world->bodies + vehicle->body->index;
-                    vehicle->startLinear = (*hot).Velocity()->Linear;
-                    vehicle->startAngular = BodyKinematics.WorldAngularVelocity(*hot);
-                }
-            }
-        }
-
-        /// <summary>
         /// Detach a destroyed body from its vehicle to prevent stale pointer access.
         /// Keep the vehicle allocation until Unity destroys it.
         /// </summary>
@@ -515,7 +497,7 @@ namespace KSP.Retooled.Physics
                 BodyData* hot = StoreOps.Hot(vehicle->body);
                 if ((hot->flags & BodyFlags.Sleeping) != 0)
                 {
-                    JointKernel.WakeRow(hot);
+                    BodyKinematics.Wake(hot);
                 }
             }
         }

@@ -5,6 +5,7 @@ using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Dynamics.Bodies;
 
 namespace KSP.Retooled.Physics
 {
@@ -136,7 +137,7 @@ namespace KSP.Retooled.Physics
         {
             if (shape != null && shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
-                JointKernel.WakeRow(StoreOps.Hot(shape->body));
+                BodyKinematics.Wake(StoreOps.Hot(shape->body));
             }
         }
 

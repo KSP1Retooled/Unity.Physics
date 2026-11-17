@@ -10,6 +10,7 @@ using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using Unity.Physics.Dynamics.Contacts;
 
 namespace KSP.Retooled.Physics
 {
@@ -435,7 +436,7 @@ namespace KSP.Retooled.Physics
             }
 
             // Match PhysX: changing isKinematic restarts touching pairs, even for sleeping bodies.
-            // WakeRefilteredPairsJob reevaluates the pairs on the next step.
+            // TouchingPairs.WakeRefilteredPairsJob reevaluates the pairs on the next step.
             if (((hot->flags ^ before) & BodyFlags.Kinematic) != 0)
             {
                 PairFilterVersion.Changed();

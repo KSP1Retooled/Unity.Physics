@@ -12,6 +12,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Dynamics.Bodies;
 
 namespace KSP.Retooled.Physics
 {
@@ -235,7 +236,7 @@ namespace KSP.Retooled.Physics
 
             if (shape->body != null && (StoreOps.Hot(shape->body)->flags & BodyFlags.Sleeping) != 0)
             {
-                JointKernel.WakeRow(StoreOps.Hot(shape->body));
+                BodyKinematics.Wake(StoreOps.Hot(shape->body));
             }
         }
 

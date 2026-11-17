@@ -25,6 +25,12 @@ using Unity.Physics.Dynamics.Joint.Translation;
 using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Dynamics.Vessels.Detection;
+using Unity.Physics.Dynamics.Contacts;
+using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Dynamics.Sleep;
+using Unity.Physics.Dynamics.Vehicles;
+using Unity.Physics.Dynamics.Bodies;
+using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 
 namespace KSP.Retooled.Physics
 {
@@ -41,7 +47,7 @@ namespace KSP.Retooled.Physics
         // Copying the joints for one unit requires copying a few hundred bytes.
         private const int CopyBatchSize = 64;
 
-        // WriteBackJob assigns these bodies a pose that differs from the result of integrating their solved motion.
+        // StoreBodies.WriteBackJob assigns these bodies a pose that differs from the result of integrating their solved motion.
         private const BodyFlags PosedByWriteBack = BodyFlags.Sleeping | BodyFlags.HasKinematicTarget;
 
         private readonly WorldData* store;
@@ -51,10 +57,10 @@ namespace KSP.Retooled.Physics
         private PhysicsWorld world;
 
         // Static tree jobs read these flags. keepStatics is constant after initialization;
-        // ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
+        // StaticTreeShift.ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
         private NativeReference<int> rebuildStatics;
         private NativeReference<int> keepStatics;
-        private ShiftStaticTreeJob.ShiftState treeShift;
+        private StaticTreeShift.ShiftState treeShift;
         private bool staticsChanged;
         private bool treeMatchesHeld;
 
@@ -130,12 +136,12 @@ namespace KSP.Retooled.Physics
         private long keptSnapshots;
         private NativeList<ManifoldRecord> manifolds;
         private NativeList<ManifoldPoint> manifoldPoints;
-        private NativeList<ContactBucket> contactBuckets;
+        private NativeList<ContactBuckets.ContactBucket> contactBuckets;
         private NativeReference<int> filledContactBuckets;
         private NativeHashMap<ShapePairKey, ShapePairState> touching;
 
         // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
-        private NativeList<TriggerEvent> removedTriggerPairs;
+        private NativeList<ShapePairKey> removedTriggerPairs;
 
         // The version of PairFilterVersion that the last step checked the touching pairs against.
         private uint seenPairFilterVersion;
@@ -310,8 +316,8 @@ namespace KSP.Retooled.Physics
                 UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
             }
         }
-        private NativeHashMap<ulong, KnownBodyPair> knownBodyPairs;
-        private NativeQueue<DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
+        private NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair> knownBodyPairs;
+        private NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
 
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
@@ -336,7 +342,7 @@ namespace KSP.Retooled.Physics
             world = new PhysicsWorld(0, 0, 0);
             rebuildStatics = new NativeReference<int>(1, Allocator.Persistent);
             keepStatics = new NativeReference<int>(0, Allocator.Persistent);
-            treeShift = ShiftStaticTreeJob.ShiftState.Create();
+            treeShift = StaticTreeShift.ShiftState.Create();
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
             staticRows = new NativeList<int>(Allocator.Persistent);
@@ -364,11 +370,11 @@ namespace KSP.Retooled.Physics
             snapshotStatic = new NativeList<int>(Allocator.Persistent);
             manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
-            contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
+            contactBuckets = new NativeList<ContactBuckets.ContactBucket>(Allocator.Persistent);
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             TouchingHandOff.Restore(store, touching);
-            removedTriggerPairs = new NativeList<TriggerEvent>(Allocator.Persistent);
+            removedTriggerPairs = new NativeList<ShapePairKey>(Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
             sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
@@ -388,8 +394,8 @@ namespace KSP.Retooled.Physics
             treeRows = new NativeList<int>(Allocator.Persistent);
             treeRefitResults = (DynamicTreeRefitResults*)UnsafeUtility.MallocTracked(sizeof(DynamicTreeRefitResults), UnsafeUtility.AlignOf<DynamicTreeRefitResults>(), Allocator.Persistent, 0);
             UnsafeUtility.MemClear(treeRefitResults, sizeof(DynamicTreeRefitResults));
-            knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
-            learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
+            knownBodyPairs = new NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair>(1024, Allocator.Persistent);
+            learnedBodyPairs = new NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
 
         internal void Dispose()
@@ -526,7 +532,7 @@ namespace KSP.Retooled.Physics
             store->queryWorld = null;
             store->queryDirty = StoreMemory.QueryStale;
             BodyEntities.PrepareForJobs(store);
-            VehicleKernel.RecordStartVelocities(store);
+            WheelSolver.RecordStartVelocities(store);
 
             using (BackendMarkers.StepApplyForces.Auto())
             {
@@ -537,13 +543,13 @@ namespace KSP.Retooled.Physics
                     seenPairFilterVersion = filterVersion;
                     if (!touching.IsEmpty)
                     {
-                        new WakeRefilteredPairsJob { World = store, Touching = touching }.Run();
+                        new TouchingPairs.WakeRefilteredPairsJob { World = store, Touching = touching }.Run();
                     }
                 }
 
-                new WakeJointedBodiesJob { World = store }.Run();
+                new WakePropagation.WakeJointedBodiesJob { World = store }.Run();
 
-                forcesApplied = new ApplyForcesJob
+                forcesApplied = new ExternalForces.ApplyForcesJob
                 {
                     Bodies = store->bodies,
                     Gravity = store->gravity,
@@ -584,7 +590,7 @@ namespace KSP.Retooled.Physics
                 return broadphase;
             }
 
-            JobHandle wheels = new WheelJob
+            JobHandle wheels = new WheelSolver.WheelJob
             {
                 Store = store,
                 Globals = globals,
@@ -635,7 +641,7 @@ namespace KSP.Retooled.Physics
             }
 
             NativeList<DispatchPairSequencer.DispatchPair> pairs = simulation->StepContext.PairsToSortByIsland;
-            JobHandle filtered = new DropIgnoredPairsJob
+            JobHandle filtered = new PairFilter.DropIgnoredPairsJob
             {
                 Pairs = pairs.AsDeferredJobArray(),
                 Store = store->bodies,
@@ -653,7 +659,7 @@ namespace KSP.Retooled.Physics
 
             // No job in this step reads the newly learned body pairs. Saving those pairs can therefore run in parallel
             // with finding islands.
-            JobHandle remembered = new RememberBodyPairsJob
+            JobHandle remembered = new PairFilter.RememberBodyPairsJob
             {
                 Known = knownBodyPairs,
                 Learned = learnedBodyPairs,
@@ -676,7 +682,7 @@ namespace KSP.Retooled.Physics
             // Drop impulses for removed shapes before new contacts can reuse their addresses.
             if (store->removedShapeCount != 0 && lastImpulses.Count != 0)
             {
-                new ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
+                new ImpulseMemory.ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
             }
 
             manifolds.Clear();
@@ -687,13 +693,13 @@ namespace KSP.Retooled.Physics
             if (contacts.IsCreated)
             {
                 NativeStream.Reader reader = contacts.AsReader();
-                read = new PrepareContactBucketsJob
+                read = new ContactBuckets.PrepareContactBucketsJob
                 {
                     Contacts = reader,
                     Buckets = contactBuckets,
                     Filled = filledContactBuckets,
                 }.Schedule(read);
-                read = new ReadContactsJob
+                read = new ContactMaterials.ReadContactsJob
                 {
                     Contacts = reader,
                     Buckets = contactBuckets,
@@ -705,7 +711,7 @@ namespace KSP.Retooled.Physics
                     BounceThreshold = store->bounceThreshold,
                 }.ScheduleUnsafe(contacts, 1, read);
 
-                merged = new MergeContactBucketsJob
+                merged = new ContactBuckets.MergeContactBucketsJob
                 {
                     Filled = filledContactBuckets,
                     Buckets = contactBuckets,
@@ -716,7 +722,7 @@ namespace KSP.Retooled.Physics
 
             // Only warm starting requires the merged manifolds before solving. Merging the manifolds can therefore run
             // in parallel with building the Jacobians.
-            warmStartsIndexed = new IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(merged);
+            warmStartsIndexed = new WarmStart.IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(merged);
 
             // If there are no contacts, no more bodies need to be woken. Bodies connected by joints were already woken
             // at the start of the step.
@@ -725,7 +731,7 @@ namespace KSP.Retooled.Physics
                 return read;
             }
 
-            return new WakeTouchedBodiesJob
+            return new WakePropagation.WakeTouchedBodiesJob
             {
                 World = store,
                 Filled = filledContactBuckets,
@@ -755,7 +761,7 @@ namespace KSP.Retooled.Physics
             input.VesselSet = vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
             preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled);
-            return new WarmStartJob
+            return new WarmStart.WarmStartJob
             {
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
@@ -903,7 +909,7 @@ namespace KSP.Retooled.Physics
             JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vesselsFilled);
 
             // Schedule write-back first because the main thread waits for it first.
-            JobHandle writtenBack = new WriteBackJob
+            JobHandle writtenBack = new StoreBodies.WriteBackJob
             {
                 Store = store->bodies,
                 DynamicIndices = dynamicIndices.AsArray(),
@@ -965,8 +971,8 @@ namespace KSP.Retooled.Physics
                 LogBoundsCheck();
             }
 
-            // SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
-            JobHandle contactsJoined = new SleepContactsJob
+            // FallAsleep.SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
+            JobHandle contactsJoined = new FallAsleep.SleepContactsJob
             {
                 World = store,
                 Records = manifolds,
@@ -993,10 +999,10 @@ namespace KSP.Retooled.Physics
             if (store->removedShapeCount != 0)
             {
                 forces.Complete();
-                new ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
+                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
             }
 
-            JobHandle counted = new UpdateWakeCountersJob
+            JobHandle counted = new SleepCounters.UpdateWakeCountersJob
             {
                 World = store,
                 Contacts = sleepContacts,
@@ -1004,7 +1010,7 @@ namespace KSP.Retooled.Physics
                 RunOut = (int*)sleepRunOut.GetUnsafePtr(),
                 DeltaTime = deltaTime,
             }.Schedule((int)store->bodyCount, ParallelBatchSize, contactsJoined);
-            JobHandle sleep = new SleepJob
+            JobHandle sleep = new FallAsleep.SleepJob
             {
                 World = store,
                 Parents = sleepParents,
@@ -1013,22 +1019,22 @@ namespace KSP.Retooled.Physics
             }.Schedule(JobHandle.CombineDependencies(counted, forces));
             JobHandle.ScheduleBatchedJobs();
 
-            // ReadImpulsesJob reads only the motions, which the rebuild of the tree doesn't change.
+            // ImpulseMemory.ReadImpulsesJob reads only the motions, which the rebuild of the tree doesn't change.
             using (BackendMarkers.StepReadImpulses.Auto())
             {
                 if (world.NumDynamicBodies != 0)
                 {
-                    new ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
+                    new ImpulseMemory.ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
                 }
 
-                new RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
+                new ImpulseMemory.RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
             }
 
             using (BackendMarkers.StepPublishContacts.Auto())
             {
-                // The contact report sorts the manifolds that SleepContactsJob reads, so wait for that job first.
+                // The contact report sorts the manifolds that FallAsleep.SleepContactsJob reads, so wait for that job first.
                 contactsJoined.Complete();
-                new PublishContactsJob
+                new ContactReport.PublishContactsJob
                 {
                     World = store,
                     Globals = globals,
@@ -1053,12 +1059,12 @@ namespace KSP.Retooled.Physics
                 PublishQueryWorld();
             }
 
-            // FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
+            // FallAsleep.FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
             // first, although it has.
             using (BackendMarkers.StepSleep.Auto())
             {
                 sleep.Complete();
-                new FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
+                new FallAsleep.FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
             }
         }
 
@@ -1294,7 +1300,7 @@ namespace KSP.Retooled.Physics
             builtStaticsVersion = store->staticsVersion;
             staticsChanged = true;
             treeMatchesHeld = true;
-            JobHandle posed = new PoseStaticsJob
+            JobHandle posed = new StoreBodies.PoseStaticsJob
             {
                 Store = store->bodies,
                 StaticIndices = staticIndices.AsArray(),
@@ -1403,7 +1409,7 @@ namespace KSP.Retooled.Physics
 
             using var span = BackendMarkers.ShiftStaticTree.Auto();
             Broadphase.Tree tree = world.CollisionWorld.Broadphase.StaticTree;
-            return new ShiftStaticTreeJob
+            return new StaticTreeShift.ShiftStaticTreeJob
             {
                 StaticBodies = world.StaticBodies,
                 Nodes = tree.Nodes.GetUnsafeList(),
@@ -1556,7 +1562,7 @@ namespace KSP.Retooled.Physics
             vesselsFilled.Complete();
             using (BackendMarkers.BuildPartition.Auto())
             {
-                new PartitionBodiesJob
+                new StoreBodies.PartitionBodiesJob
                 {
                     World = store,
                     DynamicIndices = dynamicIndices,
@@ -1611,7 +1617,7 @@ namespace KSP.Retooled.Physics
             JobHandle broadphase;
             using (BackendMarkers.BuildScheduleBodies.Auto())
             {
-                var bodiesJob = new BuildBodiesJob
+                var bodiesJob = new StoreBodies.BuildBodiesJob
                 {
                     Store = store->bodies,
                     DynamicIndices = dynamicIndices.AsArray(),

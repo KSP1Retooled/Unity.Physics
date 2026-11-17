@@ -15,6 +15,7 @@ using Unity.Physics.Store.Memory;
 using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Dynamics.Vessels.Detection;
+using Unity.Physics.Collision.Filter.Groups;
 
 namespace Unity.Physics.Dynamics.Joint.Translation
 {

@@ -3,6 +3,7 @@ using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
+using System.Threading;
 
 namespace Unity.Physics.Dynamics.Bodies
 {
@@ -91,5 +92,9 @@ namespace Unity.Physics.Dynamics.Bodies
                 + (*hot).Forces()->AngularImpulse * perStep
                 + ApplyInertia(hot, (*hot).Forces()->AngularVelocityChange) * perStep;
         }
+
+        private static long managedJobRuns;
+
+        internal static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
     }
 }

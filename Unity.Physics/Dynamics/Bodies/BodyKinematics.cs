@@ -65,15 +65,15 @@ namespace Unity.Physics.Dynamics.Bodies
             return (*hot).Velocity()->Linear + math.cross(WorldAngularVelocity(*hot), worldPoint - worldCenter);
         }
 
-    /// <summary>
-    /// Compute the exact awake-body pose that write-back will store, for jobs reading solved motion
-    /// concurrently.
-    /// </summary>
-    internal static void SolvedPose(in MotionData motion, out float3 position, out quaternion rotation)
-    {
-        RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
-        position = worldFromBody.pos;
-        rotation = math.normalize(worldFromBody.rot);
-    }
+        /// <summary>
+        /// Compute the exact awake-body pose that write-back will store, for jobs reading solved motion
+        /// concurrently.
+        /// </summary>
+        internal static void SolvedPose(in MotionData motion, out float3 position, out quaternion rotation)
+        {
+            RigidTransform worldFromBody = math.mul(motion.WorldFromMotion, math.inverse(motion.BodyFromMotion));
+            position = worldFromBody.pos;
+            rotation = math.normalize(worldFromBody.rot);
+        }
     }
 }

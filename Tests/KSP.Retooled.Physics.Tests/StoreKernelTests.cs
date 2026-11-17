@@ -410,7 +410,7 @@ namespace KSP.Retooled.Physics.Tests
             using NativeArray<MotionData> motions = new NativeArray<MotionData>(1, Allocator.TempJob);
             using NativeArray<MotionVelocity> velocities = new NativeArray<MotionVelocity>(1, Allocator.TempJob);
 
-            var job = new BuildBodiesJob
+            var job = new StoreBodies.BuildBodiesJob
             {
                 Store = &body,
                 DynamicIndices = dynamicIndices,

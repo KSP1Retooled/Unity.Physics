@@ -56,7 +56,7 @@ namespace KSP.Retooled.Physics.Tests
             using var staticIndices = new NativeList<int>(Allocator.TempJob);
             using var builtIndices = new NativeList<int>(Allocator.TempJob);
             using var matches = new NativeReference<int>(Allocator.TempJob);
-            new PartitionBodiesJob
+            new StoreBodies.PartitionBodiesJob
             {
                 World = store,
                 DynamicIndices = dynamicIndices,
@@ -76,7 +76,7 @@ namespace KSP.Retooled.Physics.Tests
             for (int pass = 0; pass < 2; pass++)
             {
                 bool readSources = pass == 1;
-                var job = new BuildBodiesJob
+                var job = new StoreBodies.BuildBodiesJob
                 {
                     Store = store->bodies,
                     DynamicIndices = dynamicIndices.AsArray(),

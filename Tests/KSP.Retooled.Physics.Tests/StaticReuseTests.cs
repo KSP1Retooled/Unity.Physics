@@ -62,7 +62,7 @@ namespace KSP.Retooled.Physics.Tests
                 int index = built[row];
                 Assert.That(index, Is.GreaterThanOrEqualTo(world.NumDynamicBodies), $"step {step}: row {row} is among the static bodies");
                 RigidBody rigidBody = world.Bodies[index];
-                RigidTransform expected = BuildBodiesJob.WorldFromBody(ref body);
+                RigidTransform expected = StoreBodies.BuildBodiesJob.WorldFromBody(ref body);
                 Assert.That((long)rigidBody.Collider.GetUnsafePtr(), Is.EqualTo((long)body.Collider()->Value.GetUnsafePtr()), $"step {step}: the collider of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.pos), Is.EqualTo(math.asuint(expected.pos)), $"step {step}: the position of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.rot.value), Is.EqualTo(math.asuint(expected.rot.value)), $"step {step}: the rotation of row {row}");

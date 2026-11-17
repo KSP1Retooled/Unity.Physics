@@ -183,7 +183,7 @@ namespace KSP.Retooled.Physics.Tests
                 "{0}: set-up {1} calls in {2:F1} ms; store tables {3:F1} MB -> {4:F1} MB; ignored pairs {5}",
                 mode, calls, setupMs, tableBefore / 1048576.0, tableAfter / 1048576.0, IgnoreTable.PairCount(globals)));
 
-            // The pair filter over every overlapping body pair, as DropIgnoredPairsJob runs it when its cache is cold.
+            // The pair filter over every overlapping body pair, as PairFilter.DropIgnoredPairsJob runs it when its cache is cold.
             List<(int, int)> neighbours = Neighbours(side);
             var first = new NativeArray<IntPtr>(neighbours.Count, Allocator.TempJob);
             var second = new NativeArray<IntPtr>(neighbours.Count, Allocator.TempJob);

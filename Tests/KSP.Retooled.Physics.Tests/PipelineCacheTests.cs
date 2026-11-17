@@ -3,6 +3,8 @@ using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Configuration;
+using Unity.Physics.Dynamics.Contacts;
+using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 
 namespace KSP.Retooled.Physics.Tests
 {

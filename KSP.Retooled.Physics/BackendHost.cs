@@ -13,6 +13,7 @@ using UnityEditor;
 using Unity.Physics.Store.World;
 #endif
 using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Dynamics.Bodies;
 
 namespace KSP.Retooled.Physics
 {
@@ -51,7 +52,6 @@ namespace KSP.Retooled.Physics
 #endif
         private static bool attached;
         private static World entityWorld;
-        private static long managedJobRuns;
         private static long managedQueries;
         private static long managedCooks;
         private static long managedCommands;
@@ -60,7 +60,7 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Number of bodies processed by the Mono force job while Burst compilation is pending.
         /// </summary>
-        public static long ManagedJobRuns => Interlocked.Read(ref managedJobRuns);
+        public static long ManagedJobRuns => ExternalForces.ManagedJobRuns;
 
         /// <summary>
         /// Number of queries executed in Mono while Burst compilation is pending.
@@ -236,11 +236,6 @@ namespace KSP.Retooled.Physics
             {
                 BodyEntities.Unbind();
             }
-        }
-
-        internal static void NoteManagedJobRun()
-        {
-            Interlocked.Increment(ref managedJobRuns);
         }
 
         internal static void NoteManagedCook()

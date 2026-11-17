@@ -11,6 +11,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Profiling;
 using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Dynamics.Contacts;
 
 namespace Unity.Physics.Collision.Colliders.Building
 {

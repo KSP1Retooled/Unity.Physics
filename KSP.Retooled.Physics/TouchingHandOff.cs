@@ -4,6 +4,7 @@ using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Reports;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
+using Unity.Physics.Dynamics.Contacts;
 
 namespace KSP.Retooled.Physics
 {

@@ -15,6 +15,7 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using Debug = UnityEngine.Debug;
 using Unity.Physics.Configuration;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -450,7 +451,7 @@ namespace KSP.Retooled.Physics.Tests
         private static string SolveTail(int first, int last)
         {
             const string fusedJob = "Solver:SolveFusedVesselIslandsJob (Burst)";
-            const string writeBackJob = "WriteBackJob (Burst)";
+            const string writeBackJob = "StoreBodies.WriteBackJob (Burst)";
             var chainEnds = new List<double>();
             var writeBacks = new List<double>();
             var writeBackEnds = new List<double>();
@@ -515,7 +516,7 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             return $"# solve tail over {writeBacks.Count} frames, medians in ms from the end of the fused job: last substep job ends " +
-                $"{Median(chainEnds):F3}, WriteBackJob starts {Median(writeBacks):F3} and ends {Median(writeBackEnds):F3}, the step " +
+                $"{Median(chainEnds):F3}, StoreBodies.WriteBackJob starts {Median(writeBacks):F3} and ends {Median(writeBackEnds):F3}, the step " +
                 $"(Retooled.Physics.Step) ends {Median(stepEnds):F3}; substep jobs that start within 5 ms before the " +
                 $"fused job ends or after it: {Median(substepJobCounts):F0}\n" + listing;
         }
