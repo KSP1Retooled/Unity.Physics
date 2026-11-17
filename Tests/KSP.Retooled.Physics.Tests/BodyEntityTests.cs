@@ -129,6 +129,49 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(body.position, Is.EqualTo(new Vector3(450.0f, 1.0f, 2.0f)));
         }
 
+        /// <summary>
+        /// After a step that throws before it applies the forces, which is where a step refreshes the pointers of the
+        /// store's rows, Unity reads the poses back, and the plugin reads them through those pointers. The backend
+        /// refreshes the pointers on that path too, so the read-back follows an entity that another change moved to
+        /// another chunk. Before, the plugin read the slot that the entity left, which the other box's entity had
+        /// taken. Burst leaves the injected throw out, so the test is inconclusive with Burst on; run it with Burst
+        /// compilation off.
+        /// </summary>
+        [Test]
+        public void TheReadBackAfterAStepThatThrewFollowsAMovedEntity()
+        {
+            float3 position = new float3(460.0f, 0.0f, 0.0f);
+            Rigidbody body = WeightlessBox(position);
+            WeightlessBox(new float3(465.0f, 0.0f, 0.0f));
+            Simulate();
+            Entity entity = EntityAt(position);
+
+            Manager.AddComponentData(entity, new Moved { Value = 1 });
+            Manager.SetComponentData(entity, LocalTransform.FromPosition(new float3(470.0f, 1.0f, 2.0f)));
+            int throws = StepState.ThrowsBeforeApplyForces;
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                StepState.ThrowBeforeApplyForcesForTests = true;
+                try
+                {
+                    Simulate();
+                }
+                catch (System.InvalidOperationException)
+                {
+                    // The system that runs the step may report the exception in the log or let it through.
+                }
+            }
+            finally
+            {
+                StepState.ThrowBeforeApplyForcesForTests = false;
+                UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
+            }
+
+            Assume.That(StepState.ThrowsBeforeApplyForces, Is.GreaterThan(throws), "the step ran in Mono and threw");
+            Assert.That(body.transform.position, Is.EqualTo(new Vector3(470.0f, 1.0f, 2.0f)));
+        }
+
         [Test]
         public void ABodyAnotherChangeShuffledKeepsItsEntityThroughACreate()
         {

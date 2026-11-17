@@ -81,6 +81,102 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A step that throws after it scheduled the refit, while the solve's jobs still run, leaves the refit pending,
+        /// and a query on a worker then helps with it. The refit reads the solved motions, so the step waits for them
+        /// before the exception goes on. Burst leaves the injected throw out, so the test is inconclusive with Burst
+        /// on; run it with Burst compilation off.
+        /// </summary>
+        [Test]
+        [Timeout(120000)]
+        public void AStepThatThrowsAfterItSchedulesTheRefitWaitsForTheSolvedMotions()
+        {
+            Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = true;
+            List<Rigidbody> bodies = FallingBoxes(Count);
+            int throws = StepState.ThrowsAfterRefitScheduled;
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                StepState.ThrowAfterRefitScheduledForTests = true;
+                try
+                {
+                    Simulate(1);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The system that runs the step may report the exception in the log or let it through.
+                }
+            }
+            finally
+            {
+                StepState.ThrowAfterRefitScheduledForTests = false;
+            }
+
+            Assume.That(StepState.ThrowsAfterRefitScheduled, Is.GreaterThan(throws), "the step ran in Mono and threw");
+            Assert.That(StepKernel.Current->RefitPending, Is.True, "the refit is pending");
+            Assert.That(StepKernel.Current->RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
+            using (NativeArray<RaycastCommand> rays = RaysOnto(bodies))
+            using (var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob))
+            {
+                RaycastCommand.ScheduleBatch(rays, hits, 16).Complete();
+            }
+
+            // The next steps run as before.
+            Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+            Simulate(2);
+            LogAssert.ignoreFailingMessages = false;
+            using NativeArray<RaycastCommand> after = RaysOnto(bodies);
+            using var afterHits = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
+            BackendHost.SyncQueryWorlds();
+            RaycastCommand.ScheduleBatch(after, afterHits, 16).Complete();
+            AssertHitsOnTop(bodies, afterHits, "after the step that threw");
+        }
+
+        /// <summary>
+        /// A detach while queries on a worker wait for a pending refit. The detach finishes each world's refit before
+        /// the plugin stops calling into the core. Before, the plugin first stopped the queries' help with the refit
+        /// and then waited for each world's query lock, so a query that took the lock in between waited for a refit
+        /// that nobody did, and with one worker the query and the detach waited for each other.
+        /// </summary>
+        [Test]
+        [Timeout(120000)]
+        public void ADetachWhileWorkerQueriesWaitForTheRefitFinishesIt()
+        {
+            int defaultWorkers = JobsUtility.JobWorkerCount;
+            try
+            {
+                JobsUtility.JobWorkerCount = 1;
+                Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = true;
+                List<Rigidbody> bodies = FallingBoxes(Count);
+                for (int round = 0; round < 5; round++)
+                {
+                    Simulate(1);
+                    Assert.That(RefitPending, Is.True, $"round {round}: the refit is pending");
+                    using NativeArray<RaycastCommand> rays = RaysOnto(bodies);
+                    using var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
+
+                    // One command per job, so that the worker keeps starting queries while the main thread detaches.
+                    JobHandle queries = RaycastCommand.ScheduleBatch(rays, hits, 1);
+                    JobHandle.ScheduleBatchedJobs();
+                    BackendHost.Detach();
+                    queries.Complete();
+                    BackendHost.Attach();
+                }
+
+                Unity.Physics.SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+                Simulate(1);
+                using NativeArray<RaycastCommand> after = RaysOnto(bodies);
+                using var afterHits = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
+                BackendHost.SyncQueryWorlds();
+                RaycastCommand.ScheduleBatch(after, afterHits, 16).Complete();
+                AssertHitsOnTop(bodies, afterHits, "after the detaches");
+            }
+            finally
+            {
+                JobsUtility.JobWorkerCount = defaultWorkers;
+            }
+        }
+
+        /// <summary>
         /// A thread that throws while it does a piece of the refit marks the refit failed, so that the threads that
         /// wait for that piece stop waiting: the refit's other jobs, a query that helps, and the main thread. The next
         /// query on the main thread builds the world again, and finds the hits at the solved poses. Burst leaves the

@@ -151,6 +151,9 @@ namespace KSP.Retooled.Physics
         private JobHandle refit;
         private bool refitPending;
 
+        // The jobs that write the motions that the pending refit reads.
+        private JobHandle refitInputs;
+
         // The store rows of the dynamic bodies, in order, that the dynamic tree was last built for. A build whose
         // dynamic bodies come from the same rows in the same order refits the tree instead of building it again (see
         // RefitsDynamicTree), until treeRefits reaches MaxTreeRefits or the tree's quality falls too far.
@@ -483,6 +486,10 @@ namespace KSP.Retooled.Physics
             // WorldState.Step has already finished the last step's refit. This is for a step that runs the systems
             // some other way.
             FinishPendingRefit();
+            if (s_ThrowBeforeApplyForces.Data != 0)
+            {
+                ThrowBeforeApplyForces();
+            }
 
             // A step that threw after this stage last time can have left the job running.
             forcesApplied.Complete();
@@ -920,12 +927,37 @@ namespace KSP.Retooled.Physics
             refit = SharedDynamicTreeRefit.Schedule(sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
                 boundsCacheBuilt ? boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
             refitPending = true;
-            JobHandle snapshot = ScheduleQuerySnapshot(motionsSolved);
-            JobHandle.ScheduleBatchedJobs();
+            refitInputs = motionsSolved;
 
-            using (BackendMarkers.StepWaitForSolve.Auto())
+            // A query that finds the refit pending helps with it, and the refit reads the solved motions, so a thread
+            // may help only after the solve has written them. Queries can't run during the step, but a step that throws
+            // between here and the wait for the solve returns with the solve's jobs still running. So on that path the
+            // main thread waits for the solved motions before the exception goes on.
+            JobHandle snapshot;
+            bool waitedForSolve = false;
+            try
             {
-                solved.Complete();
+                if (s_ThrowAfterRefitScheduled.Data != 0)
+                {
+                    ThrowAfterRefitScheduled();
+                }
+
+                snapshot = ScheduleQuerySnapshot(motionsSolved);
+                JobHandle.ScheduleBatchedJobs();
+
+                using (BackendMarkers.StepWaitForSolve.Auto())
+                {
+                    solved.Complete();
+                }
+
+                waitedForSolve = true;
+            }
+            finally
+            {
+                if (!waitedForSolve)
+                {
+                    motionsSolved.Complete();
+                }
             }
 
             // The build of this step has completed, so every entry of the bounds cache that a body could take holds
@@ -1167,6 +1199,70 @@ namespace KSP.Retooled.Physics
 
         /// <summary>Whether a refit that the last step left running may still be running. Used by tests.</summary>
         internal readonly bool RefitPending => refitPending;
+
+        /// <summary>
+        /// Whether the jobs that write the motions that the pending refit reads have completed, so that a query may
+        /// help with the refit. Used by tests.
+        /// </summary>
+        internal readonly bool RefitInputsComplete => !refitPending || refitInputs.IsCompleted;
+
+        /// <summary>
+        /// For tests: whether the next step throws right after it schedules the refit of the dynamic tree, while the
+        /// solve's jobs still run. Only code that runs in Mono throws; Burst leaves the throw out.
+        /// </summary>
+        internal static bool ThrowAfterRefitScheduledForTests
+        {
+            get => s_ThrowAfterRefitScheduled.Data != 0;
+            set => s_ThrowAfterRefitScheduled.Data = value ? 1 : 0;
+        }
+
+        /// <summary>For tests: the number of throws that <see cref="ThrowAfterRefitScheduledForTests"/> made.</summary>
+        internal static int ThrowsAfterRefitScheduled => s_ThrowsAfterRefitScheduled;
+
+        private static int s_ThrowsAfterRefitScheduled;
+
+        [Unity.Burst.BurstDiscard]
+        private static void ThrowAfterRefitScheduled()
+        {
+            s_ThrowAfterRefitScheduled.Data = 0;
+            s_ThrowsAfterRefitScheduled++;
+            throw new InvalidOperationException("a throw that a test injected into the step after the refit was scheduled");
+        }
+
+        private sealed class ThrowAfterRefitScheduledKey
+        {
+        }
+
+        /// <summary>
+        /// For tests: whether the next step throws before it applies the forces, which is also before it refreshes
+        /// the pointers of the store's rows. Only code that runs in Mono throws; Burst leaves the throw out.
+        /// </summary>
+        internal static bool ThrowBeforeApplyForcesForTests
+        {
+            get => s_ThrowBeforeApplyForces.Data != 0;
+            set => s_ThrowBeforeApplyForces.Data = value ? 1 : 0;
+        }
+
+        /// <summary>For tests: the number of throws that <see cref="ThrowBeforeApplyForcesForTests"/> made.</summary>
+        internal static int ThrowsBeforeApplyForces => s_ThrowsBeforeApplyForces;
+
+        private static int s_ThrowsBeforeApplyForces;
+
+        [Unity.Burst.BurstDiscard]
+        private static void ThrowBeforeApplyForces()
+        {
+            s_ThrowBeforeApplyForces.Data = 0;
+            s_ThrowsBeforeApplyForces++;
+            throw new InvalidOperationException("a throw that a test injected into the step before it applies the forces");
+        }
+
+        private sealed class ThrowBeforeApplyForcesKey
+        {
+        }
+
+        private static readonly Unity.Burst.SharedStatic<int> s_ThrowBeforeApplyForces = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, ThrowBeforeApplyForcesKey>();
+
+        private static readonly Unity.Burst.SharedStatic<int> s_ThrowAfterRefitScheduled = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, ThrowAfterRefitScheduledKey>();
 
         /// <summary>
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit

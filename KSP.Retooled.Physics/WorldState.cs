@@ -21,9 +21,11 @@ namespace KSP.Retooled.Physics
 
         private readonly StepState* state;
         private readonly QueryWorld* query;
+        private readonly NativeStore.WorldData* store;
 
         internal WorldState(NativeStore.WorldData* store)
         {
+            this.store = store;
             VesselForest.Initialize();
             VesselPipeline.Initialize();
             StepState.ReadBoundsCacheSwitches();
@@ -39,6 +41,12 @@ namespace KSP.Retooled.Physics
             state->SaveTouching();
         }
 
+        /// <summary>Waits for the refit of the dynamic tree that the last step left running, if there is one.</summary>
+        internal void FinishPendingRefit()
+        {
+            state->FinishPendingRefit();
+        }
+
         public void Dispose()
         {
             state->Dispose();
@@ -52,15 +60,27 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal void Step(PhysicsSystemGroup group, float deltaTime)
         {
-            if (group == null || deltaTime <= 0.0f)
+            // When this method returns, Unity reads the poses back, and the plugin reads them through the pointers of
+            // the store's rows (g_ReadBackWorld in the plugin). A step refreshes those pointers when it applies the
+            // forces. When no step runs, or a step throws before it applies the forces, the pointers can be stale
+            // after a structural change to a body's entity, so this method refreshes them on every path. After a step
+            // the refresh finds the rows current and returns at once.
+            try
             {
-                return;
-            }
+                if (group == null || deltaTime <= 0.0f)
+                {
+                    return;
+                }
 
-            // The last step's refit of the dynamic tree writes the built world, which this step builds again.
-            state->FinishPendingRefit();
-            StepKernel.Current = state;
-            group.Step(deltaTime);
+                // The last step's refit of the dynamic tree writes the built world, which this step builds again.
+                state->FinishPendingRefit();
+                StepKernel.Current = state;
+                group.Step(deltaTime);
+            }
+            finally
+            {
+                BodyEntities.PrepareForJobs(store);
+            }
         }
 
         /// <summary>
