@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Store.Memory;
@@ -293,13 +294,13 @@ namespace KSP.Retooled.Physics.Tests
         {
             TwoBoxes();
             CollisionGroups.Set(First, 7, 1, false);
-            GroupTable* table = IgnoreTable.GroupsOf(NativeStore.RetooledPhysics_Globals());
+            GroupTable* table = IgnoreTable.GroupsOf(NativeLibrary.RetooledPhysics_Globals());
             uint before = table->Orphans;
 
             Object.DestroyImmediate(First);
             Assert.That(table->Orphans, Is.EqualTo(before + 1), "the group outlives the shape for now");
 
-            CollisionGroups.ForgetDestroyedColliders(NativeStore.RetooledPhysics_Globals());
+            CollisionGroups.ForgetDestroyedColliders(NativeLibrary.RetooledPhysics_Globals());
             Assert.That(table->Orphans, Is.LessThanOrEqualTo(before), "and goes when the collider no longer exists");
         }
 
@@ -345,7 +346,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             TwoBoxes();
             UnityEngine.Physics.IgnoreCollision(First, Second);
-            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
             IgnoreTable* current = (IgnoreTable*)globals->ignoreTable;
 
             // Seed bytes beyond the old table with a stale marker and pointer before shrinking the allocation.

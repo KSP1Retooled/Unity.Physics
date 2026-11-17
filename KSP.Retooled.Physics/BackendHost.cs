@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -27,9 +28,9 @@ namespace KSP.Retooled.Physics
     {
         private const string Tag = "[RetooledPhysics] ";
 
-        private static readonly NativeStore.SimulateCallback SimulateDelegate = OnSimulate;
-        private static readonly NativeStore.BuildQueryWorldCallback BuildQueryWorldDelegate = OnBuildQueryWorld;
-        private static readonly NativeStore.DestroyWorldCallback DestroyWorldDelegate = OnDestroyWorld;
+        private static readonly ManagedCallbacks.SimulateCallback SimulateDelegate = OnSimulate;
+        private static readonly ManagedCallbacks.BuildQueryWorldCallback BuildQueryWorldDelegate = OnBuildQueryWorld;
+        private static readonly ManagedCallbacks.DestroyWorldCallback DestroyWorldDelegate = OnDestroyWorld;
 
         private static readonly Dictionary<IntPtr, WorldState> Worlds = new Dictionary<IntPtr, WorldState>();
 
@@ -37,12 +38,12 @@ namespace KSP.Retooled.Physics
         private static readonly QueryKernel.QueryFunction MonoQuery = QueryKernel.Run;
         private static readonly MeshCook.CookFunction MonoCookMesh = MeshCook.Cook;
         private static readonly MeshCook.ValidateFunction MonoValidateMesh = MeshCook.Validate;
-        private static readonly NativeStore.CommandFunction MonoBodyCommand = BodyKernel.Run;
-        private static readonly NativeStore.CommandFunction MonoShapeCommand = ShapeKernel.Run;
-        private static readonly NativeStore.CommandFunction MonoWorldCommand = WorldKernel.Run;
-        private static readonly NativeStore.CommandFunction MonoJointCommand = JointKernel.Run;
-        private static readonly NativeStore.CommandFunction MonoVehicleCommand = VehicleKernel.Run;
-        private static readonly NativeStore.RefitFunction MonoHelpRefit = StepKernel.HelpRefit;
+        private static readonly ManagedCallbacks.CommandFunction MonoBodyCommand = BodyKernel.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoShapeCommand = ShapeKernel.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoWorldCommand = WorldKernel.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoJointCommand = JointKernel.Run;
+        private static readonly ManagedCallbacks.CommandFunction MonoVehicleCommand = VehicleKernel.Run;
+        private static readonly ManagedCallbacks.RefitFunction MonoHelpRefit = StepKernel.HelpRefit;
 
         private static Kernels compiledKernels;
         private static volatile bool kernelsCompiled;
@@ -140,7 +141,7 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            string mismatch = NativeStore.FirstSizeMismatch();
+            string mismatch = LayoutChecks.FirstSizeMismatch();
             if (mismatch != null)
             {
                 Debug.LogError($"{Tag}not attaching: {mismatch}.");
@@ -148,8 +149,8 @@ namespace KSP.Retooled.Physics
             }
 
             AttachToPlugin();
-            NativeStore.InstallAddressWait();
-            IgnoreTable.Reslot(NativeStore.RetooledPhysics_Globals());
+            AddressWaitInstall.InstallAddressWait();
+            IgnoreTable.Reslot(NativeLibrary.RetooledPhysics_Globals());
             attached = true;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
 
@@ -183,14 +184,14 @@ namespace KSP.Retooled.Physics
             }
 
             AddressWait.Install(IntPtr.Zero, IntPtr.Zero);
-            NativeStore.RetooledPhysics_Detach();
+            NativeLibrary.RetooledPhysics_Detach();
             attached = false;
             compiledKernelsInPlugin = false;
 
-            int worldCount = NativeStore.RetooledPhysics_WorldCount();
+            int worldCount = NativeLibrary.RetooledPhysics_WorldCount();
             for (int i = 0; i < worldCount; i++)
             {
-                WorldData* world = NativeStore.RetooledPhysics_GetWorld(i);
+                WorldData* world = NativeLibrary.RetooledPhysics_GetWorld(i);
                 lock (Worlds)
                 {
                     // Unity keeps the trigger pairs that it holds, so the world's next state needs the touching pairs.
@@ -284,7 +285,7 @@ namespace KSP.Retooled.Physics
         private static void AttachToPlugin()
         {
             Kernels kernels = CurrentKernels();
-            NativeStore.ManagedCallbacks callbacks = new NativeStore.ManagedCallbacks
+            ManagedCallbacks callbacks = new ManagedCallbacks
             {
                 simulate = Marshal.GetFunctionPointerForDelegate(SimulateDelegate),
                 buildQueryWorld = Marshal.GetFunctionPointerForDelegate(BuildQueryWorldDelegate),
@@ -300,7 +301,7 @@ namespace KSP.Retooled.Physics
                 helpRefit = kernels.helpRefit,
             };
 
-            NativeStore.RetooledPhysics_Attach(&callbacks);
+            NativeLibrary.RetooledPhysics_Attach(&callbacks);
             compiledKernelsInPlugin = kernels.compiled;
         }
 
@@ -334,12 +335,12 @@ namespace KSP.Retooled.Physics
                 query = BurstCompiler.CompileFunctionPointer<QueryKernel.QueryFunction>(QueryKernel.Run).Value,
                 cookMesh = BurstCompiler.CompileFunctionPointer<MeshCook.CookFunction>(MeshCook.Cook).Value,
                 validateMesh = BurstCompiler.CompileFunctionPointer<MeshCook.ValidateFunction>(MeshCook.Validate).Value,
-                bodyCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(BodyKernel.Run).Value,
-                shapeCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(ShapeKernel.Run).Value,
-                worldCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(WorldKernel.Run).Value,
-                jointCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(JointKernel.Run).Value,
-                vehicleCommand = BurstCompiler.CompileFunctionPointer<NativeStore.CommandFunction>(VehicleKernel.Run).Value,
-                helpRefit = BurstCompiler.CompileFunctionPointer<NativeStore.RefitFunction>(StepKernel.HelpRefit).Value,
+                bodyCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(BodyKernel.Run).Value,
+                shapeCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(ShapeKernel.Run).Value,
+                worldCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(WorldKernel.Run).Value,
+                jointCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(JointKernel.Run).Value,
+                vehicleCommand = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.CommandFunction>(VehicleKernel.Run).Value,
+                helpRefit = BurstCompiler.CompileFunctionPointer<ManagedCallbacks.RefitFunction>(StepKernel.HelpRefit).Value,
                 compiled = true,
             };
         }
@@ -447,7 +448,7 @@ namespace KSP.Retooled.Physics
         {
             if (attached)
             {
-                NativeStore.RetooledPhysics_SyncQueryWorlds();
+                NativeLibrary.RetooledPhysics_SyncQueryWorlds();
             }
         }
 
@@ -489,7 +490,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        [MonoPInvokeCallback(typeof(NativeStore.SimulateCallback))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.SimulateCallback))]
         private static void OnSimulate(WorldData* world, float deltaTime)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Step.Auto();
@@ -510,7 +511,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        [MonoPInvokeCallback(typeof(NativeStore.BuildQueryWorldCallback))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.BuildQueryWorldCallback))]
         private static int OnBuildQueryWorld(WorldData* world)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildQueryWorld.Auto();
@@ -527,7 +528,7 @@ namespace KSP.Retooled.Physics
             }
         }
 
-        [MonoPInvokeCallback(typeof(NativeStore.DestroyWorldCallback))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.DestroyWorldCallback))]
         private static void OnDestroyWorld(WorldData* world)
         {
             using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyWorld.Auto();
@@ -535,7 +536,7 @@ namespace KSP.Retooled.Physics
             try
             {
                 ReleaseWorld(world);
-                WorldKernel.FreeBodies(world, NativeStore.RetooledPhysics_Globals());
+                WorldKernel.FreeBodies(world, NativeLibrary.RetooledPhysics_Globals());
             }
             catch (Exception e)
             {

@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
@@ -952,7 +953,7 @@ namespace KSP.Retooled.Physics.Tests
         /// <summary>The address of the backend's shape for the collider on an object, which Unity knows the shape by.</summary>
         private static unsafe long ShapeAddress(GameObject gameObject)
         {
-            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
             WorldData* store = StepKernel.Current != null ? StepKernel.Current->Store : null;
             if (globals == null || store == null)
             {

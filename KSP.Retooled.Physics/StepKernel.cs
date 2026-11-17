@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using Unity.Burst;
 using Unity.Jobs;
 using Unity.Physics;
@@ -105,7 +106,7 @@ namespace KSP.Retooled.Physics
         /// Help remaining dynamic refit work from a query on any thread; see SharedDynamicTreeRefit.Help.
         /// </summary>
         [BurstCompile(DisableSafetyChecks = true)]
-        [AOT.MonoPInvokeCallback(typeof(NativeStore.RefitFunction))]
+        [AOT.MonoPInvokeCallback(typeof(ManagedCallbacks.RefitFunction))]
         internal static void HelpRefit(void* refit)
         {
             bool ranInMono = false;

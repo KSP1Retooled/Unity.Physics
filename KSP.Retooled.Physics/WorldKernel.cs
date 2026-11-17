@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using System.Runtime.InteropServices;
 using AOT;
@@ -72,7 +73,7 @@ namespace KSP.Retooled.Physics
         }
 
         [BurstCompile(DisableSafetyChecks = true)]
-        [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // Reads run without the category's span, as in BodyKernel. The reads that count or collect have their own.

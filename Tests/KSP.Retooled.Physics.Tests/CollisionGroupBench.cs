@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -148,7 +149,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private unsafe void Run(string mode, int side, StringBuilder report)
         {
-            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
             List<Rigidbody> bodies = Cube(side);
             Collider[] colliders = bodies.Select(b => b.GetComponent<Collider>()).ToArray();
 

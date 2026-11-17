@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
@@ -34,7 +35,7 @@ namespace KSP.Retooled.Physics
     /// <summary>Sends each shape to the plugin API's overlap collector.</summary>
     internal unsafe struct ShapeListSink : IQuerySink<DistanceHit>
     {
-        internal FunctionPointer<NativeStore.ShapeCollectorFunction> Collector;
+        internal FunctionPointer<ManagedCallbacks.ShapeCollectorFunction> Collector;
         internal void* Context;
 
         public bool EarlyOut => false;
@@ -54,7 +55,7 @@ namespace KSP.Retooled.Physics
     /// <summary>Sends each shape to the plugin API's broadphase collector.</summary>
     internal unsafe struct BroadphaseListSink : IQuerySink<DistanceHit>
     {
-        internal FunctionPointer<NativeStore.BroadphaseCollectorFunction> Collector;
+        internal FunctionPointer<ManagedCallbacks.BroadphaseCollectorFunction> Collector;
         internal void* Context;
         internal QueryBody* Bodies;
 
@@ -74,7 +75,7 @@ namespace KSP.Retooled.Physics
     /// <summary>Sends each ray hit to the plugin API's hit collector.</summary>
     internal unsafe struct RayListSink : IQuerySink<RaycastHit>
     {
-        internal FunctionPointer<NativeStore.HitCollectorFunction> Collector;
+        internal FunctionPointer<ManagedCallbacks.HitCollectorFunction> Collector;
         internal void* Context;
         internal float Distance;
 
@@ -95,7 +96,7 @@ namespace KSP.Retooled.Physics
     /// <summary>Sends each cast hit to the plugin API's hit collector.</summary>
     internal unsafe struct CastListSink : IQuerySink<ColliderCastHit>
     {
-        internal FunctionPointer<NativeStore.HitCollectorFunction> Collector;
+        internal FunctionPointer<ManagedCallbacks.HitCollectorFunction> Collector;
         internal void* Context;
         internal float Distance;
         internal float3 Direction;

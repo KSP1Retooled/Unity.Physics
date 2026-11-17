@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using AOT;
 using Unity.Burst;
@@ -84,7 +85,7 @@ namespace KSP.Retooled.Physics
     internal static unsafe class BodyKernel
     {
         [BurstCompile(DisableSafetyChecks = true)]
-        [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // Skip category markers for frequent reads; their overhead is comparable to the read itself.

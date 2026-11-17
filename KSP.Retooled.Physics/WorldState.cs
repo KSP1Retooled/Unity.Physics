@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -29,7 +30,7 @@ namespace KSP.Retooled.Physics
             StepState.ReadStaticReuseSwitch();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StepState*)UnsafeUtility.MallocTracked(sizeof(StepState), UnsafeUtility.AlignOf<StepState>(), Allocator.Persistent, 0);
-            *state = new StepState(store, NativeStore.RetooledPhysics_Globals(), query);
+            *state = new StepState(store, NativeLibrary.RetooledPhysics_Globals(), query);
             TouchingHandOff.Restore(store, state->Touching);
         }
 

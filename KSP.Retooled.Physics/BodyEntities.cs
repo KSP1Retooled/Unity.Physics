@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
@@ -58,10 +59,10 @@ namespace KSP.Retooled.Physics
                 ComponentType.ReadOnly<BodyOwner>());
             binding.Bound = true;
 
-            int worlds = NativeStore.RetooledPhysics_WorldCount();
+            int worlds = NativeLibrary.RetooledPhysics_WorldCount();
             for (int w = 0; w < worlds; w++)
             {
-                WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                WorldData* world = NativeLibrary.RetooledPhysics_GetWorld(w);
                 for (uint i = 0; i < world->bodyCount; i++)
                 {
                     Place(world->bodies + i);
@@ -79,12 +80,12 @@ namespace KSP.Retooled.Physics
         internal static void Unbind()
         {
             ref Binding binding = ref Current.Data;
-            int worlds = NativeStore.RetooledPhysics_WorldCount();
+            int worlds = NativeLibrary.RetooledPhysics_WorldCount();
             try
             {
                 for (int w = 0; w < worlds; w++)
                 {
-                    WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    WorldData* world = NativeLibrary.RetooledPhysics_GetWorld(w);
                     for (uint i = 0; i < world->bodyCount; i++)
                     {
                         Release(world->bodies + i);
@@ -95,7 +96,7 @@ namespace KSP.Retooled.Physics
             {
                 for (int w = 0; w < worlds; w++)
                 {
-                    WorldData* world = NativeStore.RetooledPhysics_GetWorld(w);
+                    WorldData* world = NativeLibrary.RetooledPhysics_GetWorld(w);
                     for (uint i = 0; i < world->bodyCount; i++)
                     {
                         Abandon(world->bodies + i);
@@ -259,7 +260,7 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            if (NativeStore.RetooledPhysics_OnMainThread() == 0)
+            if (NativeLibrary.RetooledPhysics_OnMainThread() == 0)
             {
                 return;
             }

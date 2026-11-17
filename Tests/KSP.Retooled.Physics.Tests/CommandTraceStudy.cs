@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -22,7 +23,7 @@ namespace KSP.Retooled.Physics.Tests
         private const int Moved = 10;
         private const int Statics = 10;
 
-        [DllImport(NativeStore.Library)]
+        [DllImport(NativeLibrary.Library)]
         private static extern void RetooledPhysics_ReadCommandTrace(uint* counts);
 
         private static readonly string[] Categories = { "?", "Sdk", "World", "Body", "Shape", "Query", "Joint", "Articulation", "Extension" };

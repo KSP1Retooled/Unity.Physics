@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using System.Runtime.InteropServices;
 using AOT;
@@ -194,7 +195,7 @@ namespace KSP.Retooled.Physics
                 world,
                 new RayListSink
                 {
-                    Collector = new FunctionPointer<NativeStore.HitCollectorFunction>((IntPtr)input->collector),
+                    Collector = new FunctionPointer<ManagedCallbacks.HitCollectorFunction>((IntPtr)input->collector),
                     Context = input->collectorContext,
                     Distance = distance,
                     MaxFraction = 1.0f,
@@ -296,7 +297,7 @@ namespace KSP.Retooled.Physics
                 world,
                 new ShapeListSink
                 {
-                    Collector = new FunctionPointer<NativeStore.ShapeCollectorFunction>((IntPtr)input->collector),
+                    Collector = new FunctionPointer<ManagedCallbacks.ShapeCollectorFunction>((IntPtr)input->collector),
                     Context = input->collectorContext,
                     MaxFraction = TouchDistance,
                 },
@@ -322,7 +323,7 @@ namespace KSP.Retooled.Physics
                 world,
                 new BroadphaseListSink
                 {
-                    Collector = new FunctionPointer<NativeStore.BroadphaseCollectorFunction>((IntPtr)input->collector),
+                    Collector = new FunctionPointer<ManagedCallbacks.BroadphaseCollectorFunction>((IntPtr)input->collector),
                     Context = input->collectorContext,
                     Bodies = world->Bodies,
                     MaxFraction = TouchDistance,
@@ -417,7 +418,7 @@ namespace KSP.Retooled.Physics
         {
             return new CastListSink
             {
-                Collector = new FunctionPointer<NativeStore.HitCollectorFunction>((IntPtr)input->collector),
+                Collector = new FunctionPointer<ManagedCallbacks.HitCollectorFunction>((IntPtr)input->collector),
                 Context = input->collectorContext,
                 Distance = distance,
                 Direction = direction,

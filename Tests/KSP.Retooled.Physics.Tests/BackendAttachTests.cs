@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
@@ -52,14 +53,14 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public unsafe void JointsOfAnotherLayoutAreRefused()
         {
-            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
             uint size = globals->jointDataSize;
-            Assert.That(NativeStore.FirstSizeMismatch(), Is.Null);
+            Assert.That(LayoutChecks.FirstSizeMismatch(), Is.Null);
 
             globals->jointDataSize = size + 8;
             try
             {
-                Assert.That(NativeStore.FirstSizeMismatch(), Does.Contain(nameof(JointData)));
+                Assert.That(LayoutChecks.FirstSizeMismatch(), Does.Contain(nameof(JointData)));
             }
             finally
             {

@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
@@ -26,7 +27,7 @@ namespace KSP.Retooled.Physics.Tests
         public void CreateWorld()
         {
             Assume.That(BackendInfo.IsRetooled, "needs --backend retooled");
-            globals = NativeStore.RetooledPhysics_Globals();
+            globals = NativeLibrary.RetooledPhysics_Globals();
             world = StoreMemory.Allocate<WorldData>(globals);
         }
 

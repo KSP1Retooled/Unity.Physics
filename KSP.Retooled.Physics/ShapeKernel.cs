@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using AOT;
 using Unity.Burst;
@@ -65,7 +66,7 @@ namespace KSP.Retooled.Physics
     internal static unsafe class ShapeKernel
     {
         [BurstCompile(DisableSafetyChecks = true)]
-        [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // A span costs about as much as a read, so reads run without the category's span, as in BodyKernel.

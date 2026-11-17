@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using System;
 using AOT;
 using Unity.Burst;
@@ -65,7 +66,7 @@ namespace KSP.Retooled.Physics
         private const uint NoIndex = uint.MaxValue;
 
         [BurstCompile(DisableSafetyChecks = true)]
-        [MonoPInvokeCallback(typeof(NativeStore.CommandFunction))]
+        [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
         {
             // A WheelCollider's state is read every frame, and a span costs about as much as such a read, so reads run

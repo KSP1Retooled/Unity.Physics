@@ -1,3 +1,4 @@
+using KSP.Retooled.Physics.Interop;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
@@ -43,7 +44,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            StoreGlobals* globals = NativeStore.RetooledPhysics_Globals();
+            StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
             ulong engineId = EntityId.ToULong(collider.GetEntityId());
             Shape* shape = GroupTable.Set(globals, engineId, group, member, selfCollides ? GroupTable.SelfCollides : 0u);
             Wake(shape);
@@ -74,7 +75,7 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            if (!GroupTable.TryGet(NativeStore.RetooledPhysics_Globals(), EntityId.ToULong(collider.GetEntityId()), out GroupTable.Record record))
+            if (!GroupTable.TryGet(NativeLibrary.RetooledPhysics_Globals(), EntityId.ToULong(collider.GetEntityId()), out GroupTable.Record record))
             {
                 return false;
             }
@@ -97,14 +98,14 @@ namespace KSP.Retooled.Physics
                 return false;
             }
 
-            GroupTable.SetPair(NativeStore.RetooledPhysics_Globals(), first, second, collide);
+            GroupTable.SetPair(NativeLibrary.RetooledPhysics_Globals(), first, second, collide);
             return true;
         }
 
         /// <summary>Returns whether <see cref="SetMembersCollide"/> lets two members collide.</summary>
         public static bool GetMembersCollide(uint first, uint second)
         {
-            return Available && GroupTable.HasPair(NativeStore.RetooledPhysics_Globals(), first, second);
+            return Available && GroupTable.HasPair(NativeLibrary.RetooledPhysics_Globals(), first, second);
         }
 
         /// <summary>
