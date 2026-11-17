@@ -10,7 +10,8 @@ using Object = UnityEngine.Object;
 namespace KSP.Retooled.Physics.Tests
 {
     /// <summary>
-    /// Writes, for every step of a few scenes, a hash of every joint's force and torque and of every body's pose, and
+    /// Writes, for every step of a few scenes, a hash of every joint's force and torque, of every body's pose, of every
+    /// body's velocity, of the bodies and motions of the world that the step built, and of the collision messages, and
     /// the number of joints that are left. Two commits that must give the same results to the last bit give the same
     /// file. TRACE_TAG names the output, Logs/JointLoadTrace-&lt;tag&gt;.txt. TRACE_BREAK sets the break force of the
     /// Tu-160's joints, in newtons (default 2e4). The scenes are the Tu-160 dropped 2 m onto the ground, and a tower of
@@ -33,7 +34,115 @@ namespace KSP.Retooled.Physics.Tests
             return Mix(Mix(Mix(hash, value.x), value.y), value.z);
         }
 
+        /// <summary>
+        /// Mixes every collision message that its GameObject receives into one hash: the kind of message, the other
+        /// collider's name, and each contact's point, normal, separation and impulse.
+        /// </summary>
+        [ExecuteAlways]
+        internal class ContactHash : MonoBehaviour
+        {
+            public static ulong Hash = 14695981039346656037UL;
+            public static int Messages;
+
+            private void Add(float kind, Collision collision)
+            {
+                Messages++;
+                Hash = Mix(Hash, kind);
+                Hash = Mix(Hash, collision.collider != null ? collision.collider.name.Length : -1);
+                Hash = Mix(Hash, collision.impulse);
+                for (int i = 0; i < collision.contactCount; i++)
+                {
+                    ContactPoint contact = collision.GetContact(i);
+                    Hash = Mix(Mix(Mix(Hash, contact.point), contact.normal), contact.separation);
+                    Hash = Mix(Hash, contact.impulse);
+                }
+            }
+
+            private void OnCollisionEnter(Collision collision)
+            {
+                Add(1.0f, collision);
+            }
+
+            private void OnCollisionStay(Collision collision)
+            {
+                Add(2.0f, collision);
+            }
+
+            private void OnCollisionExit(Collision collision)
+            {
+                Add(3.0f, collision);
+            }
+        }
+
+        private static ulong Mix(ulong hash, int value)
+        {
+            hash ^= (uint)value;
+            return hash * 1099511628211UL;
+        }
+
+        /// <summary>
+        /// A hash of the bodies and motions of the world that the step built: every field except the colliders'
+        /// addresses and the serial numbers, which differ between runs. It also mixes in whether each body has a collider
+        /// and a serial number.
+        /// </summary>
+        private static unsafe ulong WorldHash()
+        {
+            // The refit of the dynamic tree can still run after the step, and it reads the bodies.
+            StepKernel.Current->FinishPendingRefit();
+            ulong hash = 14695981039346656037UL;
+            Unity.Physics.PhysicsWorld world = StepKernel.Current->World;
+            foreach (Unity.Physics.RigidBody body in world.Bodies)
+            {
+                hash = Mix(hash, body.Collider.IsCreated ? 1 : 0);
+                hash = Mix(hash, body.Entity.Index);
+                hash = Mix(hash, body.Entity.Version > 0 ? 1 : body.Entity.Version);
+                hash = Mix(hash, body.Scale);
+                hash = Mix(hash, body.CustomTags);
+                hash = Mix(Mix(hash, (Vector3)body.WorldFromBody.pos), (Vector4)body.WorldFromBody.rot.value);
+            }
+
+            foreach (Unity.Physics.MotionData motion in world.MotionDatas)
+            {
+                hash = Mix(Mix(hash, (Vector3)motion.WorldFromMotion.pos), (Vector4)motion.WorldFromMotion.rot.value);
+                hash = Mix(Mix(hash, (Vector3)motion.BodyFromMotion.pos), (Vector4)motion.BodyFromMotion.rot.value);
+                hash = Mix(Mix(hash, motion.LinearDamping), motion.AngularDamping);
+            }
+
+            foreach (Unity.Physics.MotionVelocity velocity in world.MotionVelocities)
+            {
+                hash = Mix(Mix(Mix(hash, (Vector3)velocity.LinearVelocity), (Vector3)velocity.AngularVelocity), (Vector3)velocity.InverseInertia);
+                hash = Mix(Mix(Mix(hash, velocity.InverseMass), velocity.AngularExpansionFactor), velocity.GravityFactor);
+            }
+
+            return hash;
+        }
+
+        private static ulong Mix(ulong hash, Vector4 value)
+        {
+            return Mix(Mix(Mix(Mix(hash, value.x), value.y), value.z), value.w);
+        }
+
         private static void Record(StringBuilder trace, int step, List<ConfigurableJoint> joints, List<Rigidbody> bodies)
+        {
+            ulong velocities = 14695981039346656037UL;
+            foreach (Rigidbody body in bodies)
+            {
+                if (body != null)
+                {
+                    velocities = Mix(Mix(velocities, body.linearVelocity), body.angularVelocity);
+                }
+            }
+
+            ulong world = WorldHash();
+            ulong contacts = ContactHash.Hash;
+            int messages = ContactHash.Messages;
+            ContactHash.Hash = 14695981039346656037UL;
+            ContactHash.Messages = 0;
+            RecordLoadsAndPoses(trace, step, joints, bodies);
+            trace.Append($"{step} velocities {velocities:x16} world {world:x16} contacts {contacts:x16} messages {messages}\n");
+        }
+
+        private static void RecordLoadsAndPoses(StringBuilder trace, int step, List<ConfigurableJoint> joints, List<Rigidbody> bodies)
         {
             ulong loads = 14695981039346656037UL, poses = 14695981039346656037UL;
             int left = 0;
@@ -93,6 +202,8 @@ namespace KSP.Retooled.Physics.Tests
             string tag = Environment.GetEnvironmentVariable("TRACE_TAG") ?? "run";
             float breakForce = float.TryParse(Environment.GetEnvironmentVariable("TRACE_BREAK"), out float value) ? value : 2e4f;
             var trace = new StringBuilder();
+            ContactHash.Hash = 14695981039346656037UL;
+            ContactHash.Messages = 0;
 
             // The Tu-160, built as the bench builds it, 2 m above the ground.
             var bench = new VesselForestBench();
@@ -110,6 +221,7 @@ namespace KSP.Retooled.Physics.Tests
                 {
                     body.position += new Vector3(0.0f, 2.0f, 0.0f);
                     body.transform.position = body.position;
+                    body.gameObject.AddComponent<ContactHash>();
                     foreach (ConfigurableJoint joint in body.GetComponents<ConfigurableJoint>())
                     {
                         joint.breakForce = breakForce;
@@ -171,6 +283,11 @@ namespace KSP.Retooled.Physics.Tests
                 joints.AddRange(right.GetComponents<ConfigurableJoint>());
                 bodies.Add(left);
                 bodies.Add(right);
+
+                foreach (Rigidbody body in bodies)
+                {
+                    body.gameObject.AddComponent<ContactHash>();
+                }
 
                 trace.Append($"tower: {bodies.Count} bodies, {joints.Count} joints\n");
                 for (int step = 0; step < Steps; step++)
