@@ -7,7 +7,9 @@
 #
 #   full, quick and retooled pick the same tests as in Tests/run-suite.sh. filter=<filters> takes test filters
 #   separated by ';', as Unity's -testFilter argument does, for example
-#   filter=KSP.Retooled.Physics.Tests.VesselForestBench.Measure. category=<categories> works like -testCategory.
+#   'filter=KSP.Retooled.Physics.Tests.VesselForestBench.Measure$'. Each filter is a regular expression that can match
+#   any part of a test's full name, so without the "$" that filter also runs VesselForestBench.MeasureStages.
+#   category=<categories> works like -testCategory.
 #   NAME=VALUE sets an environment variable for this run only, for example RETOOLED_VESSEL=0. When the set of variables
 #   differs from the last run, the editor reloads its scripts before the run, so that settings read at start-up see the
 #   new values.
@@ -26,7 +28,7 @@
 set -u
 
 usage() {
-    sed -n '2,24p' "$0"
+    sed -n '2,26p' "$0"
     exit 2
 }
 
