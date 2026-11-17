@@ -105,7 +105,9 @@ namespace KSP.Retooled.Physics
 
         /// <summary>
         /// Marks every body whose last build threw an exception for a full rebuild. Those bodies still have their
-        /// previous colliders. Call only on the main thread after the refresh has completed.
+        /// previous colliders. Call only on the main thread after the refresh has completed. The next build can give a
+        /// static body a new collider this way, so the method moves the world's statics version for a static body, as
+        /// StoreOps.MarkColliderDirty does.
         /// </summary>
         internal static void AskAgainForFailed(NativeStore.WorldData* world, NativeList<Work> work, NativeList<long> results)
         {
@@ -114,6 +116,10 @@ namespace KSP.Retooled.Physics
                 if (results[i] == Failed && work[i].Body < world->bodyCount)
                 {
                     world->bodies[work[i].Body].flags |= NativeStore.BodyFlags.ColliderDirty;
+                    if ((world->bodies[work[i].Body].flags & NativeStore.BodyFlags.Static) != 0)
+                    {
+                        world->staticsVersion++;
+                    }
                 }
             }
 

@@ -14,7 +14,11 @@ using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
+using BoxCollider = UnityEngine.BoxCollider;
+using Collider = UnityEngine.Collider;
 using Debug = UnityEngine.Debug;
+using Mesh = UnityEngine.Mesh;
+using MeshCollider = UnityEngine.MeshCollider;
 
 namespace KSP.Retooled.Physics.Tests
 {
@@ -338,6 +342,117 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// The name of the scene that puts the craft on the ground among <see cref="StaticFieldCount"/> static colliders,
+        /// for RETOOLED_BENCH_SCENE and ZzTimeline's PROFILE_SCENE. Like the buildings and props of the space centre, the
+        /// colliders never move, so the scene shows what the step spends on static bodies that don't change.
+        /// </summary>
+        internal const string StaticsScene = "statics";
+
+        /// <summary>The number of static colliders that <see cref="StaticField"/> makes.</summary>
+        internal const int StaticFieldCount = 5000;
+
+        private static Mesh hullMesh;
+
+        /// <summary>
+        /// A mesh with twelve vertices, a stretched icosahedron, for the static convex hulls of <see cref="StaticField"/>.
+        /// All of the hulls share it.
+        /// </summary>
+        internal static Mesh HullMesh()
+        {
+            if (hullMesh != null)
+            {
+                return hullMesh;
+            }
+
+            float g = 0.5f * (1.0f + Mathf.Sqrt(5.0f));
+            var vertices = new[]
+            {
+                new Vector3(-1, g, 0), new Vector3(1, g, 0), new Vector3(-1, -g, 0), new Vector3(1, -g, 0),
+                new Vector3(0, -1, g), new Vector3(0, 1, g), new Vector3(0, -1, -g), new Vector3(0, 1, -g),
+                new Vector3(g, 0, -1), new Vector3(g, 0, 1), new Vector3(-g, 0, -1), new Vector3(-g, 0, 1),
+            };
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                vertices[i] = Vector3.Scale(vertices[i], new Vector3(0.9f, 0.6f, 0.7f));
+            }
+
+            hullMesh = new Mesh
+            {
+                vertices = vertices,
+                triangles = new[]
+                {
+                    0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6, 7, 1, 8,
+                    3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9, 8, 1,
+                },
+                name = "bench hull",
+            };
+            return hullMesh;
+        }
+
+        /// <summary>
+        /// Makes <see cref="StaticFieldCount"/> static colliders on the ground around the craft, as the space centre has
+        /// buildings and props around the launch pad: boxes and convex hulls in turn, in a grid with 5 m between their
+        /// centres, each turned by its own angle about the vertical. The cells within 10 m of the craft stay empty, so
+        /// that the craft touches only the ground. <paramref name="groundTop"/> is the height of the ground's top face,
+        /// and <paramref name="track"/> records each new object for the scene's tear-down. Returns the colliders.
+        /// </summary>
+        internal static List<Collider> StaticField(Graph graph, float groundTop, Func<GameObject, GameObject> track)
+        {
+            float left = graph.Position.Min(p => p.x) - 10.0f, right = graph.Position.Max(p => p.x) + 10.0f;
+            float back = graph.Position.Min(p => p.z) - 10.0f, front = graph.Position.Max(p => p.z) + 10.0f;
+            var colliders = new List<Collider>(StaticFieldCount);
+            const float Spacing = 5.0f;
+            int side = (int)Mathf.Ceil(Mathf.Sqrt(StaticFieldCount * 1.5f));
+            for (int cell = 0; colliders.Count < StaticFieldCount; cell++)
+            {
+                float x = Spacing * (cell % side - side / 2);
+                float z = Spacing * (cell / side - side / 2);
+                if (x > left && x < right && z > back && z < front)
+                {
+                    continue;
+                }
+
+                GameObject item = track(new GameObject($"static {colliders.Count}"));
+                item.transform.rotation = Quaternion.Euler(0.0f, 37.0f * colliders.Count, 0.0f);
+                if (colliders.Count % 2 == 0)
+                {
+                    item.transform.position = new Vector3(x, groundTop + 1.0f, z);
+                    BoxCollider box = item.AddComponent<BoxCollider>();
+                    box.size = new Vector3(2.0f, 2.0f, 3.0f);
+                    colliders.Add(box);
+                }
+                else
+                {
+                    item.transform.position = new Vector3(x, groundTop + 0.6f * 1.618034f, z);
+                    MeshCollider hull = item.AddComponent<MeshCollider>();
+                    hull.sharedMesh = HullMesh();
+                    hull.convex = true;
+                    colliders.Add(hull);
+                }
+            }
+
+            return colliders;
+        }
+
+        /// <summary>
+        /// The height of the top face of the ground that <see cref="Build"/> makes under the craft.
+        /// </summary>
+        internal static float GroundTop(Graph graph)
+        {
+            float lowest = float.MaxValue;
+            for (int i = 0; i < graph.Parent.Length; i++)
+            {
+                float mass = Mathf.Max(graph.Mass[i], 1e-3f);
+                float inertia = Mathf.Max((graph.Inertia[i].x + graph.Inertia[i].y + graph.Inertia[i].z) / 3.0f, 1e-6f);
+                float side = Mathf.Clamp(Mathf.Sqrt(6.0f * inertia / mass), 0.05f, 5.0f);
+                lowest = Mathf.Min(lowest, graph.Position[i].y - 0.5f * side);
+            }
+
+            return lowest;
+        }
+
+        /// <summary>
         /// The craft as one vessel for the "vessel" path: one part per body in parent-first order, an edge for every graph
         /// edge with the bench joint's swing spring and a hard twist, and a hard closure for every strut. The parts' world
         /// indices are found once, from the first world the backend builds, since the bench adds no bodies afterwards.
@@ -586,8 +701,9 @@ namespace KSP.Retooled.Physics.Tests
         /// Builds the scene once and measures it with each number of threads in <paramref name="threadCounts"/>, in that
         /// order, after warm-up steps with that number of threads. Returns one result for each number of threads.
         /// </summary>
-        private List<SessionResult> Session(Graph graph, bool ground, string path, int[] threadCounts, int workers)
+        private List<SessionResult> Session(Graph graph, string scene, string path, int[] threadCounts, int workers)
         {
+            bool ground = scene != "floating";
             CpuReading setUpStart = CpuReading.Take();
             long clock = Stopwatch.GetTimestamp();
             TearDownScene();
@@ -633,6 +749,11 @@ namespace KSP.Retooled.Physics.Tests
             JobsUtility.JobWorkerCount = threadCounts[0] > 1 ? threadCounts[0] - 1 : 0;
             clock = Stopwatch.GetTimestamp();
             List<Rigidbody> built = Build(graph, ground, path != "vessel");
+            if (scene == StaticsScene)
+            {
+                StaticField(graph, GroundTop(graph), Track);
+            }
+
             double build = Since(clock);
 
             // The first step builds the world from the new bodies, colliders and joints, and compiles the craft's vessels.
@@ -1198,7 +1319,8 @@ namespace KSP.Retooled.Physics.Tests
                     long loadStart = Stopwatch.GetTimestamp();
                     Graph graph = Fleet(Load(craft));
                     double loadTime = Since(loadStart);
-                    foreach (bool ground in Choice("RETOOLED_BENCH_SCENE", "floating,ground").Select(s => s == "ground"))
+                    // RETOOLED_BENCH_SCENE can also name StaticsScene, the ground among thousands of static colliders.
+                    foreach (string scene in Choice("RETOOLED_BENCH_SCENE", "floating,ground"))
                     {
                         // results[t][p] is the result for the number of threads threadCounts[t] on the path paths[p].
                         var results = new SessionResult[threadCounts.Length][];
@@ -1211,7 +1333,7 @@ namespace KSP.Retooled.Physics.Tests
                         {
                             for (int p = 0; p < paths.Length; p++)
                             {
-                                List<SessionResult> runs = Session(graph, ground, paths[p], threadCounts, workers);
+                                List<SessionResult> runs = Session(graph, scene, paths[p], threadCounts, workers);
                                 for (int t = 0; t < threadCounts.Length; t++)
                                 {
                                     results[t][p] = runs[t];
@@ -1224,7 +1346,7 @@ namespace KSP.Retooled.Physics.Tests
                             {
                                 for (int p = 0; p < paths.Length; p++)
                                 {
-                                    results[t][p] = Session(graph, ground, paths[p], new[] { threadCounts[t] }, workers)[0];
+                                    results[t][p] = Session(graph, scene, paths[p], new[] { threadCounts[t] }, workers)[0];
                                 }
                             }
                         }
@@ -1243,7 +1365,7 @@ namespace KSP.Retooled.Physics.Tests
                                 setUps.Add($"{paths[p]}: {result.SetUp}");
                             }
 
-                            report.Append($"{graph.Name} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threadCounts[t]} | " +
+                            report.Append($"{graph.Name} | {graph.Parent.Length} | {scene} | {threadCounts[t]} | " +
                                 $"{string.Join(" | ", cells)} | {string.Join("; ", notes)} | " +
                                 $"load the craft {loadTime:F0} ms; {string.Join(" / ", setUps)}\n");
                         }
