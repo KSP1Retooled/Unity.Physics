@@ -24,7 +24,8 @@
 #   <output folder>/<side>-<round>.txt, where side is base or change.
 #   The summary compares minimum and median timings and competing CPU load.
 #
-# Test filters end in $ so that Measure does not also match MeasureStages.
+# Match the fixture in either layout so that the base project can use an earlier revision.
+# The end of the filter keeps MeasureStages out of the run.
 # Stop other editor instances before running against these projects.
 #
 
@@ -60,10 +61,10 @@ sh "$tester" "$change" stop
 
 # Start both editors at once; nothing is timed yet.
 echo "starting both editors"
-sh "$tester" "$base" ab-start 'filter=KSP.Retooled.Physics.Tests.BackendSelectionTests.TheCurrentBackendIsOneWeShip$' "$@" \
+sh "$tester" "$base" ab-start 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Host\.)?BackendSelectionTests\.TheCurrentBackendIsOneWeShip$' "$@" \
     > "$out/start-base.log" 2>&1 &
 first=$!
-sh "$tester" "$change" ab-start 'filter=KSP.Retooled.Physics.Tests.BackendSelectionTests.TheCurrentBackendIsOneWeShip$' "$@" \
+sh "$tester" "$change" ab-start 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Host\.)?BackendSelectionTests\.TheCurrentBackendIsOneWeShip$' "$@" \
     > "$out/start-change.log" 2>&1
 wait $first
 cat "$out/start-base.log" "$out/start-change.log"
@@ -74,7 +75,7 @@ run() {
     round=$2
     shift 2
     if [ "$side" = base ]; then project=$base; else project=$change; fi
-    sh "$tester" "$project" "ab-$side-$round" 'filter=KSP.Retooled.Physics.Tests.VesselForestBench.Measure$' "$@" || exit 1
+    sh "$tester" "$project" "ab-$side-$round" 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Benchmarks\.)?VesselForestBench\.Measure$' "$@" || exit 1
     if ! grep -q 'passed="1"' "$project/Logs/ab-$side-$round-results.xml"; then
         echo "the bench failed in $project; read $project/Logs/ab-$side-$round-results.xml"
         exit 1

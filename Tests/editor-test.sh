@@ -84,11 +84,11 @@ category=""
 # Exclude the upstream fixtures by name so new Retooled fixtures are selected automatically.
 # NUnit keeps explicit tests out of runs that use exclusions.
 upstream=$(sed -e '/^#/d' -e '/^$/d' -e 's/[.]/\\./g' "$here/upstream-tests.txt" | paste -sd '|' -)
-retooled_filter="!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^(?:$upstream)(?:\\.|\\(|$)"
+retooled_filter="!KSP.Retooled.Physics.Tests.Host.PlayModeLifecycleTests;!^(?:$upstream)(?:\\.|\\(|$)"
 
 case "$mode" in
     full)
-        filter='!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests'
+        filter='!KSP.Retooled.Physics.Tests.Host.PlayModeLifecycleTests'
         ;;
     quick)
         filter="$retooled_filter"
