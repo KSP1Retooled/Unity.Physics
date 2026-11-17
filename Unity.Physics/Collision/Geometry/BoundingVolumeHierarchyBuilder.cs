@@ -790,6 +790,115 @@ namespace Unity.Physics
         /// <summary>As <see cref="RefitSubtree(int, NativeArray{Aabb})"/>, with the bounds of the leaves' elements.</summary>
         internal unsafe void RefitSubtree(int root, Aabb* bounds)
         {
+            var fitter = new BoundsFitter { Bounds = bounds };
+            RefitSubtree(root, ref fitter);
+        }
+
+        /// <summary>
+        /// The work that a refit does at each node that it fits. <see cref="RefitSubtree{T}"/> and
+        /// <see cref="RefitAboveCut{T}"/> call <see cref="FitLeaf"/> for each leaf, and <see cref="FitInternal"/> for
+        /// each internal node after the node's children.
+        /// </summary>
+        internal unsafe interface INodeFitter
+        {
+            void FitLeaf(Node* baseNode, int index);
+            void FitInternal(Node* baseNode, int index);
+        }
+
+        /// <summary>Fits the bounds of each node to the bounds of the leaves' elements, and does nothing else.</summary>
+        internal unsafe struct BoundsFitter : INodeFitter
+        {
+            public Aabb* Bounds;
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void FitLeaf(Node* baseNode, int index) => FitLeafNode(Bounds, baseNode + index);
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void FitInternal(Node* baseNode, int index) => FitInternalNode(baseNode, baseNode + index);
+        }
+
+        /// <summary>
+        /// Fits the bounds of each node as <see cref="BoundsFitter"/> does, and adds up two surface areas that tell how
+        /// good the tree is: the area of the bounds of every node below the root, in <see cref="NodeArea"/>, and the
+        /// area of the bounds of every element, in <see cref="LeafArea"/>. A tree whose nodes hold elements that are
+        /// close together has a small node area for its leaf area. With <see cref="LeafFilters"/>, the fitter also
+        /// sets the filter of each node to the union of its children's filters, as the build does.
+        /// </summary>
+        internal unsafe struct MeasuringFitter : INodeFitter
+        {
+            public Aabb* Bounds;
+
+            /// <summary>The filters of the elements, or null to leave the nodes' filters as they are.</summary>
+            public CollisionFilter* LeafFilters;
+
+            /// <summary>The filters of the nodes, which the fitter writes when <see cref="LeafFilters"/> is set.</summary>
+            public CollisionFilter* NodeFilters;
+
+            public float NodeArea;
+            public float LeafArea;
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void FitLeaf(Node* baseNode, int index)
+            {
+                Node* node = baseNode + index;
+                FitLeafNode(Bounds, node);
+                CollisionFilter filter = CollisionFilter.Zero;
+                bool first = true;
+                for (int j = 0; j < 4; j++)
+                {
+                    if (node->IsLeafValid(j))
+                    {
+                        LeafArea += Bounds[node->Data[j]].SurfaceArea;
+                        if (LeafFilters != null)
+                        {
+                            CollisionFilter leafFilter = LeafFilters[node->Data[j]];
+                            filter = first ? leafFilter : CollisionFilter.CreateUnion(filter, leafFilter);
+                            first = false;
+                        }
+                    }
+                }
+
+                if (LeafFilters != null)
+                {
+                    NodeFilters[index] = filter;
+                }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void FitInternal(Node* baseNode, int index)
+            {
+                Node* node = baseNode + index;
+                FitInternalNode(baseNode, node);
+                CollisionFilter filter = CollisionFilter.Zero;
+                bool first = true;
+                for (int j = 0; j < 4; j++)
+                {
+                    if (node->IsInternalValid(j))
+                    {
+                        NodeArea += node->Bounds.GetAabb(j).SurfaceArea;
+                        if (LeafFilters != null)
+                        {
+                            CollisionFilter childFilter = NodeFilters[node->Data[j]];
+                            filter = first ? childFilter : CollisionFilter.CreateUnion(filter, childFilter);
+                            first = false;
+                        }
+                    }
+                }
+
+                if (LeafFilters != null)
+                {
+                    NodeFilters[index] = filter;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Walks the subtree below <paramref name="root"/>, including the root, depth first, and has
+        /// <paramref name="fitter"/> fit each node after all of its children, without changing the shape of the
+        /// subtree.
+        /// </summary>
+        internal unsafe void RefitSubtree<T>(int root, ref T fitter) where T : struct, INodeFitter
+        {
             Node* baseNode = m_Nodes;
 
             // The stack holds the nodes that still have to be visited, and the internal nodes whose children are
@@ -807,7 +916,7 @@ namespace Unity.Physics
                 int entry = stack[--count];
                 if (entry < 0)
                 {
-                    FitInternalNode(baseNode, baseNode + ~entry);
+                    fitter.FitInternal(baseNode, ~entry);
                     continue;
                 }
 
@@ -815,7 +924,7 @@ namespace Unity.Physics
                 Node* node = baseNode + entry;
                 if (node->IsLeaf)
                 {
-                    FitLeafNode(bounds, node);
+                    fitter.FitLeaf(baseNode, entry);
                     continue;
                 }
 
@@ -854,10 +963,17 @@ namespace Unity.Physics
         /// </summary>
         internal unsafe void RefitAboveCut()
         {
-            FitAboveCut(m_Nodes, 1, 0);
+            var fitter = new BoundsFitter();
+            FitAboveCut(m_Nodes, 1, 0, ref fitter);
         }
 
-        static unsafe void FitAboveCut(Node* baseNode, int index, int depth)
+        /// <summary>As <see cref="RefitAboveCut()"/>, with <paramref name="fitter"/> to fit each node.</summary>
+        internal unsafe void RefitAboveCut<T>(ref T fitter) where T : struct, INodeFitter
+        {
+            FitAboveCut(m_Nodes, 1, 0, ref fitter);
+        }
+
+        static unsafe void FitAboveCut<T>(Node* baseNode, int index, int depth, ref T fitter) where T : struct, INodeFitter
         {
             Node* node = baseNode + index;
             if (node->IsLeaf || depth >= RefitCutDepth)
@@ -869,11 +985,11 @@ namespace Unity.Physics
             {
                 if (node->IsInternalValid(j))
                 {
-                    FitAboveCut(baseNode, node->Data[j], depth + 1);
+                    FitAboveCut(baseNode, node->Data[j], depth + 1, ref fitter);
                 }
             }
 
-            FitInternalNode(baseNode, node);
+            fitter.FitInternal(baseNode, index);
         }
 
         // Only the bounds change. The counts of elements and free slots stay as the build left them.

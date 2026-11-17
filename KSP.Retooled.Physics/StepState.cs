@@ -147,6 +147,94 @@ namespace KSP.Retooled.Physics
         private JobHandle refit;
         private bool refitPending;
 
+        // The store rows of the dynamic bodies, in order, that the dynamic tree was last built for. A build whose
+        // dynamic bodies come from the same rows in the same order refits the tree instead of building it again (see
+        // RefitsDynamicTree), until treeRefits reaches MaxTreeRefits or the tree's quality falls too far.
+        private NativeList<int> treeRows;
+
+        // What the jobs of the last refit left: whether a filter changed, and the tree's quality.
+        private DynamicTreeRefitResults* treeRefitResults;
+
+        // Whether the last build refitted the tree, the refits since the tree was last built, and the quality that the
+        // first of those refits measured, or 0 before it has been read.
+        private bool treeRefitted;
+        private int treeRefits;
+        private float treeBaseQuality;
+
+        // Counts for tests.
+        private long treeBuildCount;
+        private long treeRefitCount;
+        private long treeFilterRefitCount;
+
+        /// <summary>
+        /// The most steps in a row that refit the dynamic tree instead of building it. The quality measure catches the
+        /// usual ways in which a tree goes bad, so this is only a backstop: a build every 500 steps (10 s at 50 Hz)
+        /// costs nothing that a profile would show.
+        /// </summary>
+        internal const int MaxTreeRefits = 500;
+
+        /// <summary>
+        /// How much worse than just after its build the dynamic tree may become before the next build builds it again,
+        /// as a factor on <see cref="DynamicTreeRefitResults.Quality"/>: the area of the tree's nodes for each unit of
+        /// area of its bodies. The cost of finding the pairs of bodies and of a query grows roughly with the area of
+        /// the nodes that it opens, and finding the pairs took about 0.06 ms of CPU time for four Tu-160s, while the
+        /// build took 0.3 to 1.2 ms. So a tree that is half as good again as a new one is still much cheaper to keep.
+        /// A body that a command moves far away makes every node above it as large as the jump, which goes far past
+        /// this factor at once.
+        /// </summary>
+        internal const float MaxTreeQualityGrowth = 1.5f;
+
+        /// <summary>
+        /// Whether a build of the dynamic tree may refit the tree that the last build left, when the dynamic bodies
+        /// are the same. RETOOLED_TREE_REUSE=0 turns it off. Burst compiles the code that reads it, so it lives in a
+        /// shared static, which holds 0 when the reuse is on, 1 when it is off, and 2 when it is on and never gives
+        /// way to a build for the tree's quality or for the number of refits (<see cref="TreeAlwaysRefitted"/>).
+        /// </summary>
+        internal static bool TreeReuseEnabled
+        {
+            get => TreeReuseMode.Data != 1;
+            set => TreeReuseMode.Data = value ? 0 : 1;
+        }
+
+        /// <summary>
+        /// Whether every build refits the dynamic tree when the dynamic bodies are the same, however bad the tree has
+        /// become. RETOOLED_TREE_REUSE=always turns it on, to check that a tree of any shape gives the same results.
+        /// </summary>
+        internal static bool TreeAlwaysRefitted
+        {
+            get => TreeReuseMode.Data == 2;
+            set => TreeReuseMode.Data = value ? 2 : 0;
+        }
+
+        private sealed class TreeReuseModeKey
+        {
+        }
+
+        private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, TreeReuseModeKey>();
+
+        /// <summary>
+        /// Reads RETOOLED_TREE_REUSE from the environment: 0 turns off the reuse of the dynamic tree, and "always" makes
+        /// every build refit the tree when it can (<see cref="TreeAlwaysRefitted"/>).
+        /// </summary>
+        internal static void ReadTreeReuseSwitch()
+        {
+            string reuse = Environment.GetEnvironmentVariable("RETOOLED_TREE_REUSE");
+            TreeReuseMode.Data = reuse == "0" ? 1 : reuse == "always" ? 2 : 0;
+            if (reuse == "0" || reuse == "always")
+            {
+                UnityEngine.Debug.Log($"[StepState] RETOOLED_TREE_REUSE={reuse}: {(reuse == "0" ? "every build builds the dynamic tree from scratch" : "every build refits the dynamic tree when the dynamic bodies are the same")}");
+            }
+        }
+
+        /// <summary>The builds of the dynamic tree from scratch since this state was made. Used by tests.</summary>
+        internal readonly long TreeBuildCount => treeBuildCount;
+
+        /// <summary>The builds that refitted the dynamic tree instead of building it. Used by tests.</summary>
+        internal readonly long TreeRefitCount => treeRefitCount;
+
+        /// <summary>The refits that built the nodes' filters again because a body's filter had changed. Used by tests.</summary>
+        internal readonly long TreeFilterRefitCount => treeFilterRefitCount;
+
         /// <summary>
         /// Whether the build of the dynamic tree takes the bounds that the refit of the last step left in the cache.
         /// Tests turn it off to compare the steps with and without the cache. Burst compiles the code that reads it,
@@ -253,6 +341,9 @@ namespace KSP.Retooled.Physics
             UnsafeUtility.MemClear(sharedRefit, sizeof(SharedDynamicTreeRefit));
             store->refit = sharedRefit;
             store->treeReady = 1;
+            treeRows = new NativeList<int>(Allocator.Persistent);
+            treeRefitResults = (DynamicTreeRefitResults*)UnsafeUtility.MallocTracked(sizeof(DynamicTreeRefitResults), UnsafeUtility.AlignOf<DynamicTreeRefitResults>(), Allocator.Persistent, 0);
+            UnsafeUtility.MemClear(treeRefitResults, sizeof(DynamicTreeRefitResults));
             knownBodyPairs = new NativeHashMap<ulong, KnownBodyPair>(1024, Allocator.Persistent);
             learnedBodyPairs = new NativeQueue<DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
@@ -333,6 +424,9 @@ namespace KSP.Retooled.Physics
             wholeColliderBuilds.Dispose();
             boundsCache.Dispose();
             colliderChanges.Dispose();
+            treeRows.Dispose();
+            UnsafeUtility.FreeTracked(treeRefitResults, Allocator.Persistent);
+            treeRefitResults = null;
             knownBodyPairs.Dispose();
             learnedBodyPairs.Dispose();
         }
@@ -1078,8 +1172,71 @@ namespace KSP.Retooled.Physics
             Broadphase broadphase = world.CollisionWorld.Broadphase;
             JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
             boundsCacheBuilt = BoundsCacheEnabled;
-            JobHandle dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, boundsCacheBuilt ? boundsCache : default);
+            DynamicBoundsCache cache = boundsCacheBuilt ? boundsCache : default;
+            JobHandle dynamics;
+            if (RefitsDynamicTree())
+            {
+                dynamics = broadphase.ScheduleDynamicTreeRefitBuildJobs(ref world, deltaTime, float3.zero, built, cache, treeRefitResults);
+                treeRefitted = true;
+                treeRefits++;
+                treeRefitCount++;
+            }
+            else
+            {
+                dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, cache);
+                treeRows.CopyFrom(dynamicIndices.AsArray());
+                treeRefitted = false;
+                treeRefits = 0;
+                treeBaseQuality = 0.0f;
+                treeBuildCount++;
+            }
+
             return JobHandle.CombineDependencies(statics, dynamics);
+        }
+
+        /// <summary>
+        /// Decides whether this build refits the dynamic tree that the last build left (see
+        /// Broadphase.ScheduleDynamicTreeRefitBuildJobs) instead of building it from scratch. The refit gives the
+        /// leaves the bounds that a build would give them, so the step finds the same pairs of bodies and the queries
+        /// find the same hits either way. Whether the tree is refitted changes only how fast those are found, and how
+        /// long the build takes.
+        /// <para>
+        /// A refit needs a tree with a leaf for each of the world's dynamic bodies, which the last build left only if
+        /// it completed (treeMatchesHeld) and had as many dynamic bodies. The tree is only good while each leaf holds
+        /// bodies that are close together, so the build refits only when the dynamic bodies come from the same store
+        /// rows in the same order as when the tree was built. Any body that is added, removed, made static or no
+        /// longer simulated changes the rows, and so does a body that moves to another row. A body that keeps its row
+        /// can still get a new collider or filter, or be moved by a command; the refit handles all of those, and a
+        /// move far enough to matter shows in the tree's quality. The tree is built again after
+        /// <see cref="MaxTreeRefits"/> refits, or when the last refit found the tree's quality more than
+        /// <see cref="MaxTreeQualityGrowth"/> times what it was after the first refit since the build.
+        /// </para>
+        /// </summary>
+        private bool RefitsDynamicTree()
+        {
+            if (treeRefitted && treeMatchesHeld)
+            {
+                // The last build's refit has completed: this build waits for the jobs of the last step and of the last
+                // build for queries, which waited for the refit. The first refit after a build of the tree measures
+                // the quality that later refits compare with.
+                if (treeRefitResults->FiltersChanged != 0)
+                {
+                    treeFilterRefitCount++;
+                }
+
+                float quality = treeRefitResults->Quality;
+                if (treeBaseQuality == 0.0f)
+                {
+                    treeBaseQuality = quality;
+                }
+                else if (quality > treeBaseQuality * MaxTreeQualityGrowth && !TreeAlwaysRefitted)
+                {
+                    return false;
+                }
+            }
+
+            return TreeReuseEnabled && treeMatchesHeld && dynamicIndices.Length > 0
+                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && Same(treeRows, dynamicIndices);
         }
 
         /// <summary>

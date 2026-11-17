@@ -192,7 +192,7 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         [Test]
-        public void Write()
+        public unsafe void Write()
         {
             if (!BackendInfo.IsRetooled)
             {
@@ -308,6 +308,8 @@ namespace KSP.Retooled.Physics.Tests
                 }
             }
 
+            // The counts go to the log, not to the trace, so that the trace of a commit without them can be compared.
+            Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepKernel.Current->TreeBuildCount} times and refitted {StepKernel.Current->TreeRefitCount} times");
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"JointLoadTrace-{tag}.txt"), trace.ToString());
         }
     }
