@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Jobs;
 using Unity.Physics;
 using Unity.Physics.Collision.World.Trees;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -26,7 +27,10 @@ namespace KSP.Retooled.Physics
         internal static void ApplyForces(float deltaTime)
         {
             NoteRunInMono();
-            Current->ApplyForces(deltaTime);
+            StepState* state = Current;
+            state->BeginForces();
+            BodyEntities.PrepareForJobs(state->Store);
+            state->ApplyForces(deltaTime);
         }
 
         [BurstCompile]
@@ -57,7 +61,7 @@ namespace KSP.Retooled.Physics
         internal static void FinishStep(Simulation* simulation, float deltaTime)
         {
             Current->preparedSimulation = null;
-            Current->FinishStep(*simulation, deltaTime);
+            FinishStep(Current, *simulation, deltaTime);
         }
 
         /// <summary>
@@ -75,7 +79,7 @@ namespace KSP.Retooled.Physics
 
             Current->preparedSimulation = null;
             Current->preparedInputs.Complete();
-            Current->FinishStep(*simulation, deltaTime);
+            FinishStep(Current, *simulation, deltaTime);
             return 1;
         }
 
@@ -83,7 +87,18 @@ namespace KSP.Retooled.Physics
         internal static void BuildForQueries(StepState* state)
         {
             NoteRunInMono();
-            state->BuildForQueries();
+            if (state->BeginQueryBuild())
+            {
+                BodyEntities.PrepareForJobs(state->Store);
+                state->BuildForQueries();
+            }
+        }
+
+        private static void FinishStep(StepState* state, Simulation simulation, float deltaTime)
+        {
+            state->FinishBeforeContacts(simulation, deltaTime, out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep);
+            ContactReport.Publish(state, contactsJoined);
+            state->FinishAfterContacts(snapshot, sleep);
         }
 
         /// <summary>

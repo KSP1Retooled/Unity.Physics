@@ -9,6 +9,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {

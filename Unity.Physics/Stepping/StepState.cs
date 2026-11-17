@@ -4,7 +4,6 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
-using Unity.Physics;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Collision.World.Trees;
 using Unity.Physics.Dynamics.Simulation.Islands;
@@ -13,11 +12,8 @@ using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Memory;
-using Unity.Physics.Store.Reports;
-using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
-using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Configuration;
 using Unity.Physics.Collision.Queries.Snapshot;
@@ -31,14 +27,32 @@ using Unity.Physics.Dynamics.Sleep;
 using Unity.Physics.Dynamics.Vehicles;
 using Unity.Physics.Dynamics.Bodies;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
+using Unity.Profiling;
 
-namespace KSP.Retooled.Physics
+namespace Unity.Physics.Stepping
 {
     /// <summary>
-    /// Unmanaged simulation state for one world, owned by WorldState and used by Burst step entry points.
+    /// Unmanaged simulation state for one store world, used by the Burst step entry points.
     /// </summary>
     internal unsafe struct StepState
     {
+        private static readonly ProfilerMarker BuildJointsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Joints");
+        private static readonly ProfilerMarker BuildPartitionMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Partition");
+        private static readonly ProfilerMarker BuildResetMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Reset");
+        private static readonly ProfilerMarker BuildScheduleBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
+        private static readonly ProfilerMarker BuildScheduleBroadphaseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
+        private static readonly ProfilerMarker RefreshCollidersMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.RefreshColliders");
+        private static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
+        private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
+        private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
+        private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
+        private static readonly ProfilerMarker StepReadJointForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");
+        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
+        private static readonly ProfilerMarker StepSleepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Sleep");
+        private static readonly ProfilerMarker StepWaitForSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
+        private static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForTree");
+        private static readonly ProfilerMarker StepWriteBackMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
+
         private const int ParallelBatchSize = 64;
 
         // Building a joint costs much more than building a body, so each batch contains fewer joints.
@@ -368,12 +382,11 @@ namespace KSP.Retooled.Physics
             queryFirstShapes = new NativeList<int>(Allocator.Persistent);
             snapshotDynamic = new NativeList<int>(Allocator.Persistent);
             snapshotStatic = new NativeList<int>(Allocator.Persistent);
-            manifolds =new NativeList<ManifoldRecord>(Allocator.Persistent);
+            manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBuckets.ContactBucket>(Allocator.Persistent);
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
-            TouchingHandOff.Restore(store, touching);
             removedTriggerPairs = new NativeList<ShapePairKey>(Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
@@ -514,13 +527,10 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
-        /// Wake bodies through joints, then schedule force integration.
-        /// BuildWorld waits for the force jobs; the main thread may read flags while they run.
+        /// Complete outstanding work and invalidate queries before the caller prepares body pointers for jobs.
         /// </summary>
-        internal void ApplyForces(float deltaTime)
+        internal void BeginForces()
         {
-            // WorldState.Step has already finished the last step's refit. This is for a step that runs the systems
-            // some other way.
             FinishPendingRefit();
             if (s_ThrowBeforeApplyForces.Data != 0)
             {
@@ -531,10 +541,17 @@ namespace KSP.Retooled.Physics
             forcesApplied.Complete();
             store->queryWorld = null;
             store->queryDirty = StoreMemory.QueryStale;
-            BodyEntities.PrepareForJobs(store);
+        }
+
+        /// <summary>
+        /// Wake bodies through joints, then schedule force integration.
+        /// BuildWorld waits for the force jobs. The main thread may read flags while they run.
+        /// </summary>
+        internal void ApplyForces(float deltaTime)
+        {
             WheelSolver.RecordStartVelocities(store);
 
-            using (BackendMarkers.StepApplyForces.Auto())
+            using (StepApplyForcesMarker.Auto())
             {
                 // Wake refiltered pairs before joint wake propagation and the narrow phase.
                 uint filterVersion = PairFilterVersion.Version;
@@ -562,7 +579,7 @@ namespace KSP.Retooled.Physics
         /// <summary>Builds the bodies, joints and broadphase for the simulation systems to advance.</summary>
         internal JobHandle BuildWorld(float deltaTime, JobHandle dependency)
         {
-            using var span = BackendMarkers.StepSchedule.Auto();
+            using var span = StepScheduleMarker.Auto();
 
             // Every job below waits for the forces, including the collider jobs, which write the flags that the forces
             // job reads.
@@ -570,7 +587,7 @@ namespace KSP.Retooled.Physics
             JobHandle colliders = RefreshColliders(dependency);
             JobHandle broadphase = Build(deltaTime, colliders, out JobHandle joints);
 
-            using (BackendMarkers.BuildScheduleBroadphase.Auto())
+            using (BuildScheduleBroadphaseMarker.Auto())
             {
                 // Build joints alongside the broadphase. Only dispatch pair creation needs to wait for them.
                 world.DynamicsWorld.JointsBuilt = joints;
@@ -612,13 +629,15 @@ namespace KSP.Retooled.Physics
         /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
         internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
 
-        /// <summary>
-        /// Save touching pairs for the next StepState before discarding this one on detach.
-        /// </summary>
-        internal readonly void SaveTouching()
-        {
-            TouchingHandOff.Save(store, globals, touching);
-        }
+        internal readonly StoreGlobals* Globals => globals;
+
+        internal readonly NativeHashMap<ShapePairKey, ShapePairState> Touching => touching;
+
+        internal readonly NativeList<ManifoldPoint> ManifoldPoints => manifoldPoints;
+
+        internal readonly NativeList<ShapePairKey> RemovedTriggerPairs => removedTriggerPairs;
+
+        internal uint NextContactStep() => ++stepCount;
 
         /// <summary>The vessels compiled during the last build. Used by tests.</summary>
         internal readonly VesselBuild Vessels => vesselBuild;
@@ -631,7 +650,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         internal JobHandle SortIslands(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            using var span = BackendMarkers.StepSchedule.Auto();
+            using var span = StepScheduleMarker.Auto();
             input.VesselSet = vesselSet;
 
             Simulation* simulation = singleton.AsSimulationPtr();
@@ -674,7 +693,7 @@ namespace KSP.Retooled.Physics
         /// <summary>Reads the contacts produced by the narrow phase before the Jacobians are built from them.</summary>
         internal JobHandle ReadContacts(SimulationSingleton singleton, float deltaTime, JobHandle dependency)
         {
-            using var span = BackendMarkers.StepSchedule.Auto();
+            using var span = StepScheduleMarker.Auto();
 
             // Submit the batched jobs so that workers can run them while the main thread schedules the jobs below.
             JobHandle.ScheduleBatchedJobs();
@@ -744,7 +763,7 @@ namespace KSP.Retooled.Physics
         /// <summary>Warm starts the Jacobians.</summary>
         internal JobHandle PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            using var span = BackendMarkers.StepSchedule.Auto();
+            using var span = StepScheduleMarker.Auto();
 
             directSolverCache.Forest = new ForestSettings
             {
@@ -897,8 +916,11 @@ namespace KSP.Retooled.Physics
             }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 
-        /// <summary>Finishes the step by writing the solved world back to the store and to Unity.</summary>
-        internal void FinishStep(Simulation simulation, float deltaTime)
+        /// <summary>
+        /// Writes back the solved world and prepares contact reports, query publication and sleep.
+        /// </summary>
+        internal void FinishBeforeContacts(Simulation simulation, float deltaTime,
+            out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep)
         {
             // Schedule post-solve work now. Include manifold and warm-start dependencies even when nothing is
             // solved.
@@ -932,7 +954,6 @@ namespace KSP.Retooled.Physics
 
             // If the step throws, wait for solved motions before returning: queries helping the pending refit
             // read them.
-            JobHandle snapshot;
             bool waitedForSolve = false;
             try
             {
@@ -944,7 +965,7 @@ namespace KSP.Retooled.Physics
                 snapshot = ScheduleQuerySnapshot(motionsSolved);
                 JobHandle.ScheduleBatchedJobs();
 
-                using (BackendMarkers.StepWaitForSolve.Auto())
+                using (StepWaitForSolveMarker.Auto())
                 {
                     solved.Complete();
                 }
@@ -972,7 +993,7 @@ namespace KSP.Retooled.Physics
             }
 
             // FallAsleep.SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
-            JobHandle contactsJoined = new FallAsleep.SleepContactsJob
+            contactsJoined = new FallAsleep.SleepContactsJob
             {
                 World = store,
                 Records = manifolds,
@@ -982,13 +1003,13 @@ namespace KSP.Retooled.Physics
             }.Schedule();
             JobHandle.ScheduleBatchedJobs();
 
-            using (BackendMarkers.StepWriteBack.Auto())
+            using (StepWriteBackMarker.Auto())
             {
                 writtenBack.Complete();
             }
 
             JobHandle forces;
-            using (BackendMarkers.StepReadJointForces.Auto())
+            using (StepReadJointForcesMarker.Auto())
             {
                 forces = ReadJointForces(simulation.ImpulseEvents.EventDataStream, deltaTime, vesselsSettled);
             }
@@ -1010,7 +1031,7 @@ namespace KSP.Retooled.Physics
                 RunOut = (int*)sleepRunOut.GetUnsafePtr(),
                 DeltaTime = deltaTime,
             }.Schedule((int)store->bodyCount, ParallelBatchSize, contactsJoined);
-            JobHandle sleep = new FallAsleep.SleepJob
+            sleep = new FallAsleep.SleepJob
             {
                 World = store,
                 Parents = sleepParents,
@@ -1020,7 +1041,7 @@ namespace KSP.Retooled.Physics
             JobHandle.ScheduleBatchedJobs();
 
             // ImpulseMemory.ReadImpulsesJob reads only the motions, which the rebuild of the tree doesn't change.
-            using (BackendMarkers.StepReadImpulses.Auto())
+            using (StepReadImpulsesMarker.Auto())
             {
                 if (world.NumDynamicBodies != 0)
                 {
@@ -1029,26 +1050,14 @@ namespace KSP.Retooled.Physics
 
                 new ImpulseMemory.RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
             }
+        }
 
-            using (BackendMarkers.StepPublishContacts.Auto())
-            {
-                // The contact report sorts the manifolds that FallAsleep.SleepContactsJob reads, so wait for that job first.
-                contactsJoined.Complete();
-                new ContactReport.PublishContactsJob
-                {
-                    World = store,
-                    Globals = globals,
-                    Records = manifolds,
-                    Points = manifoldPoints,
-                    Touching = touching,
-                    RemovedTriggerPairs = removedTriggerPairs,
-                    Step = ++stepCount,
-                }.Run();
-            }
-
+        /// <summary>Publish queries and finish sleep after the caller has run the contact report.</summary>
+        internal void FinishAfterContacts(JobHandle snapshot, JobHandle sleep)
+        {
             // Publish as current unless write-back changed poses. Queries finish the pending refit before
             // reading.
-            using (BackendMarkers.StepPublishQueryWorld.Auto())
+            using (StepPublishQueryWorldMarker.Auto())
             {
                 snapshot.Complete();
                 FinishQuerySnapshot();
@@ -1061,29 +1070,31 @@ namespace KSP.Retooled.Physics
 
             // FallAsleep.FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
             // first, although it has.
-            using (BackendMarkers.StepSleep.Auto())
+            using (StepSleepMarker.Auto())
             {
                 sleep.Complete();
                 new FallAsleep.FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
             }
         }
 
-        /// <summary>
-        /// Updates the built world to match the store's poses without advancing time. Main thread only.
-        /// </summary>
-        internal void BuildForQueries()
+        /// <summary>Finish pending refit work and check whether queries need a new build.</summary>
+        internal bool BeginQueryBuild()
         {
             FinishPendingRefit();
 
             // The world that the last step published is current now that its refit has finished.
             if (store->queryDirty == StoreMemory.QueryTreePending && builtWhole)
             {
-                return;
+                return false;
             }
 
             store->queryWorld = null;
-            BodyEntities.PrepareForJobs(store);
+            return true;
+        }
 
+        /// <summary>Update the built world from prepared store rows without advancing time.</summary>
+        internal void BuildForQueries()
+        {
             // The last build is still valid except for the poses of static bodies. The query snapshot contains no data
             // that depends on a pose.
             if (store->queryDirty == StoreMemory.QueryStaticsMoved && builtWhole && globals->materialVersion == builtMaterialVersion)
@@ -1120,7 +1131,7 @@ namespace KSP.Retooled.Physics
                 return;
             }
 
-            using (BackendMarkers.StepWaitForTree.Auto())
+            using (StepWaitForTreeMarker.Auto())
             {
                 // A job whose refit threw is complete too: the thread that threw marked the refit failed, and the
                 // other threads stopped waiting for its piece.
@@ -1407,7 +1418,7 @@ namespace KSP.Retooled.Physics
                 return built;
             }
 
-            using var span = BackendMarkers.ShiftStaticTree.Auto();
+            using var span = ShiftStaticTreeMarker.Auto();
             Broadphase.Tree tree = world.CollisionWorld.Broadphase.StaticTree;
             return new StaticTreeShift.ShiftStaticTreeJob
             {
@@ -1520,7 +1531,7 @@ namespace KSP.Retooled.Physics
         /// </summary>
         private JobHandle RefreshColliders(JobHandle dependency)
         {
-            using var span = BackendMarkers.RefreshColliders.Auto();
+            using var span = RefreshCollidersMarker.Auto();
 
             // Every step and query build completes the previous build, so this handle has already completed.
             collidersBuilt.Complete();
@@ -1560,7 +1571,7 @@ namespace KSP.Retooled.Physics
         {
             // An interrupted step may leave vessel fill jobs running. Finish them before resizing vessel lists.
             vesselsFilled.Complete();
-            using (BackendMarkers.BuildPartition.Auto())
+            using (BuildPartitionMarker.Auto())
             {
                 new StoreBodies.PartitionBodiesJob
                 {
@@ -1590,7 +1601,7 @@ namespace KSP.Retooled.Physics
 
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
             // read the joints, so jobs can be scheduled before the joint count is known.
-            using (BackendMarkers.BuildReset.Auto())
+            using (BuildResetMarker.Auto())
             {
                 world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
@@ -1615,7 +1626,7 @@ namespace KSP.Retooled.Physics
             // Schedule bodies and trees first: pair creation and island finding depend on them.
             // Joint compilation and vessel work can proceed alongside them.
             JobHandle broadphase;
-            using (BackendMarkers.BuildScheduleBodies.Auto())
+            using (BuildScheduleBodiesMarker.Auto())
             {
                 var bodiesJob = new StoreBodies.BuildBodiesJob
                 {
@@ -1642,7 +1653,7 @@ namespace KSP.Retooled.Physics
             joints = dependency;
             if (deltaTime > 0.0f)
             {
-                using var jointsSpan = BackendMarkers.BuildJoints.Auto();
+                using var jointsSpan = BuildJointsMarker.Auto();
 
                 // Reuse the groups if the topology and forest setting have not changed since they were found. The joint
                 // build refreshes group data that depends on other state.

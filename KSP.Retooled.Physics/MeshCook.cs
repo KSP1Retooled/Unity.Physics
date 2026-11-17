@@ -8,12 +8,7 @@ using Unity.Physics.Collision.Colliders.Building;
 
 namespace KSP.Retooled.Physics
 {
-    /// <summary>
-    /// Validate and copy mesh data into a relocatable block used for cooking and baked mesh assets.
-    /// Cooking may run on import workers: do not allocate memory, access shared state or call Unity Physics.
-    /// Use strict floating-point operations so that Burst and Mono produce identical bytes.
-    /// Increment StreamVersion when the layout changes.
-    /// </summary>
+    /// <summary>Plugin entry points for cooking and validating baked mesh data.</summary>
     [BurstCompile]
     internal static unsafe class MeshCook
     {

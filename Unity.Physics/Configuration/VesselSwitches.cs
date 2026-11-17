@@ -34,19 +34,19 @@ namespace Unity.Physics.Configuration
         /// <summary>
         /// Default minimum vessel size: two parts, so any eligible joined craft can use the vessel solver.
         /// </summary>
-        public const int DefaultMinimumParts = 2;
+        internal const int DefaultMinimumParts = 2;
 
         /// <summary>
         /// Steps to retain a removed edge or closure as a tombstone; see CompileVesselsJob.
         /// </summary>
-        public const int TombstoneSteps = 10;
+        internal const int TombstoneSteps = 10;
 
         /// <summary>
         /// Minimum parts needed to compile a vessel. Smaller crafts keep Unity Physics joints.
         /// Values below one restore the default. Read RETOOLED_VESSEL_MIN_PARTS at first attach.
         /// Changes take effect on the next vessel compilation.
         /// </summary>
-        public static int MinimumParts
+        internal static int MinimumParts
         {
             get => MinimumPartsShared.Data > 0 ? MinimumPartsShared.Data : DefaultMinimumParts;
             set => MinimumPartsShared.Data = value;
@@ -54,7 +54,7 @@ namespace Unity.Physics.Configuration
 
         private static bool initialized;
 
-        public static bool Enabled
+        internal static bool Enabled
         {
             get => Shared.Data;
             set => Shared.Data = value;

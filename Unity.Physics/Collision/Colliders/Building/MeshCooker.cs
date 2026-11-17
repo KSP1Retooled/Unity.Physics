@@ -4,6 +4,11 @@ using Unity.Physics.Store.Shapes;
 
 namespace Unity.Physics.Collision.Colliders.Building
 {
+    /// <summary>
+    /// Validate and copy mesh data into a relocatable block for cooking and baked mesh assets.
+    /// Import workers can cook meshes, so the algorithm avoids allocations and shared state.
+    /// Increment StreamVersion when the layout changes.
+    /// </summary>
     internal static unsafe class MeshCooker
     {
         internal const uint StreamMagic = 0x4853454d; // "MESH"

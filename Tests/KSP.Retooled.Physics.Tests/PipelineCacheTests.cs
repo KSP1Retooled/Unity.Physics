@@ -5,6 +5,7 @@ using Unity.Physics.Store.Versions;
 using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Contacts;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {

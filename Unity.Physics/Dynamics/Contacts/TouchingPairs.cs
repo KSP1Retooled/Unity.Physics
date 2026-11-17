@@ -27,11 +27,11 @@ namespace Unity.Physics.Dynamics.Contacts
     internal static unsafe partial class TouchingPairs
     {
         internal static bool ShouldRestart(NativeHashMap<ShapePairKey, ShapePairState> touching, ShapePairKey key,
-            bool trigger, out ShapePairState state, out byte kinematic, out bool found)
+            ref ManifoldRecord record, out ShapePairState state, out byte kinematic, out bool found)
         {
             found = !touching.TryGetValue(key, out state);
             kinematic = ShapePairState.KinematicOf(key);
-            return !found && (state.Trigger != trigger || state.KinematicChanged(kinematic));
+            return !found && (state.Trigger != record.Trigger || state.KinematicChanged(kinematic));
         }
 
         internal static ShapeData* Remember(NativeHashMap<ShapePairKey, ShapePairState> touching,

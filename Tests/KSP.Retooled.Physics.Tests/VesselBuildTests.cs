@@ -10,6 +10,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Dynamics.Joint.Translation;
 using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Vessels.Detection;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Tests
 {

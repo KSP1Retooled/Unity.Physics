@@ -26,13 +26,32 @@ using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 
 namespace KSP.Retooled.Physics
 {
-    internal static class ContactReport
+    internal static unsafe class ContactReport
     {
+        internal static void Publish(StepState* state, JobHandle contactsJoined)
+        {
+            using (BackendMarkers.StepPublishContacts.Auto())
+            {
+                // Sort the manifolds after the sleep contact job has read them.
+                contactsJoined.Complete();
+                new PublishContactsJob
+                {
+                    World = state->Store,
+                    Globals = state->Globals,
+                    Records = state->Manifolds,
+                    Points = state->ManifoldPoints,
+                    Touching = state->Touching,
+                    RemovedTriggerPairs = state->RemovedTriggerPairs,
+                    Step = state->NextContactStep(),
+                }.Run();
+            }
+        }
+
         /// <summary>
         /// Write pre-solve velocities, contact points and requested pair events to the plugin report.
         /// </summary>
         [BurstCompile]
-        internal unsafe struct PublishContactsJob : IJob
+        private unsafe struct PublishContactsJob : IJob
         {
             // Physics::ShapePairEventFlags.
             private const ushort NotifyTouchFound = 1 << 2;
@@ -102,7 +121,7 @@ namespace KSP.Retooled.Physics
                     }
 
                     ShapePairKey key = ShapePairKey.Of(record.ShapeA, record.ShapeB);
-                    if (TouchingPairs.ShouldRestart(Touching, key, record.Trigger,
+                    if (TouchingPairs.ShouldRestart(Touching, key, ref record,
                         out ShapePairState state, out byte kinematic, out bool found))
                     {
                         // Restart the pair when trigger or kinematic flags change, matching PhysX enter/exit

@@ -5,6 +5,7 @@ using Unity.Physics.Systems;
 using Unity.Physics.Store.World;
 using Unity.Physics.Collision.Queries.Snapshot;
 using Unity.Physics.Configuration;
+using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics
 {
@@ -29,12 +30,13 @@ namespace KSP.Retooled.Physics
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StepState*)UnsafeUtility.MallocTracked(sizeof(StepState), UnsafeUtility.AlignOf<StepState>(), Allocator.Persistent, 0);
             *state = new StepState(store, NativeStore.RetooledPhysics_Globals(), query);
+            TouchingHandOff.Restore(store, state->Touching);
         }
 
         /// <summary>Keeps the touching pairs for the next state of this world, before a detach discards this one.</summary>
         internal void SaveTouching()
         {
-            state->SaveTouching();
+            TouchingHandOff.Save(store, state->Globals, state->Touching);
         }
 
         /// <summary>Waits for the refit of the dynamic tree that the last step left running, if there is one.</summary>

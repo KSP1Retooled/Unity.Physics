@@ -45,23 +45,23 @@ namespace Unity.Physics.Configuration
         private static bool initialized;
 
         /// <summary>The number of boundary rows above which the solver uses the sparse solver for the island.</summary>
-        public const int DefaultBoundaryRowCap = 512;
+        internal const int DefaultBoundaryRowCap = 512;
 
         /// <summary>The fraction of joint break limits below which smoothed loads permit a pair to lock.</summary>
-        public const float DefaultLockFraction = 0.25f;
+        internal const float DefaultLockFraction = 0.25f;
 
         /// <summary>
         /// The fraction of joint break limits above which a smoothed load causes a locked pair to yield.
         /// </summary>
-        public const float DefaultYieldFraction = 0.5f;
+        internal const float DefaultYieldFraction = 0.5f;
 
-        public static bool Enabled
+        internal static bool Enabled
         {
             get => Shared.Data.Enabled;
             set => Shared.Data.Enabled = value;
         }
 
-        public static int BoundaryRowCap
+        internal static int BoundaryRowCap
         {
             get => Shared.Data.BoundaryRowCap > 0 ? Shared.Data.BoundaryRowCap : DefaultBoundaryRowCap;
             set => Shared.Data.BoundaryRowCap = value;
@@ -80,14 +80,14 @@ namespace Unity.Physics.Configuration
         /// <summary>
         /// Whether the forest solver locks tree edges under low loads. See <see cref="ForestSettings.Locking"/>.
         /// </summary>
-        public static bool Locking
+        internal static bool Locking
         {
             get => Shared.Data.Locking;
             set => Shared.Data.Locking = value;
         }
 
         /// <summary>The angle in radians used to permit locking. See <see cref="ForestSettings.LockAngle"/>.</summary>
-        public static float LockAngle
+        internal static float LockAngle
         {
             get => Shared.Data.LockAngle > 0.0f ? Shared.Data.LockAngle : ForestSettings.DefaultLockAngle;
             set => Shared.Data.LockAngle = value;
@@ -96,7 +96,7 @@ namespace Unity.Physics.Configuration
         /// <summary>
         /// The angle in radians used to trigger yielding. See <see cref="ForestSettings.YieldAngle"/>.
         /// </summary>
-        public static float YieldAngle
+        internal static float YieldAngle
         {
             get => Shared.Data.YieldAngle > 0.0f ? Shared.Data.YieldAngle : ForestSettings.DefaultYieldAngle;
             set => Shared.Data.YieldAngle = value;
@@ -106,7 +106,7 @@ namespace Unity.Physics.Configuration
         /// The minimum number of steps to hold a lock. Negative values select the default. See
         /// <see cref="ForestSettings.MinimumHoldSteps"/>.
         /// </summary>
-        public static int MinimumHoldSteps
+        internal static int MinimumHoldSteps
         {
             get => Fractions.Data.Hold >= 0 ? Fractions.Data.Hold : ForestSettings.DefaultMinimumHoldSteps;
             set => Fractions.Data.Hold = value;
@@ -116,19 +116,19 @@ namespace Unity.Physics.Configuration
         /// The number of steps used to smooth deflection. Negative values select the default. See
         /// <see cref="ForestSettings.DeflectionSmoothingSteps"/>.
         /// </summary>
-        public static int DeflectionSmoothingSteps
+        internal static int DeflectionSmoothingSteps
         {
             get => Fractions.Data.SmoothingPlusOne > 0 ? Fractions.Data.SmoothingPlusOne - 1 : ForestSettings.DefaultDeflectionSmoothingSteps;
             set => Fractions.Data.SmoothingPlusOne = value + 1;
         }
 
-        public static float LockFraction
+        internal static float LockFraction
         {
             get => Fractions.Data.Lock > 0.0f ? Fractions.Data.Lock : DefaultLockFraction;
             set => Fractions.Data.Lock = value;
         }
 
-        public static float YieldFraction
+        internal static float YieldFraction
         {
             get => Fractions.Data.Yield > 0.0f ? Fractions.Data.Yield : DefaultYieldFraction;
             set => Fractions.Data.Yield = value;
