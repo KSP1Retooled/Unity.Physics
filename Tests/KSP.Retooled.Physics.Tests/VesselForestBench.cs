@@ -1250,7 +1250,7 @@ namespace KSP.Retooled.Physics.Tests
                     }
                 }
 
-                report.Append($"The bench took {Since(benchStart) / 1000.0:F1} s in all; CPU load at the end {SampleLoad():F1}%\n");
+                report.Append($"The bench took {Since(benchStart) / 1000.0:F1} s in all\n");
             }
             finally
             {
