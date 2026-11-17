@@ -508,13 +508,91 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+
+        /// <summary>
+        /// The CPU time that the whole machine and this process have used, summed over every logical processor, in units
+        /// of 100 ns. Two readings give the load that other processes put on the machine between them, at no cost to the
+        /// bench, so that the bench can report it for each scene.
+        /// </summary>
+        private struct CpuReading
+        {
+            public long Busy;
+            public long Total;
+            public long Own;
+
+            public static CpuReading Take()
+            {
+                try
+                {
+                    if (!GetSystemTimes(out long idle, out long kernel, out long user))
+                    {
+                        return default;
+                    }
+
+                    // The kernel time that Windows reports includes the idle time.
+                    using Process self = Process.GetCurrentProcess();
+                    return new CpuReading { Busy = kernel + user - idle, Total = kernel + user, Own = self.TotalProcessorTime.Ticks };
+                }
+                catch (Exception)
+                {
+                    return default;
+                }
+            }
+
+            /// <summary>
+            /// The share of all the logical processors, in percent, that processes other than this one kept busy between
+            /// <paramref name="start"/> and this reading, or -1 when the readings failed.
+            /// </summary>
+            public double OthersLoadSince(CpuReading start)
+            {
+                long total = Total - start.Total;
+                if (total <= 0 || start.Total == 0)
+                {
+                    return -1.0;
+                }
+
+                return System.Math.Max(0.0, 100.0 * ((Busy - start.Busy) - (Own - start.Own)) / total);
+            }
+        }
+
+        /// <summary>The result of measuring one scene on one path with one number of threads.</summary>
+        private struct SessionResult
+        {
+            public double Min;
+            public double Median;
+            public long Solves;
+            public long Fallbacks;
+
+            /// <summary>The island solve's times and counts, for the notes column.</summary>
+            public string Times;
+
+            /// <summary>Where the session's time went before and during the measured steps, and the load of other processes.</summary>
+            public string SetUp;
+        }
+
+        /// <summary>
+        /// The number of blocks of measured steps for each scene and number of threads, 1 unless RETOOLED_BENCH_BLOCKS gives
+        /// another number. The bench reports the minimum and median over the steps of every block, and each block's median
+        /// in the set-up column, since building a scene costs much more time than measuring it.
+        /// </summary>
+        private static int Blocks =>
+            int.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_BLOCKS"), out int blocks) && blocks > 0 ? blocks : 1;
+
         private string lastTimes;
 
-        private (double min, double median, long solves, long fallbacks) Session(Graph graph, bool ground, string path, int threads,
-            int workers)
+        /// <summary>
+        /// Builds the scene once and measures it with each number of threads in <paramref name="threadCounts"/>, in that
+        /// order, after warm-up steps with that number of threads. Returns one result for each number of threads.
+        /// </summary>
+        private List<SessionResult> Session(Graph graph, bool ground, string path, int[] threadCounts, int workers)
         {
+            CpuReading setUpStart = CpuReading.Take();
+            long clock = Stopwatch.GetTimestamp();
             TearDownScene();
             SetUpScene();
+            double clear = Since(clock);
             // A compiled path can name settings of the fused vessel job after a colon: "compiled:parts=64" sends vessel
             // islands of 64 parts or more to the fused job, "compiled:nocontacts" keeps the islands with contacts or
             // joints out of it, and "compiled:off" turns it off.
@@ -552,16 +630,50 @@ namespace KSP.Retooled.Physics.Tests
             VesselForest.Caps = boundaryMode == "uncapped"
                 ? new BoundaryCaps { OutsideContactPoints = -1, PointsPerManifold = -1, SelfContactManifolds = -1, PivotRounds = -1, ColdStart = true }
                 : new BoundaryCaps { ColdStart = boundaryMode == "cold", RefactorEveryRound = boundaryMode == "refactor", KeepFactorPrefix = boundaryMode == "prefix", UnorderedFactor = boundaryMode == "unordered" };
-            JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
+            JobsUtility.JobWorkerCount = threadCounts[0] > 1 ? threadCounts[0] - 1 : 0;
+            clock = Stopwatch.GetTimestamp();
             List<Rigidbody> built = Build(graph, ground, path != "vessel");
+            double build = Since(clock);
+
+            // The first step builds the world from the new bodies, colliders and joints, and compiles the craft's vessels.
+            // The vessel path takes one step more than the others, since it builds its vessel set after this step.
+            clock = Stopwatch.GetTimestamp();
+            Simulate();
+            double first = Since(clock);
             BenchVesselSet vesselSet = null;
             if (path == "vessel")
             {
-                Simulate();
                 vesselSet = new BenchVesselSet(graph, built);
             }
 
-            Simulate(WarmUp);
+            double setUpLoad = CpuReading.Take().OthersLoadSince(setUpStart);
+            var results = new List<SessionResult>(threadCounts.Length);
+            for (int run = 0; run < threadCounts.Length; run++)
+            {
+                results.Add(MeasureSession(path, threadCounts[run], run == 0 && path != "vessel" ? WarmUp - 1 : WarmUp,
+                    run == 0 ? $"clear {clear:F0} ms, build {build:F0} ms, first step {first:F0} ms, other processes' load {setUpLoad:F0}%; "
+                        : "scene shared with the first number of threads; "));
+            }
+
+            JobsUtility.JobWorkerCount = workers;
+            vesselSet?.Dispose();
+            Unity.Physics.Solver.FusedVesselParts = fusedParts;
+            Unity.Physics.Solver.FusedContacts = true;
+            Unity.Physics.Solver.VesselFused = fusedOn;
+            return results;
+        }
+
+        /// <summary>
+        /// Takes <paramref name="warmUp"/> steps with <paramref name="threads"/> threads, then measures the scene's steps
+        /// in <see cref="Blocks"/> blocks of <see cref="Measured"/> steps.
+        /// </summary>
+        private SessionResult MeasureSession(string path, int threads, int warmUp, string setUp)
+        {
+            JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
+            long clock = Stopwatch.GetTimestamp();
+            Simulate(warmUp);
+            double warm = Since(clock);
+            int steps = Measured * Blocks;
             VesselForest.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
             VesselForest.GetTimes(out double s0, out double a0, out double b0, out double c0, out double f0, out double w0, out double d0);
             VesselForest.GetSectionCounts(out long sections0, out long locked0, out long builds0, out long changes0, out double rebuild0,
@@ -575,30 +687,45 @@ namespace KSP.Retooled.Physics.Tests
             // time on every lane, so the times of such a run are not comparable with others.
             SparseBlockCounters.Enabled = Environment.GetEnvironmentVariable("RETOOLED_BENCH_HISTOGRAM") == "1";
             SparseBlockCounters.Reset();
-            var samples = new List<double>(Measured);
-            for (int i = 0; i < Measured; i++)
+            var samples = new List<double>(steps);
+            var blockMedians = new List<string>(Blocks);
+            CpuReading measureStart = CpuReading.Take();
+            clock = Stopwatch.GetTimestamp();
+            for (int block = 0; block < Blocks; block++)
             {
-                long start = Stopwatch.GetTimestamp();
-                UnityEngine.Physics.Simulate(Step);
-                samples.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
+                var blockSamples = new List<double>(Measured);
+                for (int i = 0; i < Measured; i++)
+                {
+                    long start = Stopwatch.GetTimestamp();
+                    UnityEngine.Physics.Simulate(Step);
+                    blockSamples.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
+                }
+
+                samples.AddRange(blockSamples);
+                blockSamples.Sort();
+                blockMedians.Add(blockSamples[blockSamples.Count / 2].ToString("F2", CultureInfo.InvariantCulture));
             }
 
+            double measured = Since(clock);
+            double measureLoad = CpuReading.Take().OthersLoadSince(measureStart);
+            setUp += $"warm-up {warm:F0} ms ({warmUp} steps), measured {measured:F0} ms ({steps} steps), " +
+                $"other processes' load {measureLoad:F0}%; block medians {string.Join(" ", blockMedians)}";
             VesselForest.GetCounts(out long solves, out long fallbacks, out _);
             VesselForest.GetTimes(out double s1, out double a1, out double b1, out double c1, out double f1, out double w1, out double d1);
             VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
                 out double residual, out _, out _);
             long forestSolves = System.Math.Max(1, solves - solvesBefore);
-            lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / Measured:F2}"
-                : $"start {(a1 - a0) / Measured:F2} (factor {(f1 - f0) / Measured:F2}, boundary {(w1 - w0) / Measured:F2}), " +
-                $"solve {(b1 - b0) / Measured:F2}, finish {(c1 - c0) / Measured:F2} (settle {(VesselForest.SettleMilliseconds - settle0) / Measured:F2}, " +
-                $"drift aim {(d1 - d0) / Measured:F2}), " +
-                $"fallback sparse {(s1 - s0) / Measured:F2}";
+            lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / steps:F2}"
+                : $"start {(a1 - a0) / steps:F2} (factor {(f1 - f0) / steps:F2}, boundary {(w1 - w0) / steps:F2}), " +
+                $"solve {(b1 - b0) / steps:F2}, finish {(c1 - c0) / steps:F2} (settle {(VesselForest.SettleMilliseconds - settle0) / steps:F2}, " +
+                $"drift aim {(d1 - d0) / steps:F2}), " +
+                $"fallback sparse {(s1 - s0) / steps:F2}";
             if (path != "sparse")
             {
                 double[] serial1 = VesselForest.SerialMilliseconds();
-                lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / Measured:F2}, decide {(serial1[1] - serial0[1]) / Measured:F2}, " +
-                    $"section sums {(serial1[2] - serial0[2]) / Measured:F2}, body impulses {(serial1[3] - serial0[3]) / Measured:F2}, " +
-                    $"subtree {(serial1[4] - serial0[4]) / Measured:F2}";
+                lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / steps:F2}, decide {(serial1[1] - serial0[1]) / steps:F2}, " +
+                    $"section sums {(serial1[2] - serial0[2]) / steps:F2}, body impulses {(serial1[3] - serial0[3]) / steps:F2}, " +
+                    $"subtree {(serial1[4] - serial0[4]) / steps:F2}";
             }
 
             // How fast the teams' helpers reached the stages that the leaders published.
@@ -607,7 +734,7 @@ namespace KSP.Retooled.Physics.Tests
             {
                 double tickUs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-3;
-                lastTimes += $"; teams: {handOff.Stages / (double)Measured:F1} stages published a step, " +
+                lastTimes += $"; teams: {handOff.Stages / (double)steps:F1} stages published a step, " +
                     $"{100.0 * handOff.HelpedStages / handOff.Stages:F0}% of them helped, first helper after " +
                     $"{handOff.ArrivalTicks * tickUs / System.Math.Max(1, handOff.HelpedStages):F1} us on average";
             }
@@ -615,7 +742,7 @@ namespace KSP.Retooled.Physics.Tests
             if (SparseBlockCounters.Enabled)
             {
                 SparseBlockCounters.Enabled = false;
-                lastTimes += "; " + SparseHistogram(SparseBlockCounters.Current);
+                lastTimes += "; " + SparseHistogram(SparseBlockCounters.Current, steps);
             }
 
             BoundaryCounters boundary = BoundaryCounters.Current;
@@ -633,17 +760,17 @@ namespace KSP.Retooled.Physics.Tests
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
                 Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivotingStats f = boundary.Factor;
                 long laterSolves = System.Math.Max(1, boundary.Solves - boundary.FirstSubstepSolves);
-                lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / Measured:F3} ms a step (factor {f.FactorTicks * tickMs / Measured:F3}, of it from the start {f.FullFactorTicks * tickMs / Measured:F3}, solves {f.SolveTicks * tickMs / Measured:F3}, checks {f.PivotTicks * tickMs / Measured:F3}); " +
+                lastTimes += $"; dense solve {boundary.SolveTicks * tickMs / steps:F3} ms a step (factor {f.FactorTicks * tickMs / steps:F3}, of it from the start {f.FullFactorTicks * tickMs / steps:F3}, solves {f.SolveTicks * tickMs / steps:F3}, checks {f.PivotTicks * tickMs / steps:F3}); " +
                     $"rounds a solve: {f.Factorizations / (double)boundary.Solves:F2} factored, {f.Updates / (double)boundary.Solves:F2} updated, " +
                     $"{f.Reuses / (double)boundary.Solves:F2} reused, {f.CouplingRounds / (double)boundary.Solves:F2} coupling rounds; " +
                     $"free rows a round {f.FreeRows / (double)System.Math.Max(1, f.Rounds):F1} ({f.FewestFreeRows} to {f.MostFreeRows}); " +
                     $"rows that joined / left the free set a solve {f.AddedRows / (double)boundary.Solves:F1} / {f.RemovedRows / (double)boundary.Solves:F1}; " +
                     $"warm rows that changed state a solve: first substep {boundary.FirstSubstepChanges / (double)System.Math.Max(1, boundary.FirstSubstepSolves):F1}, " +
                     $"later substeps {boundary.LaterSubstepChanges / (double)laterSolves:F1}; " +
-                    $"build ms a step: choose rows {boundary.ChooseTicks * tickMs / Measured:F3}, paths {boundary.PathTicks * tickMs / Measured:F3}, " +
-                    $"fill W {boundary.FillTicks * tickMs / Measured:F3}; apply {boundary.ApplyTicks * tickMs / Measured:F3}, " +
-                    $"push-out {boundary.PushOutTicks * tickMs / Measured:F3} ({boundary.PushSolves / (double)Measured:F1} solves a step, " +
-                    $"{boundary.PushRounds / (double)System.Math.Max(1, boundary.PushSolves):F1} rounds each, dense {boundary.PushTicks * tickMs / Measured:F3})";
+                    $"build ms a step: choose rows {boundary.ChooseTicks * tickMs / steps:F3}, paths {boundary.PathTicks * tickMs / steps:F3}, " +
+                    $"fill W {boundary.FillTicks * tickMs / steps:F3}; apply {boundary.ApplyTicks * tickMs / steps:F3}, " +
+                    $"push-out {boundary.PushOutTicks * tickMs / steps:F3} ({boundary.PushSolves / (double)steps:F1} solves a step, " +
+                    $"{boundary.PushRounds / (double)System.Math.Max(1, boundary.PushSolves):F1} rounds each, dense {boundary.PushTicks * tickMs / steps:F3})";
             }
 
             if (path == "locked")
@@ -652,13 +779,17 @@ namespace KSP.Retooled.Physics.Tests
                     $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / System.Math.Max(1, builds1 - builds0):F2} ms each), " +
                     $"lock changes {changes1 - changes0}, largest residual {residual:E1} N s";
             }
-            JobsUtility.JobWorkerCount = workers;
-            vesselSet?.Dispose();
-            Unity.Physics.Solver.FusedVesselParts = fusedParts;
-            Unity.Physics.Solver.FusedContacts = true;
-            Unity.Physics.Solver.VesselFused = fusedOn;
+
             samples.Sort();
-            return (samples[0], samples[samples.Count / 2], solves - solvesBefore, fallbacks - fallbacksBefore);
+            return new SessionResult
+            {
+                Min = samples[0],
+                Median = samples[samples.Count / 2],
+                Solves = solves - solvesBefore,
+                Fallbacks = fallbacks - fallbacksBefore,
+                Times = lastTimes,
+                SetUp = setUp,
+            };
         }
 
         /// <summary>
@@ -666,7 +797,7 @@ namespace KSP.Retooled.Physics.Tests
         /// of unknowns and by their number of later neighbours, and the blocks below the diagonal by rows x columns.
         /// The last entry of each list holds every size from <see cref="SparseBlockCounters.Largest"/> - 1 up.
         /// </summary>
-        private static unsafe string SparseHistogram(SparseBlockCounters counts)
+        private static unsafe string SparseHistogram(SparseBlockCounters counts, int steps)
         {
             int last = SparseBlockCounters.Largest - 1;
             string Bin(int i) => i == last ? $"{i}+" : $"{i}";
@@ -677,12 +808,12 @@ namespace KSP.Retooled.Physics.Tests
             {
                 if (counts.NodeSizes[i] > 0)
                 {
-                    sizes.Add($"{Bin(i)}: {counts.NodeSizes[i] / (double)Measured:F0}");
+                    sizes.Add($"{Bin(i)}: {counts.NodeSizes[i] / (double)steps:F0}");
                 }
 
                 if (counts.NeighbourCounts[i] > 0)
                 {
-                    neighbours.Add($"{Bin(i)}: {counts.NeighbourCounts[i] / (double)Measured:F0}");
+                    neighbours.Add($"{Bin(i)}: {counts.NeighbourCounts[i] / (double)steps:F0}");
                 }
 
                 for (int j = 0; j <= last; j++)
@@ -690,12 +821,12 @@ namespace KSP.Retooled.Physics.Tests
                     long count = counts.BlockShapes[i * SparseBlockCounters.Largest + j];
                     if (count > 0)
                     {
-                        shapes.Add($"{Bin(i)}x{Bin(j)}: {count / (double)Measured:F0}");
+                        shapes.Add($"{Bin(i)}x{Bin(j)}: {count / (double)steps:F0}");
                     }
                 }
             }
 
-            return $"sparse factors a step {counts.Factorizations / (double)Measured:F1}; nodes a step by size {{{string.Join(", ", sizes)}}}, " +
+            return $"sparse factors a step {counts.Factorizations / (double)steps:F1}; nodes a step by size {{{string.Join(", ", sizes)}}}, " +
                 $"by later neighbours {{{string.Join(", ", neighbours)}}}; blocks below the diagonal a step by rows x columns {{{string.Join(", ", shapes)}}}";
         }
 
@@ -1017,6 +1148,14 @@ namespace KSP.Retooled.Physics.Tests
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", "VesselStageBench.txt"), report.ToString());
         }
 
+        /// <summary>
+        /// Times whole steps of each craft, scene, number of threads and path (RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and
+        /// _PATHS). By default each number of threads gets a new scene. With RETOOLED_BENCH_SHARE=1, the bench builds each
+        /// scene once for each path and measures it with every number of threads in turn, after new warm-up steps for each
+        /// number, because building a scene takes much longer than measuring it. RETOOLED_BENCH_BLOCKS=n measures n blocks
+        /// of RETOOLED_BENCH_STEPS steps. The last column says where the time went before the measured steps, and how much
+        /// of the machine other processes used during the set-up and during the measured steps.
+        /// </summary>
         [Test]
         [Timeout(7200000)]
         public void Measure()
@@ -1028,7 +1167,9 @@ namespace KSP.Retooled.Physics.Tests
             }
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
+            long benchStart = Stopwatch.GetTimestamp();
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
+            double kernelWait = Since(benchStart);
             bool wasEnabled = VesselForest.Enabled;
             bool wasLocking = VesselForest.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
@@ -1041,35 +1182,75 @@ namespace KSP.Retooled.Physics.Tests
             fusedParts = Unity.Physics.Solver.FusedVesselParts;
             fusedOn = Unity.Physics.Solver.VesselFused;
             double load = SampleLoad();
+            bool share = Environment.GetEnvironmentVariable("RETOOLED_BENCH_SHARE") == "1";
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +
-                $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default\n");
+                $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default; " +
+                $"{kernelWait / 1000.0:F1} s waiting for the compiled kernels, {Blocks} blocks of measured steps, " +
+                $"{(share ? "one scene for every number of threads" : "a new scene for each number of threads")}\n");
             string[] paths = Choice("RETOOLED_BENCH_PATHS", "sparse,forest,locked");
             report.Append($"craft | bodies | scene | threads | {string.Join(" | ", paths)} (ms min / median) | " +
-                "island solve ms per step and counts, by path\n");
+                "island solve ms per step and counts, by path | set-up times and other processes' load, by path\n");
+            int[] threadCounts = Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse).ToArray();
             try
             {
                 foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,synthetic4500"))
                 {
+                    long loadStart = Stopwatch.GetTimestamp();
                     Graph graph = Fleet(Load(craft));
+                    double loadTime = Since(loadStart);
                     foreach (bool ground in Choice("RETOOLED_BENCH_SCENE", "floating,ground").Select(s => s == "ground"))
                     {
-                        foreach (int threads in Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse))
+                        // results[t][p] is the result for the number of threads threadCounts[t] on the path paths[p].
+                        var results = new SessionResult[threadCounts.Length][];
+                        for (int t = 0; t < threadCounts.Length; t++)
+                        {
+                            results[t] = new SessionResult[paths.Length];
+                        }
+
+                        if (share)
+                        {
+                            for (int p = 0; p < paths.Length; p++)
+                            {
+                                List<SessionResult> runs = Session(graph, ground, paths[p], threadCounts, workers);
+                                for (int t = 0; t < threadCounts.Length; t++)
+                                {
+                                    results[t][p] = runs[t];
+                                }
+                            }
+                        }
+                        else
+                        {
+                            for (int t = 0; t < threadCounts.Length; t++)
+                            {
+                                for (int p = 0; p < paths.Length; p++)
+                                {
+                                    results[t][p] = Session(graph, ground, paths[p], new[] { threadCounts[t] }, workers)[0];
+                                }
+                            }
+                        }
+
+                        for (int t = 0; t < threadCounts.Length; t++)
                         {
                             var cells = new List<string>();
                             var notes = new List<string>();
-                            foreach (string path in paths)
+                            var setUps = new List<string>();
+                            for (int p = 0; p < paths.Length; p++)
                             {
-                                var result = Session(graph, ground, path, threads, workers);
-                                cells.Add($"{result.min:F2} / {result.median:F2}");
-                                notes.Add(path == "sparse" ? $"{path}: {lastTimes}"
-                                    : $"{path}: {result.solves} forest solves / {result.fallbacks} fallbacks, {lastTimes}");
+                                SessionResult result = results[t][p];
+                                cells.Add($"{result.Min:F2} / {result.Median:F2}");
+                                notes.Add(paths[p] == "sparse" ? $"{paths[p]}: {result.Times}"
+                                    : $"{paths[p]}: {result.Solves} forest solves / {result.Fallbacks} fallbacks, {result.Times}");
+                                setUps.Add($"{paths[p]}: {result.SetUp}");
                             }
 
-                            report.Append($"{graph.Name} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threads} | " +
-                                $"{string.Join(" | ", cells)} | {string.Join("; ", notes)}\n");
+                            report.Append($"{graph.Name} | {graph.Parent.Length} | {(ground ? "ground" : "floating")} | {threadCounts[t]} | " +
+                                $"{string.Join(" | ", cells)} | {string.Join("; ", notes)} | " +
+                                $"load the craft {loadTime:F0} ms; {string.Join(" / ", setUps)}\n");
                         }
                     }
                 }
+
+                report.Append($"The bench took {Since(benchStart) / 1000.0:F1} s in all; CPU load at the end {SampleLoad():F1}%\n");
             }
             finally
             {
