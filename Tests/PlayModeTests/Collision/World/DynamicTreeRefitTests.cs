@@ -610,6 +610,69 @@ namespace Unity.Physics.Tests.Collision.World
         }
 
         /// <summary>
+        /// With the bounds cache, a refit build reads a body's filter from the cache only for the body that the cache
+        /// holds. A body at the same index whose collider keeps its address, but which is another body (another
+        /// entity) with another filter, as when the heap gives a new body's collider the address of a destroyed body's
+        /// collider, gets its own filter, and the refit builds the nodes' filters again. The search then finds exactly
+        /// the pairs of a build from scratch.
+        /// </summary>
+        [Test]
+        public unsafe void ARefitBuildWithTheCacheTellsANewBodyAtAnOldColliderAddress()
+        {
+            const int count = 1000;
+            (float3[] positions, float[] sizes) = RandomScene(count, 31);
+            using var scene = new BoxWorld(positions, sizes, 31);
+            ref PhysicsWorld world = ref scene.World;
+            var none = new CollisionFilter { BelongsTo = 0u, CollidesWith = 0u };
+            for (int i = 0; i < count; i += 4)
+            {
+                scene.SetFilter(i, none);
+            }
+
+            uint version = 1;
+            var cache = new DynamicBoundsCache(&version, Allocator.Persistent);
+            var results = (DynamicTreeRefitResults*)UnsafeUtility.Malloc(sizeof(DynamicTreeRefitResults), 16, Allocator.Persistent);
+            UnsafeUtility.MemClear(results, sizeof(DynamicTreeRefitResults));
+            try
+            {
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 8, default, cache).Complete();
+                cache.MarkCurrent();
+                world.CollisionWorld.ScheduleRefitDynamicTree(ref world, TimeStep, Gravity, default, cache).Complete();
+                Physics.RigidBody[] refitted = world.DynamicBodies.ToArray();
+
+                // Every fourth body becomes another body with the same collider memory and a filter that collides.
+                NativeArray<Physics.RigidBody> bodies = world.DynamicBodies;
+                for (int i = 0; i < count; i += 4)
+                {
+                    scene.SetFilter(i, CollisionFilter.Default);
+                    Physics.RigidBody body = bodies[i];
+                    body.Entity = new Entity { Index = body.Entity.Index, Version = 7 };
+                    bodies[i] = body;
+                }
+
+                MarkSame(bodies, refitted, cache);
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeRefitBuildJobs(ref world, TimeStep, Gravity, default, cache, results).Complete();
+                Assert.That(results->FiltersChanged, Is.EqualTo(1), "the refit saw the new bodies' filters");
+                Broadphase.Tree tree = world.CollisionWorld.Broadphase.DynamicTree;
+                for (int i = 0; i < count; i += 4)
+                {
+                    Assert.That(tree.BodyFilters[i], Is.EqualTo(CollisionFilter.Default), $"body {i}'s filter");
+                }
+
+                List<(int, int, int)> refittedPairs = OverlapPairs(ref world);
+                world.CollisionWorld.Broadphase.ScheduleDynamicTreeBuildJobs(ref world, TimeStep, Gravity, 8, default).Complete();
+                List<(int, int, int)> builtPairs = OverlapPairs(ref world);
+                Assert.That(builtPairs.Count, Is.GreaterThan(100), "the scene has pairs");
+                Assert.That(refittedPairs, Is.EqualTo(builtPairs));
+            }
+            finally
+            {
+                UnsafeUtility.Free(results, Allocator.Persistent);
+                cache.Dispose();
+            }
+        }
+
+        /// <summary>
         /// The refit leaves each body's collider bounds in the cache at the body's new pose, and the next build takes
         /// them from there for each body that is still at that pose. That build gives every body the same bounds, to the
         /// last bit, and the same filter, as a build without the cache.
