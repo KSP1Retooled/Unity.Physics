@@ -100,6 +100,23 @@ namespace KSP.Retooled.Physics
             /// searching the joints.
             /// </summary>
             public int jointEnds;
+
+            /// <summary>
+            /// A copy of the owner's serial number (<see cref="Body.serial"/>), or 0 for a row that has no owner. The body
+            /// build reads it here for every body in every step, because the row is in memory that the build reads
+            /// anyway, and the owner's record is not. The row keeps the copy when it moves to another index, because
+            /// the store copies the whole row.
+            /// </summary>
+            public uint serial;
+
+            /// <summary>
+            /// A copy of the AngularExpansionFactor in the mass properties of the collider that <see cref="collider"/>
+            /// holds, or 0 while the body has no collider. The body build adds it to the distance of the centre of mass
+            /// from the body's origin, and reads it here so that it doesn't have to read the collider's memory for
+            /// every body in every step. The code that gives the body a collider writes it at the same time
+            /// (<see cref="ColliderBuilder.SetCollider"/>).
+            /// </summary>
+            public float colliderExpansion;
         }
 
         /// <summary>Stores a body's components while they are not on an entity.</summary>

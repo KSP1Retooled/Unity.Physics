@@ -187,6 +187,14 @@ namespace KSP.Retooled.Physics
         /// <summary>Whether the bodies that this job overwrites are the bodies that the bounds cache holds.</summary>
         public bool CompareBodies;
 
+        /// <summary>
+        /// Whether the job reads the serial number from the body's owner and the expansion factor from the body's
+        /// collider, as the build did before the rows held copies of them (<see cref="NativeStore.BodyData.serial"/>
+        /// and <see cref="NativeStore.BodyData.colliderExpansion"/>). Only tests set it, to check that the copies give
+        /// the same built world to the last bit.
+        /// </summary>
+        public bool ReadSources;
+
         /// <summary>The number of built bodies, including the anchor.</summary>
         public int Count => DynamicIndices.Length + StaticIndices.Length + 1;
 
@@ -196,7 +204,7 @@ namespace KSP.Retooled.Physics
             {
                 int index = DynamicIndices[builtIndex];
                 ref NativeStore.BodyData body = ref Store[index];
-                RigidBody built = RigidBodyOf(ref body, index);
+                RigidBody built = RigidBodyOf(ref body, index, ReadSources);
                 if (Same != null)
                 {
                     // This job writes the body's memory anyway, so reading it first costs little.
@@ -209,7 +217,7 @@ namespace KSP.Retooled.Physics
             else if (builtIndex < DynamicIndices.Length + StaticIndices.Length)
             {
                 int index = StaticIndices[builtIndex - DynamicIndices.Length];
-                Bodies[builtIndex] = RigidBodyOf(ref Store[index], index);
+                Bodies[builtIndex] = RigidBodyOf(ref Store[index], index, ReadSources);
             }
             else
             {
@@ -218,13 +226,13 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>Builds the Unity Physics body for a store row. See <see cref="EntityVersion"/> for its entity.</summary>
-        private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index)
+        private static RigidBody RigidBodyOf(ref NativeStore.BodyData body, int index, bool readSources)
         {
             return new RigidBody
             {
                 Collider = body.collider->Value,
                 WorldFromBody = WorldFromBody(ref body),
-                Entity = new Entity { Index = index, Version = EntityVersion(ref body, index) },
+                Entity = new Entity { Index = index, Version = EntityVersion(ref body, index, readSources) },
                 Scale = 1.0f,
             };
         }
@@ -238,11 +246,17 @@ namespace KSP.Retooled.Physics
         /// solver keys the boundary rows of bodies outside a vessel by it. The version is never zero, because the code
         /// that reads these bodies treats a version of zero as a body that is not in the store, such as the world's
         /// anchor. A row that a test builds by hand has no owner and no serial number. Its version is made from its row
-        /// and is negative, so that two such rows, or such a row and a body, never share a version.
+        /// and is negative, so that two such rows, or such a row and a body, never share a version. The job reads the
+        /// serial number from the row's copy of it, unless <paramref name="readSources"/> is true.
         /// </summary>
-        private static int EntityVersion(ref NativeStore.BodyData body, int index)
+        private static int EntityVersion(ref NativeStore.BodyData body, int index, bool readSources)
         {
-            uint serial = body.owner != null ? body.owner->serial : 0u;
+            uint serial = body.serial;
+            if (readSources)
+            {
+                serial = body.owner != null ? body.owner->serial : 0u;
+            }
+
             return serial != 0 ? (int)serial : -(index + 1);
         }
 
@@ -284,13 +298,17 @@ namespace KSP.Retooled.Physics
                 }
             }
 
-            float expansion = math.length(body.mass->Transform.pos);
-            if (body.collider->Value.IsCreated)
+            // The row holds a copy of the collider's expansion factor, which is 0 when the body has no collider. Adding
+            // 0 to the length gives the same bits as not adding it, because the length is never -0.
+            float colliderExpansion = body.colliderExpansion;
+            if (ReadSources)
             {
-                expansion += body.collider->Value.Value.MassProperties.AngularExpansionFactor;
+                colliderExpansion = body.collider->Value.IsCreated ? body.collider->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
             }
 
-            body.mass->AngularExpansionFactor = expansion;
+            // The build doesn't write the result back into the body's PhysicsMass, because no code in this package reads it
+            // there.
+            float expansion = math.length(body.mass->Transform.pos) + colliderExpansion;
 
             MotionDatas[motionIndex] = new MotionData
             {

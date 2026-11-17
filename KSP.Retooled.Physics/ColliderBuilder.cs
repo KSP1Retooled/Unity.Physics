@@ -239,9 +239,20 @@ namespace KSP.Retooled.Physics
 
                     NativeStore.BodyData* body = Bodies + Work[i].Body;
                     Release(body->collider->Value.GetUnsafePtr());
-                    body->collider->Value = FromPointer((void*)Results[i]);
+                    SetCollider(body, FromPointer((void*)Results[i]));
                 }
             }
+        }
+
+        /// <summary>
+        /// Gives a body's row a collider, or no collider when <paramref name="collider"/> isn't created. Every write of
+        /// a row's collider goes through this method, so that the row's copy of the collider's expansion factor
+        /// (<see cref="NativeStore.BodyData.colliderExpansion"/>) always belongs to the collider that the row holds.
+        /// </summary>
+        internal static void SetCollider(NativeStore.BodyData* body, BlobAssetReference<Collider> collider)
+        {
+            body->collider->Value = collider;
+            body->colliderExpansion = collider.IsCreated ? collider.Value.MassProperties.AngularExpansionFactor : 0.0f;
         }
 
         /// <summary>
