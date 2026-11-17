@@ -16,32 +16,50 @@ namespace KSP.Retooled.Physics
 
         int NumHits { get; }
 
-        /// <summary>Returns false when no more hits should be sent to this sink.</summary>
-        bool Add(in T hit, QueryShape* shape, bool backface, bool overlappedAtStart);
+        /// <summary>
+        /// Returns false when no more hits should be sent to this sink. The serial number is the hit body's (its
+        /// RigidBody.Entity.Version), which a sink that keeps the closest hit uses to break a tie.
+        /// </summary>
+        bool Add(in T hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart);
     }
 
-    /// <summary>Keeps the closest hit.</summary>
+    /// <summary>
+    /// Keeps the closest hit. Of two hits at the same distance, it keeps the one that <see
+    /// cref="QueryCollectors.Precedes"/> picks, so that the result doesn't depend on the order in which the world's tree
+    /// visits the bodies. A tree that the step refitted can visit them in another order than a tree built from scratch.
+    /// </summary>
     internal unsafe struct ClosestSink<T> : IQuerySink<T>
         where T : unmanaged, IQueryResult
     {
         internal T Hit;
         internal QueryShape* Shape;
+        internal uint Serial;
         internal bool Backface;
 
         public bool EarlyOut => false;
 
+        /// <summary>
+        /// Before the first hit, the length of the query. After it, the next float above the closest hit's fraction,
+        /// so that the queries, which pass on only the hits closer than this value, also pass on a hit at the same
+        /// distance.
+        /// </summary>
         public float MaxFraction { get; set; }
 
         public int NumHits => Shape != null ? 1 : 0;
 
-        public bool Add(in T hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in T hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
-            if (hit.Fraction < MaxFraction)
+            bool closer = Shape == null
+                ? hit.Fraction < MaxFraction
+                : QueryCollectors.Precedes(hit.Fraction, serial, hit.ColliderKey, Hit.Fraction, Serial, Hit.ColliderKey);
+
+            if (closer)
             {
                 Hit = hit;
                 Shape = shape;
+                Serial = serial;
                 Backface = backface;
-                MaxFraction = hit.Fraction;
+                MaxFraction = QueryCollectors.JustAbove(hit.Fraction);
             }
 
             return true;
@@ -59,7 +77,7 @@ namespace KSP.Retooled.Physics
 
         public int NumHits => Shape != null ? 1 : 0;
 
-        public bool Add(in DistanceHit hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in DistanceHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
             Shape = shape;
             return false;
@@ -78,7 +96,7 @@ namespace KSP.Retooled.Physics
 
         public int NumHits { get; private set; }
 
-        public bool Add(in DistanceHit hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in DistanceHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
             void* userData = shape->UserData;
             NumHits++;
@@ -99,7 +117,7 @@ namespace KSP.Retooled.Physics
 
         public int NumHits { get; private set; }
 
-        public bool Add(in DistanceHit hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in DistanceHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
             NumHits++;
             return Collector.Invoke(Context, shape->Handle, Bodies[hit.RigidBodyIndex].Owner, shape->UserData, (ushort)shape->GeometryType) != 0;
@@ -119,7 +137,7 @@ namespace KSP.Retooled.Physics
 
         public int NumHits { get; private set; }
 
-        public bool Add(in RaycastHit hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in RaycastHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
             NativeStore.RayCastHit record = QueryCollectors.Record(hit.Position, hit.SurfaceNormal, hit.Fraction * Distance, shape, backface);
             NumHits++;
@@ -141,7 +159,7 @@ namespace KSP.Retooled.Physics
 
         public int NumHits { get; private set; }
 
-        public bool Add(in ColliderCastHit hit, QueryShape* shape, bool backface, bool overlappedAtStart)
+        public bool Add(in ColliderCastHit hit, QueryShape* shape, uint serial, bool backface, bool overlappedAtStart)
         {
             NativeStore.RayCastHit record = overlappedAtStart
                 ? QueryCollectors.Record(float3.zero, -Direction, 0.0f, shape, false)
@@ -194,6 +212,7 @@ namespace KSP.Retooled.Physics
 
         private T run;
         private QueryShape* runShape;
+        private uint runSerial;
         private bool runBackface;
         private bool runOverlapped;
         private bool stopped;
@@ -220,6 +239,7 @@ namespace KSP.Retooled.Physics
             this.keepInitialOverlaps = keepInitialOverlaps;
             run = default;
             runShape = null;
+            runSerial = 0;
             runBackface = false;
             runOverlapped = false;
             stopped = false;
@@ -286,7 +306,7 @@ namespace KSP.Retooled.Physics
             bool overlapped = rules == QueryHitRules.Sweep && hit.Fraction <= 0.0f;
             if (!groupByShape)
             {
-                stopped = !Sink.Add(hit, shape, backface, overlapped);
+                stopped = !Sink.Add(hit, shape, (uint)rigidBody.Entity.Version, backface, overlapped);
                 return true;
             }
 
@@ -295,6 +315,7 @@ namespace KSP.Retooled.Physics
                 FinishRun();
                 run = hit;
                 runShape = shape;
+                runSerial = (uint)rigidBody.Entity.Version;
                 runBackface = backface;
                 runOverlapped = overlapped;
                 return true;
@@ -319,7 +340,7 @@ namespace KSP.Retooled.Physics
         {
             if (runShape != null && !stopped && (!runOverlapped || keepInitialOverlaps))
             {
-                stopped = !Sink.Add(run, runShape, runBackface, runOverlapped);
+                stopped = !Sink.Add(run, runShape, runSerial, runBackface, runOverlapped);
             }
 
             runShape = null;
@@ -516,6 +537,50 @@ namespace KSP.Retooled.Physics
 
     internal static unsafe class QueryCollectors
     {
+        /// <summary>
+        /// Decides which of two hits at the same distance a query that keeps the closest hit reports. The tree of the
+        /// world's bodies may visit two such bodies in either order, so the query can't keep the first hit that it
+        /// found. Of two bodies, the one with the higher serial number wins: that is the body created later, which is
+        /// also the body that PhysX reports when nothing was removed in between. Of two leaves of one body, the leaf with
+        /// the lower collider key wins; nobody measured what PhysX does in that case.
+        /// </summary>
+        internal static bool Precedes(float fraction, uint serial, ColliderKey key, float bestFraction, uint bestSerial, ColliderKey bestKey)
+        {
+            if (fraction != bestFraction)
+            {
+                return fraction < bestFraction;
+            }
+
+            if (serial != bestSerial)
+            {
+                return serial > bestSerial;
+            }
+
+            return key.Value < bestKey.Value;
+        }
+
+        /// <summary>
+        /// Returns the smallest float that is greater than a fraction. A collector that keeps the closest hit reports
+        /// this value as its MaxFraction, because the queries pass on only the hits that are closer than MaxFraction,
+        /// and the collector needs to see a hit at the same distance too.
+        /// </summary>
+        internal static float JustAbove(float fraction)
+        {
+            if (fraction > 0.0f)
+            {
+                return math.asfloat(math.asint(fraction) + 1);
+            }
+
+            if (fraction < 0.0f)
+            {
+                return math.asfloat(math.asint(fraction) - 1);
+            }
+
+            // The smallest normal float, rather than a denormal one, which a thread that flushes denormals to zero
+            // would read as zero. Precedes still rejects a hit between zero and this value, because it is farther.
+            return 1.17549435e-38f;
+        }
+
         // Physics.Raycast uses an infinite distance by default. Unity Physics cannot represent that distance, so use a
         // finite limit.
         internal const float MaxQueryLength = 1e7f;

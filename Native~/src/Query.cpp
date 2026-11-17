@@ -135,8 +135,14 @@ namespace Retooled
 
         std::shared_lock lock(world->queryLock);
         FinishRefit(world);
-        return g_Managed.query != nullptr && world->data.queryWorld != nullptr
-            && g_Managed.query(kind, world->data.queryWorld, &input, &output) != 0;
+        const auto query = g_Managed.query;
+        if (query == nullptr)
+        {
+            NoteDroppedCommand();
+            return false;
+        }
+
+        return world->data.queryWorld != nullptr && query(kind, world->data.queryWorld, &input, &output) != 0;
     }
 
     static void CopyHit(const QueryOutput& output, Physics::QueryHit& hit)

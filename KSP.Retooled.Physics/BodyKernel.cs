@@ -474,6 +474,14 @@ namespace KSP.Retooled.Physics
             {
                 JointTopology.Changed();
             }
+
+            // PhysX ends the touching pairs of a body that becomes kinematic or stops being kinematic, and starts them
+            // again, also when the body sleeps. The next step checks the touching pairs and wakes their bodies (see
+            // WakeRefilteredPairsJob).
+            if (((hot->flags ^ before) & NativeStore.BodyFlags.Kinematic) != 0)
+            {
+                PairFilterVersion.Changed();
+            }
         }
 
         /// <summary>

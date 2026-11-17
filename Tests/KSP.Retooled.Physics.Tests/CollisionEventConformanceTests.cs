@@ -64,19 +64,25 @@ namespace KSP.Retooled.Physics.Tests
             public readonly List<Collider> Stays = new List<Collider>();
             public readonly List<Collider> Exits = new List<Collider>();
 
+            // The messages in the order that they came: "Enter", "Stay" or "Exit".
+            public readonly List<string> Heard = new List<string>();
+
             private void OnTriggerEnter(Collider other)
             {
                 Enters.Add(other);
+                Heard.Add("Enter");
             }
 
             private void OnTriggerStay(Collider other)
             {
                 Stays.Add(other);
+                Heard.Add("Stay");
             }
 
             private void OnTriggerExit(Collider other)
             {
                 Exits.Add(other);
+                Heard.Add("Exit");
             }
         }
 
@@ -627,6 +633,128 @@ namespace KSP.Retooled.Physics.Tests
         }
 
         /// <summary>
+        /// A body that rests on a wall within the contact offsets, without overlapping it, turns into a trigger. As in
+        /// PhysX, the contact pair ends with OnCollisionExit, and no trigger pair starts, because a trigger pair needs
+        /// the shapes to overlap. PhysX gives the same messages for gaps from 0.2 mm to 5 mm, and with the wall turned
+        /// into a trigger instead of the body.
+        /// </summary>
+        [Test]
+        public void AContactPairTurnedTriggerWhileApartOnlyExits()
+        {
+            GameObject wall = Box(Vector3.zero, new Vector3(4.0f, 4.0f, 4.0f));
+            TriggerLog wallTriggers = wall.AddComponent<TriggerLog>();
+            CollisionLog wallHits = wall.AddComponent<CollisionLog>();
+            Rigidbody body = WeightlessBox(new Vector3(0.0f, 2.505f, 0.0f));
+
+            Simulate(3);
+            Assert.That(wallHits.Count("Enter"), Is.EqualTo(1), "the shapes touch within their contact offsets");
+            body.GetComponent<Collider>().isTrigger = true;
+            Simulate(4);
+
+            Assert.That(wallHits.Count("Exit"), Is.EqualTo(1));
+            Assert.That(wallTriggers.Heard, Is.Empty, "shapes that don't overlap start no trigger pair");
+        }
+
+        /// <summary>
+        /// A body that rests on a wall under gravity turns into a trigger. As in PhysX, the trigger pair starts in the
+        /// step of the change: OnTriggerEnter, OnTriggerStay and OnCollisionExit all come in that step. The trigger
+        /// agent's note that such a pair starts one step late came from the trigger probe's scene C, where a box starts
+        /// 5 cm inside a wall without gravity: PhysX pushes it out over three steps while it tilts, so a corner is still
+        /// inside the wall when it turns into a trigger, while this backend pushes it out in one step, and the tilt
+        /// takes the corner back in a step later. The pair's messages follow the poses in both backends.
+        /// </summary>
+        [Test]
+        public void ABodyRestingOnAWallTurnedTriggerEntersInTheSameStep()
+        {
+            GameObject wall = Box(Vector3.zero, new Vector3(4.0f, 4.0f, 4.0f));
+            TriggerLog wallTriggers = wall.AddComponent<TriggerLog>();
+            CollisionLog wallHits = wall.AddComponent<CollisionLog>();
+            Rigidbody body = DynamicBox(new Vector3(0.0f, 2.5f, 0.0f));
+
+            Simulate(20);
+            body.GetComponent<Collider>().isTrigger = true;
+            Simulate();
+
+            Assert.That(wallTriggers.Heard, Is.EqualTo(new[] { "Enter", "Stay" }), "the trigger pair starts in the step of the change");
+            Assert.That(wallHits.Count("Exit"), Is.EqualTo(1), "and the contact pair ends in that step");
+        }
+
+        /// <summary>
+        /// A body that becomes kinematic inside a trigger ends its trigger pair and starts it again in the same step, as
+        /// in PhysX: OnTriggerExit, then OnTriggerEnter and OnTriggerStay. The same happens when the body becomes dynamic
+        /// again. Between the changes, the pair stays.
+        /// </summary>
+        [Test]
+        public void ABodyMadeKinematicInsideATriggerExitsAndEntersAgain()
+        {
+            TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 4.0f, 4.0f)).AddComponent<TriggerLog>();
+            Rigidbody body = WeightlessBox(Vector3.zero);
+
+            Simulate(3);
+            zone.Heard.Clear();
+            body.isKinematic = true;
+            Simulate();
+            Assert.That(zone.Heard, Is.EqualTo(new[] { "Exit", "Enter", "Stay" }), "the step in which the body became kinematic");
+
+            zone.Heard.Clear();
+            Simulate(3);
+            Assert.That(zone.Heard, Is.EqualTo(new[] { "Stay", "Stay", "Stay" }), "the steps after it");
+
+            zone.Heard.Clear();
+            body.isKinematic = false;
+            Simulate();
+            Assert.That(zone.Heard, Is.EqualTo(new[] { "Exit", "Enter", "Stay" }), "the step in which the body became dynamic");
+        }
+
+        /// <summary>
+        /// As <see cref="ABodyMadeKinematicInsideATriggerExitsAndEntersAgain"/>, with the body asleep inside the trigger.
+        /// PhysX ends and starts the pair in the step of the change all the same.
+        /// </summary>
+        [Test]
+        public void ASleepingBodyMadeKinematicInsideATriggerExitsAndEntersAgain()
+        {
+            TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 4.0f, 4.0f)).AddComponent<TriggerLog>();
+            Rigidbody body = WeightlessBox(Vector3.zero);
+
+            Simulate(3);
+            body.Sleep();
+            Simulate(2);
+            Assert.That(body.IsSleeping(), "the body sleeps inside the trigger");
+
+            zone.Heard.Clear();
+            body.isKinematic = true;
+            Simulate();
+            Assert.That(zone.Heard, Is.EqualTo(new[] { "Exit", "Enter", "Stay" }));
+        }
+
+        /// <summary>
+        /// A body that touches another dynamic body and becomes kinematic ends the contact pair and starts it again in
+        /// the same step, as in PhysX: OnCollisionExit, then OnCollisionEnter. The same happens when it becomes dynamic
+        /// again.
+        /// </summary>
+        [Test]
+        public void ABodyMadeKinematicWhileTouchingAnotherBodyExitsAndEntersAgain()
+        {
+            Rigidbody low = WeightlessBox(Vector3.zero);
+            CollisionLog lowHits = low.gameObject.AddComponent<CollisionLog>();
+            Rigidbody high = WeightlessBox(new Vector3(0.0f, 1.005f, 0.0f));
+
+            Simulate(3);
+            Assert.That(lowHits.Messages, Is.EqualTo(new[] { "Enter", "Stay", "Stay" }));
+
+            lowHits.Messages.Clear();
+            high.isKinematic = true;
+            Simulate();
+            Assert.That(lowHits.Messages, Is.EqualTo(new[] { "Exit", "Enter" }), "the step in which the body became kinematic");
+
+            lowHits.Messages.Clear();
+            Simulate(2);
+            high.isKinematic = false;
+            Simulate();
+            Assert.That(lowHits.Messages, Is.EqualTo(new[] { "Stay", "Stay", "Exit", "Enter" }), "the step in which the body became dynamic");
+        }
+
+        /// <summary>
         /// A static trigger that moves to a layer that doesn't collide with a body asleep inside it ends the pair with
         /// OnTriggerExit, as in PhysX. The change wakes the body, because a pair of two resting bodies is kept without
         /// being seen. Moving the trigger back starts the pair at the same two shapes again.
@@ -754,12 +882,19 @@ namespace KSP.Retooled.Physics.Tests
                 GameObject oldZone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f));
                 Rigidbody oldBody = WeightlessBox(Vector3.zero);
                 Simulate(3);
-                destroyedPairs.Add((ShapeAddress(oldZone), ShapeAddress(oldBody.gameObject)));
+                long oldZoneShape = ShapeAddress(oldZone);
+                long oldBoxShape = ShapeAddress(oldBody.gameObject);
+                destroyedPairs.Add((oldZoneShape, oldBoxShape));
                 DestroyAll();
 
                 TriggerLog zone = Trigger(Vector3.zero, new Vector3(4.0f, 2.0f, 4.0f)).AddComponent<TriggerLog>();
                 Rigidbody body = DynamicBox(new Vector3(0.0f, 3.0f, 0.0f));
                 Simulate();
+
+                // What keeps the stays of a pair that takes the old addresses is the event that ends the old pair in
+                // Unity's cache. The test checks that event in every iteration, because the heap hands an old address
+                // back only now and then.
+                Assert.That(EndsRemovedPair(oldZoneShape, oldBoxShape), $"iteration {iteration}: the step after the destruction ends the old pair in Unity's cache");
                 bool reused = destroyedPairs.Contains((ShapeAddress(zone.gameObject), ShapeAddress(body.gameObject)));
                 Simulate(100);
 
@@ -777,7 +912,33 @@ namespace KSP.Retooled.Physics.Tests
                 DestroyAll();
             }
 
-            Assert.That(reuses, Is.EqualTo(wantedReuses), "the new shapes took the old shapes' addresses often enough");
+            // How often the heap gives the new shapes the old shapes' addresses isn't up to this code: in one run, it was 2
+            // times in 200 iterations. The event above is checked in every iteration, so fewer reuses only mean fewer
+            // checks of the stays themselves.
+            if (reuses < wantedReuses)
+            {
+                Debug.Log($"{nameof(ANewTriggerPairAtTheAddressesOfADestroyedPairKeepsItsStays)}: the new shapes took the old shapes' addresses {reuses} times in 200 iterations.");
+            }
+        }
+
+        /// <summary>
+        /// Whether the last step reported the event for a removed shape, with zero ids, that ends the trigger pair of two
+        /// shapes in Unity's cache.
+        /// </summary>
+        private static unsafe bool EndsRemovedPair(long triggerShape, long colliderShape)
+        {
+            NativeStore.WorldData* store = StepKernel.Current->Store;
+            for (uint i = 0; i < store->triggerCount; i++)
+            {
+                NativeStore.TriggerEvent e = store->triggers[i];
+                if (e.type == NativeStore.TriggerEventShapeRemoved && (long)e.triggerShape == triggerShape && (long)e.colliderShape == colliderShape
+                    && e.trigger == 0 && e.collider == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

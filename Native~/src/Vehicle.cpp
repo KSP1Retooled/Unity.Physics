@@ -43,7 +43,11 @@ namespace Retooled
 
         World* world = static_cast<World*>(ctx.world != nullptr ? ctx.world : object);
         const CommandKernel kernel = g_Managed.vehicleCommand;
-        if (kernel != nullptr && world != nullptr)
+        if (kernel == nullptr)
+        {
+            NoteDroppedCommand();
+        }
+        else if (world != nullptr)
         {
             args.value2 = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
             args.pointer3 = ctx.body;

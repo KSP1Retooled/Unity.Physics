@@ -43,6 +43,10 @@ namespace Retooled
     // Logs the first time an unimplemented command arrives, so that a gap shows up once instead of on every call.
     void LogUnimplementedOnce(uint32_t category, uint32_t id);
 
+    // A handler calls this when it does nothing because the managed core is detached, so that the command is lost. The
+    // plugin counts such commands and names them in a warning when the core attaches again (see Plugin.cpp).
+    void NoteDroppedCommand();
+
     // Binds a handler to the command of the same name: the handler's parameter names the command struct, and that
     // struct's `command` constant picks the table slot.
     template <typename T>
@@ -171,8 +175,9 @@ namespace Retooled
     inline constexpr auto RotationOut = [](const CommandArgs& args, auto& command) { command.value = ToVec4(args.rotation); };
 
     // Runs a command in its kernel. Without a kernel, or for a handle Unity never got because it was created without one,
-    // it is a no-op that answers zero and a rotation that is at least valid. That only happens while the core is away for
-    // a domain reload, when no command is expected.
+    // it is a no-op that answers zero and a rotation that is at least valid. The kernel is missing only while the core is
+    // away for a domain reload or after it detached at quitting, when no command is expected; the plugin names any
+    // command that comes then in a warning (NoteDroppedCommand).
     template <typename T, CommandKernel ManagedCallbacks::*Kernel, auto Pack, auto Unpack, bool NeedsObject>
     void Forwarded(void* object, const Context&, Command& base)
     {
@@ -181,7 +186,11 @@ namespace Retooled
         args.rotation.w = 1.0f;
 
         const CommandKernel kernel = g_Managed.*Kernel;
-        if (kernel != nullptr && (object != nullptr || !NeedsObject))
+        if (kernel == nullptr)
+        {
+            NoteDroppedCommand();
+        }
+        else if (object != nullptr || !NeedsObject)
         {
             Pack(args, command);
             kernel(static_cast<uint32_t>(T::command), object, &args, &g_Globals);
