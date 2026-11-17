@@ -340,6 +340,57 @@ namespace KSP.Retooled.Physics.Tests
             }
         }
 
+        /// <summary>
+        /// A weightless box that rests in place has its collider turned off for a step, and turned on again on another
+        /// layer. While the collider is off, the build has no collider to write into the box's entry of the bounds cache,
+        /// so the entry keeps the old collider's address and filter. The heap often gives the new collider the old
+        /// collider's address. The entry then had the same address and the same body, and the build kept the old
+        /// filter in it, so from the next step on the box took the old layer from the cache: a ray that looks for the
+        /// new layer missed the box, and the cache's check counted a mismatch. Each round turns the box to the other
+        /// layer, so that a round where the heap reuses the address is likely.
+        /// </summary>
+        [Test]
+        public unsafe void ABoxWhoseColliderComesBackOnAnotherLayerIsFoundOnThatLayer()
+        {
+            const int layer = 29;
+            bool wasEnabled = StepState.BoundsCacheEnabled;
+            bool wasChecked = Unity.Physics.DynamicBoundsCache.CheckEnabled;
+            try
+            {
+                StepState.BoundsCacheEnabled = true;
+                Unity.Physics.DynamicBoundsCache.CheckEnabled = true;
+                Rigidbody body = WeightlessBox(new Vector3(0.0f, 1.0f, 0.0f));
+                BoxCollider box = body.GetComponent<BoxCollider>();
+                Simulate(2);
+
+                long mismatches = Unity.Physics.DynamicBoundsCache.Counts->Mismatches;
+                long hits = Unity.Physics.DynamicBoundsCache.Counts->Hits;
+                var misses = new List<int>();
+                for (int round = 0; round < 16; round++)
+                {
+                    int target = round % 2 == 0 ? layer : 0;
+                    box.enabled = false;
+                    Simulate(1);
+                    body.gameObject.layer = target;
+                    box.enabled = true;
+                    Simulate(3);
+                    if (!UnityEngine.Physics.Raycast(new Vector3(0.0f, 5.0f, 0.0f), Vector3.down, 10.0f, 1 << target))
+                    {
+                        misses.Add(round);
+                    }
+                }
+
+                Assert.That(Unity.Physics.DynamicBoundsCache.Counts->Hits, Is.GreaterThan(hits), "the box took its bounds from the cache");
+                Assert.That(misses, Is.Empty, "the rounds in which the ray missed the box on its new layer");
+                Assert.That(Unity.Physics.DynamicBoundsCache.Counts->Mismatches - mismatches, Is.EqualTo(0), "no entry kept another filter");
+            }
+            finally
+            {
+                StepState.BoundsCacheEnabled = wasEnabled;
+                Unity.Physics.DynamicBoundsCache.CheckEnabled = wasChecked;
+            }
+        }
+
         [Test]
         public void EveryChangeToTheJointsMovesTheirVersion()
         {

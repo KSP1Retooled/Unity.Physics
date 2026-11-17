@@ -1597,7 +1597,7 @@ namespace Unity.Physics
                     responds = body.Collider.Value.RespondsToCollision;
                     if (Cache.IsCreated)
                     {
-                        Cache.Write(index, body, bounds);
+                        Cache.Write(index, body, bounds, filter, responds);
                     }
                 }
                 else
@@ -2179,30 +2179,40 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose. The
-            /// filter is read from the collider only when the entry held another collider or another body's collider.
+            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose, and
+            /// the collider's filter and response, which it reads from the collider.
             /// </summary>
-            /// <remarks>
-            /// The heap can give a new body's collider the address of a collider that was freed, so the address alone
-            /// doesn't tell that the entry holds this collider. When the entry kept the filter of a destroyed body's
-            /// collider at the same address, the new body took that filter from the cache in the next step: a trigger
-            /// pair of the new body ended one step after it entered, because the old body didn't detect collisions.
-            /// </remarks>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void Write(int i, in RigidBody body, Aabb bounds)
             {
+                Write(i, body, bounds, body.Collider.Value.GetCollisionFilter(), body.Collider.Value.RespondsToCollision);
+            }
+
+            /// <summary>
+            /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose, and
+            /// the filter and response that the caller read from the collider. Every write stores the filter and the
+            /// response, because neither the collider's address nor the body tells that the entry already holds them.
+            /// </summary>
+            /// <remarks>
+            /// The heap can give a new collider the address of a collider that was freed. That happens to a new body at
+            /// the index of a destroyed body, and also to the same body: a body whose collider is gone for a build
+            /// leaves its entry as it was, because the build has no collider to write, and its next collider can take
+            /// the old collider's address. When a write kept the old collider's filter because the address and the body
+            /// were the same, the body took that filter from the cache from the next step on. A trigger pair of a new
+            /// body ended one step after it entered, and a ray that looked for the layer of a box whose collider came
+            /// back on another layer missed the box.
+            /// </remarks>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Write(int i, in RigidBody body, Aabb bounds, CollisionFilter filter, bool respondsToCollision)
+            {
                 Bounds[i] = bounds;
-                long collider = body.Scale == 1.0f ? (long)body.Collider.GetUnsafePtr() : 0;
-                if (Colliders[i].Collider != collider || Colliders[i].Body != body.Entity)
+                Colliders[i] = new ColliderInfo
                 {
-                    Colliders[i] = new ColliderInfo
-                    {
-                        Collider = collider,
-                        Body = body.Entity,
-                        Filter = body.Collider.Value.GetCollisionFilter(),
-                        RespondsToCollision = body.Collider.Value.RespondsToCollision ? 1 : 0,
-                    };
-                }
+                    Collider = body.Scale == 1.0f ? (long)body.Collider.GetUnsafePtr() : 0,
+                    Body = body.Entity,
+                    Filter = filter,
+                    RespondsToCollision = respondsToCollision ? 1 : 0,
+                };
             }
 
             /// <summary>
