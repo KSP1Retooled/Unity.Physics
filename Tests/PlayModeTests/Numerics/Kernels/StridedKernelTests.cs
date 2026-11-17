@@ -2,7 +2,7 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Compare double BLAS and Cholesky kernels with scalar references on padded column-major, transposed,
@@ -115,7 +115,7 @@ namespace KSP.Retooled.Physics.Tests
 
         internal static double[,] RandomMatrix(int rows, int columns, uint seed)
         {
-            var random = new Random(seed * 7919 + 1);
+            var random = new Unity.Mathematics.Random(seed * 7919 + 1);
             var m = new double[rows, columns];
             for (int i = 0; i < rows; i++)
             {
@@ -221,7 +221,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void DotAndAxpyTakeAnyStride([Values(1, 5, 23)] int count, [Values(1, 3, -2)] int incx, [Values(1, 2)] int incy)
         {
-            var random = new Random((uint)(count * 13 + incx * 3 + incy + 50));
+            var random = new Unity.Mathematics.Random((uint)(count * 13 + incx * 3 + incy + 50));
             int span = count * 3 + 1;
             var x = new double[span];
             var y = new double[span];
@@ -262,7 +262,7 @@ namespace KSP.Retooled.Physics.Tests
             double[] stored = Store(a, place);
             var x = new double[n * incx];
             var y = new double[m * 2];
-            var random = new Random(3);
+            var random = new Unity.Mathematics.Random(3);
             for (int i = 0; i < x.Length; i++)
             {
                 x[i] = random.NextDouble(-1.0, 1.0);

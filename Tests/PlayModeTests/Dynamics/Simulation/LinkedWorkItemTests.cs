@@ -1,8 +1,7 @@
 using NUnit.Framework;
 using Unity.Collections;
-using Unity.Physics;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Simulation
 {
     /// <summary>
     /// Verify narrow phase and Jacobian construction partition linked pairs into identical work items.

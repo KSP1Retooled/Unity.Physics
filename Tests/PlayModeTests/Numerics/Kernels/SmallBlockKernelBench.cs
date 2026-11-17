@@ -8,7 +8,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 using UnityEngine;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Benchmark SmallBlockKernels against equivalent general kernels on row-major blocks.

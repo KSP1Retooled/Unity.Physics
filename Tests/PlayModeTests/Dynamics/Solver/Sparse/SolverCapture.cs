@@ -2,13 +2,12 @@ using System;
 using System.IO;
 using System.Threading;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using UnityEditor;
 using UnityEngine;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Solver.Sparse
 {
     /// <summary>
     /// Capture direct solver problems to Library/SolverCapture/(RETOOLED_SOLVER_CAPTURE).

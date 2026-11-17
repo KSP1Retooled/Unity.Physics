@@ -1,9 +1,9 @@
 using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using static KSP.Retooled.Physics.Tests.StridedKernelTests;
+using static Unity.Numerics.Kernels.Tests.StridedKernelTests;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Compare float BLAS and Cholesky kernels with double reference loops across strided layouts, vector tails and
@@ -78,7 +78,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void DotAndAxpyMatchPlainLoops([Values(1, 3, 4, 7, 8, 13, 31, 32, 45, 77)] int count, [Values(1, 2)] int stride)
         {
-            var random = new Random((uint)(count * 3 + stride));
+            var random = new Unity.Mathematics.Random((uint)(count * 3 + stride));
             var x = new float[count * stride];
             var y = new float[count * stride];
             for (int i = 0; i < x.Length; i++)

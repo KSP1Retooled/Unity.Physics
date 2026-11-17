@@ -2,7 +2,7 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Compare float and double matrix products with scalar reference loops across full tiles and edges.
@@ -15,7 +15,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheDoubleProductsMatchPlainLoops([ValueSource(nameof(Sizes))] int m, [Values(1, 5, 6, 13)] int n, [Values(1, 9)] int k)
         {
-            var random = new Random((uint)(m * 131 + n * 7 + k));
+            var random = new Unity.Mathematics.Random((uint)(m * 131 + n * 7 + k));
             int lda = m + 2, ldb = math.max(k, n) + 1, ldc = m + 3;
             var a = new double[lda * k];
             var b = new double[ldb * math.max(k, n)];
@@ -74,7 +74,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheFloatProductsMatchPlainLoops([ValueSource(nameof(Sizes))] int m, [Values(1, 5, 6, 13)] int n, [Values(1, 9)] int k)
         {
-            var random = new Random((uint)(m * 131 + n * 7 + k + 5));
+            var random = new Unity.Mathematics.Random((uint)(m * 131 + n * 7 + k + 5));
             int lda = m + 2, ldb = math.max(k, n) + 1, ldc = m + 3;
             var a = new float[lda * k];
             var b = new float[ldb * math.max(k, n)];
@@ -135,7 +135,7 @@ namespace KSP.Retooled.Physics.Tests
         [Test]
         public void TheLowerTriangleProductMatchesPlainLoops([ValueSource(nameof(Sizes))] int n, [Values(1, 9)] int k)
         {
-            var random = new Random((uint)(n * 17 + k));
+            var random = new Unity.Mathematics.Random((uint)(n * 17 + k));
             int lda = n + 1, ldc = n + 2;
             var a = new double[lda * k];
             var c = new double[ldc * n];

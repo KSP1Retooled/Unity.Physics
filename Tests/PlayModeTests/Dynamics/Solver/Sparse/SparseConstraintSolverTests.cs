@@ -7,12 +7,11 @@ using Unity.Mathematics;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Memory;
-using Unity.Physics;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Solver.Sparse
 {
     /// <summary>
     /// Compare sparse solving with the dense complementarity solver and independently check row conditions and

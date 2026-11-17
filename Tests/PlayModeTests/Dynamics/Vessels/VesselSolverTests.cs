@@ -6,14 +6,13 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Dynamics.Vessels.Structure;
 using Unity.Physics.Tests.Dynamics.Vessels;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Vessels
 {
     /// <summary>
     /// Compare the section solver with independent dense LU and stiff live-edge references.

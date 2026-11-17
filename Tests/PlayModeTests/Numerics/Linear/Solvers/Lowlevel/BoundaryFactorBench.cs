@@ -7,7 +7,7 @@ using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Linear.Solvers.Lowlevel.Tests
 {
     /// <summary>
     /// Benchmark Cholesky factorization and solves against the previous scalar kernel.
@@ -194,7 +194,7 @@ namespace KSP.Retooled.Physics.Tests
         public void MeasureSolve()
         {
             const int contacts = 24, rows = contacts * 5, dofs = 150;
-            var random = new Random(4242);
+            var random = new Unity.Mathematics.Random(4242);
             var jacobian = new double[rows * dofs];
             for (int k = 0; k < jacobian.Length; k++)
             {
@@ -345,7 +345,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             const int m = 68;
             var a = new NativeArray<double>(Stride * Stride, Allocator.Persistent);
-            var random = new Random(99);
+            var random = new Unity.Mathematics.Random(99);
             const int dofs = 90;
             var jacobian = new double[m * dofs];
             for (int k = 0; k < jacobian.Length; k++)
@@ -421,7 +421,7 @@ namespace KSP.Retooled.Physics.Tests
         {
             // W = J J^T + a small diagonal, with 30 columns in J for each 5 rows, so that W looks like a boundary block
             // of contacts on a few bodies: dense, symmetric, positive definite and not too well conditioned.
-            var random = new Random(12345);
+            var random = new Unity.Mathematics.Random(12345);
             const int dofs = 72;
             var jacobian = new double[Stride * dofs];
             for (int k = 0; k < jacobian.Length; k++)

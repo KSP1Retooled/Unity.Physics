@@ -8,7 +8,7 @@ using Unity.Numerics.Kernels;
 using Unity.Physics;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Benchmark 6 by 6 sparse blocks against general kernels and shuffled access. Check numerical agreement.

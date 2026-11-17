@@ -2,7 +2,7 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Kernels.Tests
 {
     /// <summary>
     /// Tests for Cholesky factorization, solves, insertion and deletion, covering the base case and recursive path.
@@ -14,7 +14,7 @@ namespace KSP.Retooled.Physics.Tests
         /// <summary>Create a random n by n positive definite matrix A = J*J^T + 0.01*I in column-major order.</summary>
         private static double[] Matrix(int n, uint seed)
         {
-            var random = new Random(seed);
+            var random = new Unity.Mathematics.Random(seed);
             int dofs = n / 2 + 3;
             var jacobian = new double[n * dofs];
             for (int k = 0; k < jacobian.Length; k++)
@@ -109,7 +109,7 @@ namespace KSP.Retooled.Physics.Tests
             Assert.That(largest, Is.LessThan(Tolerance * size), $"n = {n}");
 
             // Check the solve by computing the residual A*x - b.
-            var random = new Random(7);
+            var random = new Unity.Mathematics.Random(7);
             var b = new double[n];
             var x = new double[n];
             for (int i = 0; i < n; i++)
@@ -193,7 +193,7 @@ namespace KSP.Retooled.Physics.Tests
             [Values(1u, 2u, 3u)] uint seed)
         {
             double[] a = Matrix(n, seed * 101 + (uint)n);
-            var random = new Random(seed);
+            var random = new Unity.Mathematics.Random(seed);
             var deleted = new System.Collections.Generic.SortedSet<int>();
             if (seed == 1)
             {

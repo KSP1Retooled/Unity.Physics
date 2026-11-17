@@ -3,6 +3,7 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using Random = Unity.Mathematics.Random;
 using static Unity.Physics.Math;
+using PhysicsSolver = Unity.Physics.Solver;
 
 namespace Unity.Physics.Tests.Dynamics.Joints
 {
@@ -152,7 +153,7 @@ namespace Unity.Physics.Tests.Dynamics.Joints
 
         delegate Joint GenerateJoint(ref Random rnd);
 
-        static void SolveSingleJoint(Joint jointData, Solver.StepInput stepInput,
+        static void SolveSingleJoint(Joint jointData, PhysicsSolver.StepInput stepInput,
             ref MotionVelocity velocityA, ref MotionVelocity velocityB, ref MotionData motionA,
             ref MotionData motionB, out NativeStream jacobiansOut, NativeStream impulseEventStream = default)
         {
@@ -165,7 +166,7 @@ namespace Unity.Physics.Tests.Dynamics.Joints
             {
                 NativeStream.Writer jacobianWriter = jacobiansOut.AsWriter();
                 jacobianWriter.BeginForEachIndex(0);
-                Solver.BuildJointJacobian(ref jointData, jointData.SolverType, velocityA, velocityB, motionA, motionB, stepInput.Timestep,
+                PhysicsSolver.BuildJointJacobian(ref jointData, jointData.SolverType, velocityA, velocityB, motionA, motionB, stepInput.Timestep,
                     stepInput.NumSolverIterations, stepInput.DirectSolverSettings, ref jacobianWriter);
                 jacobianWriter.EndForEachIndex();
             }
@@ -210,8 +211,8 @@ namespace Unity.Physics.Tests.Dynamics.Joints
                         header.Solve(ref velocityA, ref velocityB, stepInput,
                             ref eventWriter, ref eventWriter, ref impulseEventWriter,
                             false,
-                            Solver.MotionStabilizationInput.Default,
-                            Solver.MotionStabilizationInput.Default);
+                            PhysicsSolver.MotionStabilizationInput.Default,
+                            PhysicsSolver.MotionStabilizationInput.Default);
                     }
 
                     if (impulseEventStream.IsCreated && stepInput.ExportEventsInThisIteration)
@@ -266,7 +267,7 @@ namespace Unity.Physics.Tests.Dynamics.Joints
                         var numSubsteps = steps[s].x;
                         var numSolverIterations = steps[s].y;
 
-                        var stepInput = new Solver.StepInput()
+                        var stepInput = new PhysicsSolver.StepInput()
                         {
                             Gravity = new float3(0.0f, -9.81f, 0.0f),
                             Timestep = JointTimestep,
@@ -417,7 +418,7 @@ namespace Unity.Physics.Tests.Dynamics.Joints
             const int numSubsteps = 1;
             const int numSolverIterations = 4;
 
-            var stepInput = new Solver.StepInput()
+            var stepInput = new PhysicsSolver.StepInput()
             {
                 Gravity = new float3(0.0f, -9.81f, 0.0f),
                 Timestep = JointTimestep,
@@ -561,7 +562,7 @@ namespace Unity.Physics.Tests.Dynamics.Joints
                 var numSubsteps = steps[s].x;
                 var numSolverIterations = steps[s].y;
 
-                var stepInput = new Solver.StepInput
+                var stepInput = new PhysicsSolver.StepInput
                 {
                     Gravity = float3.zero,
                     Timestep = timestep,

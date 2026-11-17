@@ -1,10 +1,9 @@
 using NUnit.Framework;
 using Unity.Collections;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Solver.Islands
 {
     /// <summary>
     /// Test island cache slots keyed by body serial so that row movement preserves state and row reuse does not.

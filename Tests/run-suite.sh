@@ -6,8 +6,8 @@
 #
 # Selection:
 #   full      All tests except PlayModeLifecycleTests (default).
-#   quick     Backend tests excluding the Slow category.
-#   retooled  Backend tests including the Slow category.
+#   quick     Retooled tests excluding the Slow category.
+#   retooled  Retooled tests including the Slow category.
 #   quick and retooled also exclude PlayModeLifecycleTests and upstream suites.
 #
 # Configure solver paths through environment variables.
@@ -43,17 +43,26 @@ log="$logs/$name.log"
 mkdir -p "$logs"
 rm -f "$results"
 
+# Keep the moved fixtures and their parent namespaces in the retooled selections.
+# Use an exclusion so that NUnit keeps [Explicit] tests out of the default run.
+moved_simulation='Simulation(?:$|\.LinkedWorkItemTests(?:\.|$)|\.Islands(?:$|\.IslandNodeTests(?:\.|$)))'
+moved_solver='Solver(?:$|\.Islands(?:$|\.DirectSolverCacheTests(?:\.|$))|\.Sparse(?:$|\.SparseConstraintSolverTests(?:\.|$)))'
+moved_vessels='Vessels(?:$|\.(?:VesselSolverBench|VesselSolverTests)(?:\.|$))'
+moved_physics="Unity\.Physics\.Tests\.Dynamics(?:$|\.(?:$moved_simulation|$moved_solver|$moved_vessels))"
+moved_kernels='Kernels(?:$|\.Tests(?:$|\.(?:BlasTests|CholeskyLLTTests|FloatKernelTests|SixKernelBench|SmallBlockKernelBench|StridedKernelTests)(?:\.|$)))'
+moved_lowlevel='Linear(?:$|\.Solvers(?:$|\.Lowlevel(?:$|\.Tests(?:$|\.(?:BlockPrincipalPivotingTests|BoundaryFactorBench)(?:\.|$)))))'
+moved_numerics="Unity\.Numerics\.(?:$moved_kernels|$moved_lowlevel)"
+retooled_filter="!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^(?!$moved_physics|$moved_numerics)(?:Unity\.Physics\.Tests\.|Unity\.Numerics\.)"
+
 case "$mode" in
     full)
         set -- -testFilter "!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests" "$@"
         ;;
-    # Use only exclusions here. A filter that includes a fixture by name also runs the [Explicit] tests in it,
-    # such as VesselSolverBench, which takes half an hour.
     quick)
-        set -- -testFilter "!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^Unity.Physics.Tests.;!^Unity.Numerics." -testCategory "!Slow" "$@"
+        set -- -testFilter "$retooled_filter" -testCategory "!Slow" "$@"
         ;;
     retooled)
-        set -- -testFilter "!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^Unity.Physics.Tests.;!^Unity.Numerics." "$@"
+        set -- -testFilter "$retooled_filter" "$@"
         ;;
 esac
 

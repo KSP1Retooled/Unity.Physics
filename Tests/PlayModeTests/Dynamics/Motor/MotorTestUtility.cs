@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
+using PhysicsSolver = Unity.Physics.Solver;
 using Random = Unity.Mathematics.Random;
 
 //
@@ -183,7 +184,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
 
         // Solves a joint, using a set number of iterations, and integrates the motions
         // Input timestep needs to be an inverse timestep
-        internal unsafe static void SolveSingleJoint(Joint jointData, Solver.StepInput stepInput,
+        internal unsafe static void SolveSingleJoint(Joint jointData, PhysicsSolver.StepInput stepInput,
             ref MotionVelocity velocityA, ref MotionVelocity velocityB, ref MotionData motionA, ref MotionData motionB,
             out NativeStream jacobiansOut)
         {
@@ -196,7 +197,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
             {
                 NativeStream.Writer jacobianWriter = jacobiansOut.AsWriter();
                 jacobianWriter.BeginForEachIndex(0);
-                Solver.BuildJointJacobian(ref jointData, jointData.SolverType, velocityA, velocityB, motionA, motionB, stepInput.Timestep,
+                PhysicsSolver.BuildJointJacobian(ref jointData, jointData.SolverType, velocityA, velocityB, motionA, motionB, stepInput.Timestep,
                     stepInput.NumSolverIterations, stepInput.DirectSolverSettings, ref jacobianWriter);
                 jacobianWriter.EndForEachIndex();
             }
@@ -233,8 +234,8 @@ namespace Unity.Physics.Tests.Dynamics.Motors
                         header.Solve(ref velocityA, ref velocityB, stepInput,
                             ref eventWriter, ref eventWriter, ref eventWriter,
                             false,
-                            Solver.MotionStabilizationInput.Default,
-                            Solver.MotionStabilizationInput.Default);
+                            PhysicsSolver.MotionStabilizationInput.Default,
+                            PhysicsSolver.MotionStabilizationInput.Default);
                     }
                 }
 
@@ -282,7 +283,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
 
             float timeStep = Timestep / numSubsteps;
 
-            var stepInput = new Solver.StepInput()
+            var stepInput = new PhysicsSolver.StepInput()
             {
                 Gravity = gravity,
                 Timestep = timeStep,
@@ -401,7 +402,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
 
                     float timeStep = timestep50Hz / numSubsteps;
 
-                    var stepInput = new Solver.StepInput()
+                    var stepInput = new PhysicsSolver.StepInput()
                     {
                         Gravity = gravity,
                         Timestep = timeStep,

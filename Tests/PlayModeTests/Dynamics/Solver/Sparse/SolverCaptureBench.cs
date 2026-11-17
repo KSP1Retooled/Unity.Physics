@@ -10,14 +10,13 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Solver.Sparse
 {
     /// <summary>
     /// Replay captured solver problems on one Burst thread. Write stage timings and impulse differences to

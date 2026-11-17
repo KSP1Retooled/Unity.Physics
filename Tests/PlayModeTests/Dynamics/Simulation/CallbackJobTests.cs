@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
+using PhysicsSolver = Unity.Physics.Solver;
 
 namespace Unity.Physics.Tests.Dynamics.Simulation
 {
@@ -171,7 +172,7 @@ namespace Unity.Physics.Tests.Dynamics.Simulation
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
                     NumSubsteps = 1,
-                    DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                    DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
 
@@ -266,7 +267,7 @@ namespace Unity.Physics.Tests.Dynamics.Simulation
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
                     NumSubsteps = 1,
-                    DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                    DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
 

@@ -11,6 +11,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Physics.Tests.Dynamics.Vessels;
 using UnityEngine;
 using static Unity.Physics.BoundingVolumeHierarchy;
 
@@ -1243,7 +1244,7 @@ namespace Unity.Physics.Tests.Collision.World
         {
             string craft = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CRAFT") ?? "tu160";
             int copies = int.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_COPIES"), out int c) ? c : 4;
-            KSP.Retooled.Physics.Tests.VesselGraph graph = KSP.Retooled.Physics.Tests.VesselGraph.Load(craft);
+            VesselGraph graph = VesselGraph.Load(craft);
             double left = graph.Position.Min(p => p.x), right = graph.Position.Max(p => p.x);
             var positions = new List<float3>();
             var sizes = new List<float>();

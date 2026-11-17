@@ -81,16 +81,27 @@ fi
 mode=$1
 shift
 category=""
+# Keep the moved fixtures and their parent namespaces in the retooled selections.
+# Use an exclusion so that NUnit keeps [Explicit] tests out of the default run.
+moved_simulation='Simulation(?:$|\.LinkedWorkItemTests(?:\.|$)|\.Islands(?:$|\.IslandNodeTests(?:\.|$)))'
+moved_solver='Solver(?:$|\.Islands(?:$|\.DirectSolverCacheTests(?:\.|$))|\.Sparse(?:$|\.SparseConstraintSolverTests(?:\.|$)))'
+moved_vessels='Vessels(?:$|\.(?:VesselSolverBench|VesselSolverTests)(?:\.|$))'
+moved_physics="Unity\.Physics\.Tests\.Dynamics(?:$|\.(?:$moved_simulation|$moved_solver|$moved_vessels))"
+moved_kernels='Kernels(?:$|\.Tests(?:$|\.(?:BlasTests|CholeskyLLTTests|FloatKernelTests|SixKernelBench|SmallBlockKernelBench|StridedKernelTests)(?:\.|$)))'
+moved_lowlevel='Linear(?:$|\.Solvers(?:$|\.Lowlevel(?:$|\.Tests(?:$|\.(?:BlockPrincipalPivotingTests|BoundaryFactorBench)(?:\.|$)))))'
+moved_numerics="Unity\.Numerics\.(?:$moved_kernels|$moved_lowlevel)"
+retooled_filter="!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^(?!$moved_physics|$moved_numerics)(?:Unity\.Physics\.Tests\.|Unity\.Numerics\.)"
+
 case "$mode" in
     full)
         filter='!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests'
         ;;
     quick)
-        filter='!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^Unity.Physics.Tests.;!^Unity.Numerics.'
+        filter="$retooled_filter"
         category='!Slow'
         ;;
     retooled)
-        filter='!KSP.Retooled.Physics.Tests.PlayModeLifecycleTests;!^Unity.Physics.Tests.;!^Unity.Numerics.'
+        filter="$retooled_filter"
         ;;
     filter=*)
         filter=${mode#filter=}

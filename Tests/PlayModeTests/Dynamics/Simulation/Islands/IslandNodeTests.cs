@@ -5,14 +5,13 @@ using NUnit.Framework;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Simulation.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
-using Math = System.Math;
-using DispatchPair =Unity.Physics.DispatchPairSequencer.DispatchPair;
+using SystemMath = System.Math;
+using DispatchPair = Unity.Physics.DispatchPairSequencer.DispatchPair;
 using SolverIsland = Unity.Physics.DispatchPairSequencer.SolverIsland;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Simulation.Islands
 {
     /// <summary>
     /// Test vessel-node island finding, numbering, body order and cache invalidation on synthetic pairs and
@@ -44,8 +43,8 @@ namespace KSP.Retooled.Physics.Tests
         {
             var pairs = new NativeList<DispatchPair>(Allocator.TempJob);
             var joints = new NativeArray<Joint>(0, Allocator.TempJob);
-            var records = new NativeArray<VesselRecord>(Math.Max(1, vesselParts.Length), Allocator.TempJob);
-            var partBodies = new NativeArray<int>(Math.Max(1, vesselParts.Sum(v => v.Length)), Allocator.TempJob);
+            var records = new NativeArray<VesselRecord>(SystemMath.Max(1, vesselParts.Length), Allocator.TempJob);
+            var partBodies = new NativeArray<int>(SystemMath.Max(1, vesselParts.Sum(v => v.Length)), Allocator.TempJob);
             var islands = new NativeList<SolverIsland>(Allocator.TempJob);
             var islandPairs = new NativeList<DispatchPair>(Allocator.TempJob);
             var islandBodies = new NativeList<int>(Allocator.TempJob);
@@ -263,10 +262,10 @@ namespace KSP.Retooled.Physics.Tests
             var members = new HashSet<int>(vessels.SelectMany(v => v));
             foreach ((int a, int b) in contacts)
             {
-                members.Add(Math.Min(a, b));
-                if (Math.Max(a, b) < dynamicBodies)
+                members.Add(SystemMath.Min(a, b));
+                if (SystemMath.Max(a, b) < dynamicBodies)
                 {
-                    members.Add(Math.Max(a, b));
+                    members.Add(SystemMath.Max(a, b));
                 }
             }
 
@@ -298,7 +297,7 @@ namespace KSP.Retooled.Physics.Tests
                 Assert.AreEqual(parts.Length, found.Islands[i].VesselParts);
 
                 int root = Root(expected[group][0]);
-                int expectedPairs = contacts.Count(c => Root(Math.Min(c.Item1, c.Item2)) == root);
+                int expectedPairs = contacts.Count(c => Root(SystemMath.Min(c.Item1, c.Item2)) == root);
                 Assert.AreEqual(expectedPairs, found.Islands[i].PairCount);
                 Assert.IsTrue(found.PairsOf(i).All(p => Root(p.Item1) == root));
             }

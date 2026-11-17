@@ -9,6 +9,7 @@ using Unity.Mathematics;
 using Unity.Physics.Systems;
 using Unity.Transforms;
 using UnityEngine;
+using PhysicsSolver = Unity.Physics.Solver;
 
 namespace Unity.Physics.Tests.Dynamics
 {
@@ -456,7 +457,7 @@ namespace Unity.Physics.Tests.Dynamics
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
                     NumSubsteps = 1,
-                    DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                    DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
 
@@ -511,7 +512,7 @@ namespace Unity.Physics.Tests.Dynamics
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
                     NumSubsteps = 1,
-                    DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                    DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
 
@@ -561,7 +562,7 @@ namespace Unity.Physics.Tests.Dynamics
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
                     NumSubsteps = 1,
-                    DirectSolverSettings = Solver.DirectSolverSettings.Default,
+                    DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
 

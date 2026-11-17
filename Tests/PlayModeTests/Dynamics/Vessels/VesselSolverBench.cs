@@ -11,13 +11,12 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Tests.Dynamics.Vessels;
 using Debug = UnityEngine.Debug;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Vessels
 {
     /// <summary>
     /// Benchmark reference and synthetic 4,500-body vessels under each lock rule on one and eight threads,

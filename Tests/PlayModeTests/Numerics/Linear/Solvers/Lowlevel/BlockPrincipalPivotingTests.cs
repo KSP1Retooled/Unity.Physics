@@ -2,7 +2,7 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Numerics.Linear.Solvers.Lowlevel.Tests
 {
     /// <summary>
     /// Test boundary block pivoting, round limits and factor updates on coupled contact problems.
@@ -29,7 +29,7 @@ namespace KSP.Retooled.Physics.Tests
 
         private static Problem Make(uint seed)
         {
-            var random = new Random(seed);
+            var random = new Unity.Mathematics.Random(seed);
             var jacobian = new double[Rows * Dofs];
             for (int k = 0; k < jacobian.Length; k++)
             {
@@ -137,7 +137,7 @@ namespace KSP.Retooled.Physics.Tests
                 Solve(problem, null, false, out _, out byte[] nearby, out _, out _);
                 Problem next = problem;
                 next.Q = (double[])problem.Q.Clone();
-                var random = new Random(seed + 1000);
+                var random = new Unity.Mathematics.Random(seed + 1000);
                 for (int i = 0; i < Rows; i++)
                 {
                     next.Q[i] += random.NextDouble(-0.3, 0.3);
@@ -191,7 +191,7 @@ namespace KSP.Retooled.Physics.Tests
                 Solve(problem, null, false, out _, out byte[] nearby, out _, out _);
                 Problem next = problem;
                 next.Q = (double[])problem.Q.Clone();
-                var random = new Random(seed + 2000);
+                var random = new Unity.Mathematics.Random(seed + 2000);
                 var priority = new byte[Rows];
                 for (int i = 0; i < Rows; i++)
                 {

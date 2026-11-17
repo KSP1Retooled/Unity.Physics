@@ -5,11 +5,10 @@ using System.IO;
 using System.IO.Compression;
 using Unity.Collections;
 using Unity.Mathematics;
-using Unity.Physics;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 
-namespace KSP.Retooled.Physics.Tests
+namespace Unity.Physics.Tests.Dynamics.Vessels
 {
     /// <summary>
     /// Load a vessel graph from Tests/VesselGraphs~ and prepare solver inputs under a lock rule, gravity and
