@@ -933,8 +933,10 @@ namespace KSP.Retooled.Physics
         /// <summary>
         /// Waits for the refit of the dynamic tree that the last step left running, if there is one. Call it on the main
         /// thread, outside a job, before anything reads or changes the built world, the dynamic tree or the bounds
-        /// cache: the next step, a build for queries, and disposal. While the main thread waits, it runs the refit's
-        /// jobs itself if no worker has taken them.
+        /// cache: the next step, a build for queries, and disposal. While the main thread waits in JobHandle.Complete,
+        /// it runs the jobs in the refit's dependency chain that no worker has taken, and only those, so it helps with
+        /// the refit itself. A query job that the main thread picked up can't complete a job at all, so the queries use
+        /// <see cref="HelpPendingRefit"/> and the plugin's helpRefit instead.
         /// </summary>
         internal void FinishPendingRefit()
         {
