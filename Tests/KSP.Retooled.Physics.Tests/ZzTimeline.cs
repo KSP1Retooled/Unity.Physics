@@ -24,7 +24,9 @@ namespace KSP.Retooled.Physics.Tests
     // CPU inside each Physics.Simulate call, as medians per step. Rows that start with "M" are the main thread, rows that
     // start with "A" merge all threads. Rows that start with "O" are the main thread's work within 10 ms before or after
     // the Physics.Simulate marker, with negative times before it. PROFILE_ONLY picks configurations by name, PROFILE_PATHS picks the paths
-    // (compiled by default), and PROFILE_TAG names the output file Logs/Timeline-<tag>.txt. PROFILE_SAVE=1 also saves
+    // (compiled by default), PROFILE_SCENE picks the scenes (floating and ground by default; "statics" is the ground among
+    // thousands of static colliders, as in VesselForestBench), and PROFILE_TAG names the output file
+    // Logs/Timeline-<tag>.txt. PROFILE_SAVE=1 also saves
     // each configuration's profiler frames as Logs/Timeline-<tag>-<configuration>.data, which the Profiler window opens.
     [Explicit("profiling")]
     [Category("Slow")]
@@ -59,8 +61,9 @@ namespace KSP.Retooled.Physics.Tests
             return joint;
         }
 
-        private void Build(Graph graph, bool ground)
+        private void Build(Graph graph, string scene)
         {
+            bool ground = scene != "floating";
             var bodies = new List<Rigidbody>(graph.Parent.Length);
             float lowest = float.MaxValue;
             for (int i = 0; i < graph.Parent.Length; i++)
@@ -98,6 +101,11 @@ namespace KSP.Retooled.Physics.Tests
                 bool fits = left > -190.0f && right < 190.0f;
                 Box(new Vector3(fits ? 0.0f : 0.5f * (left + right), lowest - 0.5f, 0.0f),
                     new Vector3(fits ? 400.0f : right - left + 100.0f, 1.0f, 400.0f));
+            }
+
+            if (scene == VesselForestBench.StaticsScene)
+            {
+                VesselForestBench.StaticField(graph, lowest, Track);
             }
         }
 
@@ -145,13 +153,14 @@ namespace KSP.Retooled.Physics.Tests
             foreach (string craft in string.IsNullOrEmpty(crafts) ? new[] { "tu160", "synthetic4500" } : crafts.Split(','))
             {
                 Graph graph = VesselForestBench.Load(craft);
-                foreach (bool ground in new[] { false, true })
+                foreach (string scene in (Environment.GetEnvironmentVariable("PROFILE_SCENE") ?? "floating,ground").Split(','))
                 {
+                    bool ground = scene != "floating";
                     foreach (int threads in new[] { 8, 1 })
                     {
                         foreach (string path in (Environment.GetEnvironmentVariable("PROFILE_PATHS") ?? "compiled").Split(','))
                         {
-                            string name = $"{craft} {(ground ? "ground" : "floating")} {threads}T {path}";
+                            string name = $"{craft} {scene} {threads}T {path}";
                             if (!string.IsNullOrEmpty(only) && !name.Contains(only))
                             {
                                 continue;
@@ -181,7 +190,7 @@ namespace KSP.Retooled.Physics.Tests
                             VesselForest.BoundaryRowCap = VesselForest.DefaultBoundaryRowCap;
                             VesselForest.MinimumHoldSteps = -1;
                             JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
-                            Build(graph, ground);
+                            Build(graph, scene);
                             for (int i = 0; i < 30; i++)
                             {
                                 UnityEngine.Physics.Simulate(Step);
@@ -212,7 +221,7 @@ namespace KSP.Retooled.Physics.Tests
                             VesselForest.GetCounts(out long solves1, out _, out _);
                             VesselForest.GetSectionCounts(out long sections1, out long locked1, out long builds1, out _, out _, out _, out _, out _);
                             long solved = Math.Max(1, solves1 - solves0);
-                            report.Append($"# {craft} {(ground ? "ground" : "floating")} {threads}T: {solves1 - solves0} vessel solves in 40 steps, " +
+                            report.Append($"# {craft} {scene} {threads}T: {solves1 - solves0} vessel solves in 40 steps, " +
                                 $"{(sections1 - sections0) / (double)solved:F0} sections and {(locked1 - locked0) / (double)solved:F0} locked edges per solve, " +
                                 $"{builds1 - builds0} structure builds\n");
                             report.Append($"# unprofiled step median: {Median(unprofiled):F2} ms back to back, {Median(framed):F2} ms with an editor frame between steps\n");

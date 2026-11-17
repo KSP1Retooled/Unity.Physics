@@ -195,8 +195,18 @@ namespace KSP.Retooled.Physics
         /// </summary>
         public bool ReadSources;
 
-        /// <summary>The number of built bodies, including the anchor.</summary>
-        public int Count => DynamicIndices.Length + StaticIndices.Length + 1;
+        /// <summary>
+        /// Whether the world already holds the rows of the static bodies and of the anchor, from the last build, so
+        /// that the job writes only the rows of the dynamic bodies (see StepState.KeepsStaticRows).
+        /// </summary>
+        public bool KeepStatics;
+
+        /// <summary>
+        /// The number of bodies that the job writes: every built body, including the anchor, or only the dynamic
+        /// bodies when <see cref="KeepStatics"/> is true. The dynamic bodies come first, so the job's indices are the
+        /// built indices either way.
+        /// </summary>
+        public int Count => KeepStatics ? DynamicIndices.Length : DynamicIndices.Length + StaticIndices.Length + 1;
 
         public void Execute(int builtIndex)
         {
