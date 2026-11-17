@@ -87,6 +87,8 @@ namespace KSP.Retooled.Physics.Tests
         /// </summary>
         private static unsafe ulong WorldHash()
         {
+            // The refit of the dynamic tree can still run after the step, and it reads the bodies.
+            StepKernel.Current->FinishPendingRefit();
             ulong hash = 14695981039346656037UL;
             Unity.Physics.PhysicsWorld world = StepKernel.Current->World;
             foreach (Unity.Physics.RigidBody body in world.Bodies)
