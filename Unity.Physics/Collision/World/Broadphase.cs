@@ -2105,10 +2105,14 @@ namespace Unity.Physics
     /// </summary>
     internal unsafe struct DynamicBoundsCache : IDisposable
     {
-        /// <summary>The collider of an entry, with the collider's filter, which the build would read from it.</summary>
+        /// <summary>
+        /// The collider of an entry and the body that it belonged to, with the collider's filter, which the build would
+        /// read from it.
+        /// </summary>
         internal struct ColliderInfo
         {
             public long Collider;
+            public Unity.Entities.Entity Body;
             public CollisionFilter Filter;
             public int RespondsToCollision;
         }
@@ -2176,18 +2180,25 @@ namespace Unity.Physics
 
             /// <summary>
             /// Writes entry i for a body whose collider is created, with the collider's bounds at the body's pose. The
-            /// filter is read from the collider only when the entry held another collider.
+            /// filter is read from the collider only when the entry held another collider or another body's collider.
             /// </summary>
+            /// <remarks>
+            /// The heap can give a new body's collider the address of a collider that was freed, so the address alone
+            /// doesn't tell that the entry holds this collider. When the entry kept the filter of a destroyed body's
+            /// collider at the same address, the new body took that filter from the cache in the next step: a trigger
+            /// pair of the new body ended one step after it entered, because the old body didn't detect collisions.
+            /// </remarks>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void Write(int i, in RigidBody body, Aabb bounds)
             {
                 Bounds[i] = bounds;
                 long collider = body.Scale == 1.0f ? (long)body.Collider.GetUnsafePtr() : 0;
-                if (Colliders[i].Collider != collider)
+                if (Colliders[i].Collider != collider || Colliders[i].Body != body.Entity)
                 {
                     Colliders[i] = new ColliderInfo
                     {
                         Collider = collider,
+                        Body = body.Entity,
                         Filter = body.Collider.Value.GetCollisionFilter(),
                         RespondsToCollision = body.Collider.Value.RespondsToCollision ? 1 : 0,
                     };
@@ -2195,17 +2206,26 @@ namespace Unity.Physics
             }
 
             /// <summary>
-            /// Returns whether a body that is built at index i has exactly the collider and pose of the body that the
-            /// world held at that index before. The code that builds the bodies calls it before it overwrites the
-            /// body, and stores the answer in <see cref="Same"/>.
+            /// Returns whether a body that is built at index i is the body that the world held at that index before,
+            /// with exactly the same collider and pose. The code that builds the bodies calls it before it overwrites
+            /// the body, and stores the answer in <see cref="Same"/>.
             /// </summary>
+            /// <remarks>
+            /// The entity must match too, because the heap can give a new body's collider the address of a collider
+            /// that was freed. That happens when a body is destroyed and a new body takes its index. Without the check,
+            /// the new body took the old body's bounds, filter and response from the cache: a trigger pair of a new
+            /// body ended one step after it entered, because the cache gave the new body the filter of an old body on a
+            /// layer that didn't collide with the trigger. The same body keeps its entity, and its collider can't take
+            /// the address of the collider that the world held, because the backend builds the new collider before it
+            /// frees the old one.
+            /// </remarks>
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public static bool Matches(RigidBody before, RigidBody after)
             {
                 // The collider of the body that the world held before can have been freed since. So read the
                 // colliders' addresses as they are stored, at the start of the body. BlobAssetReference.GetUnsafePtr
                 // checks the collider's header first, and that check fails and throws for a freed collider.
-                return *(void**)&before == *(void**)&after && before.Scale == after.Scale
+                return *(void**)&before == *(void**)&after && before.Entity == after.Entity && before.Scale == after.Scale
                     && math.all(math.asuint(before.WorldFromBody.pos) == math.asuint(after.WorldFromBody.pos))
                     && math.all(math.asuint(before.WorldFromBody.rot.value) == math.asuint(after.WorldFromBody.rot.value));
             }

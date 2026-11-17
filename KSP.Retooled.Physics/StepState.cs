@@ -119,6 +119,10 @@ namespace KSP.Retooled.Physics
 
         // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
         private NativeList<NativeStore.TriggerEvent> removedTriggerPairs;
+
+        // The version of PairFilterVersion that the last step checked the touching pairs against.
+        private uint seenPairFilterVersion;
+
         private NativeList<int> sleepParents;
         private NativeList<int> sleepContacts;
         private NativeList<bool> sleepTouchesStill;
@@ -324,6 +328,7 @@ namespace KSP.Retooled.Physics
             contactBuckets = new NativeList<ContactBucket>(Allocator.Persistent);
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
+            TouchingHandOff.Restore(store, touching);
             removedTriggerPairs = new NativeList<NativeStore.TriggerEvent>(Allocator.Persistent);
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
@@ -484,6 +489,19 @@ namespace KSP.Retooled.Physics
 
             using (BackendMarkers.StepApplyForces.Auto())
             {
+                // A shape that became a trigger or stopped being one, or whose filter changed, can end a pair of two
+                // resting bodies. WakeRefilteredPairsJob wakes such bodies before the joints spread the wake and before
+                // the narrow phase, so that this step already sees the pair as it is now.
+                uint filterVersion = PairFilterVersion.Version;
+                if (filterVersion != seenPairFilterVersion)
+                {
+                    seenPairFilterVersion = filterVersion;
+                    if (!touching.IsEmpty)
+                    {
+                        new WakeRefilteredPairsJob { World = store, Touching = touching }.Run();
+                    }
+                }
+
                 new WakeJointedBodiesJob { World = store }.Run();
 
                 forcesApplied = new ApplyForcesJob
@@ -551,6 +569,15 @@ namespace KSP.Retooled.Physics
 
         /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
         internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
+
+        /// <summary>
+        /// Keeps the touching pairs for the world's next step state, before this state is discarded on detach (see
+        /// <see cref="TouchingHandOff"/>).
+        /// </summary>
+        internal readonly void SaveTouching()
+        {
+            TouchingHandOff.Save(store, globals, touching);
+        }
 
         /// <summary>The vessels compiled during the last build. Used by tests.</summary>
         internal readonly VesselBuild Vessels => vesselBuild;

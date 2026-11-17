@@ -142,6 +142,11 @@ namespace KSP.Retooled.Physics
                     a->flags = shape->data.flags;
                     break;
                 case ShapeCommand.SetFlags:
+                    if (((shape->data.flags ^ a->flags) & NativeStore.ShapeFlagTrigger) != 0)
+                    {
+                        PairFilterVersion.Changed();
+                    }
+
                     shape->data.flags = a->flags;
                     TouchBody(shape);
                     break;
@@ -223,6 +228,7 @@ namespace KSP.Retooled.Physics
             if (baked)
             {
                 TouchBody(shape);
+                PairFilterVersion.Changed();
             }
 
             if (shape->body != null && (StoreOps.Hot(shape->body)->flags & NativeStore.BodyFlags.Sleeping) != 0)

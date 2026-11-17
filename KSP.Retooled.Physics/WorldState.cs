@@ -33,6 +33,12 @@ namespace KSP.Retooled.Physics
             *state = new StepState(store, NativeStore.RetooledPhysics_Globals(), query);
         }
 
+        /// <summary>Keeps the touching pairs for the next state of this world, before a detach discards this one.</summary>
+        internal void SaveTouching()
+        {
+            state->SaveTouching();
+        }
+
         public void Dispose()
         {
             state->Dispose();
