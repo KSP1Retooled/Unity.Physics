@@ -486,6 +486,43 @@ namespace Unity.Physics.Tests.Collision.World
             }
         }
 
+        /// <summary>
+        /// An entry that is written again for the same body takes the filter of the body's collider, even when the
+        /// collider has the address that the entry held. A body whose collider is gone for a build leaves its entry
+        /// as it was, and its next collider can get the old collider's address from the heap, with another filter. The
+        /// test changes the filter of one collider between the two writes, in place of that new collider.
+        /// </summary>
+        [Test]
+        public unsafe void AnEntryWrittenAgainForTheSameBodyTakesTheColliderFilter()
+        {
+            BlobAssetReference<Collider> collider = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(1.0f) });
+            uint colliderVersion = 1;
+            var cache = new DynamicBoundsCache(&colliderVersion, Allocator.Temp);
+            try
+            {
+                DynamicBoundsCache.View view = cache.Resize(1);
+                var body = new Physics.RigidBody
+                {
+                    Collider = collider,
+                    WorldFromBody = RigidTransform.identity,
+                    Scale = 1.0f,
+                    Entity = new Entity { Index = 3, Version = 1 },
+                };
+                view.Write(0, body, body.CalculateAabb());
+
+                var other = new CollisionFilter { BelongsTo = 2, CollidesWith = 4 };
+                collider.Value.SetCollisionFilter(other);
+                view.Write(0, body, body.CalculateAabb());
+
+                Assert.That(view.Colliders[0].Filter.Equals(other), Is.True, "the entry holds the collider's filter");
+            }
+            finally
+            {
+                cache.Dispose();
+                collider.Dispose();
+            }
+        }
+
         static void AssertSameBounds(Aabb expected, Aabb actual, string what)
         {
             Assert.That(math.asuint(actual.Min), Is.EqualTo(math.asuint(expected.Min)), what);
