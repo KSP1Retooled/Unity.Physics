@@ -39,6 +39,12 @@ namespace KSP.Retooled.Physics
         private ShiftStaticTreeJob.ShiftState treeShift;
         private bool staticsChanged;
         private bool treeMatchesHeld;
+
+        // The store rows of the static bodies, in order, that the world's static rows were last written from. A build
+        // in which no static body changed keeps those rows, and the anchor's row after them, instead of writing them
+        // again (see KeepsStaticRows). The count is for tests: the builds that kept the rows.
+        private NativeList<int> staticRows;
+        private long keptStaticRowsCount;
         private NativeList<int> dynamicIndices;
         private NativeList<int> staticIndices;
         private NativeList<int> builtIndices;
@@ -230,6 +236,27 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>
+        /// Whether a build in which no static body changed keeps the static bodies' rows that the last build wrote into
+        /// the world, instead of writing them again from the store. RETOOLED_STATIC_REUSE=0 turns it off. Only the main
+        /// thread reads it, when it schedules a build.
+        /// </summary>
+        internal static bool StaticReuseEnabled = true;
+
+        /// <summary>Reads RETOOLED_STATIC_REUSE from the environment: 0 turns off the reuse of the static rows.</summary>
+        internal static void ReadStaticReuseSwitch()
+        {
+            string reuse = Environment.GetEnvironmentVariable("RETOOLED_STATIC_REUSE");
+            StaticReuseEnabled = reuse != "0";
+            if (reuse == "0")
+            {
+                UnityEngine.Debug.Log("[StepState] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
+            }
+        }
+
+        /// <summary>The builds that kept the static bodies' rows of the last build. Used by tests.</summary>
+        internal readonly long KeptStaticRowsCount => keptStaticRowsCount;
+
         /// <summary>The builds of the dynamic tree from scratch since this state was made. Used by tests.</summary>
         internal readonly long TreeBuildCount => treeBuildCount;
 
@@ -301,6 +328,7 @@ namespace KSP.Retooled.Physics
             treeShift = ShiftStaticTreeJob.ShiftState.Create();
             dynamicIndices = new NativeList<int>(Allocator.Persistent);
             staticIndices = new NativeList<int>(Allocator.Persistent);
+            staticRows = new NativeList<int>(Allocator.Persistent);
             builtIndices = new NativeList<int>(Allocator.Persistent);
             partitionResult = new NativeReference<int>(1, Allocator.Persistent);
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
@@ -384,6 +412,7 @@ namespace KSP.Retooled.Physics
             treeShift.Dispose();
             dynamicIndices.Dispose();
             staticIndices.Dispose();
+            staticRows.Dispose();
             builtIndices.Dispose();
             partitionResult.Dispose();
             jointGroups.Dispose();
@@ -1267,6 +1296,51 @@ namespace KSP.Retooled.Physics
         }
 
         /// <summary>
+        /// Decides whether this build keeps the rows of the static bodies that the world holds from the last build, and
+        /// the anchor's row after them, instead of writing them again from the store (BuildBodiesJob.KeepStatics). A
+        /// scene such as the space centre has thousands of static bodies that never change, and writing their rows
+        /// costs CPU time in every build.
+        /// <para>
+        /// The rows are still right when no static body has changed since the last build (staticsChanged is false)
+        /// and the static bodies come from the same store rows in the same order. Every change to a static body moves
+        /// the store's statics version: a new pose for the body or for its posed shape (StoreOps.MarkStaticMoved), a
+        /// shape that is added, removed or changed, which builds the collider again (StoreOps.MarkColliderDirty), a
+        /// change to the body's flags, which covers a body that is made static, dynamic or kinematic, or that stops or
+        /// starts being simulated (BodyKernel.SetFlags), a static body that is made or destroyed, or that moves to
+        /// another store row (WorldKernel), a change to a material, which builds every collider again (see
+        /// RefreshColliders), and a collider build that failed and is tried again (ColliderBuilder.AskAgainForFailed).
+        /// staticsChanged is also true when the last build didn't complete. The comparison of the store rows only
+        /// guards against a change that missed the version.
+        /// </para>
+        /// <para>
+        /// The world can only keep the rows if it keeps its memory for the bodies, which the caller checks after the
+        /// world's reset.
+        /// </para>
+        /// </summary>
+        private readonly bool KeepsStaticRows()
+        {
+            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == staticIndices.Length + 1 && Same(staticRows, staticIndices);
+        }
+
+        /// <summary>
+        /// Moves the rows of the static bodies and the anchor that the last build left after its
+        /// <paramref name="dynamicBefore"/> dynamic bodies to their place after this build's dynamic bodies. The rows
+        /// only move when the number of dynamic bodies changed. Nothing reads or writes the world's bodies while this
+        /// thread schedules a build: the last step's refit has finished, and no query reads the world until the build
+        /// publishes it again.
+        /// </summary>
+        private void MoveStaticRows(int dynamicBefore)
+        {
+            if (dynamicBefore == dynamicIndices.Length)
+            {
+                return;
+            }
+
+            RigidBody* bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
+            UnsafeUtility.MemMove(bodies + dynamicIndices.Length, bodies + dynamicBefore, (long)(staticIndices.Length + 1) * sizeof(RigidBody));
+        }
+
+        /// <summary>
         /// After the static bodies are built, decides whether to rebuild or shift the static tree. If no static body
         /// changed, leaves the tree unchanged.
         /// </summary>
@@ -1407,8 +1481,17 @@ namespace KSP.Retooled.Physics
             ColliderBuilder.AskAgainForFailed(store, colliderWork, colliderResults);
             ReleaseDeadColliders();
 
+            // A change to a material builds every body's collider again, the static bodies' too. The new colliders can
+            // take the addresses of the colliders that they replace, so the build has to know that the static bodies
+            // changed, both for the static tree and for the static bodies' rows (see KeepsStaticRows).
             uint materialVersion = globals->materialVersion;
-            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, materialVersion != builtMaterialVersion, colliderWork, colliderResults,
+            bool all = materialVersion != builtMaterialVersion;
+            if (all)
+            {
+                store->staticsVersion++;
+            }
+
+            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, all, colliderWork, colliderResults,
                 wholeColliderBuilds, colliderChanges, dependency);
             builtMaterialVersion = materialVersion;
             return collidersBuilt;
@@ -1460,6 +1543,8 @@ namespace KSP.Retooled.Physics
             // same number of dynamic bodies, and if the last build and refit kept the cache.
             void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
             bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == dynamicIndices.Length;
+            int dynamicBefore = world.NumDynamicBodies;
+            bool keepStaticRows = KeepsStaticRows();
 
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
             // read the joints, so jobs can be scheduled before the joint count is known.
@@ -1469,7 +1554,20 @@ namespace KSP.Retooled.Physics
                 world.DynamicsWorld.EnableDirectSolver = true;
             }
 
-            compareBodies &= NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
+            bool sameMemory = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
+            compareBodies &= sameMemory;
+            keepStaticRows &= sameMemory;
+            if (keepStaticRows)
+            {
+                keptStaticRowsCount++;
+                MoveStaticRows(dynamicBefore);
+            }
+            else if (StaticReuseEnabled)
+            {
+                // With the reuse off, every build writes the rows, so the rows that they come from don't matter.
+                staticRows.CopyFrom(staticIndices.AsArray());
+            }
+
             DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(dynamicIndices.Length) : default;
 
             // The bodies and the broadphase trees lead the longest chain before the solve: the pairs and islands wait
@@ -1490,6 +1588,7 @@ namespace KSP.Retooled.Physics
                     DeltaTime = deltaTime,
                     Same = boundsView.Same,
                     CompareBodies = compareBodies,
+                    KeepStatics = keepStaticRows,
                 };
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
