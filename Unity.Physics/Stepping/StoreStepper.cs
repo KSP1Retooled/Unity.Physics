@@ -65,6 +65,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal SleepState Sleep;
         internal ContactState Contacts;
         internal VesselState VesselData;
         internal JointBuildState Joints;
@@ -93,11 +94,6 @@ namespace Unity.Physics.Stepping
         private NativeList<int> snapshotDynamic;
         private NativeList<int> snapshotStatic;
         private long keptSnapshots;
-        private NativeList<int> sleepParents;
-        private NativeList<int> sleepContacts;
-        private NativeList<bool> sleepTouchesStill;
-        private NativeList<int> fallingAsleep;
-        private NativeArray<int> sleepRunOut;
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
@@ -134,11 +130,7 @@ namespace Unity.Physics.Stepping
             snapshotDynamic = new NativeList<int>(Allocator.Persistent);
             snapshotStatic = new NativeList<int>(Allocator.Persistent);
             Contacts.Initialize();
-            sleepParents = new NativeList<int>(Allocator.Persistent);
-            sleepContacts = new NativeList<int>(Allocator.Persistent);
-            sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
-            fallingAsleep = new NativeList<int>(Allocator.Persistent);
-            sleepRunOut = new NativeArray<int>(1, Allocator.Persistent);
+            Sleep.Initialize();
             Contacts.InitializeImpulseMemory();
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
@@ -185,11 +177,7 @@ namespace Unity.Physics.Stepping
             snapshotDynamic.Dispose();
             snapshotStatic.Dispose();
             Contacts.Dispose();
-            sleepParents.Dispose();
-            sleepContacts.Dispose();
-            sleepTouchesStill.Dispose();
-            fallingAsleep.Dispose();
-            sleepRunOut.Dispose();
+            Sleep.Dispose();
             Contacts.DisposeImpulseMemory();
             colliderWork.Dispose();
             colliderResults.Dispose();
@@ -691,9 +679,9 @@ namespace Unity.Physics.Stepping
             {
                 World = store,
                 Records = Contacts.manifolds,
-                Parents = sleepParents,
-                Contacts = sleepContacts,
-                TouchesStill = sleepTouchesStill,
+                Parents = Sleep.sleepParents,
+                Contacts = Sleep.sleepContacts,
+                TouchesStill = Sleep.sleepTouchesStill,
             }.Schedule();
             JobHandle.ScheduleBatchedJobs();
 
@@ -720,17 +708,17 @@ namespace Unity.Physics.Stepping
             JobHandle counted = new SleepCounters.UpdateWakeCountersJob
             {
                 World = store,
-                Contacts = sleepContacts,
-                TouchesStill = sleepTouchesStill,
-                RunOut = (int*)sleepRunOut.GetUnsafePtr(),
+                Contacts = Sleep.sleepContacts,
+                TouchesStill = Sleep.sleepTouchesStill,
+                RunOut = (int*)Sleep.sleepRunOut.GetUnsafePtr(),
                 DeltaTime = deltaTime,
             }.Schedule((int)store->bodyCount, ParallelBatchSize, contactsJoined);
             sleep = new FallAsleep.SleepJob
             {
                 World = store,
-                Parents = sleepParents,
-                Falling = fallingAsleep,
-                RunOut = (int*)sleepRunOut.GetUnsafePtr(),
+                Parents = Sleep.sleepParents,
+                Falling = Sleep.fallingAsleep,
+                RunOut = (int*)Sleep.sleepRunOut.GetUnsafePtr(),
             }.Schedule(JobHandle.CombineDependencies(counted, forces));
             JobHandle.ScheduleBatchedJobs();
 
@@ -767,7 +755,7 @@ namespace Unity.Physics.Stepping
             using (StepSleepMarker.Auto())
             {
                 sleep.Complete();
-                new FallAsleep.FallAsleepJob { World = store, Falling = fallingAsleep }.Run();
+                new FallAsleep.FallAsleepJob { World = store, Falling = Sleep.fallingAsleep }.Run();
             }
         }
 
