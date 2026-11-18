@@ -1,5 +1,7 @@
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using KSP.Retooled.Physics.Interop;
+using KSP.Retooled.Physics.Diagnostics;
+using KSP.Retooled.Physics.Stepping;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
@@ -16,6 +18,29 @@ namespace KSP.Retooled.Physics.Tests.Host
         public void RequireTheBackend()
         {
             Assume.That(BackendInfo.IsRetooled, "needs --backend retooled");
+        }
+
+        [Test]
+        public unsafe void DetachClearsTheLastSteppedWorld()
+        {
+            DynamicBox(new Vector3(0.0f, 2.0f, 0.0f));
+            Simulate();
+            Assert.That((ulong)StepEntryPoints.Current, Is.Not.Zero);
+
+            BackendHost.Detach();
+            try
+            {
+                Assert.That((ulong)StepEntryPoints.Current, Is.Zero);
+                ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out long builds);
+                Assert.That((solves, fallbacks, builds), Is.EqualTo((0L, 0L, 0L)));
+            }
+            finally
+            {
+                BackendHost.Attach();
+            }
+
+            Simulate();
+            Assert.That((ulong)StepEntryPoints.Current, Is.Not.Zero);
         }
 
         [Test]
