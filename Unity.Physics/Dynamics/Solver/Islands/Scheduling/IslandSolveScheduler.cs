@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Vessels;
 using static Unity.Physics.Solver;
 using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 using Unity.Physics.Dynamics.Solver.Forest;
@@ -890,7 +891,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 {
                     JacobianRows rows = work.Rows(island);
                     Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
-                    SolveSparsely(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
+                    SolveSparsely<SparseIslandPath>(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
                         DirectIslandBuffers.View(work.Epsilon, island), DirectIslandBuffers.View(work.Lower, island),
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
                         (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,

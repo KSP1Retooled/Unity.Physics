@@ -1,4 +1,3 @@
-using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
@@ -21,21 +20,62 @@ namespace Unity.Physics
     {
         static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Solve");
         static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Setup");
-        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.BuildRows");
-        static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.ApplyImpulses");
-        static readonly ProfilerMarker PushOutMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.PushOut");
+
+        /// <summary>The upstream direct solver applies the impulses after this call.</summary>
+        static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+            int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
+            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
+            in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray,
+            bool bounded, int contactPairs)
+        {
+            SolveSparsely<CoupledDirectPath>(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities,
+                motionDatas, stepInput, rows, jacobianRows, eps, l, u, rhs, indexSetArray, bounded, contactPairs);
+        }
+
+        /// <summary>The parts of the sparse solve that only the island scheduler runs.</summary>
+        internal unsafe interface ISparseIslandPath
+        {
+            void SolveVessel(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+                in NativeList<IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
+                bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
+                in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
+                bool sparseContacts, WorkTeam* team, bool applyImpulses, float* impulses);
+
+            void PushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+                in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
+                in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest = null);
+        }
+
+        /// <summary>The upstream direct path supplies no compiled vessels and handles its own impulses.</summary>
+        unsafe struct CoupledDirectPath : ISparseIslandPath
+        {
+            public void SolveVessel(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+                in NativeList<IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
+                bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
+                in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
+                bool sparseContacts, WorkTeam* team, bool applyImpulses, float* impulses)
+            {
+            }
+
+            public void PushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+                in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
+                in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest)
+            {
+            }
+        }
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
         /// used. Leaves the impulses in the right-hand side, where the dense path leaves them too.
         /// </summary>
-        internal static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+        internal static unsafe void SolveSparsely<TIslandPath>(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,
             int contactPairs, WorkTeam* team = null, bool applyImpulses = false, IslandHeader* islandHeaders = null,
             int* headerRows = null, int headerCount = 0, float* recovery = null, int* islandVessels = null, int islandVesselCount = 0,
             RigidBody* rigidBodies = null, int rigidBodyCount = 0)
+            where TIslandPath : struct, ISparseIslandPath
         {
             using ProfilerMarker.AutoScope span = SolveSparselyMarker.Auto();
 
@@ -142,7 +182,7 @@ namespace Unity.Physics
             // An island with a vessel has no Jacobians for the vessel's edges, so it can only solve with the vessel's own rows.
             if (islandVesselCount > 0)
             {
-                SolveVesselIsland(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), headers, setup.WorldBodies, compactBodies,
+                default(TIslandPath).SolveVessel(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), headers, setup.WorldBodies, compactBodies,
                     bounded, holdsPositions, islandIndex, islandVessels, islandVesselCount, motionVelocities, motionDatas, stepInput,
                     jacobianRows, recovery, contactPairs > 0, team, applyImpulses, impulsesPtr);
                 SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
@@ -233,7 +273,7 @@ namespace Unity.Physics
                             motionVelocities, motionDatas, contactPairs > 0, team);
                         if (recovery != null)
                         {
-                            SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                            default(TIslandPath).PushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
                                 motionVelocities, motionDatas, stepInput.Timestep,
                                 math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run);
                         }
@@ -304,7 +344,7 @@ namespace Unity.Physics
                     motionDatas, contactPairs > 0, team);
                 if (recovery != null)
                 {
-                    SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                    default(TIslandPath).PushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
                         motionVelocities, motionDatas, stepInput.Timestep,
                         math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
                 }

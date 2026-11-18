@@ -297,7 +297,7 @@ namespace Unity.Physics
         /// fast bodies,
         /// but below the backend's unreachable-contact separation.
         /// </summary>
-        internal const float ContactRowReach = 1000.0f;
+        internal const float ContactRowReach = ContactRowLimits.Reach;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static int GetConstraintRows(ref JacobianHeader header)

@@ -20,7 +20,7 @@ using Unity.Profiling;
 namespace Unity.Physics.Dynamics.Solver.Vessels
 {
     /// <summary>Build the rows for compiled vessels and solve them with the forest and vessel kernels.</summary>
-    internal static class VesselIslandSolver
+    internal static partial class VesselIslandSolver
     {
         static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.Solve");
 

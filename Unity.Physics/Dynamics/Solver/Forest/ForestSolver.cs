@@ -1,4 +1,3 @@
-using static Unity.Physics.Solver;
 using System;
 using System.Threading;
 using Unity.Burst;
@@ -8,7 +7,6 @@ using Unity.Mathematics;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Numerics.Kernels;
 using Unity.Physics.Base.Threading;
-using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
@@ -872,7 +870,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 for (int i = 0; i < count; i++)
                 {
                     float distance = contact.AccessAngularJacobian(i).ContactDistance;
-                    if (distance <= ContactRowReach)
+                    if (distance <= ContactRowLimits.Reach)
                     {
                         int row = block.FirstRow + points.Length;
                         points.Add(new DepthItem { Depth = -distance, Tie = (uint)Mix((ulong)row | turn), Index = row });
@@ -1190,7 +1188,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             int point = -1;
             for (int k = 0; k < count; k++)
             {
-                if (header.AccessAngularJacobian(k).ContactDistance <= ContactRowReach)
+                if (header.AccessAngularJacobian(k).ContactDistance <= ContactRowLimits.Reach)
                 {
                     if (normals == offset)
                     {

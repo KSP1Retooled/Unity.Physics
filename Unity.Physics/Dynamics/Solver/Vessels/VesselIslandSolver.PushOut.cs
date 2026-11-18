@@ -1,4 +1,3 @@
-using Unity.Physics.Dynamics.Solver.Vessels;
 using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -7,10 +6,12 @@ using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Profiling;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Vessels
 {
-    public static partial class Solver
+    internal static partial class VesselIslandSolver
     {
+        static readonly ProfilerMarker PushOutMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.PushOut");
+
         /// <summary>
         /// Correct deep penetration without adding velocity, propagating motion through joints.
         /// Use a separate push-out solve with unilateral contacts and no friction so that the main solver state is
@@ -81,7 +82,7 @@ namespace Unity.Physics
                 float3* linearImpulses = (float3*)bodyImpulses.GetUnsafePtr();
                 if (pushRun.VesselMode)
                 {
-                    VesselIslandSolver.SettleCompiledVessel(ref pushRun, pushOut, push, linearImpulses,
+                    SettleCompiledVessel(ref pushRun, pushOut, push, linearImpulses,
                         linearImpulses + worldBodies.Length, true);
                 }
                 else
@@ -178,7 +179,7 @@ namespace Unity.Physics
                 {
                     // Rows are built for the points within reach, in order; see the contact rows of BuildJacobianRows.
                     ref ContactJacAngAndVelToReachCp point = ref header.AccessAngularJacobian(i);
-                    if (point.ContactDistance > ContactRowReach)
+                    if (point.ContactDistance > ContactRowLimits.Reach)
                     {
                         continue;
                     }

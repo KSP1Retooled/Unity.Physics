@@ -10,6 +10,8 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
+        static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.ApplyImpulses");
+
         /// <summary>
         /// Applies a sparse solve's impulses: each body takes all its rows' at once, and each Jacobian keeps what its events
         /// read. Neither writes what another body or Jacobian does, so both split among a team's lanes.

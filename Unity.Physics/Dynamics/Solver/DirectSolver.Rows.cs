@@ -1,3 +1,4 @@
+using Unity.Profiling;
 using Unity.Numerics.Linear;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Collections;
@@ -9,6 +10,8 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
+        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.BuildRows");
+
         /// <summary>
         /// Contiguous Jacobian rows, twelve floats per row. Preassigned row ranges allow independent construction.
         /// Temporary allocations are released with the job.
