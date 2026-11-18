@@ -28,6 +28,7 @@ using Unity.Physics.Dynamics.Vehicles;
 using Unity.Physics.Dynamics.Bodies;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 using Unity.Profiling;
+using Unity.Physics.Stepping.State;
 
 namespace Unity.Physics.Stepping
 {
@@ -61,14 +62,12 @@ namespace Unity.Physics.Stepping
         // Copying the joints for one unit requires copying a few hundred bytes.
         private const int CopyBatchSize = 64;
 
-        // StoreBodies.WriteBackJob assigns these bodies a pose that differs from the result of integrating their solved motion.
-        private const BodyFlags PosedByWriteBack = BodyFlags.Sleeping | BodyFlags.HasKinematicTarget;
-
         private readonly WorldData* store;
         private readonly StoreGlobals* globals;
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal BodyPartition Partition;
 
         // Static tree jobs read these flags. keepStatics is constant after initialization;
         // StaticTreeShift.ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
@@ -82,10 +81,6 @@ namespace Unity.Physics.Stepping
         // permits.
         private NativeList<int> staticRows;
         private long keptStaticRowsCount;
-        private NativeList<int> dynamicIndices;
-        private NativeList<int> staticIndices;
-        private NativeList<int> builtIndices;
-        private NativeReference<int> partitionResult;
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
@@ -344,8 +339,6 @@ namespace Unity.Physics.Stepping
         // False from the start of a build until the query world is published. If a build fails, the next build rebuilds
         // the whole world.
         private bool builtWhole;
-        private bool motionsMatchStore;
-
         internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
@@ -357,11 +350,9 @@ namespace Unity.Physics.Stepping
             rebuildStatics = new NativeReference<int>(1, Allocator.Persistent);
             keepStatics = new NativeReference<int>(0, Allocator.Persistent);
             treeShift = StaticTreeShift.ShiftState.Create();
-            dynamicIndices = new NativeList<int>(Allocator.Persistent);
-            staticIndices = new NativeList<int>(Allocator.Persistent);
+            Partition.InitializeRows();
             staticRows = new NativeList<int>(Allocator.Persistent);
-            builtIndices = new NativeList<int>(Allocator.Persistent);
-            partitionResult = new NativeReference<int>(1, Allocator.Persistent);
+            Partition.Initialize();
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
             jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
@@ -440,11 +431,9 @@ namespace Unity.Physics.Stepping
             rebuildStatics.Dispose();
             keepStatics.Dispose();
             treeShift.Dispose();
-            dynamicIndices.Dispose();
-            staticIndices.Dispose();
+            Partition.DisposeRows();
             staticRows.Dispose();
-            builtIndices.Dispose();
-            partitionResult.Dispose();
+            Partition.Dispose();
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
             jointUnits.Dispose();
@@ -502,7 +491,7 @@ namespace Unity.Physics.Stepping
         internal readonly PhysicsWorld World => world;
 
         /// <summary>The index of each store body in the built world.</summary>
-        internal readonly NativeList<int> BuiltIndices => builtIndices;
+        internal readonly NativeList<int> BuiltIndices => Partition.builtIndices;
 
         internal readonly int StaticsChanged => staticsChanged ? 1 : 0;
 
@@ -614,9 +603,9 @@ namespace Unity.Physics.Stepping
                 Collision = world.CollisionWorld,
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
-                BuiltIndices = builtIndices.AsArray(),
+                BuiltIndices = Partition.builtIndices.AsArray(),
                 Joints = world.DynamicsWorld.InternalJointsList,
-                AnchorIndex = dynamicIndices.Length + staticIndices.Length,
+                AnchorIndex = Partition.dynamicIndices.Length + Partition.staticIndices.Length,
                 DeltaTime = deltaTime,
             }.Schedule(JobHandle.CombineDependencies(broadphase, joints));
             world.DynamicsWorld.JointsBuilt = wheels;
@@ -636,6 +625,8 @@ namespace Unity.Physics.Stepping
         internal readonly NativeList<ManifoldPoint> ManifoldPoints => manifoldPoints;
 
         internal readonly NativeList<ShapePairKey> RemovedTriggerPairs => removedTriggerPairs;
+
+        internal bool CanWriteContainers() => Partition.CanWriteContainers();
 
         internal uint NextContactStep() => ++stepCount;
 
@@ -755,7 +746,7 @@ namespace Unity.Physics.Stepping
                 World = store,
                 Filled = filledContactBuckets,
                 Buckets = contactBuckets,
-                DynamicIndices = dynamicIndices.AsArray(),
+                DynamicIndices = Partition.dynamicIndices.AsArray(),
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
             }.Schedule(read);
         }
@@ -784,7 +775,7 @@ namespace Unity.Physics.Stepping
             {
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
-                MotionCount = dynamicIndices.Length,
+                MotionCount = Partition.dynamicIndices.Length,
             }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled));
         }
 
@@ -902,7 +893,7 @@ namespace Unity.Physics.Stepping
                 Groups = jointGroups.AsArray(),
                 Members = jointGroupMembers.AsArray(),
                 MotionDatas = world.MotionDatas,
-                BuiltIndices = builtIndices.AsArray(),
+                BuiltIndices = Partition.builtIndices.AsArray(),
                 DeltaTime = deltaTime,
                 PartUnits = vesselBuild.PartUnits.AsArray(),
                 ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
@@ -934,10 +925,10 @@ namespace Unity.Physics.Stepping
             JobHandle writtenBack = new StoreBodies.WriteBackJob
             {
                 Store = store->bodies,
-                DynamicIndices = dynamicIndices.AsArray(),
+                DynamicIndices = Partition.dynamicIndices.AsArray(),
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
-            }.Schedule(dynamicIndices.Length, ParallelBatchSize, motionsSolved);
+            }.Schedule(Partition.dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
             // Vessel loads read solved motions, so they can run alongside pose write-back.
             JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
@@ -1063,7 +1054,7 @@ namespace Unity.Physics.Stepping
                 FinishQuerySnapshot();
                 // A refit that failed has set the ready word too, and leaves the world stale.
                 bool treeReady = store->treeReady != 0;
-                store->queryDirty = !motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreMemory.QueryStale
+                store->queryDirty = !Partition.motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreMemory.QueryStale
                     : !treeReady ? StoreMemory.QueryTreePending : 0u;
                 PublishQueryWorld();
             }
@@ -1243,9 +1234,9 @@ namespace Unity.Physics.Stepping
             JobHandle posed = new StoreBodies.PoseStaticsJob
             {
                 Store = store->bodies,
-                StaticIndices = staticIndices.AsArray(),
+                StaticIndices = Partition.staticIndices.AsArray(),
                 StaticBodies = world.StaticBodies,
-            }.Schedule(staticIndices.Length, ParallelBatchSize, default);
+            }.Schedule(Partition.staticIndices.Length, ParallelBatchSize, default);
 
             world.CollisionWorld.ScheduleUpdateStaticTree(ref world, BuildStaticTree, ScheduleShiftStaticTree(posed), true).Complete();
         }
@@ -1272,7 +1263,7 @@ namespace Unity.Physics.Stepping
             else
             {
                 dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, cache);
-                treeRows.CopyFrom(dynamicIndices.AsArray());
+                treeRows.CopyFrom(Partition.dynamicIndices.AsArray());
                 treeRefitted = false;
                 treeRefits = 0;
                 treeBaseQuality = 0.0f;
@@ -1308,8 +1299,8 @@ namespace Unity.Physics.Stepping
                 }
             }
 
-            return TreeReuseEnabled && treeMatchesHeld && dynamicIndices.Length > 0
-                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && Same(treeRows, dynamicIndices);
+            return TreeReuseEnabled && treeMatchesHeld && Partition.dynamicIndices.Length > 0
+                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && Same(treeRows, Partition.dynamicIndices);
         }
 
         /// <summary>
@@ -1318,7 +1309,7 @@ namespace Unity.Physics.Stepping
         /// </summary>
         private readonly bool KeepsStaticRows()
         {
-            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == staticIndices.Length + 1 && Same(staticRows, staticIndices);
+            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == Partition.staticIndices.Length + 1 && Same(staticRows, Partition.staticIndices);
         }
 
         /// <summary>
@@ -1327,13 +1318,13 @@ namespace Unity.Physics.Stepping
         /// </summary>
         private void MoveStaticRows(int dynamicBefore)
         {
-            if (dynamicBefore == dynamicIndices.Length)
+            if (dynamicBefore == Partition.dynamicIndices.Length)
             {
                 return;
             }
 
             RigidBody* bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            UnsafeUtility.MemMove(bodies + dynamicIndices.Length, bodies + dynamicBefore, (long)(staticIndices.Length + 1) * sizeof(RigidBody));
+            UnsafeUtility.MemMove(bodies + Partition.dynamicIndices.Length, bodies + dynamicBefore, (long)(Partition.staticIndices.Length + 1) * sizeof(RigidBody));
         }
 
         /// <summary>
@@ -1364,35 +1355,13 @@ namespace Unity.Physics.Stepping
         }
 
         /// <summary>
-        /// Return whether safety handles permit container writes before starting a build.
-        /// A main-thread query inside a job must keep using the published world if access is denied.
-        /// After checking access outside jobs, pass the containers to build jobs again to restore ownership.
-        /// </summary>
-        internal bool CanWriteContainers()
-        {
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            try
-            {
-                // These calls check write access without changing the containers.
-                staticIndices.GetUnsafePtr();
-                dynamicIndices.GetUnsafePtr();
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
-            }
-#endif
-            return true;
-        }
-
-        /// <summary>
         /// Copy query data from the store, or return dependency unchanged if the snapshot is still current.
         /// Do not retain pointers into movable store memory. Call FinishQuerySnapshot after completion.
         /// </summary>
         private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
         {
             uint version = QuerySnapshotVersion.Version;
-            if (snapshotTaken && version == snapshotVersion && Same(snapshotDynamic, dynamicIndices) && Same(snapshotStatic, staticIndices))
+            if (snapshotTaken && version == snapshotVersion && Same(snapshotDynamic, Partition.dynamicIndices) && Same(snapshotStatic, Partition.staticIndices))
             {
                 keptSnapshots++;
                 return dependency;
@@ -1400,15 +1369,15 @@ namespace Unity.Physics.Stepping
 
             snapshotTaken = false;
             snapshotVersion = version;
-            snapshotDynamic.CopyFrom(dynamicIndices.AsArray());
-            snapshotStatic.CopyFrom(staticIndices.AsArray());
+            snapshotDynamic.CopyFrom(Partition.dynamicIndices.AsArray());
+            snapshotStatic.CopyFrom(Partition.staticIndices.AsArray());
             queryBodies.ResizeUninitialized(world.NumBodies);
             queryFirstShapes.ResizeUninitialized(world.NumBodies);
             JobHandle found = new QuerySnapshot.FindFirstShapesJob
             {
                 Store = store->bodies,
-                DynamicIndices = dynamicIndices.AsArray(),
-                StaticIndices = staticIndices.AsArray(),
+                DynamicIndices = Partition.dynamicIndices.AsArray(),
+                StaticIndices = Partition.staticIndices.AsArray(),
                 FirstShapes = queryFirstShapes.AsArray(),
                 QueryShapes = queryShapes,
             }.Schedule(dependency);
@@ -1416,8 +1385,8 @@ namespace Unity.Physics.Stepping
             return new QuerySnapshot.SnapshotQueryDataJob
             {
                 Store = store->bodies,
-                DynamicIndices = dynamicIndices.AsArray(),
-                StaticIndices = staticIndices.AsArray(),
+                DynamicIndices = Partition.dynamicIndices.AsArray(),
+                StaticIndices = Partition.staticIndices.AsArray(),
                 FirstShapes = queryFirstShapes.AsArray(),
                 QueryBodies = queryBodies.AsArray(),
                 QueryShapes = queryShapes.AsDeferredJobArray(),
@@ -1502,16 +1471,7 @@ namespace Unity.Physics.Stepping
             vesselsFilled.Complete();
             using (BuildPartitionMarker.Auto())
             {
-                new StoreBodies.PartitionBodiesJob
-                {
-                    World = store,
-                    DynamicIndices = dynamicIndices,
-                    StaticIndices = staticIndices,
-                    BuiltIndices = builtIndices,
-                    PosedByWriteBack = PosedByWriteBack,
-                    MotionsMatchStore = partitionResult,
-                }.Run();
-                motionsMatchStore = partitionResult.Value != 0;
+                Partition.Rebuild(store);
 
                 // Indices in the static tree are relative to the static bodies. Queries and pair finding add the number
                 // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
@@ -1524,7 +1484,7 @@ namespace Unity.Physics.Stepping
             // Compare cached bounds only when body storage and dynamic count are retained and the cache remains
             // valid.
             void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == dynamicIndices.Length;
+            bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == Partition.dynamicIndices.Length;
             int dynamicBefore = world.NumDynamicBodies;
             bool keepStaticRows = KeepsStaticRows();
 
@@ -1532,7 +1492,7 @@ namespace Unity.Physics.Stepping
             // read the joints, so jobs can be scheduled before the joint count is known.
             using (BuildResetMarker.Auto())
             {
-                world.Reset(staticIndices.Length + 1, dynamicIndices.Length, 0);
+                world.Reset(Partition.staticIndices.Length + 1, Partition.dynamicIndices.Length, 0);
                 world.DynamicsWorld.EnableDirectSolver = true;
             }
 
@@ -1547,10 +1507,10 @@ namespace Unity.Physics.Stepping
             else if (StaticReuseEnabled)
             {
                 // With the reuse off, every build writes the rows, so the rows that they come from don't matter.
-                staticRows.CopyFrom(staticIndices.AsArray());
+                staticRows.CopyFrom(Partition.staticIndices.AsArray());
             }
 
-            DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(dynamicIndices.Length) : default;
+            DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(Partition.dynamicIndices.Length) : default;
 
             // Schedule bodies and trees first: pair creation and island finding depend on them.
             // Joint compilation and vessel work can proceed alongside them.
@@ -1560,8 +1520,8 @@ namespace Unity.Physics.Stepping
                 var bodiesJob = new StoreBodies.BuildBodiesJob
                 {
                     Store = store->bodies,
-                    DynamicIndices = dynamicIndices.AsArray(),
-                    StaticIndices = staticIndices.AsArray(),
+                    DynamicIndices = Partition.dynamicIndices.AsArray(),
+                    StaticIndices = Partition.staticIndices.AsArray(),
                     Bodies = world.Bodies,
                     MotionDatas = world.MotionDatas,
                     MotionVelocities = world.MotionVelocities,
@@ -1642,7 +1602,7 @@ namespace Unity.Physics.Stepping
                 vesselSet = default;
                 if (vessels)
                 {
-                    vesselBuild.ChooseStepVessels(store, builtIndices.AsArray(), dynamicIndices.Length);
+                    vesselBuild.ChooseStepVessels(store, Partition.builtIndices.AsArray(), Partition.dynamicIndices.Length);
                     vesselSet = vesselBuild.Set();
                 }
 
@@ -1653,14 +1613,14 @@ namespace Unity.Physics.Stepping
                 {
                     World = store,
                     States = jointStates->Ptr,
-                    BuiltIndices = builtIndices.AsArray(),
+                    BuiltIndices = Partition.builtIndices.AsArray(),
                     Units = jointUnits.AsDeferredJobArray(),
                     Output = stream.AsWriter(),
                     Written = jointsWritten.AsDeferredJobArray(),
                     Groups = jointGroups.AsDeferredJobArray(),
                     Members = jointGroupMembers.AsDeferredJobArray(),
-                    DynamicCount = dynamicIndices.Length,
-                    AnchorIndex = dynamicIndices.Length + staticIndices.Length,
+                    DynamicCount = Partition.dynamicIndices.Length,
+                    AnchorIndex = Partition.dynamicIndices.Length + Partition.staticIndices.Length,
                     DeltaTime = deltaTime,
                     Roles = jointRoles.AsDeferredJobArray(),
                     Locking = forest && ForestSwitches.Locking,
