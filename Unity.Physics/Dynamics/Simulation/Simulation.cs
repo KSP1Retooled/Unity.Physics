@@ -35,6 +35,8 @@ namespace Unity.Physics
         // Previous step's island pair count, used to choose serial or parallel sorting.
         internal NativeReference<int> IslandPairCount;
 
+        internal IslandPairSortCache IslandPairSorts;
+
         /// <summary>   Gets the collision events. </summary>
         ///
         /// <value> The collision events. </value>
@@ -123,6 +125,11 @@ namespace Unity.Physics
 
         internal JobHandle ScheduleReset(SimulationStepInput stepInput, JobHandle inputDeps)
         {
+            if (!IslandPairSorts.IsCreated && Configuration.StepCacheSwitches.PairSortReuseEnabled)
+            {
+                IslandPairSorts = IslandPairSortCache.Create();
+            }
+
             if (!IslandPairCount.IsCreated)
             {
                 IslandPairCount = new NativeReference<int>(0, Allocator.Persistent);
@@ -189,6 +196,8 @@ namespace Unity.Physics
             {
                 IslandPairCount.Dispose();
             }
+
+            IslandPairSorts.Dispose();
 
             if (m_SolverStabilizationMotionData.IsCreated)
             {
@@ -432,7 +441,7 @@ namespace Unity.Physics
             handles = DispatchPairSequencer.ScheduleCreatePhasedDispatchPairsJob(input,
                 ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, JobHandle.CombineDependencies(handle, joints),
                 ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, out StepContext.PairsToSortByIsland,
-                multiThreaded, SimulationContext.IslandPairCount);
+                multiThreaded, SimulationContext.IslandPairCount, SimulationContext.IslandPairSorts);
 
             m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(handles.FinalDisposeHandle, disposeHandle);
             m_StepHandles.FinalExecutionHandle = multiThreaded ?

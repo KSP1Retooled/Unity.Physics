@@ -19,7 +19,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         /// Distribute group forces equally and torques by member stiffness, including forces from offset anchors.
         /// </summary>
         [BurstCompile]
-        internal unsafe struct ShareGroupLoadsJob : IJobParallelFor
+        internal unsafe struct ShareGroupLoadsJob : IJobParallelForDefer
         {
             [NativeDisableUnsafePtrRestriction]
             public WorldData* World;

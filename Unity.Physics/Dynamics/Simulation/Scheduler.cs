@@ -718,7 +718,8 @@ namespace Unity.Physics
         internal static SimulationJobHandles ScheduleCreatePhasedDispatchPairsJob(in SimulationStepInput stepInput,
             ref NativeStream dynamicVsDynamicBroadphasePairsStream, ref NativeStream staticVsDynamicBroadphasePairsStream,
             JobHandle inputDeps, ref NativeList<DispatchPair> dispatchPairs, out SolverSchedulerInfo solverSchedulerInfo,
-            out NativeList<DispatchPair> pairsToSortByIsland, bool multiThreaded = true, NativeReference<int> islandPairCount = default)
+            out NativeList<DispatchPair> pairsToSortByIsland, bool multiThreaded = true, NativeReference<int> islandPairCount = default,
+            IslandPairSortCache islandPairSorts = default)
         {
             SimulationJobHandles returnHandles = default;
             pairsToSortByIsland = default;
@@ -738,6 +739,7 @@ namespace Unity.Physics
                     UnsortedPairs = dispatchPairs,
                     SortedPairs = pairsToSortByIsland,
                     PairCount = islandPairCount,
+                    Cache = islandPairSorts,
                 }.Schedule(inputDeps);
 
                 returnHandles.FinalExecutionHandle = sorted;

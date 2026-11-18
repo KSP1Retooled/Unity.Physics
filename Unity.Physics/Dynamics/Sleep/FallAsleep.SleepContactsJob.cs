@@ -28,12 +28,7 @@ namespace Unity.Physics.Dynamics.Sleep
             [NativeDisableUnsafePtrRestriction]
             public WorldData* World;
 
-            /// <summary>
-            /// This list is read while <see cref="ImpulseMemory.ReadImpulsesJob"/> runs. That job writes only the impulse fields, which
-            /// this job does not read.
-            /// </summary>
             [ReadOnly]
-            [NativeDisableContainerSafetyRestriction]
             public NativeList<ManifoldRecord> Records;
 
             public NativeList<int> Parents;

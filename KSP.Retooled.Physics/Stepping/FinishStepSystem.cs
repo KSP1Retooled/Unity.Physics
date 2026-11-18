@@ -1,5 +1,6 @@
 using Unity.Burst;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Physics;
 using Unity.Physics.Systems;
 
@@ -24,8 +25,10 @@ internal unsafe partial struct FinishStepSystem : ISystem
     {
         // Schedule post-solve work before waiting for the solve. Reading the singleton here would also wait for
         // cleanup.
-        if (StepEntryPoints.FinishPreparedStep(state.WorldUnmanaged.Time.DeltaTime) != 0)
+        JobHandle dependency = state.Dependency;
+        if (StepEntryPoints.FinishPreparedStep(state.WorldUnmanaged.Time.DeltaTime, &dependency) != 0)
         {
+            state.Dependency = default;
             return;
         }
 

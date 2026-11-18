@@ -7,6 +7,7 @@ using Unity.Jobs;
 using Unity.Physics;
 using Unity.Physics.Collision.World.Trees;
 using Unity.Physics.Stepping;
+using Unity.Profiling;
 
 namespace KSP.Retooled.Physics.Stepping
 {
@@ -17,6 +18,8 @@ namespace KSP.Retooled.Physics.Stepping
     [BurstCompile]
     internal static unsafe class StepEntryPoints
     {
+        private static readonly ProfilerMarker StepWaitForSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Step.WaitForSolve");
+
         private readonly struct CurrentKey { }
 
         private static readonly SharedStatic<nint> CurrentState = SharedStatic<nint>.GetOrCreate<CurrentKey>();
@@ -65,7 +68,7 @@ namespace KSP.Retooled.Physics.Stepping
         internal static void FinishStep(Simulation* simulation, float deltaTime)
         {
             Current->preparedSimulation = null;
-            FinishStep(Current, *simulation, deltaTime);
+            FinishStep(Current, *simulation, deltaTime, default);
         }
 
         /// <summary>
@@ -73,7 +76,7 @@ namespace KSP.Retooled.Physics.Stepping
         /// prepared.
         /// </summary>
         [BurstCompile]
-        internal static int FinishPreparedStep(float deltaTime)
+        internal static int FinishPreparedStep(float deltaTime, JobHandle* systems)
         {
             Simulation* simulation = Current->preparedSimulation;
             if (simulation == null)
@@ -82,8 +85,7 @@ namespace KSP.Retooled.Physics.Stepping
             }
 
             Current->preparedSimulation = null;
-            Current->preparedInputs.Complete();
-            FinishStep(Current, *simulation, deltaTime);
+            FinishStep(Current, *simulation, deltaTime, *systems);
             return 1;
         }
 
@@ -98,11 +100,35 @@ namespace KSP.Retooled.Physics.Stepping
             }
         }
 
-        private static void FinishStep(StoreStepper* state, Simulation simulation, float deltaTime)
+        private static void FinishStep(StoreStepper* state, Simulation simulation, float deltaTime, JobHandle systems)
         {
-            state->FinishBeforeContacts(simulation, deltaTime, out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep);
-            ContactReport.Publish(state, contactsJoined);
-            state->FinishAfterContacts(snapshot, sleep);
+            JobHandle pending = systems;
+            bool finished = false;
+            try
+            {
+                JobHandle contactsReady = state->ScheduleBeforeContacts(ref simulation, deltaTime, ref pending,
+                    out JobHandle snapshot, out JobHandle sleep);
+                JobHandle published = ContactReport.Schedule(state, contactsReady);
+                pending = JobHandle.CombineDependencies(pending, published);
+                JobHandle fallen = state->ScheduleSleep(published, snapshot, sleep);
+                pending = JobHandle.CombineDependencies(pending, fallen);
+
+                using (StepWaitForSolveMarker.Auto())
+                {
+                    pending.Complete();
+                }
+
+                finished = true;
+            }
+            finally
+            {
+                if (!finished)
+                {
+                    pending.Complete();
+                }
+            }
+
+            state->PublishQueries();
         }
 
         /// <summary>

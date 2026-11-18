@@ -19,6 +19,7 @@ namespace Unity.Physics.Stepping.State
         internal NativeList<ManifoldPoint> manifoldPoints;
         internal NativeList<ContactBuckets.ContactBucket> contactBuckets;
         internal NativeReference<int> filledContactBuckets;
+        internal NativeList<int2> mergeOffsets;
         internal NativeHashMap<ShapePairKey, ShapePairState> touching;
 
         // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
@@ -38,6 +39,7 @@ namespace Unity.Physics.Stepping.State
             manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
             contactBuckets = new NativeList<ContactBuckets.ContactBucket>(Allocator.Persistent);
             filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
+            mergeOffsets = new NativeList<int2>(Allocator.Persistent);
             touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
             removedTriggerPairs = new NativeList<ShapePairKey>(Allocator.Persistent);
         }
@@ -65,6 +67,7 @@ namespace Unity.Physics.Stepping.State
 
             contactBuckets.Dispose();
             filledContactBuckets.Dispose();
+            mergeOffsets.Dispose();
             touching.Dispose();
             removedTriggerPairs.Dispose();
         }
@@ -104,13 +107,19 @@ namespace Unity.Physics.Stepping.State
             }
         }
 
-        internal void ForgetRemovedShapes(WorldData* store, ref JobHandle forces)
+        internal JobHandle ScheduleForgetRemovedShapes(WorldData* store, JobHandle dependency)
         {
-            if (store->removedShapeCount != 0)
+            if (store->removedShapeCount == 0)
             {
-                forces.Complete();
-                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
+                return dependency;
             }
+
+            return new TouchingPairs.ForgetRemovedShapesJob
+            {
+                World = store,
+                Touching = touching,
+                RemovedTriggerPairs = removedTriggerPairs,
+            }.Schedule(dependency);
         }
     }
 }

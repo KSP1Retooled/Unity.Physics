@@ -37,9 +37,6 @@ namespace Unity.Physics.Stepping
         // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
         internal Simulation* preparedSimulation;
 
-        // Pre-solve jobs that FinishStepSystem completes before FinishStep reads their lists.
-        internal JobHandle preparedInputs;
-
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
@@ -186,7 +183,7 @@ namespace Unity.Physics.Stepping
         internal JobHandle PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
             return SolveStage.PrepareSolve(ref world, ref Partition, ref Contacts, ref VesselData, ref SolverCaches,
-                warmStartsIndexed, out preparedSimulation, out preparedInputs, singleton, ref input, dependency);
+                warmStartsIndexed, out preparedSimulation, singleton, ref input, dependency);
         }
 
         /// <summary>
@@ -201,21 +198,23 @@ namespace Unity.Physics.Stepping
         /// <summary>
         /// Writes back the solved world and prepares contact reports, query publication and sleep.
         /// </summary>
-        internal void FinishBeforeContacts(Simulation simulation, float deltaTime,
-            out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep)
+        internal JobHandle ScheduleBeforeContacts(ref Simulation simulation, float deltaTime, ref JobHandle pending,
+            out JobHandle snapshot, out JobHandle sleep)
         {
-            FinishStage.SchedulePostSolve(store, globals, ref world, ref Partition, ref Joints, ref VesselData,
-                ref Trees, ref Queries, warmStartsIndexed, ref simulation, deltaTime,
-                out JobHandle writtenBack, out JobHandle vesselsSettled, out snapshot);
-            FinishStage.CompleteBeforeContacts(store, globals, ref world, ref Joints, ref VesselData,
-                ref Contacts, ref Sleep, ref simulation, deltaTime, writtenBack, vesselsSettled, out contactsJoined, out sleep);
+            return FinishStage.ScheduleBeforeContacts(store, globals, ref world, ref Partition, ref Joints,
+                ref VesselData, ref Contacts, ref Sleep, ref Trees, ref Queries, warmStartsIndexed,
+                ref simulation, deltaTime, ref pending, out snapshot, out sleep);
         }
 
-        /// <summary>Publish queries and finish sleep after the caller has run the contact report.</summary>
-        internal void FinishAfterContacts(JobHandle snapshot, JobHandle sleep)
+        internal JobHandle ScheduleSleep(JobHandle published, JobHandle snapshot, JobHandle sleep)
         {
-            FinishStage.FinishAfterContacts(store, query, ref world, ref Queries, ref Trees, ref Partition,
-                ref Sleep, snapshot, sleep);
+            return FinishStage.ScheduleSleep(store, ref Sleep, JobHandle.CombineDependencies(published, snapshot, sleep));
+        }
+
+        /// <summary>Publishes the query snapshot after the finish jobs complete.</summary>
+        internal void PublishQueries()
+        {
+            FinishStage.PublishQueries(store, query, ref world, ref Queries, ref Trees, ref Partition);
         }
 
         /// <summary>Finish pending refit work and check whether queries need a new build.</summary>

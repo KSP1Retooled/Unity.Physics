@@ -17,7 +17,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         /// Store joint loads, smooth force/torque magnitudes and mark active overloaded joints.
         /// </summary>
         [BurstCompile]
-        internal unsafe struct SettleJointLoadsJob : IJobParallelFor
+        internal unsafe struct SettleJointLoadsJob : IJobParallelFor, IJobParallelForDefer
         {
             /// <summary>
             /// Smoothing time constant in seconds for break-test force and torque.

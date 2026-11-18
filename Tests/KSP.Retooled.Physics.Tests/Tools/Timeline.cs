@@ -26,7 +26,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
     // Profile craft steps and report median marker start/end times and CPU totals.
     // M rows cover the main thread, A all threads, and O work within 10 ms around Simulate.
-    // Use PROFILE_ONLY, _PATHS, _SCENE and _TAG to select configurations and output.
+    // Use PROFILE_ONLY, PROFILE_PATHS, PROFILE_SCENE, PROFILE_THREADS and PROFILE_TAG to select configurations and output.
     // PROFILE_SAVE=1 also saves Profiler data files in Logs.
     [Explicit("profiling")]
     [Category("Slow")]
@@ -34,6 +34,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
     {
         private const int PartLayer = 30;
         private const int Profiled = 30;
+        private const string ContactsScene = "contacts";
+        private const int BoxFieldSide = 30;
+        private const float BoxFieldPitch = 1.02f;
 
         private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked)
         {
@@ -98,6 +101,11 @@ namespace KSP.Retooled.Physics.Tests.Tools
             {
                 // A fleet of copies that reaches past the 400 m ground gets a ground that covers it, as in the bench.
                 float left = graph.Position.Min(p => p.x), right = graph.Position.Max(p => p.x);
+                if (scene == ContactsScene)
+                {
+                    right += 5.0f + BoxFieldPitch * (BoxFieldSide - 1) + 0.5f;
+                }
+
                 bool fits = left > -190.0f && right < 190.0f;
                 Box(new Vector3(fits ? 0.0f : 0.5f * (left + right), lowest - 0.5f, 0.0f),
                     new Vector3(fits ? 400.0f : right - left + 100.0f, 1.0f, 400.0f));
@@ -107,8 +115,29 @@ namespace KSP.Retooled.Physics.Tests.Tools
             {
                 VesselForestBench.StaticField(graph, lowest, Track);
             }
+            else if (scene == ContactsScene)
+            {
+                BuildBoxField(graph.Position.Max(p => p.x) + 5.0f, lowest);
+            }
         }
 
+        /// <summary>Places two layers of boxes beside the craft and keeps them awake during profiling.</summary>
+        private void BuildBoxField(float left, float groundTop)
+        {
+            for (int layer = 0; layer < 2; layer++)
+            {
+                for (int x = 0; x < BoxFieldSide; x++)
+                {
+                    for (int z = 0; z < BoxFieldSide; z++)
+                    {
+                        var position = new Vector3(left + BoxFieldPitch * x, groundTop + 0.51f + BoxFieldPitch * layer,
+                            BoxFieldPitch * (z - BoxFieldSide / 2));
+                        Rigidbody body = Box(position, Vector3.one).AddComponent<Rigidbody>();
+                        body.sleepThreshold = 0.0f;
+                    }
+                }
+            }
+        }
 
         private sealed class Stat
         {
@@ -150,13 +179,19 @@ namespace KSP.Retooled.Physics.Tests.Tools
             // PROFILE_CRAFT lists the crafts, separated by commas, in the names that VesselForestBench reads: "tu160x2"
             // for two copies of the Tu-160, or "tu160:128x16" for sixteen copies of its first 128 parts.
             string crafts = Environment.GetEnvironmentVariable("PROFILE_CRAFT");
+            string threadList = Environment.GetEnvironmentVariable("PROFILE_THREADS");
+            bool defaultThreads = string.IsNullOrWhiteSpace(threadList);
+            int[] threadCounts = defaultThreads ? new[] { 8, 1 }
+                : threadList.Split(',').Select(value => int.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+            Assert.That(threadCounts.All(count => count >= 1 && count - 1 <= JobsUtility.JobWorkerMaximumCount),
+                Is.True, $"PROFILE_THREADS must be between 1 and {JobsUtility.JobWorkerMaximumCount + 1}.");
             foreach (string craft in string.IsNullOrEmpty(crafts) ? new[] { "tu160", "synthetic4500" } : crafts.Split(','))
             {
                 Graph graph = VesselForestBench.Load(craft);
                 foreach (string scene in (Environment.GetEnvironmentVariable("PROFILE_SCENE") ?? "floating,ground").Split(','))
                 {
                     bool ground = scene != "floating";
-                    foreach (int threads in new[] { 8, 1 })
+                    foreach (int threads in threadCounts)
                     {
                         foreach (string path in (Environment.GetEnvironmentVariable("PROFILE_PATHS") ?? "compiled").Split(','))
                         {
@@ -168,7 +203,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
                             TearDownScene();
                             SetUpScene();
-                            if (threads == 1 && ground)
+                            if (defaultThreads && threads == 1 && ground)
                             {
                                 continue;
                             }
@@ -189,7 +224,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
                             ForestSwitches.Locking = path == "locked";
                             ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
                             ForestSwitches.MinimumHoldSteps = -1;
-                            JobsUtility.JobWorkerCount = threads > 1 ? threads - 1 : 0;
+                            JobsUtility.JobWorkerCount = threads - 1;
+                            Assert.That(JobsUtility.JobWorkerCount, Is.EqualTo(threads - 1));
                             Build(graph, scene);
                             for (int i = 0; i < 30; i++)
                             {
@@ -299,6 +335,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
         {
             var stats = new Dictionary<string, Stat>();
             var steps = new List<double>();
+            var busyWorkers = new List<double>();
+            var mainOutsideWaits = new List<double>();
             int first = ProfilerDriver.firstFrameIndex;
             int last = ProfilerDriver.lastFrameIndex;
             for (int frame = first; frame <= last; frame++)
@@ -329,6 +367,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
 
                 steps.Add((windowEnd - windowStart) / 1e6);
+                MeasureOccupancy(frame, windowStart, windowEnd, out double busy, out double outsideWaits);
+                busyWorkers.Add(busy);
+                mainOutsideWaits.Add(outsideWaits);
 
                 // The main thread's work within 10 ms before and after the step's marker. Physics.Simulate does work
                 // of its own around the backend's step, which the stopwatch counts and the marker doesn't.
@@ -419,7 +460,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
             text.Append(WhileParked(first, last));
             text.Append(SolveTail(first, last));
             text.Append($"## {name}: profiled step median {Median(steps):F2} ms over {steps.Count}, unprofiled median {unprofiled:F2}\n");
-            text.Append("   first     last     span      cpu  marker\n");
+            text.Append($"# average busy workers per step: median {Median(busyWorkers):F2}; " +
+                $"main thread in Physics.Simulate outside JobHandle.Complete: median {Median(mainOutsideWaits):F3} ms\n");
+            text.Append("   first     last     span      cpu  median cpu  marker\n");
             foreach (var pair in stats.OrderBy(p => Median(p.Value.First)))
             {
                 double cpu = pair.Value.Cpu.Sum() / Math.Max(1, steps.Count);
@@ -428,15 +471,95 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 bool islandStage = pair.Key.Contains("Island") || pair.Key.Contains("DispatchPair");
                 bool stepStage = pair.Key.StartsWith("M Physics.Step.", StringComparison.Ordinal)
                     || pair.Key.StartsWith("M Rigid Bodies KSP.Retooled.Physics.Stepping.", StringComparison.Ordinal);
-                if (cpu < 0.02 && span < 0.05 && !islandStage && !stepStage)
+                bool tailStage = TailSamples.Any(sample => pair.Key.Contains(sample));
+                if (cpu < 0.02 && span < 0.05 && !islandStage && !stepStage && !tailStage)
                 {
                     continue;
                 }
 
-                text.Append($"{Median(pair.Value.First),8:F3} {Median(pair.Value.Last),8:F3} {span,8:F3} {cpu,8:F3}  {pair.Key}\n");
+                text.Append($"{Median(pair.Value.First),8:F3} {Median(pair.Value.Last),8:F3} {span,8:F3} {cpu,8:F3} {Median(pair.Value.Cpu),11:F3}  {pair.Key}\n");
             }
 
             return text.ToString();
+        }
+
+        private static readonly string[] TailSamples =
+        {
+            "Physics.Step.WaitForSolve", "Physics.Contacts.", "WriteBackJob", "VesselLoadsJob",
+            "SleepContactsJob", "ClearGroupLoadsJob", "SeedJointLoadsJob", "RotateJointImpulsesJob", "SumJointImpulsesJob",
+            "ShareGroupLoadsJob", "SettleJointLoadsJob", "BreakJointsJob", "ForgetRemovedShapesJob", "UpdateWakeCountersJob",
+            "FallAsleep:SleepJob", "ReadImpulsesJob", "RememberImpulsesJob", "PublishContactsJob", "FallAsleepJob",
+            "FindFirstShapesJob", "SnapshotQueryDataJob", "MergeContactBucketsJob", "SizeMergedContactsJob", "CopyContactBucketsJob",
+        };
+
+        /// <summary>Measures worker activity and main-thread waits within one Physics.Simulate sample.</summary>
+        private static void MeasureOccupancy(int frame, ulong windowStart, ulong windowEnd,
+            out double busyWorkers, out double mainOutsideWaits)
+        {
+            using RawFrameDataView main = ProfilerDriver.GetRawFrameDataView(frame, 0);
+            double waits = 0;
+            for (int index = 0; index < main.sampleCount;)
+            {
+                if (main.GetSampleName(index) == "JobHandle.Complete")
+                {
+                    waits += SampleOverlap(main, index, windowStart, windowEnd);
+                    index = SkipSample(main, index);
+                }
+                else
+                {
+                    index++;
+                }
+            }
+
+            double busy = 0;
+            for (int thread = 1; ; thread++)
+            {
+                using RawFrameDataView worker = ProfilerDriver.GetRawFrameDataView(frame, thread);
+                if (!worker.valid)
+                {
+                    break;
+                }
+
+                if (worker.threadName?.StartsWith("Worker", StringComparison.Ordinal) != true)
+                {
+                    continue;
+                }
+
+                // The root spans the frame. Its immediate children describe work or idle time.
+                for (int index = 1; index < worker.sampleCount; index = SkipSample(worker, index))
+                {
+                    if (worker.GetSampleName(index) != "Idle")
+                    {
+                        busy += SampleOverlap(worker, index, windowStart, windowEnd);
+                    }
+                }
+            }
+
+            double duration = windowEnd - windowStart;
+            busyWorkers = duration > 0 ? busy / duration : 0;
+            mainOutsideWaits = Math.Max(0, duration - waits) / 1e6;
+        }
+
+        private static double SampleOverlap(RawFrameDataView view, int index, ulong windowStart, ulong windowEnd)
+        {
+            ulong start = view.GetSampleStartTimeNs(index);
+            ulong end = start + (ulong)(view.GetSampleTimeMs(index) * 1e6);
+            ulong from = Math.Max(start, windowStart);
+            ulong to = Math.Min(end, windowEnd);
+            return to > from ? to - from : 0;
+        }
+
+        private static int SkipSample(RawFrameDataView view, int index)
+        {
+            int children = view.GetSampleChildrenCount(index);
+            int next = index + 1;
+            while (children > 0 && next < view.sampleCount)
+            {
+                next = SkipSample(view, next);
+                children--;
+            }
+
+            return next;
         }
 
         /// <summary>

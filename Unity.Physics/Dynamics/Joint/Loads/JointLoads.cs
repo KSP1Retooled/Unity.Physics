@@ -31,7 +31,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         /// If Listed is true, process only Joints.
         /// </summary>
         [BurstCompile]
-        internal unsafe struct SeedJointLoadsJob : IJobParallelFor
+        internal unsafe struct SeedJointLoadsJob : IJobParallelFor, IJobParallelForDefer
         {
             [NativeDisableUnsafePtrRestriction]
             public WorldData* World;

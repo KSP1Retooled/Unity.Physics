@@ -11,7 +11,7 @@ using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Reports;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
-using Unity.Physics.Stepping;
+using Unity.Profiling;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
 using StoreContactPoint = Unity.Physics.Store.Reports.ContactPoint;
@@ -32,6 +32,10 @@ namespace KSP.Retooled.Physics.Reports
             private const ushort NotifyTouchLost = 1 << 4;
 
             private const uint NoFace = uint.MaxValue;
+
+            private static readonly ProfilerMarker SortMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Contacts.Sort");
+            private static readonly ProfilerMarker ReportMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Contacts.Report");
+            private static readonly ProfilerMarker LostMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Contacts.Lost");
 
             [NativeDisableUnsafePtrRestriction]
             public WorldData* World;
@@ -60,7 +64,24 @@ namespace KSP.Retooled.Physics.Reports
                 World->contactPointCount = 0;
                 World->triggerCount = 0;
 
-                Records.AsArray().Sort(new ManifoldOrder());
+                using (SortMarker.Auto())
+                {
+                    Records.AsArray().Sort(new ManifoldOrder());
+                }
+
+                using (ReportMarker.Auto())
+                {
+                    ReportCurrentContacts();
+                }
+
+                using (LostMarker.Auto())
+                {
+                    ReportLostTouches();
+                }
+            }
+
+            private void ReportCurrentContacts()
+            {
                 Reserve();
 
                 // Removal events clear Unity's cached pair before any replacement pair is added at the same
@@ -140,8 +161,6 @@ namespace KSP.Retooled.Physics.Reports
 
                     AddShapePair(bodyPair, first, index, events);
                 }
-
-                ReportLostTouches();
             }
 
             private static TriggerEvent RemovedEvent(ShapePairKey pair)
