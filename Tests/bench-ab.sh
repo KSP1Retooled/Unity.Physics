@@ -15,8 +15,10 @@
 #   AB_BLOCKS  Blocks per configuration (default 2).
 #   AB_PATHS   Solver paths (default compiled).
 #   AB_KEEP=1  Leave both editors open after the benchmark.
+#   AB_BASE_ANGLE and AB_CHANGE_ANGLE  Set attachment limits in degrees for each side.
 #
-# Restart both editors before measuring and reuse them for all rounds.
+# Restart the editors before measuring and reuse them for all rounds.
+# Pass the same project twice to compare settings in one editor.
 # Alternate which project runs first to reduce bias from changing machine load.
 # Reuse each scene across thread counts, with a fresh warm-up for each count.
 #
@@ -26,7 +28,7 @@
 #
 # Match the fixture in either layout so that the base project can use an earlier revision.
 # The end of the filter keeps MeasureStages out of the run.
-# Stop other editor instances before running against these projects.
+# The script only stops editors for the named projects.
 #
 
 set -u
@@ -55,27 +57,42 @@ set -- RETOOLED_BENCH_PATHS="${AB_PATHS:-compiled}" RETOOLED_BENCH_THREADS="$thr
     RETOOLED_BENCH_SHARE=1
 
 started=$(date +%s)
-echo "stopping both editors"
+echo "stopping the benchmark editors"
 sh "$tester" "$base" stop
-sh "$tester" "$change" stop
+if [ "$base" != "$change" ]; then sh "$tester" "$change" stop; fi
 
-# Start both editors at once; nothing is timed yet.
-echo "starting both editors"
-sh "$tester" "$base" ab-start 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Host\.)?BackendSelectionTests\.TheCurrentBackendIsOneWeShip$' "$@" \
-    > "$out/start-base.log" 2>&1 &
-first=$!
-sh "$tester" "$change" ab-start 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Host\.)?BackendSelectionTests\.TheCurrentBackendIsOneWeShip$' "$@" \
-    > "$out/start-change.log" 2>&1
-wait $first
-cat "$out/start-base.log" "$out/start-change.log"
-echo "both editors are ready after $(( $(date +%s) - started )) s"
+start_editor() {
+    project=$1
+    shift
+    sh "$tester" "$project" ab-start 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Host\.)?BackendSelectionTests\.TheCurrentBackendIsOneWeShip$' "$@"
+}
+
+echo "starting the benchmark editors"
+if [ "$base" = "$change" ]; then
+    start_editor "$base" "$@" > "$out/start-base.log" 2>&1 || exit 1
+    cat "$out/start-base.log"
+else
+    start_editor "$base" "$@" > "$out/start-base.log" 2>&1 &
+    first=$!
+    start_editor "$change" "$@" > "$out/start-change.log" 2>&1 || exit 1
+    wait "$first" || exit 1
+    cat "$out/start-base.log" "$out/start-change.log"
+fi
+echo "the editors are ready after $(( $(date +%s) - started )) s"
 
 run() {
     side=$1
     round=$2
     shift 2
-    if [ "$side" = base ]; then project=$base; else project=$change; fi
-    sh "$tester" "$project" "ab-$side-$round" 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Benchmarks\.)?VesselForestBench\.Measure$' "$@" || exit 1
+    if [ "$side" = base ]; then
+        project=$base
+        angle=${AB_BASE_ANGLE:-}
+    else
+        project=$change
+        angle=${AB_CHANGE_ANGLE:-}
+    fi
+    sh "$tester" "$project" "ab-$side-$round" 'filter=^KSP\.Retooled\.Physics\.Tests\.(?:Benchmarks\.)?VesselForestBench\.Measure$' "$@" \
+        "RETOOLED_BENCH_FLEX_LIMIT=$angle" || exit 1
     if ! grep -q 'passed="1"' "$project/Logs/ab-$side-$round-results.xml"; then
         echo "the bench failed in $project; read $project/Logs/ab-$side-$round-results.xml"
         exit 1
@@ -100,7 +117,7 @@ done
 
 if [ "${AB_KEEP:-0}" != 1 ]; then
     sh "$tester" "$base" stop
-    sh "$tester" "$change" stop
+    if [ "$base" != "$change" ]; then sh "$tester" "$change" stop; fi
 fi
 
 echo "the A/B took $(( $(date +%s) - started )) s"

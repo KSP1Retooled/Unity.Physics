@@ -260,7 +260,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 : double.TryParse(output.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out load) ? load : -1.0;
         }
 
-        private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked)
+        private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked, float? flexLimit = null)
         {
             ConfigurableJoint joint = host.gameObject.AddComponent<ConfigurableJoint>();
             joint.connectedBody = target;
@@ -283,6 +283,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = 1e20f, maximumForce = 1e20f };
             joint.rotationDriveMode = RotationDriveMode.XYAndZ;
             joint.angularYZDrive = new JointDrive { positionSpring = spring, positionDamper = 0.02f * spring, maximumForce = 1e20f };
+            if (flexLimit is float angle)
+            {
+                joint.angularXMotion = ConfigurableJointMotion.Limited;
+                joint.lowAngularXLimit = new SoftJointLimit { limit = -angle };
+                joint.highAngularXLimit = joint.angularYLimit = joint.angularZLimit = new SoftJointLimit { limit = angle };
+                joint.angularXDrive = joint.angularYZDrive;
+            }
+
             return joint;
         }
 
@@ -304,12 +312,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 lowest = Mathf.Min(lowest, graph.Position[i].y - 0.5f * side);
             }
 
+            float? flexLimit = float.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_FLEX_LIMIT"),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out float angle) ? angle : null;
             for (int i = 0; i < graph.Parent.Length && joints; i++)
             {
                 int parent = graph.Parent[i];
                 if (parent >= 0)
                 {
-                    Joint(bodies[i], bodies[parent], graph.Joint[i], graph.Swing[i] > 0.0f ? graph.Swing[i] : 1e5f, false);
+                    Joint(bodies[i], bodies[parent], graph.Joint[i], graph.Swing[i] > 0.0f ? graph.Swing[i] : 1e5f, false, flexLimit);
                 }
             }
 
