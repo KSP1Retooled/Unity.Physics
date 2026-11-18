@@ -11,7 +11,6 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
-using UnityEngine;
 using UnityEngine.Assertions;
 
 namespace Unity.Physics
@@ -493,7 +492,6 @@ namespace Unity.Physics
                                                         // of dispatch pairs for this scheduler info.
                                                         // Index for this pair in the global dispatch pair array is
                                                         // IterativeSolverSchedulerInfo.FirstDispatchPairIndex + SolvePhaseInfo.FirstDispatchPairOffset.
-                internal bool ContainsDuplicateIndices; // Indicates that there are duplicate body indices across batches within this phase.
                 internal int LinkedNumDynamicBodies;    // Positive when all pairs of a link must stay in one work item.
                                                         // See DispatchPair.IsSameLink.
             }
@@ -881,7 +879,6 @@ namespace Unity.Physics
             returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandles.AsArray());
             return returnHandles;
         }
-
 
         #region Helpers
 

@@ -1,3 +1,4 @@
+using static Unity.Physics.Solver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using Unity.Collections;
@@ -8,9 +9,9 @@ using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Profiling;
 using static Unity.Physics.Math;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Vessels
 {
-    public static partial class Solver
+    internal static partial class VesselIslandSolver
     {
         /// <summary>
         /// Predict equality constraint motion over a substep using the integrator and supplied velocities.
@@ -285,6 +286,24 @@ namespace Unity.Physics
                     prediction->Change[startRow + i] = rate - change[i] / timestep;
                 }
             }
+        }
+
+        /// <summary> Where a body's motion will be after a substep at the given velocity, as the integrator moves it. </summary>
+        static RigidTransform PredictedMotion(in RigidTransform worldFromMotion, int bodyIndex, in NativeArray<MotionVelocity> motionVelocities,
+            float timestep)
+        {
+            RigidTransform predicted = worldFromMotion;
+            if (bodyIndex < motionVelocities.Length)
+            {
+                Integrator.Integrate(ref predicted, motionVelocities[bodyIndex], timestep);
+            }
+
+            return predicted;
+        }
+
+        static float3 MotionAngularVelocity(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities)
+        {
+            return bodyIndex < motionVelocities.Length ? motionVelocities[bodyIndex].AngularVelocity : float3.zero;
         }
     }
 }

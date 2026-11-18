@@ -72,7 +72,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             teams->ElementAt(1).Configure();
             int lanes = math.min(JobsUtility.JobWorkerCount + 1, MaxTeamLanes);
 
-            var template = new ParallelIterativeSolverJob
+            var template = new IterativeSolveWork
             {
                 JacobiansReader = jacobians.AsReader(),
                 IterativeSolverSchedulerInfo = iterativePairs,
@@ -151,7 +151,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             /// The job data copied for each phase, with the phase index and iteration number set before execution.
             /// </summary>
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
-            public ParallelIterativeSolverJob Template;
+            public IterativeSolveWork Template;
 
             public int FirstIteration;
             public int Iterations;
@@ -169,7 +169,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
                 var phases = (DispatchPairSequencer.IterativeSolverSchedulerInfo.SolvePhaseInfo*)
                     NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(Template.IterativeSolverSchedulerInfo.PhaseInfo);
-                ParallelIterativeSolverJob job = Template;
+                IterativeSolveWork job = Template;
                 for (int iteration = FirstIteration; iteration < FirstIteration + Iterations; iteration++)
                 {
                     job.stepInput.CurrentSolverIteration = iteration;
@@ -190,7 +190,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         /// </summary>
         internal static unsafe void IterativePhaseTask(void* context, int task)
         {
-            ParallelIterativeSolverJob job = *(ParallelIterativeSolverJob*)context;
+            IterativeSolveWork job = *(IterativeSolveWork*)context;
             job.Execute(task);
         }
 
@@ -259,8 +259,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             bool fold = FoldsUnfusedSubsteps(stepInput.IslandSolverCache);
             var unfused = new UnfusedSubsteps
             {
-                Info = info,
-                JacobiansReader = jacobians.AsReader(),
                 Buffers = work.Buffers,
                 StepInput = substepInput,
             };
@@ -331,8 +329,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
                 JobHandle alone = new SolveDirectIslandJob
                 {
-                    Info = info,
-                    JacobiansReader = jacobians.AsReader(),
                     Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
@@ -345,8 +341,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
                 JobHandle shared = new SolveSharedDirectIslandsJob
                 {
-                    Info = info,
-                    JacobiansReader = jacobians.AsReader(),
                     Headers = work.Headers.AsDeferredJobArray(),
                     Islands = work.Islands.AsDeferredJobArray(),
                     Work = work.Buffers,
@@ -787,11 +781,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         unsafe struct SolveDirectIslandJob : IJobParallelForDefer
         {
             [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
-
-            public NativeStream.Reader JacobiansReader;
-
-            [ReadOnly]
             public NativeArray<IslandHeader> Headers;
 
             [ReadOnly]
@@ -818,7 +807,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             {
                 if (!Islands[islandIndex].SolvesInTeam)
                 {
-                    SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, null);
+                    SolveDirectIsland(Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, null);
                 }
             }
         }
@@ -831,11 +820,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         [NoAlias]
         unsafe struct SolveSharedDirectIslandsJob : IJobParallelFor
         {
-            [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
-
-            public NativeStream.Reader JacobiansReader;
-
             [ReadOnly]
             public NativeArray<IslandHeader> Headers;
 
@@ -880,7 +864,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 {
                     if (Islands[islandIndex].SolvesInTeam)
                     {
-                        SolveDirectIsland(Info, JacobiansReader, Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, Team);
+                        SolveDirectIsland(Headers, Islands, Work, IslandVessels, ref MotionVelocities, MotionDatas, Bodies, StepInput, islandIndex, Team);
                     }
                 }
 
@@ -890,8 +874,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
         static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.DirectSolve");
 
-        static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
-            in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
+        static unsafe void SolveDirectIsland(in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
             in NativeArray<int> islandVessels, ref NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in NativeArray<RigidBody> bodies, in StepInput stepInput, int islandIndex,
             WorkTeam* team)
@@ -903,10 +886,10 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 {
                     JacobianRows rows = work.Rows(island);
                     Vector rightHandSide = DirectIslandBuffers.View(work.RightHandSide, island);
-                    SolveSparsely<SparseIslandPath>(info, islandIndex, jacobiansReader, motionVelocities, motionDatas, stepInput, island.Rows, rows,
+                    SolveSparsely(islandIndex, motionVelocities, motionDatas, stepInput, island.Rows, rows,
                         DirectIslandBuffers.View(work.Epsilon, island), DirectIslandBuffers.View(work.Lower, island),
                         DirectIslandBuffers.View(work.Upper, island), rightHandSide, work.Flags(island),
-                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team, true,
+                        (*work.Bounded)[islandIndex] != 0, island.ContactPairs, team,
                         (IslandHeader*)headers.GetUnsafeReadOnlyPtr() + island.FirstHeader, work.HeaderRows->Ptr + island.FirstHeader,
                         island.SolveEnd - island.FirstHeader, work.Recovery->Ptr + island.FirstRow,
                         (int*)islandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, island.VesselCount,
@@ -945,12 +928,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         /// </summary>
         unsafe struct UnfusedSubsteps
         {
-            [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
-
-            [ReadOnly]
-            public NativeStream.Reader JacobiansReader;
-
             public DirectIslandBuffers Buffers;
 
             /// <summary>The input of the first substep. Its time step is the substep's.</summary>
@@ -1023,7 +1000,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 {
                     if (!islandPointer[i].Fused)
                     {
-                        SolveDirectIsland(unfused.Info, unfused.JacobiansReader, headers, islands, unfused.Buffers, islandVessels,
+                        SolveDirectIsland(headers, islands, unfused.Buffers, islandVessels,
                             ref motionVelocities, motionDatas, bodies, input, i, null);
                     }
                 }

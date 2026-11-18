@@ -46,7 +46,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
             bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
-            bool sparseContacts, WorkTeam* team, bool applyImpulses, float* impulses)
+            bool sparseContacts, WorkTeam* team, float* impulses)
         {
             using ProfilerMarker.AutoScope span = VesselSolveMarker.Auto();
 
@@ -103,7 +103,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
             long solved = SolveVesselBoundary(ref run, problem, headers, headerList, worldBodies, compactBodies, holdsPositions,
-                motionVelocities, motionDatas, stepInput, jacobianRows, recovery, sparseContacts, team, applyImpulses, impulses, linear,
+                motionVelocities, motionDatas, stepInput, jacobianRows, recovery, sparseContacts, team, impulses, linear,
                 angular);
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
             FinishStrutLoads(ref run);
@@ -121,12 +121,12 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// <summary>
         /// Solve the vessel boundary and recover body impulses. Correct predicted positional drift with a second
         /// solve when needed.
-        /// Optionally apply impulses and deep-contact push-out. Return first-solve completion time for profiling.
+        /// Apply impulses and deep-contact push-out. Return first-solve completion time for profiling.
         /// </summary>
         static unsafe long SolveVesselBoundary(ref ForestRun run, in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool holdsPositions,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
-            in JacobianRows jacobianRows, float* recovery, bool sparseContacts, WorkTeam* team, bool applyImpulses, float* impulses,
+            in JacobianRows jacobianRows, float* recovery, bool sparseContacts, WorkTeam* team, float* impulses,
             float3* linear, float3* angular)
         {
             long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
@@ -160,21 +160,18 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 drift.Dispose();
             }
 
-            if (applyImpulses)
+            long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            ApplySparseImpulses(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList, impulses,
+                motionVelocities, motionDatas, sparseContacts, team);
+            long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            if (recovery != null)
             {
-                long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                ApplySparseImpulses(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList, impulses,
-                    motionVelocities, motionDatas, sparseContacts, team);
-                long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                if (recovery != null)
-                {
-                    SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
-                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
-                        (ForestRun*)UnsafeUtility.AddressOf(ref run));
-                }
-
-                BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
+                SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
+                    math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
+                    (ForestRun*)UnsafeUtility.AddressOf(ref run));
             }
+
+            BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
 
             return solved;
         }
@@ -470,7 +467,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     solved = SolveVesselBoundary(ref run, problem, (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(), setup.Headers,
                         setup.WorldBodies, compactBodies, setup.HoldsPositions, motionVelocities, motionDatas, substepInput,
-                        new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team, true,
+                        new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team,
                         (float*)impulses.GetUnsafePtr(), linear, angular);
                     bodyTasks.Phase = VesselTasks.IntegrateBodiesAndWriteLoads;
                     WorkTeam.RunAll<VesselTaskDispatch>(team, &bodyTasks, IslandTaskKind.ForestVesselKind,

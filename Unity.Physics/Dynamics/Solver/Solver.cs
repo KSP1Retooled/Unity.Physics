@@ -989,9 +989,8 @@ namespace Unity.Physics
             }
         }
 
-        [BurstCompile]
         [NoAlias]
-        internal struct ParallelIterativeSolverJob : IJobParallelForDefer
+        internal struct IterativeSolveWork
         {
             [NativeDisableParallelForRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;

@@ -6,7 +6,7 @@ using Unity.Physics.Base.Threading;
 using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Dynamics.Vessels.Model;
-using static Unity.Physics.Solver;
+using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 
 namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 {

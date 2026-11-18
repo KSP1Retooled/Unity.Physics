@@ -35,38 +35,5 @@ namespace Unity.Physics
             epsilon = ContactCompliance * inverseMass;
             return distance > 0.0f ? -distance / timestep : -(ContactRecovery / timestep) * distance;
         }
-
-        /// <summary>
-        /// Store normal impulse per contact point and accumulate step-wide normal/friction totals for later substep
-        /// bounds.
-        /// </summary>
-        static unsafe void HandOverContactImpulses(ref JacobianHeader header, float* lambda, float collisionTolerance)
-        {
-            ref var contactJacobian = ref header.AccessBaseJacobian<ContactJacobian>();
-            float sum = 0.0f;
-            float pushed = 0.0f;
-            int normalRow = 0;
-            for (int i = 0; i < contactJacobian.BaseJacobian.NumContacts; ++i)
-            {
-                ref var point = ref header.AccessAngularJacobian(i);
-                if (point.ContactDistance <= collisionTolerance)
-                {
-                    // The point already holds its warm start, which the events count apart from this.
-                    float solved = lambda[normalRow++];
-                    point.Jac.Impulse = math.max(point.Jac.Impulse + solved, 0.0f);
-                    sum += solved;
-                }
-
-                // A point without a row still pushed with its warm start.
-                pushed += point.Jac.Impulse;
-            }
-
-            contactJacobian.SumImpulsesOverSubsteps += sum;
-            contactJacobian.NormalImpulseOverSubsteps += pushed;
-            if (contactJacobian.CoefficientOfFriction > 0 && normalRow > 0)
-            {
-                contactJacobian.FrictionImpulseOverSubsteps += new float3(lambda[normalRow], lambda[normalRow + 1], lambda[normalRow + 2]);
-            }
-        }
     }
 }

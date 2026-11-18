@@ -9,11 +9,8 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
-using Unity.Numerics.Memory;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Numerics.Linear.Solvers.Lowlevel;
-using Unity.Profiling;
 using UnityEngine;
 using static Unity.Physics.Math;
 
@@ -596,59 +593,6 @@ namespace Unity.Physics
             float2 phi_0 = new float2(math.mul(d_AB, u_B), math.mul(d_AB, v_B));
 
             return phi_0;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void ComputeInertiaTensor(in MotionVelocity motionVelocity, in MotionData motionData, float timestep,
-            bool enableGyroscopicTorque, out float3x3 I, out float3x3 invI)
-        {
-            // Principal components of inertia and inverse inertia
-            var invInertiaPCs = motionVelocity.InverseInertia;
-            var inertiaPCs = 1 / invInertiaPCs;
-
-            float3x3 inertiaTensor;
-            float3x3 invInertiaTensor;
-            if (enableGyroscopicTorque)
-            {
-                var I0 = new float3x3(inertiaPCs.x, 0, 0,
-                    0, inertiaPCs.y, 0,
-                    0, 0, inertiaPCs.z);
-                var invI0 = new float3x3(invInertiaPCs.x, 0, 0,
-                    0, invInertiaPCs.y, 0,
-                    0, 0, invInertiaPCs.z);
-
-                // Add mass stabilization term from Claude Lacoursiere's PhD thesis to inertia tensor in order to
-                // ensure a strictly dissipative integration scheme:
-                //      I = I_0 - h^2 * \hat(L) * I_0^-1 * \hat(L),
-                // where L corresponds to the angular momentum I_0 * w of the rigid body.
-                // We perform this computation in body space and then bring the final matrix to world space.
-                float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that we get
-                                                                        // the Hadamard product and not the dot product,
-                                                                        // as desired!
-                var hatL = DoubleMath.Cross(L);
-                var stabilizationTerm = timestep * timestep * math.mul(math.mul(hatL, invI0), hatL);
-                inertiaTensor = I0 - stabilizationTerm;
-                invInertiaTensor = math.inverse(inertiaTensor);
-            }
-            else
-            {
-                inertiaTensor = new float3x3(inertiaPCs.x, 0, 0,
-                    0, inertiaPCs.y, 0,
-                    0, 0, inertiaPCs.z);
-                invInertiaTensor = new float3x3(invInertiaPCs.x, 0, 0,
-                    0, invInertiaPCs.y, 0,
-                    0, 0, invInertiaPCs.z);
-            }
-
-            var worldTransform = motionData.WorldFromMotion;
-            float3x3 worldRotM = new float3x3(worldTransform.rot);
-
-            var inertiaTensorWorld = math.mul(math.mul(worldRotM, inertiaTensor), math.transpose(worldRotM));
-            var invInertiaTensorWorld = math.mul(math.mul(worldRotM, invInertiaTensor),
-                math.transpose(worldRotM));
-
-            I = JacobianUtilities.BuildSymmetricMatrix(inertiaTensorWorld);
-            invI = JacobianUtilities.BuildSymmetricMatrix(invInertiaTensorWorld);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1807,86 +1751,5 @@ namespace Unity.Physics
                 context.RightHandSide[startRow + i] -= rhsBodyVelocity[i];
             }
         }
-
-        /// <summary>
-        /// Keeps what the events and the next substep read of one Jacobian's solved impulses. A Jacobian writes only its own
-        /// data, so Jacobians can do this on any thread.
-        /// </summary>
-        static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows, bool sparseContacts)
-        {
-            // Collect collision or joint impulses for later event exports
-            if (header.Type == JacobianType.Contact && sparseContacts)
-            {
-                HandOverContactImpulses(ref header, lambda, ContactRowReach);
-            }
-            else if (header.Type == JacobianType.Contact &&
-                (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
-            {
-                ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
-
-                var sumNormalImpulses = 0f;
-                int normalRow = 0;
-                for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
-                {
-                    ref var contactAngularJac = ref header.AccessAngularJacobian(i);
-                    var contactDistance = contactAngularJac.ContactDistance;
-                    if (contactDistance <= ContactRowReach)
-                    {
-                        sumNormalImpulses += lambda[normalRow++];
-                    }
-                }
-
-                contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
-            }
-            else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
-            {
-                // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
-                // flag is not set for them.
-
-                ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
-
-                // Add impulses to accumulated impulse
-                switch (header.Type)
-                {
-                    case JacobianType.AngularLimit1D:
-                        ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
-                        impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
-                        break;
-                    case JacobianType.AngularLimit2D:
-                        ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
-                        impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
-                        if (jacRows == 1)
-                        {
-                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
-                        }
-                        break;
-                    case JacobianType.AngularLimit3D:
-                        for (int i = 0; i < jacRows; ++i)
-                        {
-                            impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                        }
-                        break;
-                    case JacobianType.LinearLimit:
-                        if (jacRows == 3)
-                        {
-                            // A ball and socket's rows run along the world axes, and an event reports the impulse in
-                            // constraint B's frame, as the iterative solver does.
-                            ref var linearLimit = ref header.AccessBaseJacobian<LinearLimitJacobian>();
-                            quaternion constraintBInWorld = math.mul(linearLimit.WorldFromB.rot, new quaternion(linearLimit.BodyFromConstraintB.Rotation));
-                            impulseEventData.AccumulatedImpulse += math.rotate(math.conjugate(constraintBInWorld), new float3(lambda[0], lambda[1], lambda[2]));
-                        }
-                        else
-                        {
-                            for (int i = 0; i < jacRows; ++i)
-                            {
-                                impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                            }
-                        }
-
-                        break;
-                }
-            }
-        }
-
     }
 }

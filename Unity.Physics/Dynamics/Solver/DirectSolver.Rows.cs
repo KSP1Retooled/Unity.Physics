@@ -1,10 +1,8 @@
-using Unity.Profiling;
 using Unity.Numerics.Linear;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Numerics.Memory;
 
 namespace Unity.Physics
 {

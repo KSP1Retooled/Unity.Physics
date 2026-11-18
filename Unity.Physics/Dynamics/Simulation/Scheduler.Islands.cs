@@ -18,9 +18,9 @@ namespace Unity.Physics
         /// </summary>
         internal const int NumIslandPhases = 4;
 
-        /// <summary> One bucket of pairs for each phase, then one for the direct solver. </summary>
         const int MaxPairsPerWorkItem = 8;
 
+        /// <summary>One bucket of pairs for each phase, then one for the direct solver.</summary>
         const int NumIslandBuckets = NumIslandPhases + 1;
 
         /// <summary>

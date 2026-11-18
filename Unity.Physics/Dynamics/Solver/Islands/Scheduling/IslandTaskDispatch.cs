@@ -14,23 +14,23 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         {
             if (stage.Kind == PredictDriftKind)
             {
-                Unity.Physics.Solver.PredictDriftTask(stage.Context, task);
+                VesselIslandSolver.PredictDriftTask(stage.Context, task);
             }
             else if (stage.Kind == ApplyImpulsesKind)
             {
-                Unity.Physics.Solver.ApplyImpulsesTask(stage.Context, task);
+                VesselIslandSolver.ApplyImpulsesTask(stage.Context, task);
             }
             else if (stage.Kind == SetupBodiesKind)
             {
-                Unity.Physics.Solver.SetupBodiesTask(stage.Context, task);
+                VesselIslandSolver.SetupBodiesTask(stage.Context, task);
             }
             else if (stage.Kind == SummarizeJacobiansKind)
             {
-                Unity.Physics.Solver.SummarizeJacobiansTask(stage.Context, task);
+                VesselIslandSolver.SummarizeJacobiansTask(stage.Context, task);
             }
             else if (stage.Kind == FillBlocksKind)
             {
-                Unity.Physics.Solver.FillBlocksTask(stage.Context, task);
+                VesselIslandSolver.FillBlocksTask(stage.Context, task);
             }
             else if (stage.Kind == IterativePhaseKind)
             {

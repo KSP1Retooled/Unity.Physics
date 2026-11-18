@@ -233,9 +233,8 @@ namespace Unity.Physics
         public NativeStream Contacts;
         public NativeStream Jacobians;
 
-        // When the step solves by island, this handle completes when the solve has written its last motion. The jobs
-        // that free the solve's buffers and export the direct islands' events run after it. See
-        // Simulation.MotionsSolvedHandle.
+        // This handle completes when the solver has written the final motions. Buffer disposal and direct island
+        // event export can finish later.
         public JobHandle MotionsSolved;
         public bool HasMotionsSolved;
 
@@ -616,13 +615,8 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Schedule all the jobs for the simulation step. Enqueued callbacks can choose to inject
-        /// additional jobs at defined sync points. multiThreaded defines which simulation type will be
-        /// called:
-        ///     - true will result in default multithreaded simulation
-        ///     - false will result in a very small number of jobs (1 per physics step phase) that are
-        ///     scheduled sequentially
-        /// Behavior doesn't change regardless of the multiThreaded argument provided.
+        /// Schedule an island step. Use the staged methods to run callbacks between stages.
+        /// Set multiThreaded to false to run each stage on one thread.
         /// </summary>
         ///
         /// <param name="input">            The input. </param>
@@ -630,7 +624,7 @@ namespace Unity.Physics
         /// <param name="multiThreaded">    (Optional) True if multi threaded. </param>
         ///
         /// <returns>   The SimulationJobHandles. </returns>
-        public unsafe SimulationJobHandles ScheduleStepJobs(SimulationStepInput input, JobHandle inputDeps, bool multiThreaded = true)
+        public SimulationJobHandles ScheduleStepJobs(SimulationStepInput input, JobHandle inputDeps, bool multiThreaded = true)
         {
             ScheduleBroadphaseJobs(input, inputDeps, multiThreaded);
             ScheduleNarrowphaseJobs(input, m_StepHandles.FinalExecutionHandle, multiThreaded);

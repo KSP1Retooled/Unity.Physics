@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using Unity.Collections;
@@ -7,9 +8,9 @@ using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Sparse;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Vessels
 {
-    public static partial class Solver
+    internal static partial class VesselIslandSolver
     {
         /// <summary>
         /// Gather sparse blocks and couplings, numbering bodies in Jacobian order.
@@ -92,29 +93,6 @@ namespace Unity.Physics
             public NativeArray<int> CompactBodies;
 
             public bool HoldsPositions;
-
-            public void Add(in JacobianSummary summary, JacobianHeader* header, int firstRow)
-            {
-                if (summary.Rows == 0)
-                {
-                    return;
-                }
-
-                HoldsPositions |= summary.HoldsPosition;
-                if (summary.Friction > 0)
-                {
-                    Couplings.Add(FrictionCoupling(summary, firstRow));
-                }
-
-                Blocks.Add(new SparseConstraintSolver.ConstraintBlock
-                {
-                    BodyA = Number(summary.BodyA),
-                    BodyB = Number(summary.BodyB),
-                    FirstRow = firstRow,
-                    RowCount = summary.Rows,
-                });
-                Headers.Add((IntPtr)header);
-            }
 
             /// <summary>
             /// Gives back the index of the island's bodies: sets the island's entries in the shared index to -1 again, or
@@ -350,6 +328,59 @@ namespace Unity.Physics
                     Inertia = new double3x3(inertia),
                 };
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void ComputeInertiaTensor(in MotionVelocity motionVelocity, in MotionData motionData, float timestep,
+            bool enableGyroscopicTorque, out float3x3 I, out float3x3 invI)
+        {
+            // Principal components of inertia and inverse inertia
+            var invInertiaPCs = motionVelocity.InverseInertia;
+            var inertiaPCs = 1 / invInertiaPCs;
+
+            float3x3 inertiaTensor;
+            float3x3 invInertiaTensor;
+            if (enableGyroscopicTorque)
+            {
+                var I0 = new float3x3(inertiaPCs.x, 0, 0,
+                    0, inertiaPCs.y, 0,
+                    0, 0, inertiaPCs.z);
+                var invI0 = new float3x3(invInertiaPCs.x, 0, 0,
+                    0, invInertiaPCs.y, 0,
+                    0, 0, invInertiaPCs.z);
+
+                // Add mass stabilization term from Claude Lacoursiere's PhD thesis to inertia tensor in order to
+                // ensure a strictly dissipative integration scheme:
+                //      I = I_0 - h^2 * \hat(L) * I_0^-1 * \hat(L),
+                // where L corresponds to the angular momentum I_0 * w of the rigid body.
+                // We perform this computation in body space and then bring the final matrix to world space.
+                float3 L = inertiaPCs * motionVelocity.AngularVelocity; // Warning: don't use mul here so that we get
+                                                                        // the Hadamard product and not the dot product,
+                                                                        // as desired!
+                var hatL = DoubleMath.Cross(L);
+                var stabilizationTerm = timestep * timestep * math.mul(math.mul(hatL, invI0), hatL);
+                inertiaTensor = I0 - stabilizationTerm;
+                invInertiaTensor = math.inverse(inertiaTensor);
+            }
+            else
+            {
+                inertiaTensor = new float3x3(inertiaPCs.x, 0, 0,
+                    0, inertiaPCs.y, 0,
+                    0, 0, inertiaPCs.z);
+                invInertiaTensor = new float3x3(invInertiaPCs.x, 0, 0,
+                    0, invInertiaPCs.y, 0,
+                    0, 0, invInertiaPCs.z);
+            }
+
+            var worldTransform = motionData.WorldFromMotion;
+            float3x3 worldRotM = new float3x3(worldTransform.rot);
+
+            var inertiaTensorWorld = math.mul(math.mul(worldRotM, inertiaTensor), math.transpose(worldRotM));
+            var invInertiaTensorWorld = math.mul(math.mul(worldRotM, invInertiaTensor),
+                math.transpose(worldRotM));
+
+            I = JacobianUtilities.BuildSymmetricMatrix(inertiaTensorWorld);
+            invI = JacobianUtilities.BuildSymmetricMatrix(invInertiaTensorWorld);
         }
     }
 }

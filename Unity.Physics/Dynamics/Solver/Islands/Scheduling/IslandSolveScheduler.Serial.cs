@@ -32,7 +32,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
             in DispatchPairSequencer.SolverSchedulerInfo info, StabilizationData stabilization)
         {
-            var iterative = new ParallelIterativeSolverJob
+            var iterative = new IterativeSolveWork
             {
                 JacobiansReader = jacobians.AsReader(),
                 IterativeSolverSchedulerInfo = info.IterativePairsIterativeScheduling,
@@ -89,8 +89,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             substepInput.DisableExportEvents = true;
             var unfused = new UnfusedSubsteps
             {
-                Info = info.DirectPairsDirectScheduling,
-                JacobiansReader = jacobians.AsReader(),
                 Buffers = work.Buffers,
                 StepInput = substepInput,
             };
@@ -140,7 +138,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             work.Buffers.Destroy();
         }
 
-        static void Iterate(ParallelIterativeSolverJob job, int firstIteration, int iterations)
+        static void Iterate(IterativeSolveWork job, int firstIteration, int iterations)
         {
             for (int i = firstIteration; i < firstIteration + iterations; i++)
             {

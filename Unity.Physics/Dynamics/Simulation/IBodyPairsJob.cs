@@ -117,13 +117,15 @@ namespace Unity.Physics
         {
             SafetyChecks.CheckSimulationStageAndThrow(simulation.m_SimulationScheduleStage, SimulationScheduleStage.PostCreateBodyPairs);
 
-            var pairs = simulation.StepContext.IslandsSorted ? simulation.StepContext.PhasedDispatchPairs : simulation.StepContext.PairsToSortByIsland;
+            var pairs = simulation.StepContext.IslandsSorted
+                ? simulation.StepContext.PhasedDispatchPairs
+                : simulation.StepContext.PairsToSortByIsland;
             if (pairs.IsCreated)
             {
                 var data = new BodyPairsJobData<T>
                 {
                     UserJobData = job,
-                    PhasedDispatchPairs = pairs.AsDeferredJobArray(),
+                    DispatchPairs = pairs.AsDeferredJobArray(),
                     Bodies = world.Bodies,
                     IsParallel = false
                 };
@@ -144,13 +146,15 @@ namespace Unity.Physics
         {
             SafetyChecks.CheckSimulationStageAndThrow(simulation.m_SimulationScheduleStage, SimulationScheduleStage.PostCreateBodyPairs);
 
-            var pairs = simulation.StepContext.IslandsSorted ? simulation.StepContext.PhasedDispatchPairs : simulation.StepContext.PairsToSortByIsland;
+            var pairs = simulation.StepContext.IslandsSorted
+                ? simulation.StepContext.PhasedDispatchPairs
+                : simulation.StepContext.PairsToSortByIsland;
             if (pairs.IsCreated)
             {
                 var data = new BodyPairsJobData<T>
                 {
                     UserJobData = job,
-                    PhasedDispatchPairs = pairs.AsDeferredJobArray(),
+                    DispatchPairs = pairs.AsDeferredJobArray(),
                     Bodies = world.Bodies,
                     IsParallel = true
                 };
@@ -169,7 +173,7 @@ namespace Unity.Physics
         internal struct BodyPairsJobData<T> where T : struct
         {
             public T UserJobData;
-            public NativeArray<DispatchPairSequencer.DispatchPair> PhasedDispatchPairs;
+            public NativeArray<DispatchPairSequencer.DispatchPair> DispatchPairs;
             //Need to disable aliasing restriction in case T has a NativeArray of PhysicsWorld.Bodies:
             [ReadOnly][NativeDisableContainerSafetyRestriction] public NativeArray<RigidBody> Bodies;
             public bool IsParallel;
@@ -195,7 +199,7 @@ namespace Unity.Physics
                 while (true)
                 {
                     int startIndex = 0;
-                    int endIndex = jobData.PhasedDispatchPairs.Length;
+                    int endIndex = jobData.DispatchPairs.Length;
 
                     if (jobData.IsParallel)
                     {
@@ -209,7 +213,7 @@ namespace Unity.Physics
 
                     for (int currentIdx = startIndex; currentIdx < endIndex; currentIdx++)
                     {
-                        DispatchPairSequencer.DispatchPair dispatchPair = jobData.PhasedDispatchPairs[currentIdx];
+                        DispatchPairSequencer.DispatchPair dispatchPair = jobData.DispatchPairs[currentIdx];
 
                         // Skip joint pairs and invalid pairs
                         if (dispatchPair.IsJoint || !dispatchPair.IsValid || !dispatchPair.IsCollisionEnabled)
@@ -235,7 +239,7 @@ namespace Unity.Physics
 
                         if (pair.BodyIndexA == -1 || pair.BodyIndexB == -1)
                         {
-                            jobData.PhasedDispatchPairs[currentIdx] = DispatchPairSequencer.DispatchPair.Invalid;
+                            jobData.DispatchPairs[currentIdx] = DispatchPairSequencer.DispatchPair.Invalid;
                         }
                     }
 

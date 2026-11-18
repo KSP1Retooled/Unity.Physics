@@ -92,24 +92,6 @@ namespace Unity.Physics
             };
         }
 
-        /// <summary> Where a body's motion will be after a substep at the given velocity, as the integrator moves it. </summary>
-        static RigidTransform PredictedMotion(in RigidTransform worldFromMotion, int bodyIndex, in NativeArray<MotionVelocity> motionVelocities,
-            float timestep)
-        {
-            RigidTransform predicted = worldFromMotion;
-            if (bodyIndex < motionVelocities.Length)
-            {
-                Integrator.Integrate(ref predicted, motionVelocities[bodyIndex], timestep);
-            }
-
-            return predicted;
-        }
-
-        static float3 MotionAngularVelocity(int bodyIndex, in NativeArray<MotionVelocity> motionVelocities)
-        {
-            return bodyIndex < motionVelocities.Length ? motionVelocities[bodyIndex].AngularVelocity : float3.zero;
-        }
-
         /// <summary>
         /// Arming a row this far inside a limit, in metres or radians, stops a body resting on it from switching the row on
         /// and off.
@@ -158,7 +140,7 @@ namespace Unity.Physics
         }
 
         /// <summary> How fast a row's constraint function is changing at the bodies' current velocities. </summary>
-        static unsafe float RowRate(in JacobianRows jacobianRows, int row, int bodyIndexA, int bodyIndexB,
+        internal static unsafe float RowRate(in JacobianRows jacobianRows, int row, int bodyIndexA, int bodyIndexB,
             bool bodyAIsDynamic, bool bodyBIsDynamic, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas)
         {
