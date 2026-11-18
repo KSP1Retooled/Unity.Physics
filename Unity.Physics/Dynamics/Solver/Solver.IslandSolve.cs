@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
 using Unity.Burst;
 using Unity.Collections;
@@ -347,64 +348,6 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Describes the Jacobians for one direct island in <see cref="DirectIslandWork.Headers"/> and its rows for the
-        /// current substep.
-        /// </summary>
-        struct DirectIsland
-        {
-            public int FirstHeader;
-
-            /// <summary>
-            /// The exclusive end index of the joint Jacobians, which precede the contact Jacobians.
-            /// </summary>
-            public int JointEnd;
-
-            /// <summary>
-            /// The exclusive end index of the Jacobians included in the solve. Contact Jacobians after this index are
-            /// updated but not solved.
-            /// </summary>
-            public int SolveEnd;
-
-            public int HeaderEnd;
-
-            /// <summary>
-            /// The number of contact pairs included with the joints in the sparse solve.
-            /// </summary>
-            public int ContactPairs;
-
-            public int FirstRow;
-            public int Rows;
-
-            /// <summary>
-            /// The number of rows in the joint Jacobians, which remains the same across substeps.
-            /// </summary>
-            public int JointRows;
-
-            /// <summary>
-            /// The range of this island's vessels in <see cref="DirectIslandWork.IslandVessels"/> and their total
-            /// number of parts. An island with a vessel is solved even if it has no Jacobian rows.
-            /// </summary>
-            public int FirstVessel;
-            public int VesselCount;
-            public int VesselParts;
-
-            /// <summary>The number of the island's bodies that are not parts of its vessels.</summary>
-            public int OtherBodies;
-
-            /// <summary>
-            /// Whether the island has enough rows or vessel parts to benefit from sharing the solve among lanes.
-            /// Smaller islands are solved independently in parallel.
-            /// </summary>
-            public bool SolvesInTeam => Rows >= SharedSolveRows || VesselParts >= SharedSolveParts;
-
-            /// <summary>
-            /// Whether <see cref="SolveFusedVesselIslandsJob"/> solves this island for the whole step. The jobs of each
-            /// substep then skip it.
-            /// </summary>
-            public bool Fused;
-        }
-
-        /// <summary>
         /// The number of island solves, each one for a whole step, that the fused vessel job has done since the
         /// program started. Tests read it to check that an island went to the fused job.
         /// </summary>
@@ -413,17 +356,6 @@ namespace Unity.Physics
         struct FusedIslandSolveKey { }
 
         static readonly SharedStatic<long> FusedIslandSolveCount = SharedStatic<long>.GetOrCreate<FusedIslandSolveKey>();
-
-        /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
-        const int SharedSolveParts = 256;
-
-        const int SharedSolveRows = 512;
-
-        unsafe struct IslandHeader
-        {
-            public JacobianHeader* Header;
-            public int Island;
-        }
 
         /// <summary>
         /// Contiguous row ranges for direct islands. Store pointers to list headers because jobs may resize their
@@ -909,7 +841,7 @@ namespace Unity.Physics
                 return;
             }
 
-            bool lcp = BuildHeaderRows(ref header, startRow, jacRows, IslandRowBuffers.Of(work, island), motionVelocities, motionDatas,
+            bool lcp = BuildHeaderRows(ref header, startRow, jacRows, GetIslandRows(work, island), motionVelocities, motionDatas,
                 stepInput, island.ContactPairs > 0, regularization);
 
             // Workers only set this flag to one; the solver reads it after all row builds complete.
@@ -921,31 +853,19 @@ namespace Unity.Physics
         }
 
         // Per-island Jacobian rows, regularization, bounds, targets, push-out and states for one substep.
-        unsafe struct IslandRowBuffers
+        static unsafe IslandRowBuffers GetIslandRows(in DirectIslandBuffers work, in DirectIsland island)
         {
-            public float* Jacobian;
-            public float* Epsilon;
-            public float* Lower;
-            public float* Upper;
-            public float* RightHandSide;
-            public float* Recovery;
-            public LCP.MLCPIndexFlag* Flags;
-            public int Rows;
-
-            public static IslandRowBuffers Of(in DirectIslandBuffers work, in DirectIsland island)
+            return new IslandRowBuffers
             {
-                return new IslandRowBuffers
-                {
-                    Jacobian = work.Jacobian->Ptr + island.FirstRow * (long)SparseConstraintSolver.ColumnsPerRow,
-                    Epsilon = work.Epsilon->Ptr + island.FirstRow,
-                    Lower = work.Lower->Ptr + island.FirstRow,
-                    Upper = work.Upper->Ptr + island.FirstRow,
-                    RightHandSide = work.RightHandSide->Ptr + island.FirstRow,
-                    Recovery = work.Recovery->Ptr + island.FirstRow,
-                    Flags = work.IndexFlags->Ptr + island.FirstRow,
-                    Rows = island.Rows,
-                };
-            }
+                Jacobian = work.Jacobian->Ptr + island.FirstRow * (long)SparseConstraintSolver.ColumnsPerRow,
+                Epsilon = work.Epsilon->Ptr + island.FirstRow,
+                Lower = work.Lower->Ptr + island.FirstRow,
+                Upper = work.Upper->Ptr + island.FirstRow,
+                RightHandSide = work.RightHandSide->Ptr + island.FirstRow,
+                Recovery = work.Recovery->Ptr + island.FirstRow,
+                Flags = work.IndexFlags->Ptr + island.FirstRow,
+                Rows = island.Rows,
+            };
         }
 
         /// <summary>

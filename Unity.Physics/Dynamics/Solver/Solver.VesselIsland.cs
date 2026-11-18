@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
