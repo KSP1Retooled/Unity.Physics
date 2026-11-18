@@ -11,7 +11,8 @@ namespace Unity.Physics.Stepping.State
 {
     /// <summary>
     /// Owns the compiled vessels and the caches for their edges and closures.
-    /// Joint regrouping and expired tombstones force compilation when vessels are enabled.
+    /// Compiles on first use, joint regrouping, or tombstone expiry. Reuses constraints while the joint settings
+    /// and motion frames match.
     /// </summary>
     internal unsafe struct VesselState
     {
@@ -94,8 +95,7 @@ namespace Unity.Physics.Stepping.State
         {
             const int ParallelBatchSize = 64;
 
-            // Fill vessel constraints alongside joint and broadphase work; only the solve needs their
-            // results.
+            // The solve needs the vessel constraints. Fill them alongside joint and broadphase work.
             vesselsFilled = default;
             if (vesselSet.IsCreated)
             {

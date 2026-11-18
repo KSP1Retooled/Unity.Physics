@@ -6,8 +6,7 @@ namespace Unity.Physics.Stepping
     internal unsafe partial struct StoreStepper
     {
         /// <summary>
-        /// For tests: whether the next step throws right after it schedules the refit of the dynamic tree, while the
-        /// solve's jobs still run. Only code that runs in Mono throws; Burst leaves the throw out.
+        /// Controls whether the next Mono step throws after scheduling the refit while the solve is still running.
         /// </summary>
         internal static bool ThrowAfterRefitScheduledForTests
         {
@@ -15,10 +14,18 @@ namespace Unity.Physics.Stepping
             set => s_ThrowAfterRefitScheduled.Data = value ? 1 : 0;
         }
 
-        /// <summary>For tests: the number of throws that <see cref="ThrowAfterRefitScheduledForTests"/> made.</summary>
+        /// <summary>Counts exceptions injected after refit scheduling.</summary>
         internal static int ThrowsAfterRefitScheduled => s_ThrowsAfterRefitScheduled;
 
         private static int s_ThrowsAfterRefitScheduled;
+
+        internal static void ThrowAfterRefitScheduledIfRequested()
+        {
+            if (s_ThrowAfterRefitScheduled.Data != 0)
+            {
+                ThrowAfterRefitScheduled();
+            }
+        }
 
         [Unity.Burst.BurstDiscard]
         private static void ThrowAfterRefitScheduled()
@@ -33,8 +40,7 @@ namespace Unity.Physics.Stepping
         }
 
         /// <summary>
-        /// For tests: whether the next step throws before it applies the forces, which is also before it refreshes
-        /// the pointers of the store's rows. Only code that runs in Mono throws; Burst leaves the throw out.
+        /// Controls whether the next Mono step throws before it refreshes the pointers to the store rows.
         /// </summary>
         internal static bool ThrowBeforeApplyForcesForTests
         {
@@ -42,7 +48,7 @@ namespace Unity.Physics.Stepping
             set => s_ThrowBeforeApplyForces.Data = value ? 1 : 0;
         }
 
-        /// <summary>For tests: the number of throws that <see cref="ThrowBeforeApplyForcesForTests"/> made.</summary>
+        /// <summary>Counts exceptions injected before force scheduling.</summary>
         internal static int ThrowsBeforeApplyForces => s_ThrowsBeforeApplyForces;
 
         private static int s_ThrowsBeforeApplyForces;
@@ -77,12 +83,11 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal void ReleaseTreeAfterThrow()
         {
-            if (!Trees.refitPending)
+            if (!Trees.RefitPending)
             {
                 System.Threading.Interlocked.Exchange(ref store->treeReady, 1);
                 AddressWait.WakeAll(&store->treeReady);
             }
         }
-
     }
 }

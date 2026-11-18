@@ -133,5 +133,15 @@ namespace Unity.Physics.Stepping.State
         {
             return store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
         }
+
+        internal void PublishAfterStep(WorldData* store, QueryWorld* query, ref PhysicsWorld world,
+            ref BodyPartition partition, ref TreeState trees)
+        {
+            // A refit that failed has set the ready word too, and leaves the world stale.
+            bool treeReady = store->treeReady != 0;
+            store->queryDirty = !partition.motionsMatchStore || (treeReady && trees.sharedRefit->Failed) ? StoreMemory.QueryStale
+                : !treeReady ? StoreMemory.QueryTreePending : 0u;
+            PublishQueryWorld(store, query, ref world);
+        }
     }
 }

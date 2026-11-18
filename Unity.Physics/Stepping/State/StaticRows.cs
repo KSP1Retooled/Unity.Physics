@@ -34,7 +34,7 @@ namespace Unity.Physics.Stepping.State
 
         private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StaticRows, StaticReuseOffKey>();
 
-        /// <summary>Reads RETOOLED_STATIC_REUSE from the environment: 0 turns off the reuse of the static rows.</summary>
+        /// <summary>Read RETOOLED_STATIC_REUSE. A value of 0 disables static row reuse.</summary>
         internal static void ReadStaticReuseSwitch()
         {
             string reuse = Environment.GetEnvironmentVariable("RETOOLED_STATIC_REUSE");

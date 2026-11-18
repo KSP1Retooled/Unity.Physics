@@ -104,5 +104,13 @@ namespace Unity.Physics.Stepping.State
             }
         }
 
+        internal void ForgetRemovedShapes(WorldData* store, ref JobHandle forces)
+        {
+            if (store->removedShapeCount != 0)
+            {
+                forces.Complete();
+                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
+            }
+        }
     }
 }

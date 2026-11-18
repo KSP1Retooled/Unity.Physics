@@ -55,8 +55,8 @@ namespace Unity.Physics.Stepping.Stages
             int dynamicBefore = world.NumDynamicBodies;
             bool keepStaticRows = staticRows.KeepsStaticRows(ref world, ref partition);
 
-            // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
-            // read the joints, so jobs can be scheduled before the joint count is known.
+            // Reset the world with no joints. The joint build job fills them later.
+            // Unity Physics schedules jobs that read the joints through deferred arrays before it knows the count.
             using (BuildResetMarker.Auto())
             {
                 world.Reset(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0);
@@ -69,7 +69,7 @@ namespace Unity.Physics.Stepping.Stages
 
             DynamicBoundsCache.View boundsView = trees.PrepareBounds(ref partition);
 
-            // Schedule bodies and trees first: pair creation and island finding depend on them.
+            // Pair creation and island finding depend on the bodies and trees, so schedule them first.
             // Joint compilation and vessel work can proceed alongside them.
             JobHandle broadphase;
             using (BuildScheduleBodiesMarker.Auto())
@@ -268,10 +268,7 @@ namespace Unity.Physics.Stepping.Stages
                 ref colliders, ref queries.builtWhole, 0.0f, collidersReady);
             queries.ScheduleQuerySnapshot(store, globals, ref world, ref partition, broadphase).Complete();
             broadphase.Complete();
-            if (trees.boundsCacheBuilt)
-            {
-                trees.boundsCache.MarkCurrent();
-            }
+            trees.MarkBoundsCurrent();
             queries.FinishQuerySnapshot();
             queries.PublishQueryWorld(store, query, ref world);
         }

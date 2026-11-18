@@ -15,53 +15,53 @@ namespace Unity.Physics.Stepping.State
 {
     /// <summary>
     /// Owns the broadphase reuse data, the bounds cache, and the pending refit.
-    /// The trees can be reused while the build and their body rows permit it.
+    /// Reuses the dynamic tree after a completed build while the row order, refit count, and tree quality allow it.
     /// </summary>
     internal unsafe struct TreeState
     {
-        // Static tree jobs read these flags. keepStatics is constant after initialization;
-        // StaticTreeShift.ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
-        internal NativeReference<int> rebuildStatics;
-        internal NativeReference<int> keepStatics;
-        internal StaticTreeShift.ShiftState treeShift;
+        // The static tree jobs read these flags. keepStatics stays constant after initialization.
+        // StaticTreeShift.ShiftStaticTreeJob sets rebuildStatics before the tree jobs run.
+        private NativeReference<int> rebuildStatics;
+        private NativeReference<int> keepStatics;
+        private StaticTreeShift.ShiftState treeShift;
         internal bool treeMatchesHeld;
         // The number of collider refreshes that gave any body a new collider, and the bounds of the dynamic bodies'
         // colliders that the refit at the end of a step leaves for the build at the start of the next.
         internal NativeReference<uint> colliderChanges;
-        internal DynamicBoundsCache boundsCache;
+        private DynamicBoundsCache boundsCache;
 
         // Whether the last build of the dynamic tree used the bounds cache. Only then does the cache hold the current
         // colliders after the build.
-        internal bool boundsCacheBuilt;
+        private bool boundsCacheBuilt;
 
-        // Pending refit to solved poses. FinishPendingRefit protects the built world and bounds cache;
-        // queries may help the refit through the native store pointer.
+        // FinishPendingRefit waits before callers read the built world or the bounds cache.
+        // Queries may help the pending refit through the native store pointer.
         internal SharedDynamicTreeRefit* sharedRefit;
-        internal JobHandle refit;
-        internal bool refitPending;
+        private JobHandle refit;
+        private bool refitPending;
 
         // The jobs that write the motions that the pending refit reads.
-        internal JobHandle refitInputs;
+        private JobHandle refitInputs;
 
         // Dynamic store rows used for the current tree. Refit while row order, count and quality remain
         // suitable.
-        internal NativeList<int> treeRows;
+        private NativeList<int> treeRows;
 
-        // What the jobs of the last refit left: whether a filter changed, and the tree's quality.
-        internal DynamicTreeRefitResults* treeRefitResults;
+        // The last refit records whether a filter changed and how much overlap the tree contains.
+        private DynamicTreeRefitResults* treeRefitResults;
 
         // Whether the last build refitted the tree, the refits since the tree was last built, and the quality that the
         // first of those refits measured, or 0 before it has been read.
-        internal bool treeRefitted;
-        internal int treeRefits;
-        internal float treeBaseQuality;
+        private bool treeRefitted;
+        private int treeRefits;
+        private float treeBaseQuality;
 
         // Counts for tests.
-        internal long treeBuildCount;
-        internal long treeRefitCount;
-        internal long treeFilterRefitCount;
-        internal static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
-        internal static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForTree");
+        private long treeBuildCount;
+        private long treeRefitCount;
+        private long treeFilterRefitCount;
+        private static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
+        private static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForTree");
 
         /// <summary>
         /// Maximum consecutive refits before rebuilding the dynamic tree.
@@ -76,7 +76,7 @@ namespace Unity.Physics.Stepping.State
 
         /// <summary>
         /// Enable dynamic tree reuse. RETOOLED_TREE_REUSE=0 disables it.
-        /// Stored in SharedStatic for Burst; the always-refit mode also bypasses count and quality limits.
+        /// Burst reads this switch through SharedStatic. Always refitting bypasses the count and quality limits.
         /// </summary>
         internal static bool TreeReuseEnabled
         {
@@ -101,8 +101,8 @@ namespace Unity.Physics.Stepping.State
         private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<TreeState, TreeReuseModeKey>();
 
         /// <summary>
-        /// Reads RETOOLED_TREE_REUSE from the environment: 0 turns off the reuse of the dynamic tree, and "always" makes
-        /// every build refit the tree when it can (<see cref="TreeAlwaysRefitted"/>).
+        /// Read RETOOLED_TREE_REUSE. A value of 0 disables dynamic tree reuse. A value of "always" refits the tree
+        /// whenever the dynamic body rows match.
         /// </summary>
         internal static void ReadTreeReuseSwitch()
         {
@@ -139,9 +139,8 @@ namespace Unity.Physics.Stepping.State
         private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<TreeState, BoundsCacheOffKey>();
 
         /// <summary>
-        /// Read bounds cache switches: RETOOLED_BOUNDS_CACHE=0 disables caching;
-        /// RETOOLED_BOUNDS_CHECK=1 validates cached bounds; RETOOLED_SHAPE_BOUNDS=0 disables cached collider
-        /// geometry.
+        /// RETOOLED_BOUNDS_CACHE=0 disables caching. RETOOLED_BOUNDS_CHECK=1 validates cached bounds.
+        /// RETOOLED_SHAPE_BOUNDS=0 disables reuse of cached collider geometry.
         /// </summary>
         internal static void ReadBoundsCacheSwitches()
         {
@@ -211,7 +210,7 @@ namespace Unity.Physics.Stepping.State
         /// <summary>
         /// Complete the pending dynamic tree refit on the main thread before reading or modifying the built world
         /// or bounds cache.
-        /// Call outside jobs; query jobs use HelpPendingRefit instead.
+        /// Call this outside jobs. Query jobs use HelpPendingRefit.
         /// </summary>
         internal void FinishPendingRefit(WorldData* store)
         {
@@ -222,8 +221,7 @@ namespace Unity.Physics.Stepping.State
 
             using (StepWaitForTreeMarker.Auto())
             {
-                // A job whose refit threw is complete too: the thread that threw marked the refit failed, and the
-                // other threads stopped waiting for its piece.
+                // If a thread threw, it marked the refit as failed. The other threads stopped waiting for its work.
                 refit.Complete();
 
                 // The jobs have done all of the work unless a test told them to leave it.
@@ -236,8 +234,8 @@ namespace Unity.Physics.Stepping.State
         }
 
         /// <summary>
-        /// Invalidate the published world after a refit fails. The next main-thread query rebuilds it;
-        /// workers may continue querying pre-step poses until then.
+        /// Invalidate the published world after a refit fails. The next main-thread query rebuilds it.
+        /// Workers may continue querying the poses from before the step until then.
         /// </summary>
         private void NoteFailedRefit(WorldData* store)
         {
@@ -288,7 +286,7 @@ namespace Unity.Physics.Stepping.State
         }
 
         /// <summary>
-        /// Logs the check's mismatches of the bounds cache when there are new ones, and the counts every 1,000 steps.
+        /// Logs new bounds cache mismatches and reports the counts every 1,000 steps.
         /// </summary>
         internal static void LogBoundsCheck()
         {
@@ -408,5 +406,21 @@ namespace Unity.Physics.Stepping.State
         }
 
         internal readonly NativeReference<int>.ReadOnly BuildStaticTree(bool staticsChanged) => (staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
+        internal void SchedulePendingRefit(WorldData* store, ref PhysicsWorld world, float deltaTime, JobHandle motionsSolved)
+        {
+            refit = SharedDynamicTreeRefit.Schedule(sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
+                boundsCacheBuilt ? boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
+            refitPending = true;
+            refitInputs = motionsSolved;
+        }
+
+        internal void MarkBoundsCurrent()
+        {
+            if (boundsCacheBuilt)
+            {
+                boundsCache.MarkCurrent();
+            }
+        }
+
     }
 }

@@ -1,67 +1,37 @@
-using System;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using Unity.Jobs.LowLevel.Unsafe;
-using Unity.Mathematics;
-using Unity.Physics.Base.Threading;
-using Unity.Physics.Collision.World.Trees;
-using Unity.Physics.Dynamics.Simulation.Islands;
-using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Dynamics.Contacts;
 using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
-using Unity.Physics.Store.Bodies;
-using Unity.Physics.Store.Memory;
-using Unity.Physics.Store.Versions;
-using Unity.Physics.Store.World;
-using Unity.Physics.Collision.Colliders.Building;
-using Unity.Physics.Configuration;
-using Unity.Physics.Collision.Queries.Snapshot;
-using Unity.Physics.Dynamics.Joint.Translation;
-using Unity.Physics.Dynamics.Joint.Grouping;
-using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Dynamics.Vessels.Detection;
-using Unity.Physics.Dynamics.Contacts;
-using Unity.Physics.Collision.Filter.Groups;
-using Unity.Physics.Dynamics.Sleep;
-using Unity.Physics.Dynamics.Vehicles;
-using Unity.Physics.Dynamics.Bodies;
-using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
-using Unity.Profiling;
 using Unity.Physics.Stepping.Stages;
 using Unity.Physics.Stepping.State;
+using Unity.Physics.Store.World;
+using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 
 namespace Unity.Physics.Stepping
 {
     /// <summary>
-    /// Unmanaged simulation state for one store world, used by the Burst step entry points.
+    /// Orders the stages for one store world and carries their state and job handles.
     /// </summary>
     internal unsafe partial struct StoreStepper
     {
-        private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
-        private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
-        private static readonly ProfilerMarker StepReadJointForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");
-        private static readonly ProfilerMarker StepSleepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Sleep");
-        private static readonly ProfilerMarker StepWaitForSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
-        private static readonly ProfilerMarker StepWriteBackMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
-
-        private const int ParallelBatchSize = 64;
-
         private readonly WorldData* store;
         private readonly StoreGlobals* globals;
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
-        internal StepSolverCaches SolverCaches;
-        internal ColliderState Colliders;
+        private StepSolverCaches SolverCaches;
+        private ColliderState Colliders;
         internal QuerySnapshotState Queries;
-        internal SleepState Sleep;
-        internal ContactState Contacts;
-        internal VesselState VesselData;
-        internal JointBuildState Joints;
+        private SleepState Sleep;
+        private ContactState Contacts;
+        private VesselState VesselData;
+        private JointBuildState Joints;
         internal TreeState Trees;
         internal StaticRows StaticBodies;
-        internal BodyPartition Partition;
+        private BodyPartition Partition;
 
         // Prepared simulation, or null since the last FinishStep.
         // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
@@ -73,6 +43,7 @@ namespace Unity.Physics.Stepping
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
+
         internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
@@ -167,7 +138,8 @@ namespace Unity.Physics.Stepping
         internal JobHandle BuildWorld(float deltaTime, JobHandle dependency)
         {
             return BuildStage.BuildWorld(store, globals, ref world, ref Partition, ref StaticBodies, ref Trees,
-                ref Joints, ref VesselData, ref Colliders, ref forcesApplied, ref Queries.builtWhole, ref Contacts.stepCount, deltaTime, dependency);
+                ref Joints, ref VesselData, ref Colliders, ref forcesApplied, ref Queries.builtWhole,
+                ref Contacts.stepCount, deltaTime, dependency);
         }
 
         /// <summary>The store updated by this simulation state. Used by tests.</summary>
@@ -218,87 +190,12 @@ namespace Unity.Physics.Stepping
         }
 
         /// <summary>
-        /// Read impulse and vessel loads, then break overloaded joints.
-        /// Wait for body pose write-back before converting impulse events to world space.
-        /// </summary>
-        private JobHandle ReadJointForces(NativeStream events, float deltaTime, JobHandle vesselsSettled)
-        {
-            const int groupsPerBatch = 16;
-
-            // ScheduleVesselLoads has already sized the joint loads.
-            int jointCount = Joints.jointLoads.Length;
-            Joints.groupLoads.ResizeUninitialized(Joints.jointGroups.Length);
-            UnsafeUtility.MemClear(Joints.groupLoads.GetUnsafePtr(), (long)Joints.groupLoads.Length * sizeof(JointLoad));
-
-            bool listed = VesselData.vesselSet.IsCreated;
-            int seededJoints = listed ? Joints.otherJoints.Length : jointCount;
-            int sharedGroups = listed ? Joints.otherGroups.Length : Joints.jointGroups.Length;
-            JobHandle loaded = new JointLoads.SeedJointLoadsJob
-            {
-                World = store,
-                States = Joints.jointStates->Ptr,
-                Loads = Joints.jointLoads.AsArray(),
-                Joints = Joints.otherJoints.AsArray(),
-                Listed = listed,
-            }.Schedule(seededJoints, ParallelBatchSize);
-            if (events.IsCreated)
-            {
-                JobHandle rotated = new JointLoads.RotateJointImpulsesJob
-                {
-                    Events = events.AsReader(),
-                    World = store,
-                    Groups = Joints.jointGroups.AsArray(),
-                    DeltaTime = deltaTime,
-                }.ScheduleUnsafe(events, 1, default);
-
-                loaded = new JointLoads.SumJointImpulsesJob
-                {
-                    Events = events.AsReader(),
-                    JointLoads = Joints.jointLoads.AsArray(),
-                    GroupLoads = Joints.groupLoads.AsArray(),
-                }.Schedule(JobHandle.CombineDependencies(loaded, rotated));
-            }
-
-            JobHandle shared = new JointLoads.ShareGroupLoadsJob
-            {
-                World = store,
-                Groups = Joints.jointGroups.AsArray(),
-                Members = Joints.jointGroupMembers.AsArray(),
-                GroupLoads = Joints.groupLoads.AsArray(),
-                JointLoads = Joints.jointLoads.AsArray(),
-                ListedGroups = Joints.otherGroups.AsArray(),
-                Listed = listed,
-            }.Schedule(sharedGroups, groupsPerBatch, loaded);
-
-            JobHandle settled = new JointLoads.SettleJointLoadsJob
-            {
-                World = store,
-                States = Joints.jointStates->Ptr,
-                Loads = Joints.jointLoads.AsArray(),
-                Overloaded = Joints.jointsOverloaded.AsArray(),
-                Joints = Joints.otherJoints.AsArray(),
-                Listed = listed,
-                DeltaTime = deltaTime,
-            }.Schedule(seededJoints, ParallelBatchSize, shared);
-
-            settled = JobHandle.CombineDependencies(settled, vesselsSettled);
-            return new JointBreaking.BreakJointsJob
-            {
-                World = store,
-                Globals = globals,
-                States = Joints.jointStates->Ptr,
-                Overloaded = Joints.jointsOverloaded.AsArray(),
-                EngineObjectIdOffset = globals->engineObjectIdOffset,
-            }.Schedule(settled);
-        }
-
-        /// <summary>
         /// Convert test-supplied vessel loads to joint loads and process breaking as at step completion.
         /// </summary>
         internal void ReadVesselLoads(float deltaTime)
         {
-            JobHandle vesselsSettled = SolveStage.ScheduleVesselLoads(store, ref world, ref Partition, ref Joints, ref VesselData, deltaTime, default);
-            ReadJointForces(default, deltaTime, vesselsSettled).Complete();
+            FinishStage.ReadVesselLoads(store, globals, ref world, ref Partition, ref Joints, ref VesselData,
+                deltaTime);
         }
 
         /// <summary>
@@ -307,159 +204,18 @@ namespace Unity.Physics.Stepping
         internal void FinishBeforeContacts(Simulation simulation, float deltaTime,
             out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep)
         {
-            // Schedule post-solve work now. Include manifold and warm-start dependencies even when nothing is
-            // solved.
-            JobHandle solved = JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, VesselData.vesselsFilled);
-
-            // The jobs below read only the solved motions, so they don't wait for the jobs that free the solve's
-            // buffers and export the events of its direct islands. Those jobs only read the motions too.
-            JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, VesselData.vesselsFilled);
-
-            // Schedule write-back first because the main thread waits for it first.
-            JobHandle writtenBack = new StoreBodies.WriteBackJob
-            {
-                Store = store->bodies,
-                DynamicIndices = Partition.dynamicIndices.AsArray(),
-                MotionDatas = world.MotionDatas,
-                MotionVelocities = world.MotionVelocities,
-            }.Schedule(Partition.dynamicIndices.Length, ParallelBatchSize, motionsSolved);
-
-            // Vessel loads read solved motions, so they can run alongside pose write-back.
-            JobHandle vesselsSettled = SolveStage.ScheduleVesselLoads(store, ref world, ref Partition, ref Joints, ref VesselData, deltaTime, motionsSolved);
-
-            // Refit the dynamic tree to solved poses alongside write-back. The step returns without waiting for
-            // the refit.
-            // Clear treeReady until completion; later world access must finish the refit, and queries can help
-            // it.
-            // Snapshot copying reads only Static flags, which these concurrent jobs do not change.
-            Trees.refit = SharedDynamicTreeRefit.Schedule(Trees.sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
-                Trees.boundsCacheBuilt ? Trees.boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
-            Trees.refitPending = true;
-            Trees.refitInputs = motionsSolved;
-
-            // If the step throws, wait for solved motions before returning: queries helping the pending refit
-            // read them.
-            bool waitedForSolve = false;
-            try
-            {
-                if (s_ThrowAfterRefitScheduled.Data != 0)
-                {
-                    ThrowAfterRefitScheduled();
-                }
-
-                snapshot = Queries.ScheduleQuerySnapshot(store, globals, ref world, ref Partition, motionsSolved);
-                JobHandle.ScheduleBatchedJobs();
-
-                using (StepWaitForSolveMarker.Auto())
-                {
-                    solved.Complete();
-                }
-
-                waitedForSolve = true;
-            }
-            finally
-            {
-                if (!waitedForSolve)
-                {
-                    motionsSolved.Complete();
-                }
-            }
-
-            // The build of this step has completed, so every entry of the bounds cache that a body could take holds
-            // the body's current collider: the build wrote it, and the refit writes it again now.
-            if (Trees.boundsCacheBuilt)
-            {
-                Trees.boundsCache.MarkCurrent();
-            }
-
-            if (DynamicBoundsCache.CheckEnabled)
-            {
-                TreeState.LogBoundsCheck();
-            }
-
-            // FallAsleep.SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
-            contactsJoined = new FallAsleep.SleepContactsJob
-            {
-                World = store,
-                Records = Contacts.manifolds,
-                Parents = Sleep.sleepParents,
-                Contacts = Sleep.sleepContacts,
-                TouchesStill = Sleep.sleepTouchesStill,
-            }.Schedule();
-            JobHandle.ScheduleBatchedJobs();
-
-            using (StepWriteBackMarker.Auto())
-            {
-                writtenBack.Complete();
-            }
-
-            JobHandle forces;
-            using (StepReadJointForcesMarker.Auto())
-            {
-                forces = ReadJointForces(simulation.ImpulseEvents.EventDataStream, deltaTime, vesselsSettled);
-            }
-
-            // Wake bodies affected by shape removal after joint load reads but before sleep and contact
-            // reporting.
-            // Sleep grouping must also wait for joint breaking.
-            if (store->removedShapeCount != 0)
-            {
-                forces.Complete();
-                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = Contacts.touching, RemovedTriggerPairs = Contacts.removedTriggerPairs }.Run();
-            }
-
-            JobHandle counted = new SleepCounters.UpdateWakeCountersJob
-            {
-                World = store,
-                Contacts = Sleep.sleepContacts,
-                TouchesStill = Sleep.sleepTouchesStill,
-                RunOut = (int*)Sleep.sleepRunOut.GetUnsafePtr(),
-                DeltaTime = deltaTime,
-            }.Schedule((int)store->bodyCount, ParallelBatchSize, contactsJoined);
-            sleep = new FallAsleep.SleepJob
-            {
-                World = store,
-                Parents = Sleep.sleepParents,
-                Falling = Sleep.fallingAsleep,
-                RunOut = (int*)Sleep.sleepRunOut.GetUnsafePtr(),
-            }.Schedule(JobHandle.CombineDependencies(counted, forces));
-            JobHandle.ScheduleBatchedJobs();
-
-            // ImpulseMemory.ReadImpulsesJob reads only the motions, which the rebuild of the tree doesn't change.
-            using (StepReadImpulsesMarker.Auto())
-            {
-                if (world.NumDynamicBodies != 0)
-                {
-                    new ImpulseMemory.ReadImpulsesJob { Records = Contacts.manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
-                }
-
-                new ImpulseMemory.RememberImpulsesJob { Records = Contacts.manifolds, LastImpulses = Contacts.lastImpulses }.Run();
-            }
+            FinishStage.SchedulePostSolve(store, globals, ref world, ref Partition, ref Joints, ref VesselData,
+                ref Trees, ref Queries, warmStartsIndexed, ref simulation, deltaTime,
+                out JobHandle writtenBack, out JobHandle vesselsSettled, out snapshot);
+            FinishStage.CompleteBeforeContacts(store, globals, ref world, ref Joints, ref VesselData,
+                ref Contacts, ref Sleep, ref simulation, deltaTime, writtenBack, vesselsSettled, out contactsJoined, out sleep);
         }
 
         /// <summary>Publish queries and finish sleep after the caller has run the contact report.</summary>
         internal void FinishAfterContacts(JobHandle snapshot, JobHandle sleep)
         {
-            // Publish as current unless write-back changed poses. Queries finish the pending refit before
-            // reading.
-            using (StepPublishQueryWorldMarker.Auto())
-            {
-                snapshot.Complete();
-                Queries.FinishQuerySnapshot();
-                // A refit that failed has set the ready word too, and leaves the world stale.
-                bool treeReady = store->treeReady != 0;
-                store->queryDirty = !Partition.motionsMatchStore || (treeReady && Trees.sharedRefit->Failed) ? StoreMemory.QueryStale
-                    : !treeReady ? StoreMemory.QueryTreePending : 0u;
-                Queries.PublishQueryWorld(store, query, ref world);
-            }
-
-            // FallAsleep.FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
-            // first, although it has.
-            using (StepSleepMarker.Auto())
-            {
-                sleep.Complete();
-                new FallAsleep.FallAsleepJob { World = store, Falling = Sleep.fallingAsleep }.Run();
-            }
+            FinishStage.FinishAfterContacts(store, query, ref world, ref Queries, ref Trees, ref Partition,
+                ref Sleep, snapshot, sleep);
         }
 
         /// <summary>Finish pending refit work and check whether queries need a new build.</summary>
@@ -478,7 +234,7 @@ namespace Unity.Physics.Stepping
         /// <summary>
         /// Complete the pending dynamic tree refit on the main thread before reading or modifying the built world
         /// or bounds cache.
-        /// Call outside jobs; query jobs use HelpPendingRefit instead.
+        /// Call this outside jobs. Query jobs use HelpPendingRefit.
         /// </summary>
         internal void FinishPendingRefit() => Trees.FinishPendingRefit(store);
 
@@ -493,6 +249,5 @@ namespace Unity.Physics.Stepping
         /// has finished.
         /// </summary>
         internal readonly bool OnlyRefitPending => Queries.OnlyRefitPending(store);
-
     }
 }
