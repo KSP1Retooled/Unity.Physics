@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Vessels;
 using Unity.Physics.Dynamics.Solver.Forest;
 using System.Threading;
 using Unity.Burst.Intrinsics;
@@ -343,7 +344,7 @@ namespace Unity.Physics.Base.Threading
             }
             else if (stage.Kind == ForestVesselKind)
             {
-                Solver.ForestVesselTask(stage.Context, task);
+                VesselIslandSolver.ForestVesselTask(stage.Context, task);
             }
             else if (stage.Kind == ForestBoundaryKind)
             {

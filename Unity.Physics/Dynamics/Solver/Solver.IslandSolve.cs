@@ -1,3 +1,4 @@
+using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
@@ -867,48 +868,6 @@ namespace Unity.Physics
                 Flags = work.IndexFlags->Ptr + island.FirstRow,
                 Rows = island.Rows,
             };
-        }
-
-        /// <summary>
-        /// Build a Jacobian's rows starting at startRow, initially free and unbounded.
-        /// Return whether any bound requires a bounded solve. Parallel Jacobians write disjoint ranges.
-        /// </summary>
-        static unsafe bool BuildHeaderRows(ref JacobianHeader header, int startRow, int jacRows, in IslandRowBuffers buffers,
-            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
-            bool sparseContacts, RowRegularization* regularization)
-        {
-            for (int row = startRow; row < startRow + jacRows; row++)
-            {
-                buffers.Lower[row] = float.MinValue;
-                buffers.Upper[row] = float.MaxValue;
-                buffers.Flags[row] = LCP.MLCPIndexFlag.Free;
-                buffers.Recovery[row] = -1.0f;
-            }
-
-            var flags = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<LCP.MLCPIndexFlag>(buffers.Flags, buffers.Rows, Allocator.None);
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref flags, AtomicSafetyHandle.GetTempMemoryHandle());
-#endif
-            var context = new RowBuildContext
-            {
-                MotionVelocities = motionVelocities,
-                MotionDatas = motionDatas,
-                StepInput = stepInput,
-                JacobianRows = new JacobianRows(buffers.Jacobian, buffers.Rows),
-                Eps = Vector.Create(default, buffers.Epsilon, 1, buffers.Rows),
-                L = Vector.Create(default, buffers.Lower, 1, buffers.Rows),
-                U = Vector.Create(default, buffers.Upper, 1, buffers.Rows),
-                RightHandSide = Vector.Create(default, buffers.RightHandSide, 1, buffers.Rows),
-                Recovery = buffers.Recovery,
-                IndexSetArray = flags,
-                SparseContacts = sparseContacts,
-                SolveSparsely = true,
-                Regularization = regularization,
-            };
-
-            Vector* JBlocks = stackalloc Vector[jacRows];
-            BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
-            return context.IsLCP;
         }
 
         /// <summary>

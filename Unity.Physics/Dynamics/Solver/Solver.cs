@@ -1067,7 +1067,7 @@ namespace Unity.Physics
             }
         }
 
-        static void UpdateJacobian(ref JacobianHeader header,
+        internal static void UpdateJacobian(ref JacobianHeader header,
             [NoAlias] NativeArray<MotionData> motionDatas,
             [NoAlias] NativeArray<MotionVelocity> motionVelocities,
             [NoAlias] NativeArray<RigidBody> bodies,

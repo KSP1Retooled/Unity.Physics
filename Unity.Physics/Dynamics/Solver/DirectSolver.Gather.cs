@@ -15,7 +15,7 @@ namespace Unity.Physics
         /// Gather sparse blocks and couplings, numbering bodies in Jacobian order.
         /// headerRows gives each Jacobian's row range.
         /// </summary>
-        static unsafe void GatherSparseBlocks(ref SparseSetup setup, IslandHeader* islandHeaders, int* headerRows, int headerCount, int rows,
+        internal static unsafe void GatherSparseBlocks(ref SparseSetup setup, IslandHeader* islandHeaders, int* headerRows, int headerCount, int rows,
             in NativeArray<MotionVelocity> motionVelocities, WorkTeam* team)
         {
             // Number bodies serially in Jacobian order; split Jacobian reads and list writes into disjoint task
@@ -77,7 +77,7 @@ namespace Unity.Physics
         }
 
         /// <summary>The blocks of a sparse solve, gathered from an island's Jacobians in their order.</summary>
-        unsafe struct SparseSetup
+        internal unsafe struct SparseSetup
         {
             public NativeList<SparseConstraintSolver.ConstraintBlock> Blocks;
             public NativeList<BoundCoupling> Couplings;
@@ -155,7 +155,7 @@ namespace Unity.Physics
         }
 
         /// <summary>What a sparse solve takes from one Jacobian, which needs nothing from the others.</summary>
-        struct JacobianSummary
+        internal struct JacobianSummary
         {
             /// <summary>The Jacobian's bodies by their index in the world, or -1 for one that doesn't move.</summary>
             public int BodyA;
@@ -175,7 +175,7 @@ namespace Unity.Physics
             public bool HoldsPosition;
         }
 
-        static unsafe JacobianSummary Summarize(ref JacobianHeader header, int rows, MotionVelocity* motionVelocities,
+        internal static unsafe JacobianSummary Summarize(ref JacobianHeader header, int rows, MotionVelocity* motionVelocities,
             int motionCount)
         {
             var summary = new JacobianSummary { Rows = rows };
@@ -206,7 +206,7 @@ namespace Unity.Physics
             return summary;
         }
 
-        static unsafe int Moving(int bodyIndex, MotionVelocity* motionVelocities, int motionCount)
+        internal static unsafe int Moving(int bodyIndex, MotionVelocity* motionVelocities, int motionCount)
         {
             return bodyIndex < motionCount && !motionVelocities[bodyIndex].IsKinematic ? bodyIndex : -1;
         }

@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Vessels;
 using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -15,7 +16,7 @@ namespace Unity.Physics
         /// Use a separate push-out solve with unilateral contacts and no friction so that the main solver state is
         /// preserved.
         /// </summary>
-        static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+        internal static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest = null)
         {
@@ -78,7 +79,15 @@ namespace Unity.Physics
                 pushRun.Bounded = true;
                 solved = SolveForest(ref pushRun, rightHandSide, push);
                 float3* linearImpulses = (float3*)bodyImpulses.GetUnsafePtr();
-                SettleForest(ref pushRun, pushOut, push, linearImpulses, linearImpulses + worldBodies.Length, true);
+                if (pushRun.VesselMode)
+                {
+                    VesselIslandSolver.SettleCompiledVessel(ref pushRun, pushOut, push, linearImpulses,
+                        linearImpulses + worldBodies.Length, true);
+                }
+                else
+                {
+                    SettleForest(ref pushRun, pushOut, push, linearImpulses, linearImpulses + worldBodies.Length, true);
+                }
             }
             else
             {

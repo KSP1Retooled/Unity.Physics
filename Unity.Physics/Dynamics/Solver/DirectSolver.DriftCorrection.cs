@@ -101,7 +101,7 @@ namespace Unity.Physics
         /// Return whether any correction is nonzero. Use post-solve motion so that rejected initial motion does not
         /// distort the prediction.
         /// </summary>
-        static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
+        internal static unsafe bool AimAtPredictedDrift(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep,
             in JacobianRows jacobianRows, float* rhsChange, WorkTeam* team, bool skipSlow = false, byte* skipBlocks = null)

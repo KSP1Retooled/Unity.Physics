@@ -1892,14 +1892,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         internal static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
         {
-            long summing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            SumBodyImpulses(problem, impulses, linear, angular);
-            run.BodyImpulseTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - summing;
-            if (run.VesselMode)
-            {
-                SettleVessel(ref run, problem, impulses, linear, angular, pushOut);
-                return;
-            }
+            SumForestBodyImpulses(ref run, problem, impulses, linear, angular);
 
             if (!run.MultiPart)
             {
@@ -2312,6 +2305,15 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         /// Each moving body's share of J^T z, in the frame of the Jacobian's columns, as
         /// <see cref="SparseConstraintSolver.BodyImpulse"/> gives it.
         /// </summary>
+        /// <summary>Sum the row impulses and record the time that the forest spent summing them.</summary>
+        internal static unsafe void SumForestBodyImpulses(ref ForestRun run, in SparseConstraintSolver.Problem problem,
+            float* impulses, float3* linear, float3* angular)
+        {
+            long summing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            SumBodyImpulses(problem, impulses, linear, angular);
+            run.BodyImpulseTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - summing;
+        }
+
         static unsafe void SumBodyImpulses(in SparseConstraintSolver.Problem problem, float* impulses, float3* linear, float3* angular)
         {
             UnsafeUtility.MemClear(linear, problem.BodyCount * (long)sizeof(float3));

@@ -1,3 +1,4 @@
+using static Unity.Physics.Solver;
 using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
@@ -16,9 +17,10 @@ using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Dynamics.Vessels.Structure;
 using Unity.Profiling;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Vessels
 {
-    public static partial class Solver
+    /// <summary>Build the rows for compiled vessels and solve them with the forest and vessel kernels.</summary>
+    internal static class VesselIslandSolver
     {
         static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.Solve");
 
@@ -41,7 +43,7 @@ namespace Unity.Physics
         /// Treat other moving bodies as separate parts. Compute section velocities, body impulses and vessel edge
         /// loads.
         /// </summary>
-        static unsafe void SolveVesselIsland(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+        internal static unsafe void SolveVesselIsland(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
             bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
@@ -135,7 +137,7 @@ namespace Unity.Physics
             SolveForest(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSolveTime, solved - started);
-            SettleForest(ref run, problem, impulses, linear, angular, false);
+            SettleCompiledVessel(ref run, problem, impulses, linear, angular, false);
             stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
 
@@ -153,7 +155,7 @@ namespace Unity.Physics
                     }
 
                     SolveForest(ref run, problem.RightHandSide, impulses);
-                    SettleForest(ref run, problem, impulses, linear, angular, false);
+                    SettleCompiledVessel(ref run, problem, impulses, linear, angular, false);
                 }
 
                 drift.Dispose();
@@ -190,7 +192,7 @@ namespace Unity.Physics
         /// Solve all substeps for an island of vessel parts in one job, retaining state by first vessel ID.
         /// Update boundary rows, solve vessel constraints, compute loads and integrate bodies with shared kernels.
         /// </summary>
-        static unsafe void SolveFusedVesselIsland(in DirectIsland island, IslandHeader* islandHeaders, int* islandVessels,
+        internal static unsafe void SolveFusedVesselIsland(in DirectIsland island, IslandHeader* islandHeaders, int* islandVessels,
             NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, NativeArray<RigidBody> rigidBodies,
             StepInput stepInput, WorkTeam* team)
         {
@@ -929,7 +931,7 @@ namespace Unity.Physics
         /// Copy all states before handing out forests, because slot assignment may destroy a previous owner.
         /// Run serially after cache slot assignment.
         /// </summary>
-        static unsafe void AssignVesselForests(IslandSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
+        internal static unsafe void AssignVesselForests(IslandSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
             VesselSet set)
         {
             if (!cache.IsCreated || !set.IsCreated)
@@ -1829,12 +1831,20 @@ namespace Unity.Physics
             return rate;
         }
 
+        /// <summary>Sum the rows with the forest solver, then recover the vessel bodies' impulses.</summary>
+        internal static unsafe void SettleCompiledVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem,
+            float* impulses, float3* linear, float3* angular, bool pushOut)
+        {
+            SumForestBodyImpulses(ref run, problem, impulses, linear, angular);
+            SettleVessel(ref run, problem, impulses, linear, angular, pushOut);
+        }
+
         /// <summary>
         /// Recover vessel-row impulses and loads from solved section velocities, treating boundary impulses as
         /// external forces.
         /// Use inverse dynamics for locked edges. Push-out starts sections at rest and writes body impulses only.
         /// </summary>
-        internal static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
+        static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
         {
             ForestIsland* forest = run.Forest;

@@ -14,7 +14,7 @@ namespace Unity.Physics
         /// Applies a sparse solve's impulses: each body takes all its rows' at once, and each Jacobian keeps what its events
         /// read. Neither writes what another body or Jacobian does, so both split among a team's lanes.
         /// </summary>
-        static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
+        internal static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, bool sparseContacts,
             WorkTeam* team)
@@ -105,7 +105,7 @@ namespace Unity.Physics
         }
 
         /// <summary>An array over memory another lane owns, for code that takes arrays.</summary>
-        static unsafe NativeArray<T> View<T>(T* data, int length) where T : unmanaged
+        internal static unsafe NativeArray<T> View<T>(T* data, int length) where T : unmanaged
         {
             var array = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<T>(data, length, Allocator.None);
 #if ENABLE_UNITY_COLLECTIONS_CHECKS

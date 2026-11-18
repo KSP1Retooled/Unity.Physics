@@ -300,7 +300,7 @@ namespace Unity.Physics
         internal const float ContactRowReach = 1000.0f;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static int GetConstraintRows(ref JacobianHeader header)
+        internal static int GetConstraintRows(ref JacobianHeader header)
         {
             switch (header.Type)
             {
