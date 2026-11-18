@@ -191,6 +191,42 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assert.That(FlightReplay.Run(path, long.MaxValue, TextWriter.Null), Is.EqualTo(4));
         }
 
+        [Test]
+        public void ReplayPreservesEmptyVehicleSlots()
+        {
+            Ground();
+            Rigidbody first = DynamicBox(new Vector3(-2, 0.95f, 0), 100f);
+            Rigidbody second = DynamicBox(new Vector3(2, 0.95f, 0), 100f);
+            AddWheel(first);
+            WheelCollider survivingWheel = AddWheel(second);
+            Simulate(14);
+            FlightRecorderSwitches.Enabled = true;
+            Simulate(2);
+            Object.DestroyImmediate(first.gameObject);
+            Simulate(3);
+
+            var world = StepEntryPoints.Current->Store;
+            bool emptySlot = false;
+            for (uint i = 0; i < world->vehicleCount; i++)
+            {
+                emptySlot |= world->vehicles[i] == null;
+            }
+
+            Assert.That(emptySlot, Is.True);
+            Assert.That(survivingWheel.isGrounded, Is.True);
+            string path = WaitForRecording(FlightRecorderSwitches.Save());
+            Assert.That(FlightReplay.Run(path, long.MaxValue, TextWriter.Null), Is.EqualTo(4));
+        }
+
+        private WheelCollider AddWheel(Rigidbody body)
+        {
+            body.freezeRotation = true;
+            var wheel = Track(new GameObject("wheel"));
+            wheel.transform.SetParent(body.transform, false);
+            wheel.transform.localPosition = new Vector3(0, -0.2f, 0);
+            return wheel.AddComponent<WheelCollider>();
+        }
+
         [Test, Explicit("Measures recording overhead on a large vessel and a terrain scene.")]
         public void Measure()
         {

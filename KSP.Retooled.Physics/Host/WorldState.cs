@@ -24,6 +24,8 @@ namespace KSP.Retooled.Physics.Host
         private readonly QueryWorld* query;
         private readonly WorldData* store;
         private FlightRecorder recorder;
+        private bool recorderInputFailed;
+        private bool recorderOutputFailed;
 
         internal WorldState(WorldData* store)
         {
@@ -104,10 +106,15 @@ namespace KSP.Retooled.Physics.Host
                 state->BeginRecorderStep();
                 recorder = FlightRecorder.Start(recorder);
                 step = recorder.Begin(state, deltaTime);
+                recorderInputFailed = false;
             }
             catch (Exception error)
             {
-                UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step input: {error.Message}");
+                if (!recorderInputFailed)
+                {
+                    UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step input: {error}");
+                    recorderInputFailed = true;
+                }
             }
 
             try
@@ -118,10 +125,15 @@ namespace KSP.Retooled.Physics.Host
                     try
                     {
                         recorder.End(state, step);
+                        recorderOutputFailed = false;
                     }
                     catch (Exception error)
                     {
-                        UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step output: {error.Message}");
+                        if (!recorderOutputFailed)
+                        {
+                            UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step output: {error}");
+                            recorderOutputFailed = true;
+                        }
                     }
                 }
             }

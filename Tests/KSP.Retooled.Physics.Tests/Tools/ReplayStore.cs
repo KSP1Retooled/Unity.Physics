@@ -124,7 +124,13 @@ namespace KSP.Retooled.Physics.Tests.Tools
             world->vehicleCount = world->vehicleCapacity = (uint)vehicles;
             for (int i = 0; i < vehicles; i++)
             {
-                Body* owner = Owner(reader.ReadInt32());
+                int row = reader.ReadInt32();
+                if (row == RecordingBinary.EmptyVehicle)
+                {
+                    continue;
+                }
+
+                Body* owner = Owner(row);
                 VehicleData value = reader.ReadValue<VehicleData>();
                 if (value.wheelCount > MaxRecords)
                 {

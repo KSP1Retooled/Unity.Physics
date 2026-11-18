@@ -9,6 +9,7 @@ namespace Unity.Physics.Stepping.Recording
     {
         internal const string Magic = "Retooled flight recorder";
         internal const int Version = 4;
+        internal const int EmptyVehicle = -2;
 
         internal static T ReadValue<T>(this BinaryReader reader) where T : unmanaged
         {

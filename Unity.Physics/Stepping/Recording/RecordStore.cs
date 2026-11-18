@@ -69,6 +69,12 @@ namespace Unity.Physics.Stepping.Recording
             for (uint i = 0; i < world->vehicleCount; i++)
             {
                 VehicleData* source = world->vehicles[i];
+                if (source == null)
+                {
+                    writer.Write(RecordingBinary.EmptyVehicle);
+                    continue;
+                }
+
                 VehicleData vehicle = *source;
                 writer.Write(vehicle.body == null ? -1 : checked((int)vehicle.body->index));
                 vehicle.body = null;
