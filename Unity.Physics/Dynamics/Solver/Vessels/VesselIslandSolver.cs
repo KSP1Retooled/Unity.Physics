@@ -46,7 +46,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
             bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
-            bool sparseContacts, WorkTeam* team, float* impulses)
+            WorkTeam* team, float* impulses)
         {
             using ProfilerMarker.AutoScope span = VesselSolveMarker.Auto();
 
@@ -103,7 +103,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
             long solved = SolveVesselBoundary(ref run, problem, headers, headerList, worldBodies, compactBodies, holdsPositions,
-                motionVelocities, motionDatas, stepInput, jacobianRows, recovery, sparseContacts, team, impulses, linear,
+                motionVelocities, motionDatas, stepInput, jacobianRows, recovery, team, impulses, linear,
                 angular);
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
             FinishStrutLoads(ref run);
@@ -126,7 +126,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         static unsafe long SolveVesselBoundary(ref ForestRun run, in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool holdsPositions,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
-            in JacobianRows jacobianRows, float* recovery, bool sparseContacts, WorkTeam* team, float* impulses,
+            in JacobianRows jacobianRows, float* recovery, WorkTeam* team, float* impulses,
             float3* linear, float3* angular)
         {
             long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
@@ -162,7 +162,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             long applying = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             ApplySparseImpulses(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList, impulses,
-                motionVelocities, motionDatas, sparseContacts, team);
+                motionVelocities, motionDatas, team);
             long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             if (recovery != null)
             {
@@ -339,7 +339,6 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     MotionDatas = motionDatas,
                     RigidBodies = rigidBodies,
                     StepInput = substepInput,
-                    SparseContacts = island.ContactPairs > 0,
                 };
                 if (substep > 0 && headerCount > 0)
                 {
@@ -467,7 +466,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     solved = SolveVesselBoundary(ref run, problem, (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(), setup.Headers,
                         setup.WorldBodies, compactBodies, setup.HoldsPositions, motionVelocities, motionDatas, substepInput,
-                        new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team,
+                        new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, team,
                         (float*)impulses.GetUnsafePtr(), linear, angular);
                     bodyTasks.Phase = VesselTasks.IntegrateBodiesAndWriteLoads;
                     WorkTeam.RunAll<VesselTaskDispatch>(team, &bodyTasks, IslandTaskKind.ForestVesselKind,
@@ -569,7 +568,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             // Every lane that sees a bounded row stores the same value, so the lanes need no lock.
             if (BuildHeaderRows(ref header, startRow, jacRows, tasks->Rows, tasks->MotionVelocities, tasks->MotionDatas, tasks->StepInput,
-                tasks->SparseContacts, &tasks->Regularization) && tasks->Bounded == 0)
+                &tasks->Regularization) && tasks->Bounded == 0)
             {
                 tasks->Bounded = 1;
             }
@@ -1859,7 +1858,6 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             public StepInput StepInput;
             public IslandRowBuffers Rows;
             public RowRegularization Regularization;
-            public bool SparseContacts;
             public int Bounded;
 
             /// <summary>

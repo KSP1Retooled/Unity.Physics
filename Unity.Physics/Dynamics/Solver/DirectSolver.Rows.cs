@@ -57,7 +57,7 @@ namespace Unity.Physics
         /// </summary>
         internal static unsafe bool BuildHeaderRows(ref JacobianHeader header, int startRow, int jacRows, in IslandRowBuffers buffers,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
-            bool sparseContacts, RowRegularization* regularization)
+            RowRegularization* regularization)
         {
             for (int row = startRow; row < startRow + jacRows; row++)
             {
@@ -83,7 +83,6 @@ namespace Unity.Physics
                 RightHandSide = Vector.Create(default, buffers.RightHandSide, 1, buffers.Rows),
                 Recovery = buffers.Recovery,
                 IndexSetArray = flags,
-                SparseContacts = sparseContacts,
                 Regularization = regularization,
             };
 

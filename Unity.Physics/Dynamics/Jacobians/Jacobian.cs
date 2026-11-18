@@ -692,17 +692,6 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Computes regularization terms for purely elastic constitutive model, i.e., a spring-damper without any damping.
-        /// Same as calling <see cref="ComputeDirectSolverViscoelasticRegularizationTerms"/> with damping set to 0.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void ComputeDirectSolverElasticRegularizationTerms(out float epsilon, out float gamma, in float stiffness, in float timeStep)
-        {
-            epsilon = math.select(math.EPSILON, math.rcp(timeStep * timeStep * stiffness), stiffness > 0);
-            gamma = 1.0f;
-        }
-
-        /// <summary>
         /// Computes regularization term epsilon based on motor slip (inverse damping) and time step using
         /// Eq. 59 in S. Andrews et al., SIGGRAPH'22 Course: Contact and Friction Simulation for Computer Graphics.
         /// </summary>

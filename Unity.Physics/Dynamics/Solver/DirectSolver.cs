@@ -1,7 +1,3 @@
-// When enabled, predictive (not yet penetrating) contacts will not be assigned any damping to prevent a slowdown during
-// approach, yielding more rigid collision response.
-#define DIRECT_SOLVER_UNDAMPED_PREDICTIVE_CONTACTS
-
 using System;
 using System.Runtime.CompilerServices;
 using Unity.Burst;
@@ -25,26 +21,6 @@ namespace Unity.Physics
         [Serializable]
         public struct DirectSolverSettings
         {
-            /// <summary>   The stiffness a contact will have when simulated with the direct solver. </summary>
-            public float ContactStiffness
-            {
-                get  => m_ContactStiffness;
-                set => m_ContactStiffness = value;
-            }
-            [SerializeField]
-            [Tooltip("The stiffness a contact will have when simulated with the direct solver.")]
-            float m_ContactStiffness;
-
-            /// <summary>   The damping a contact will have when simulated with the direct solver. </summary>
-            public float ContactDamping
-            {
-                get  => m_ContactDamping;
-                set => m_ContactDamping = value;
-            }
-            [SerializeField]
-            [Tooltip("The damping a contact will have when simulated with the direct solver.")]
-            float m_ContactDamping;
-
             /// <summary>   The slip a contact will experience in the friction plane when simulated with the direct solver. </summary>
             public float ContactSlip
             {
@@ -88,8 +64,6 @@ namespace Unity.Physics
             /// <summary>   The default direct solver settings. </summary>
             public static readonly DirectSolverSettings Default = new ()
             {
-                ContactStiffness = 100000f,
-                ContactDamping = 500f,
                 ContactSlip = 0.001f,
                 MaximumJointStiffness = 100000f,
                 MaximumJointDamping = 10000f,
@@ -638,7 +612,6 @@ namespace Unity.Physics
             public bool IsLCP;
 
             // Contacts that follow the island's pairs are solved sparsely, with their normals and without friction.
-            public bool SparseContacts;
 
             // The default regularization of the step's rows, worked out once by a caller that builds many Jacobians, or null.
             public RowRegularization* Regularization;
@@ -652,8 +625,6 @@ namespace Unity.Physics
         {
             public float JointEpsilon;
             public float JointGamma;
-            public float ContactEpsilon;
-            public float ContactGamma;
             public float ContactViscousEpsilon;
 
             public static RowRegularization Of(in StepInput stepInput)
@@ -662,8 +633,6 @@ namespace Unity.Physics
                 JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out terms.JointEpsilon, out terms.JointGamma,
                     stepInput.DirectSolverSettings.MaximumJointStiffness, stepInput.DirectSolverSettings.MaximumJointDamping,
                     stepInput.Timestep);
-                JacobianUtilities.ComputeDirectSolverViscoelasticRegularizationTerms(out terms.ContactEpsilon, out terms.ContactGamma,
-                    stepInput.DirectSolverSettings.ContactStiffness, stepInput.DirectSolverSettings.ContactDamping, stepInput.Timestep);
                 JacobianUtilities.ComputeDirectSolverViscousRegularizationTerm(out terms.ContactViscousEpsilon,
                     stepInput.DirectSolverSettings.ContactSlip, stepInput.Timestep);
                 return terms;
@@ -687,14 +656,9 @@ namespace Unity.Physics
             ref Vector rhs = ref context.RightHandSide;
             ref NativeArray<LCP.MLCPIndexFlag> indexSetArray = ref context.IndexSetArray;
             ref bool isLCP = ref context.IsLCP;
-            bool sparseContacts = context.SparseContacts;
-
-            float maxJointStiffness = stepInput.DirectSolverSettings.MaximumJointStiffness;
             RowRegularization terms = context.Regularization != null ? *context.Regularization : RowRegularization.Of(stepInput);
             float defaultJointViscoelasticEpsilon = terms.JointEpsilon;
             float defaultJointViscoelasticGamma = terms.JointGamma;
-            float contactViscoelasticEpsilon = terms.ContactEpsilon;
-            float contactViscoelasticGamma = terms.ContactGamma;
             float contactViscousEpsilon = terms.ContactViscousEpsilon;
 
             JacobianHeader.DirectSolverRegularizationData jointRegularizationData = default;
@@ -1524,64 +1488,34 @@ namespace Unity.Physics
                                         //                     = (pointOnA - pointOnB)^t * n = contactDistance
                                         var phi_0 = contactDistance;
 
-                                        // Assemble right hand side (rhs):
-                                        float gamma = contactViscoelasticGamma;
-                                        float epsilon = contactViscoelasticEpsilon;
-#if DIRECT_SOLVER_UNDAMPED_PREDICTIVE_CONTACTS
-                                        // moderate tolerance (10% of full tolerance)
-                                        if (contactDistance > 0.01f)
-                                        {
-                                            // if no touch yet, don't use damping to prevent slowdown during approach
-                                            JacobianUtilities.ComputeDirectSolverElasticRegularizationTerms(out epsilon, out gamma,
-                                                maxJointStiffness, stepInput.Timestep);
-                                        }
-
+                                        float gamma_phi_0 = SparseContactRow(phi_0, motionVelocities, ixBodyA, ixBodyB,
+                                            bodyAIsStatic || bodyAIsKinematic, bodyBIsStatic || bodyBIsKinematic,
+                                            stepInput.Timestep, out float epsilon);
                                         eps[normalRow] = epsilon;
-#endif
-
-                                        // Constraint error and gamma term
-                                        var gamma_phi_0 = -(gamma / stepInput.Timestep) * phi_0;
-                                        if (sparseContacts)
+                                        if (context.Recovery != null)
                                         {
-                                            gamma_phi_0 = SparseContactRow(phi_0, motionVelocities, ixBodyA, ixBodyB,
-                                                bodyAIsStatic || bodyAIsKinematic, bodyBIsStatic || bodyBIsKinematic,
-                                                stepInput.Timestep, out epsilon);
-                                            eps[normalRow] = epsilon;
-                                            if (context.Recovery != null)
+                                            bool againstFixed = bodyAIsStatic || bodyAIsKinematic || bodyBIsStatic || bodyBIsKinematic;
+                                            float fastest = againstFixed
+                                                ? stepInput.MaxStaticDepenetrationVelocity
+                                                : stepInput.MaxDynamicDepenetrationVelocity;
+                                            // Below the slop the velocity solve recovers only the slop's worth, however deep
+                                            // the contact: the depth the capped push-out leaves comes out in later substeps.
+                                            float pushOut = 0.0f;
+                                            if (phi_0 < -ContactSlop)
                                             {
-                                                bool againstFixed = bodyAIsStatic || bodyAIsKinematic || bodyBIsStatic || bodyBIsKinematic;
-                                                float fastest = againstFixed
-                                                    ? stepInput.MaxStaticDepenetrationVelocity
-                                                    : stepInput.MaxDynamicDepenetrationVelocity;
-                                                // Below the slop the velocity solve recovers only the slop's worth, however deep
-                                                // the contact: the depth the capped push-out leaves comes out in later substeps.
-                                                float pushOut = 0.0f;
-                                                if (phi_0 < -ContactSlop)
-                                                {
-                                                    float held = (ContactRecovery / stepInput.Timestep) * ContactSlop;
-                                                    pushOut = math.min(gamma_phi_0 - held, fastest);
-                                                    gamma_phi_0 = held;
-                                                }
-
-                                                context.Recovery[normalRow] = pushOut;
+                                                float held = (ContactRecovery / stepInput.Timestep) * ContactSlop;
+                                                pushOut = math.min(gamma_phi_0 - held, fastest);
+                                                gamma_phi_0 = held;
                                             }
+
+                                            context.Recovery[normalRow] = pushOut;
                                         }
 
-                                        // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)
-                                        // After this assignment, we have rhs = v0 - \gamma * \phi(q_)/dt.
-                                        // The remaining terms in rhs follow later below.
                                         rhs[normalRow] = gamma_phi_0;
-
-                                        // Set lower impulse bound to zero (by default [l,u] = [-inf, inf]) to model
-                                        // unilateral contact
-                                        l[normalRow] = 0;
 
                                         // Allow removal of the warm impulse, but keep the contact's total
                                         // impulse nonnegative.
-                                        if (sparseContacts)
-                                        {
-                                            l[normalRow] = -contactAngularJac.Jac.Impulse;
-                                        }
+                                        l[normalRow] = -contactAngularJac.Jac.Impulse;
 
                                         // Since by design (see skip if inactive contact) the contact is already penetrating,
                                         // as initial guess we assume the variable to be free.
@@ -1661,28 +1595,12 @@ namespace Unity.Physics
                                         eps[frictionStartRow + 1] = contactViscousEpsilon;
                                         eps[frictionStartRow + 2] = contactViscousEpsilon;
 
-                                        // set lower and upper bounds to zero since we will couple it with the normal
-                                        // force using the friction coefficient
-                                        l[frictionStartRow]     = 0;
-                                        l[frictionStartRow + 1] = 0;
-                                        l[frictionStartRow + 2] = 0;
-                                        u[frictionStartRow]     = 0;
-                                        u[frictionStartRow + 1] = 0;
-                                        u[frictionStartRow + 2] = 0;
+                                        // Earlier substeps' impulses count toward the friction cone for the whole step.
+                                        float3 held = contactJacobian.FrictionImpulseOverSubsteps;
+                                        SetSubVector3(l, -held, frictionStartRow);
+                                        SetSubVector3(u, -held, frictionStartRow);
 
-                                        // The friction cone bounds what the contact pushes over the whole step, so a
-                                        // sparse solve's rows start from minus what earlier substeps pushed.
-                                        if (sparseContacts)
-                                        {
-                                            float3 held = contactJacobian.FrictionImpulseOverSubsteps;
-                                            SetSubVector3(l, -held, frictionStartRow);
-                                            SetSubVector3(u, -held, frictionStartRow);
-                                        }
-
-                                        // make some initial guess for the MLCP index set: friction force is set to
-                                        // initially zero (see above) so that we can get a first guess for the normal
-                                        // force first which the coupled MLCP solver will use to approximate the
-                                        // friction bounds.
+                                        // Start at the lower bound. The normal impulse determines the friction bounds.
                                         indexSetArray[frictionStartRow] = LCP.MLCPIndexFlag.LowerTight;
                                         indexSetArray[frictionStartRow + 1] = LCP.MLCPIndexFlag.LowerTight;
                                         indexSetArray[frictionStartRow + 2] = LCP.MLCPIndexFlag.LowerTight;

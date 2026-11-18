@@ -124,7 +124,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             {
                 SolveVesselIsland(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), headers, setup.WorldBodies, compactBodies,
                     bounded, holdsPositions, islandIndex, islandVessels, islandVesselCount, motionVelocities, motionDatas, stepInput,
-                    jacobianRows, recovery, contactPairs > 0, team, impulsesPtr);
+                    jacobianRows, recovery, team, impulsesPtr);
                 SparseProblemObserver.Report(&problem, (float*)impulses.GetUnsafePtr(), bounded);
                 for (int row = 0; row < rows; row++)
                 {
@@ -208,7 +208,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     }
 
                     ApplySparseImpulses(problem, null, linearPtr, angularPtr, islandBodies, headers, impulsesPtr,
-                        motionVelocities, motionDatas, contactPairs > 0, team);
+                        motionVelocities, motionDatas, team);
                     if (recovery != null)
                     {
                         SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
@@ -276,7 +276,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             drift.Dispose();
             ApplySparseImpulses(problem, kept, null, null, islandBodies, headers, impulsesPtr, motionVelocities,
-                motionDatas, contactPairs > 0, team);
+                motionDatas, team);
             if (recovery != null)
             {
                 SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,

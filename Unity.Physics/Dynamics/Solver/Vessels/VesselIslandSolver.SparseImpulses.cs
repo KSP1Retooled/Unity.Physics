@@ -20,8 +20,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// </summary>
         internal static unsafe void ApplySparseImpulses(in SparseConstraintSolver.Problem problem, SparseConstraintSolver* solver,
             float3* bodyLinear, float3* bodyAngular, int* worldBodies, in NativeList<IntPtr> headers, float* impulses,
-            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, bool sparseContacts,
-            WorkTeam* team)
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, WorkTeam* team)
         {
             using ProfilerMarker.AutoScope span = ApplyImpulsesMarker.Auto();
 
@@ -36,7 +35,6 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 WorldBodies = worldBodies,
                 MotionVelocities = (MotionVelocity*)motionVelocities.GetUnsafePtr(),
                 MotionDatas = (MotionData*)motionDatas.GetUnsafeReadOnlyPtr(),
-                SparseContacts = sparseContacts,
                 BodyTasks = (problem.BodyCount + BodiesPerApplyTask - 1) / BodiesPerApplyTask,
             };
 
@@ -60,7 +58,6 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             public int* WorldBodies;
             public MotionVelocity* MotionVelocities;
             public MotionData* MotionDatas;
-            public bool SparseContacts;
 
             /// <summary>The tasks before this apply to bodies, and the rest record Jacobians' impulses.</summary>
             public int BodyTasks;
@@ -103,8 +100,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             for (int block = headerTask * DriftBlocksPerTask; block < endBlock; block++)
             {
                 SparseConstraintSolver.ConstraintBlock rows = application->Problem.Blocks[block];
-                RecordImpulses(ref *application->Headers[block], application->Impulses + rows.FirstRow, rows.RowCount,
-                    application->SparseContacts);
+                RecordImpulses(ref *application->Headers[block], application->Impulses + rows.FirstRow, rows.RowCount);
             }
         }
 
@@ -122,31 +118,12 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// Keeps what the events and the next substep read of one Jacobian's solved impulses. A Jacobian writes only its own
         /// data, so Jacobians can do this on any thread.
         /// </summary>
-        static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows, bool sparseContacts)
+        static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows)
         {
             // Collect collision or joint impulses for later event exports
-            if (header.Type == JacobianType.Contact && sparseContacts)
+            if (header.Type == JacobianType.Contact)
             {
                 HandOverContactImpulses(ref header, lambda, ContactRowReach);
-            }
-            else if (header.Type == JacobianType.Contact &&
-                (header.Flags & JacobianFlags.EnableCollisionEvents) != 0)
-            {
-                ref var contactJac = ref header.AccessBaseJacobian<ContactJacobian>();
-
-                var sumNormalImpulses = 0f;
-                int normalRow = 0;
-                for (int i = 0; i < contactJac.BaseJacobian.NumContacts; ++i)
-                {
-                    ref var contactAngularJac = ref header.AccessAngularJacobian(i);
-                    var contactDistance = contactAngularJac.ContactDistance;
-                    if (contactDistance <= ContactRowReach)
-                    {
-                        sumNormalImpulses += lambda[normalRow++];
-                    }
-                }
-
-                contactJac.SumImpulsesOverSubsteps += sumNormalImpulses;
             }
             else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
             {

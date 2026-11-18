@@ -747,7 +747,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             }
 
             bool lcp = BuildHeaderRows(ref header, startRow, jacRows, GetIslandRows(work, island), motionVelocities, motionDatas,
-                stepInput, island.ContactPairs > 0, regularization);
+                stepInput, regularization);
 
             // Workers only set this flag to one; the solver reads it after all row builds complete.
             int* bounded = work.Bounded->Ptr + entry.Island;
