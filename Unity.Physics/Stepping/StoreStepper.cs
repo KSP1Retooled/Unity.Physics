@@ -64,6 +64,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal StepSolverCaches SolverCaches;
         internal ColliderState Colliders;
         internal QuerySnapshotState Queries;
         internal SleepState Sleep;
@@ -74,8 +75,6 @@ namespace Unity.Physics.Stepping
         internal StaticRows StaticBodies;
         internal BodyPartition Partition;
 
-        private IslandSolverCache directSolverCache;
-
         // Prepared simulation, or null since the last FinishStep.
         // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
         internal Simulation* preparedSimulation;
@@ -83,7 +82,6 @@ namespace Unity.Physics.Stepping
         // Pre-solve jobs that FinishStepSystem completes before FinishStep reads their lists.
         internal JobHandle preparedInputs;
 
-        private SolverIslandCache solverIslandCache;
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
@@ -100,9 +98,9 @@ namespace Unity.Physics.Stepping
             StaticBodies.Initialize();
             Partition.Initialize();
             Joints.Initialize(store);
-            directSolverCache = IslandSolverCache.Create();
+            SolverCaches.InitializeDirectSolver();
             VesselData.Initialize();
-            solverIslandCache = SolverIslandCache.Create();
+            SolverCaches.Initialize();
             Queries.Initialize();
             Contacts.Initialize();
             Sleep.Initialize();
@@ -134,9 +132,9 @@ namespace Unity.Physics.Stepping
             StaticBodies.Dispose();
             Partition.Dispose();
             Joints.Dispose(store);
-            directSolverCache.Dispose();
+            SolverCaches.DisposeDirectSolver();
             VesselData.Dispose();
-            solverIslandCache.Dispose();
+            SolverCaches.Dispose();
             Queries.Dispose();
             Contacts.Dispose();
             Sleep.Dispose();
@@ -147,7 +145,7 @@ namespace Unity.Physics.Stepping
         }
 
         /// <summary>The direct solver's cache, including the counts of solves that used the forest.</summary>
-        internal readonly IslandSolverCache IslandSolverCache => directSolverCache;
+        internal readonly IslandSolverCache IslandSolverCache => SolverCaches.directSolverCache;
 
         /// <summary>The world built for the simulation systems to advance.</summary>
         internal readonly PhysicsWorld World => world;
@@ -328,7 +326,7 @@ namespace Unity.Physics.Stepping
             }.Schedule(filtered);
 
             SimulationStepInput keeping = input;
-            keeping.SolverIslandCache = solverIslandCache;
+            keeping.SolverIslandCache = SolverCaches.solverIslandCache;
             return JobHandle.CombineDependencies(simulation->ScheduleIslandJobs(keeping, filtered), remembered);
         }
 
@@ -407,7 +405,7 @@ namespace Unity.Physics.Stepping
         {
             using var span = StepScheduleMarker.Auto();
 
-            directSolverCache.Forest = new ForestSettings
+            SolverCaches.directSolverCache.Forest = new ForestSettings
             {
                 Enabled = ForestSwitches.Enabled || VesselSwitches.Enabled,
                 BoundaryRowCap = ForestSwitches.BoundaryRowCap,
@@ -418,7 +416,7 @@ namespace Unity.Physics.Stepping
                 DeflectionSmoothingSteps = ForestSwitches.DeflectionSmoothingSteps,
                 Caps = ForestSwitches.Caps,
             };
-            input.IslandSolverCache = directSolverCache;
+            input.IslandSolverCache = SolverCaches.directSolverCache;
             input.VesselSet = VesselData.vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
             preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled);
