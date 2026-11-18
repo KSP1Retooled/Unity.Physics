@@ -50,21 +50,20 @@ namespace Unity.Physics.Stepping.Stages
 
             // Compare cached bounds only when body storage and dynamic count are retained and the cache remains
             // valid.
-            void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
             bool compareBodies = trees.CanCompareBounds(ref world, ref partition);
             int dynamicBefore = world.NumDynamicBodies;
             bool keepStaticRows = staticRows.KeepsStaticRows(ref world, ref partition);
 
             // Reset the world with no joints. The joint build job fills them later.
             // Unity Physics schedules jobs that read the joints through deferred arrays before it knows the count.
+            bool keptBodies;
             using (BuildResetMarker.Auto())
             {
-                world.Reset(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0);
+                keptBodies = world.ResetAndKeepBodies(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0);
             }
 
-            bool sameMemory = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
-            compareBodies &= sameMemory;
-            keepStaticRows = staticRows.RetainOrRemember(ref world, ref partition, dynamicBefore, keepStaticRows, sameMemory);
+            compareBodies &= keptBodies;
+            keepStaticRows = staticRows.RetainOrRemember(ref world, ref partition, dynamicBefore, keepStaticRows, keptBodies);
 
             DynamicBoundsCache.View boundsView = trees.PrepareBounds(ref partition);
 

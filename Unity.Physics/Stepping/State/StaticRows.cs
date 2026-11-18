@@ -7,14 +7,12 @@ using Unity.Physics.Store.World;
 namespace Unity.Physics.Stepping.State
 {
     /// <summary>
-    /// Tracks the static body rows and the anchor slot.
-    /// Reuses their data when the static version, row order, and body storage still match.
+    /// Reuses static body rows when the static version, row order, and body storage still match.
     /// </summary>
     internal unsafe struct StaticRows
     {
         internal bool staticsChanged;
-        // Store rows used for the retained static bodies. Reuse them and the anchor when KeepsStaticRows
-        // permits.
+        // Store rows used for the retained static bodies.
         internal NativeList<int> staticRows;
         internal long keptStaticRowsCount;
         private uint builtStaticsVersion;
@@ -45,7 +43,7 @@ namespace Unity.Physics.Stepping.State
         }
 
         /// <summary>
-        /// Reuse static body rows and the anchor when the previous build completed, staticsVersion is unchanged,
+        /// Reuse static body rows when the previous build completed, staticsVersion is unchanged,
         /// and static row order matches. The caller must also verify that body storage was retained.
         /// </summary>
         internal readonly bool KeepsStaticRows(ref PhysicsWorld world, ref BodyPartition partition)
@@ -55,7 +53,7 @@ namespace Unity.Physics.Stepping.State
         }
 
         /// <summary>
-        /// Move retained static rows and the anchor after the new dynamic body range when its size changes.
+        /// Move retained static rows after the new dynamic body range when its size changes.
         /// Call only while the built world is inaccessible to queries and jobs.
         /// </summary>
         internal void MoveStaticRows(ref PhysicsWorld world, ref BodyPartition partition, int dynamicBefore)
@@ -66,17 +64,19 @@ namespace Unity.Physics.Stepping.State
             }
 
             RigidBody* bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            UnsafeUtility.MemMove(bodies + partition.dynamicIndices.Length, bodies + dynamicBefore, (long)(partition.staticIndices.Length + 1) * sizeof(RigidBody));
+            UnsafeUtility.MemMove(bodies + partition.dynamicIndices.Length, bodies + dynamicBefore, (long)partition.staticIndices.Length * sizeof(RigidBody));
         }
 
         internal bool RetainOrRemember(ref PhysicsWorld world, ref BodyPartition partition,
-            int dynamicBefore, bool keepStaticRows, bool sameMemory)
+            int dynamicBefore, bool keepStaticRows, bool keptBodies)
         {
-            keepStaticRows &= sameMemory;
+            keepStaticRows &= keptBodies;
             if (keepStaticRows)
             {
                 keptStaticRowsCount++;
                 MoveStaticRows(ref world, ref partition, dynamicBefore);
+                NativeArray<RigidBody> bodies = world.Bodies;
+                bodies[bodies.Length - 1] = RigidBody.Zero;
             }
             else if (StepCacheSwitches.StaticReuseEnabled)
             {

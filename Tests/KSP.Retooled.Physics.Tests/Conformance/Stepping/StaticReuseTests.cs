@@ -47,8 +47,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         }
 
         /// <summary>
-        /// Compare built static collider, pose and entity fields with freshly built store rows. The anchor must
-        /// have no collider.
+        /// Compare built static collider, pose and entity fields with freshly built store rows.
         /// </summary>
         private static void AssertStaticRowsMatchTheStore(int step)
         {
@@ -78,7 +77,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
 
             Assert.That(world.NumStaticBodies, Is.EqualTo(statics + 1), $"step {step}: the static bodies and the anchor");
-            Assert.That(world.Bodies[world.NumBodies - 1].Collider.IsCreated, Is.False, $"step {step}: the anchor has no collider");
+            RigidBody anchor = world.Bodies[world.NumBodies - 1];
+            Assert.That(anchor.Collider.IsCreated, Is.False, $"step {step}: the anchor has no collider");
+            Assert.That(anchor.WorldFromBody.pos, Is.EqualTo(float3.zero), $"step {step}: the anchor position");
+            Assert.That(anchor.WorldFromBody.rot, Is.EqualTo(quaternion.identity), $"step {step}: the anchor rotation");
         }
 
         /// <summary>
@@ -141,6 +143,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             {
                 AddBody(statics[i].transform.position + new Vector3(0.1f, 2.5f, 0.05f * i));
             }
+
+            Rigidbody clamped = WeightlessBox(new Vector3(30.0f, 5.0f, 0.0f));
+            FixedJoint clamp = clamped.gameObject.AddComponent<FixedJoint>();
+            clamp.autoConfigureConnectedAnchor = false;
+            clamp.connectedAnchor = clamped.position;
 
             Rigidbody extra = null;
 
@@ -239,6 +246,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 Simulate();
                 run.Kept.Add(StepEntryPoints.Current->StaticBodies.KeptStaticRowsCount != kept);
                 AssertStaticRowsMatchTheStore(step);
+                Assert.That(clamped.linearVelocity.sqrMagnitude, Is.LessThan(0.000001f), $"step {step}: the clamped body is still");
                 Look("after");
                 found.Sort(string.CompareOrdinal);
                 run.Steps.Add($"step {step}: contacts {JointLoadTrace.ContactHash.Hash:x16} in {JointLoadTrace.ContactHash.Messages} messages; {string.Join(", ", found)}");
@@ -252,6 +260,38 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
 
             Object.DestroyImmediate(slippery);
             return run;
+        }
+
+        [Test]
+        public void ReusingStaticRowsWritesTheAnchorAgain()
+        {
+            bool wasEnabled = StepCacheSwitches.StaticReuseEnabled;
+            StepCacheSwitches.StaticReuseEnabled = true;
+            try
+            {
+                Ground();
+                Rigidbody clamped = WeightlessBox(new Vector3(0.0f, 5.0f, 0.0f));
+                FixedJoint clamp = clamped.gameObject.AddComponent<FixedJoint>();
+                clamp.autoConfigureConnectedAnchor = false;
+                clamp.connectedAnchor = clamped.position;
+                Simulate();
+                StepEntryPoints.Current->FinishPendingRefit();
+                var bodies = StepEntryPoints.Current->World.Bodies;
+                RigidBody anchor = bodies[bodies.Length - 1];
+                anchor.WorldFromBody.pos = new float3(1.0f, 2.0f, 3.0f);
+                bodies[bodies.Length - 1] = anchor;
+
+                long kept = StepEntryPoints.Current->StaticBodies.KeptStaticRowsCount;
+                Simulate();
+
+                Assert.That(StepEntryPoints.Current->StaticBodies.KeptStaticRowsCount, Is.EqualTo(kept + 1));
+                AssertStaticRowsMatchTheStore(1);
+                Assert.That(clamped.linearVelocity.sqrMagnitude, Is.LessThan(0.000001f));
+            }
+            finally
+            {
+                StepCacheSwitches.StaticReuseEnabled = wasEnabled;
+            }
         }
 
         [Test]
