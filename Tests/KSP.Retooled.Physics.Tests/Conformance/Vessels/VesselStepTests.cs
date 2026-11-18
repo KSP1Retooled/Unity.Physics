@@ -8,6 +8,7 @@ using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 using Unity.Physics.Configuration;
+using Unity.Physics.Dynamics.Solver.Forest;
 
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
@@ -303,6 +304,89 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Simulate(30);
             Debug.Log($"[VesselStepTests] kinematic: {VesselCount()} vessels, bottom at {bodies[2].position:F3}");
             Assert.That((bodies[2].position - new Vector3(0.0f, 8.0f, 0.0f)).magnitude, Is.LessThan(0.01f), "the bottom part still hangs");
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void AFallingVesselCanHitALaunchClamp(bool pinned)
+        {
+            BoundaryCaps previousCaps = ForestSwitches.Caps;
+            try
+            {
+                // Use a short boundary solve to reproduce the pinned failure with one clamp.
+                // The loose clamp also reproduces the spike with the default budget.
+                BoundaryCaps caps = previousCaps;
+                caps.PivotRounds = pinned ? 2 : 0;
+                ForestSwitches.Caps = caps;
+
+                foreach (bool vessels in new[] { false, true })
+                {
+                    Fresh(vessels);
+                    ForestSwitches.Enabled = false;
+                    Ground();
+                    GameObject tower = Box(new Vector3(0.865f, 3.78f, 0.1f), new Vector3(0.5f, 7.5f, 0.5f));
+                    tower.transform.rotation = Quaternion.Euler(0.0f, 13.0f, 3.0f);
+                    Rigidbody clamp = tower.AddComponent<Rigidbody>();
+                    clamp.mass = 0.1f;
+                    clamp.inertiaTensor = new Vector3(6.95f, 0.1f, 6.95f);
+                    clamp.sleepThreshold = 0.0f;
+                    clamp.maxAngularVelocity = 50.0f;
+                    if (pinned)
+                    {
+                        var pin = tower.AddComponent<ConfigurableJoint>();
+                        pin.autoConfigureConnectedAnchor = false;
+                        pin.anchor = Vector3.up * 3.75f;
+                        pin.connectedAnchor = tower.transform.TransformPoint(pin.anchor);
+                        pin.xMotion = pin.yMotion = pin.zMotion = ConfigurableJointMotion.Locked;
+                        pin.angularXMotion = pin.angularYMotion = pin.angularZMotion = ConfigurableJointMotion.Locked;
+                    }
+
+                    Vector3 start = clamp.position;
+                    List<Rigidbody> craft = StandingColumn(7, 0.0f, 9.0f);
+                    foreach (Rigidbody part in craft)
+                    {
+                        part.mass = 18.0f;
+                        part.sleepThreshold = 0.0f;
+                        part.maxAngularVelocity = 50.0f;
+                    }
+
+                    Simulate();
+                    Assert.That(VesselCount(), Is.EqualTo(vessels ? 1 : 0));
+                    float clampSpeed = 0.0f, clampTravel = 0.0f, craftSpeed = 0.0f;
+                    int clampPeakStep = 0;
+                    for (int step = 2; step <= 220; step++)
+                    {
+                        Simulate();
+                        float speed = clamp.linearVelocity.magnitude;
+                        if (speed > clampSpeed)
+                        {
+                            clampSpeed = speed;
+                            clampPeakStep = step;
+                        }
+
+                        clampTravel = Mathf.Max(clampTravel, Vector3.Distance(start, clamp.position));
+                        foreach (Rigidbody part in craft)
+                        {
+                            craftSpeed = Mathf.Max(craftSpeed, part.linearVelocity.magnitude);
+                        }
+                    }
+
+                    Debug.Log($"[VesselStepTests] pinned={pinned}, vessels={vessels}, clamp {clampSpeed:F3} m/s at step {clampPeakStep}, " +
+                        $"clamp travel {clampTravel:F3} m, craft {craftSpeed:F3} m/s, bottom {craft[0].position:F3}");
+                    Assert.That(clampSpeed, Is.LessThan(pinned ? 5.0f : 20.0f), "the clamp stays at impact speeds");
+                    Assert.That(craftSpeed, Is.LessThan(20.0f), "the craft stays at falling speeds");
+                    if (pinned)
+                    {
+                        Assert.That(clampTravel, Is.LessThan(0.1f), "the world joint holds the clamp");
+                    }
+
+                    Assert.That(craft[0].position.y, Is.LessThan(1.0f), "the craft reaches the pad");
+                }
+            }
+            finally
+            {
+                ForestSwitches.Caps = previousCaps;
+            }
         }
 
         [Test]
