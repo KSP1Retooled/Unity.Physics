@@ -1,5 +1,5 @@
-// Unpack WheelCollider commands for VehicleKernel.cs. Per-wheel commands use a vehicle ID and take the world from
-// context.
+// Unpack WheelCollider commands for VehicleCommands.cs. Per-wheel commands use a vehicle ID and take the world
+// from context.
 // Unsupported extension commands keep logging stubs; trace builds record them.
 
 #include <cstddef>
@@ -13,7 +13,7 @@ using namespace PhysicsCommands::PhysXExt;
 
 namespace Retooled
 {
-    // VehicleKernel writes these through pointers, so NativeStore.cs mirrors their layout.
+    // VehicleCommands writes results through pointers. The matching types are in Unity.Physics.Store.Vehicles.
     static_assert(sizeof(Physics::PhysXExt::WheelQueryResult) == 80, "NativeStore.WheelQueryResult mirrors this layout");
     static_assert(offsetof(Physics::PhysXExt::WheelQueryResult, userData) == 72, "NativeStore.WheelQueryResult mirrors this layout");
     static_assert(sizeof(Physics::PhysXExt::WheelSuspensionData) == 20, "NativeStore.WheelSuspension mirrors this layout");
@@ -23,7 +23,7 @@ namespace Retooled
 
     constexpr uint32_t kFirstVehicleCommand = static_cast<uint32_t>(PhysXExtension::CreateVehicle);
 
-    // The id within the vehicle commands, which VehicleCommand in VehicleKernel.cs numbers from zero.
+    // The ID that VehicleCommand in VehicleCommands.cs assigns to each command, starting at zero.
     template <typename T>
     constexpr uint32_t VehicleId()
     {

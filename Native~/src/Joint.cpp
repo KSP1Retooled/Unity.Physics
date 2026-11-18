@@ -1,4 +1,4 @@
-// Joint commands. Each one is unpacked here and runs in JointKernel.cs, which addresses the joint through the object handle.
+// Unpack joint commands for JointCommands.cs, which finds the joint through its object handle.
 // CreateJoint and DestroyJoint are world commands, in World.cpp.
 
 #include <cstddef>
@@ -9,6 +9,7 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
+    // ActorDescriptor.cs declares the layout that JointCommands reads.
     static_assert(sizeof(Physics::ActorDescriptor) == 24, "NativeStore.ActorDescriptor mirrors this layout");
     static_assert(offsetof(Physics::ActorDescriptor, type) == 16, "NativeStore.ActorDescriptor mirrors this layout");
 

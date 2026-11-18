@@ -281,7 +281,7 @@ namespace Retooled
         command.callback(command.ctx, extracted);
     }
 
-    // Ray hits don't name a triangle (see QueryKernel), so there is no cooked index to translate.
+    // Ray hits don't name a triangle (see QueryEntry), so there is no cooked index to translate.
     static void RemapTriangleIndexToSourceIndex(void*, const Context&, ShapeCmd::RemapTriangleIndexToSourceIndex& command)
     {
         command.outSourceMeshTriangleIndex = command.physicsMeshTriangleIndex;

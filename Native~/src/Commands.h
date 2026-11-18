@@ -92,7 +92,7 @@ namespace Retooled
     void BindJointCommands(FunctionBinding* table);
     void BindExtensionCommands(FunctionBinding* table);
 
-    // How many vehicle commands the plugin API has, which VehicleKernel.cs numbers the same way.
+    // The number of vehicle commands in the plugin API. VehicleCommands.cs uses the same numbering.
     int32_t VehicleCommandCount();
 
 #ifdef RETOOLED_COMMAND_TRACE

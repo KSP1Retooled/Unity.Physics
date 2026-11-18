@@ -1,5 +1,5 @@
-// Body commands. Each one is unpacked here and runs in BodyKernel.cs, which addresses the body through the object handle,
-// except for the few that only read the row's own fields.
+// Unpack body commands for BodyCommands.cs, which finds the body through its object handle.
+// The plugin handles commands that only read the row's fields.
 
 #include "Commands.h"
 

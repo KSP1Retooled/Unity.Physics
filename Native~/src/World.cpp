@@ -1,5 +1,5 @@
 // Manage native world creation and settings before managed code exists.
-// WorldKernel.cs handles body commands and counts.
+// WorldCommands.cs handles body commands and counts.
 
 #include <algorithm>
 #include <cstddef>
@@ -12,7 +12,7 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
-    // WorldKernel.BodyCounts writes these through a pointer.
+    // WorldCommands.CountBodies writes the counts through a pointer.
     static_assert(offsetof(Physics::SimulationStepStats, dynamicBodies) == 0);
     static_assert(offsetof(Physics::SimulationStepStats, activeDynamicBodies) == 4);
     static_assert(offsetof(Physics::SimulationStepStats, kinematicBodies) == 8);

@@ -1,5 +1,5 @@
 // Native physics scene storage, retained across managed domain reloads.
-// Mirrored structures must match NativeStore.cs; attach verifies sizes and layouts before use.
+// These structures match the managed store types. The backend checks their layouts when it attaches.
 // SDK handles point to stable records. Dense BodyData rows may move on swap-removal.
 // Mutate the store on the main thread outside Simulate. Queries use snapshots under shared queryLock;
 // publication takes the lock exclusively. Mesh cooking uses private data and g_MeshLock protects callbacks.
@@ -22,7 +22,7 @@ namespace Retooled
     struct Shape;
     struct World;
 
-    // NativeStore.cs alone defines this. A joint is a pointer here, on the store's heap, which the world frees with it.
+    // JointData.cs defines the record. The native store holds a pointer and frees the record with the world.
     struct JointData;
 
     struct Float3
@@ -316,7 +316,7 @@ namespace Retooled
         // What managed hands the query function, null while no built world can be read. Guarded by queryLock.
         void* queryWorld;
 
-        // The WheelColliders' vehicles, indexed by the id Unity holds, with null for a free id. VehicleKernel.cs writes the
+        // The WheelColliders' vehicles, indexed by the id Unity holds, with null for a free id. VehicleCommands.cs writes the
         // records, each one block on the store's heap, and the world frees them with itself.
         void** vehicles;
         uint32_t vehicleCount;

@@ -1,5 +1,5 @@
-// Shape commands. Each one is unpacked here and runs in ShapeKernel.cs, except for the few that only read what the plugin
-// holds itself. Mesh.cpp holds the mesh commands.
+// Unpack shape commands for ShapeCommands.cs. The plugin handles commands that only read its own data.
+// Mesh.cpp handles mesh commands.
 
 #include <new>
 
