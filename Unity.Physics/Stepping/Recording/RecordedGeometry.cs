@@ -6,6 +6,7 @@ using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using StoreMesh = Unity.Physics.Store.Shapes.Mesh;
 using Unity.Physics.Store.World;
+using Unity.Physics.Store.Versions;
 
 namespace Unity.Physics.Stepping.Recording
 {
@@ -86,6 +87,9 @@ namespace Unity.Physics.Stepping.Recording
             internal int Id;
             internal long Step;
             internal byte[] Bytes;
+            internal uint Version;
+            internal uint Type;
+            internal nuint Data;
         }
 
         internal int Capture(ShapeData* shape, RecordedStep step)
@@ -103,11 +107,19 @@ namespace Unity.Physics.Stepping.Recording
             }
 
             uint type = shape->geometryType;
+            uint version = QuerySnapshotVersion.Version;
+            bool sameVersion = entry.Id != 0 && entry.Version == version && entry.Type == type;
             if (type == StoreConstants.GeometryHeightField)
             {
                 HeightField field = *(HeightField*)shape->mesh;
                 short* heights = field.heights;
                 byte* cells = field.cells;
+                if (sameVersion && entry.Data == (nuint)heights)
+                {
+                    return UseEntry(address, ref entry, step);
+                }
+
+                entry.Data = (nuint)heights;
                 field.heights = null;
                 field.cells = null;
                 field.firstShape = null;
@@ -122,11 +134,32 @@ namespace Unity.Physics.Stepping.Recording
                 StoreMesh mesh = *(StoreMesh*)shape->mesh;
                 MeshData* data = mesh.data;
                 mesh.data = null;
+                // A cook publishes an immutable stream. The data pointer can change when a queued cook finishes.
+                if (sameVersion && entry.Data == (nuint)data)
+                {
+                    const int headerBytes = sizeof(int) * 5;
+                    fixed (byte* previous = entry.Bytes)
+                    {
+                        if (UnsafeUtility.MemCmp(previous + headerBytes, &mesh, sizeof(StoreMesh)) == 0)
+                        {
+                            return UseEntry(address, ref entry, step);
+                        }
+                    }
+                }
+
+                entry.Data = (nuint)data;
                 int length = data == null ? 0 : checked(sizeof(MeshData)
                     + (int)data->vertexCount * sizeof(float3) + (int)data->triangleCount * sizeof(int3));
                 Update(ref entry, type, &mesh, sizeof(StoreMesh), data, length, null, 0);
             }
 
+            entry.Version = version;
+            entry.Type = type;
+            return UseEntry(address, ref entry, step);
+        }
+
+        private int UseEntry(nuint address, ref Entry entry, RecordedStep step)
+        {
             entry.Step = step.Number;
             entries[address] = entry;
             step.Geometry.Add(entry.Bytes);
