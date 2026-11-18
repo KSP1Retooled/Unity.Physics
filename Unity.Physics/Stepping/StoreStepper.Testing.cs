@@ -47,6 +47,14 @@ namespace Unity.Physics.Stepping
 
         private static int s_ThrowsBeforeApplyForces;
 
+        internal static void ThrowBeforeApplyForcesIfRequested()
+        {
+            if (s_ThrowBeforeApplyForces.Data != 0)
+            {
+                ThrowBeforeApplyForces();
+            }
+        }
+
         [Unity.Burst.BurstDiscard]
         private static void ThrowBeforeApplyForces()
         {

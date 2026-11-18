@@ -28,6 +28,7 @@ using Unity.Physics.Dynamics.Vehicles;
 using Unity.Physics.Dynamics.Bodies;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
 using Unity.Profiling;
+using Unity.Physics.Stepping.Stages;
 using Unity.Physics.Stepping.State;
 
 namespace Unity.Physics.Stepping
@@ -42,7 +43,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker BuildResetMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Reset");
         private static readonly ProfilerMarker BuildScheduleBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
         private static readonly ProfilerMarker BuildScheduleBroadphaseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
-        private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
         private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
         private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
         private static readonly ProfilerMarker StepReadJointForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");
@@ -178,16 +178,7 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal void BeginForces()
         {
-            FinishPendingRefit();
-            if (s_ThrowBeforeApplyForces.Data != 0)
-            {
-                ThrowBeforeApplyForces();
-            }
-
-            // A step that threw after this stage last time can have left the job running.
-            forcesApplied.Complete();
-            store->queryWorld = null;
-            store->queryDirty = StoreMemory.QueryStale;
+            ForcesStage.BeginForces(store, ref Trees, ref forcesApplied);
         }
 
         /// <summary>
@@ -196,22 +187,7 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal void ApplyForces(float deltaTime)
         {
-            WheelSolver.RecordStartVelocities(store);
-
-            using (StepApplyForcesMarker.Auto())
-            {
-                Contacts.WakeRefilteredPairs(store);
-
-                new WakePropagation.WakeJointedBodiesJob { World = store }.Run();
-
-                forcesApplied = new ExternalForces.ApplyForcesJob
-                {
-                    Bodies = store->bodies,
-                    Gravity = store->gravity,
-                    DeltaTime = deltaTime,
-                }.Schedule((int)store->bodyCount, ParallelBatchSize);
-                JobHandle.ScheduleBatchedJobs();
-            }
+            ForcesStage.ApplyForces(store, ref Contacts, ref forcesApplied, deltaTime);
         }
 
         /// <summary>Builds the bodies, joints and broadphase for the simulation systems to advance.</summary>
