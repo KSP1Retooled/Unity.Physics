@@ -267,7 +267,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
         {
             SetMode(true, true);
             FlightRecorderSwitches.WindowSteps = 300;
-            FlightRecorderSwitches.MaxFiles = 0;
             var graph = VesselForestBench.Load("tu160:128x8");
             Assert.That(graph.Parent.Length, Is.EqualTo(1024));
             int layer = VesselForestBench.PartLayer;
@@ -292,12 +291,14 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
         private void MeasureScene(string name)
         {
-            for (int pass = 0; pass < 4; pass++)
+            const int passes = 10;
+            const int measuredSteps = 300;
+            for (int pass = 0; pass < passes; pass++)
             {
-                bool recording = pass == 1 || pass == 2;
+                bool recording = pass % 2 != 0;
                 FlightRecorderSwitches.Enabled = recording;
-                Simulate(20);
-                var samples = new double[300];
+                Simulate(320);
+                var samples = new double[measuredSteps];
                 var startLoad = VesselForestBench.CpuReading.Take();
                 for (int i = 0; i < samples.Length; i++)
                 {
@@ -306,17 +307,17 @@ namespace KSP.Retooled.Physics.Tests.Tools
                     samples[i] = (System.Diagnostics.Stopwatch.GetTimestamp() - start)
                         * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 }
-
                 Array.Sort(samples);
-                TestContext.WriteLine($"{name}, pass {pass + 1}, recording {recording}, median {samples[150]:F3} ms, "
-                    + $"90th percentile {samples[270]:F3} ms, other processes' CPU "
-                    + $"{VesselForestBench.CpuReading.Take().OthersLoadSince(startLoad):F0}%, {FlightRecorderSwitches.GetStatus()}");
-                if (pass == 2)
+                double median = (samples[149] + samples[150]) / 2;
+                double p95 = samples[284];
+                TestContext.WriteLine($"{name}, pass {pass + 1}, recording {recording}, median {median:F4} ms, "
+                    + $"p95 {p95:F4} ms, other processes' CPU "
+                    + $"{VesselForestBench.CpuReading.Take().OthersLoadSince(startLoad):F1}%, "
+                    + FlightRecorderSwitches.GetStatus());
+                if (recording && pass == passes - 1)
                 {
-                    FlightRecorderSwitches.MaxFiles = int.MaxValue;
                     string path = WaitForRecording(FlightRecorderSwitches.SaveWithReason(name));
-                    TestContext.WriteLine($"Recording file {new FileInfo(path).Length:N0} bytes");
-                    FlightRecorderSwitches.MaxFiles = 0;
+                    TestContext.WriteLine($"Recording file {new FileInfo(path).Length:N0} bytes at {path}");
                 }
             }
         }
