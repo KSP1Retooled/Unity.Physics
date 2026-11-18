@@ -225,10 +225,6 @@ namespace Unity.Physics
         public NativeList<DispatchPairSequencer.DispatchPair> PairsToSortByIsland;
         public bool IslandsSorted;
 
-        // Job handle for the scheduler's job that creates the phased dispatch pairs.
-        // Results will appear in the SolverSchedulerInfo property upon job completion.
-        public JobHandle CreateDispatchPairsJobHandle;
-
         // Built by the scheduler. Describes the grouping of phased dispatch pairs for parallel processing
         // of joints and contacts in the solver.
         // Informs how we can schedule the solver jobs and what data locations they read info from.
@@ -438,8 +434,6 @@ namespace Unity.Physics
                 ref dynamicVsDynamicBodyPairs, ref dynamicVsStaticBodyPairs, JobHandle.CombineDependencies(handle, joints),
                 ref StepContext.PhasedDispatchPairs, out StepContext.SolverSchedulerInfo, out StepContext.PairsToSortByIsland,
                 multiThreaded, SimulationContext.IslandPairCount);
-
-            StepContext.CreateDispatchPairsJobHandle = handles.FinalExecutionHandle;
 
             m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(handles.FinalDisposeHandle, disposeHandle);
             m_StepHandles.FinalExecutionHandle = multiThreaded ?

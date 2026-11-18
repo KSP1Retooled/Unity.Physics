@@ -96,16 +96,6 @@ namespace Unity.Physics
                     ContactsWriter = contacts.AsWriter()
                 }.ScheduleUnsafeIndex0(solverSchedulerInfo.IterativePairsIterativeScheduling.NumWorkItems, 1, streamConstructionHandle);
 
-                var createContactsJobIterativeCoupling = new ParallelCreateContactsJob
-                {
-                    World = world,
-                    InputVelocities = inputVelocities,
-                    TimeStep = timeStep,
-                    DispatchPairs = dispatchPairs.AsDeferredJobArray(),
-                    IterativeSolverSchedulerInfo = solverSchedulerInfo.CouplingPairsIterativeScheduling,
-                    ContactsWriter = contacts.AsWriter()
-                }.ScheduleUnsafeIndex0(solverSchedulerInfo.CouplingPairsIterativeScheduling.NumWorkItems, 1, streamConstructionHandle);
-
                 var createContactsJobIterativeDirect = new ParallelCreateContactsJob
                 {
                     World = world,
@@ -116,8 +106,7 @@ namespace Unity.Physics
                     ContactsWriter = contacts.AsWriter()
                 }.ScheduleUnsafeIndex0(solverSchedulerInfo.DirectPairsIterativeScheduling.NumWorkItems, 1, streamConstructionHandle);
 
-                returnHandles.FinalExecutionHandle = JobHandle.CombineDependencies(createContactsJobIterative,
-                    createContactsJobIterativeCoupling, createContactsJobIterativeDirect);
+                returnHandles.FinalExecutionHandle = JobHandle.CombineDependencies(createContactsJobIterative, createContactsJobIterativeDirect);
             }
 
             return returnHandles;

@@ -20,11 +20,6 @@ namespace Unity.Physics
             }.Schedule(world.NumMotions, 64, inputDeps);
         }
 
-        internal static void IntegrateMotion(int i, NativeArray<MotionData> motionDatas, NativeArray<MotionVelocity> motionVelocities, float timeStep)
-        {
-            ParallelIntegrateMotionsJob.ExecuteImpl(i, motionDatas, motionVelocities, timeStep);
-        }
-
         [BurstCompile]
         private struct IntegrateBodiesOutsideIslandsJob : IJobParallelFor
         {
@@ -40,7 +35,7 @@ namespace Unity.Physics
             {
                 if (BodiesInIslands.Length == 0 || !BodiesInIslands[i])
                 {
-                    ParallelIntegrateMotionsJob.ExecuteImpl(i, MotionDatas, MotionVelocities, TimeStep);
+                    IntegrateMotion(i, MotionDatas, MotionVelocities, TimeStep);
                 }
             }
         }

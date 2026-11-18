@@ -25,7 +25,6 @@ namespace Unity.Physics
                 StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps, out JobHandle disposed, multiThreaded);
             StepContext.IslandsSorted = true;
 
-            StepContext.CreateDispatchPairsJobHandle = handle;
             m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(m_StepHandles.FinalDisposeHandle,
                 StepContext.PairsToSortByIsland.Dispose(handle), disposed);
             m_StepHandles.FinalExecutionHandle = handle;

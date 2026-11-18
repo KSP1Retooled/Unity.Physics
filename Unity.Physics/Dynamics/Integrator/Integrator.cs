@@ -1,7 +1,5 @@
 using System.Runtime.CompilerServices;
-using Unity.Burst;
 using Unity.Collections;
-using Unity.Jobs;
 using Unity.Mathematics;
 
 namespace Unity.Physics
@@ -18,7 +16,7 @@ namespace Unity.Physics
         {
             for (int i = 0; i < motionDatas.Length; i++)
             {
-                ParallelIntegrateMotionsJob.ExecuteImpl(i, motionDatas, motionVelocities, timeStep);
+                IntegrateMotion(i, motionDatas, motionVelocities, timeStep);
             }
         }
 
@@ -36,75 +34,24 @@ namespace Unity.Physics
             IntegrateOrientation(ref transform.rot, motionVelocity.AngularVelocity, timeStep);
         }
 
-        // Schedule a job to integrate the world's motions forward by the given time step.
-        internal static JobHandle ScheduleIntegrateJobs(ref DynamicsWorld world, float timeStep, JobHandle inputDeps, bool multiThreaded = true)
+        internal static void IntegrateMotion(int i, NativeArray<MotionData> motionDatas, NativeArray<MotionVelocity> motionVelocities, float timeStep)
         {
-            if (!multiThreaded)
-            {
-                var job = new IntegrateMotionsJob
-                {
-                    MotionDatas = world.MotionDatas,
-                    MotionVelocities = world.MotionVelocities,
-                    TimeStep = timeStep
-                };
-                return job.Schedule(inputDeps);
-            }
-            else
-            {
-                var job = new ParallelIntegrateMotionsJob
-                {
-                    MotionDatas = world.MotionDatas,
-                    MotionVelocities = world.MotionVelocities,
-                    TimeStep = timeStep
-                };
-                return job.Schedule(world.NumMotions, 64, inputDeps);
-            }
-        }
+            MotionData motionData = motionDatas[i];
+            MotionVelocity motionVelocity = motionVelocities[i];
 
-        [BurstCompile]
-        private struct ParallelIntegrateMotionsJob : IJobParallelFor
-        {
-            public NativeArray<MotionData> MotionDatas;
-            public NativeArray<MotionVelocity> MotionVelocities;
-            public float TimeStep;
+            // Update motion space
+            Integrate(ref motionData.WorldFromMotion, motionVelocity, timeStep);
 
-            public void Execute(int i)
+            // Update velocities
             {
-                ExecuteImpl(i, MotionDatas, MotionVelocities, TimeStep);
+                // damping
+                motionVelocity.LinearVelocity *= math.clamp(1.0f - motionData.LinearDamping * timeStep, 0.0f, 1.0f);
+                motionVelocity.AngularVelocity *= math.clamp(1.0f - motionData.AngularDamping * timeStep, 0.0f, 1.0f);
             }
 
-            internal static void ExecuteImpl(int i, NativeArray<MotionData> motionDatas, NativeArray<MotionVelocity> motionVelocities, float timeStep)
-            {
-                MotionData motionData = motionDatas[i];
-                MotionVelocity motionVelocity = motionVelocities[i];
-
-                // Update motion space
-                Integrate(ref motionData.WorldFromMotion, motionVelocity, timeStep);
-
-                // Update velocities
-                {
-                    // damping
-                    motionVelocity.LinearVelocity *= math.clamp(1.0f - motionData.LinearDamping * timeStep, 0.0f, 1.0f);
-                    motionVelocity.AngularVelocity *= math.clamp(1.0f - motionData.AngularDamping * timeStep, 0.0f, 1.0f);
-                }
-
-                // Write back
-                motionDatas[i] = motionData;
-                motionVelocities[i] = motionVelocity;
-            }
-        }
-
-        [BurstCompile]
-        private struct IntegrateMotionsJob : IJob
-        {
-            public NativeArray<MotionData> MotionDatas;
-            public NativeArray<MotionVelocity> MotionVelocities;
-            public float TimeStep;
-
-            public void Execute()
-            {
-                Integrate(MotionDatas, MotionVelocities, TimeStep);
-            }
+            // Write back
+            motionDatas[i] = motionData;
+            motionVelocities[i] = motionVelocity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
