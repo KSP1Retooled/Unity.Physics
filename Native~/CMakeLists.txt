@@ -54,3 +54,8 @@ option(RETOOLED_COMMAND_TRACE "Count the commands of each category and id, for d
 if(RETOOLED_COMMAND_TRACE)
     target_compile_definitions(RetooledPhysics PRIVATE RETOOLED_COMMAND_TRACE)
 endif()
+
+option(RETOOLED_STORE_QUARANTINE "Poison and quarantine store allocations, for development only" OFF)
+if(RETOOLED_STORE_QUARANTINE)
+    target_compile_definitions(RetooledPhysics PRIVATE RETOOLED_STORE_QUARANTINE)
+endif()

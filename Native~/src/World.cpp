@@ -12,8 +12,6 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
-    void AdvanceStoreQuarantine();
-
     // WorldCommands.CountBodies writes the counts through a pointer.
     static_assert(offsetof(Physics::SimulationStepStats, dynamicBodies) == 0);
     static_assert(offsetof(Physics::SimulationStepStats, activeDynamicBodies) == 4);
@@ -124,7 +122,9 @@ namespace Retooled
 
         std::unique_lock lock(world->queryLock);
         g_Managed.simulate(&world->data, command.deltaTime);
+#ifdef RETOOLED_STORE_QUARANTINE
         AdvanceStoreQuarantine();
+#endif
         command.ranSimulation = true;
 
         // Unity reads the poses back next (see g_ReadBackWorld).

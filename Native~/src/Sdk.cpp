@@ -12,6 +12,7 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
+#ifdef RETOOLED_STORE_QUARANTINE
     struct RetiredStoreBlock
     {
         void* address;
@@ -35,7 +36,7 @@ namespace Retooled
         }
     };
 
-    static StoreQuarantine* s_Quarantine = nullptr;
+    static StoreQuarantine s_Quarantine;
 
     // Call with the quarantine locked. The pointer remains allocated but will read as NaN through a float view.
     static void RetireStoreBlock(StoreQuarantine& quarantine, void* memory)
@@ -59,14 +60,14 @@ namespace Retooled
 
     static void ReleaseCheckedStoreBlock(void* memory)
     {
-        StoreQuarantine& quarantine = *s_Quarantine;
+        StoreQuarantine& quarantine = s_Quarantine;
         std::lock_guard lock(quarantine.mutex);
         RetireStoreBlock(quarantine, memory);
     }
 
     static void* ReallocateCheckedStoreBlock(void* memory, uint64_t size)
     {
-        StoreQuarantine& quarantine = *s_Quarantine;
+        StoreQuarantine& quarantine = s_Quarantine;
         std::lock_guard lock(quarantine.mutex);
         if (memory != nullptr && size == 0)
         {
@@ -100,12 +101,7 @@ namespace Retooled
 
     void AdvanceStoreQuarantine()
     {
-        if (s_Quarantine == nullptr)
-        {
-            return;
-        }
-
-        StoreQuarantine& quarantine = *s_Quarantine;
+        StoreQuarantine& quarantine = s_Quarantine;
         std::lock_guard lock(quarantine.mutex);
         ++quarantine.step;
         while (!quarantine.retired.empty() && quarantine.retired.front().releaseStep <= quarantine.step)
@@ -114,6 +110,7 @@ namespace Retooled
             quarantine.retired.pop_front();
         }
     }
+#endif
 
     // PhysicMaterial's defaults; Unity overwrites them for every material it creates.
     static constexpr float kDefaultFriction = 0.6f;
@@ -154,17 +151,14 @@ namespace Retooled
     void InitializeGlobals()
     {
         g_Globals.defaultMaterial = &s_DefaultMaterial;
+#ifdef RETOOLED_STORE_QUARANTINE
+        g_Globals.reallocate = ReallocateCheckedStoreBlock;
+        g_Globals.release = ReleaseCheckedStoreBlock;
+        LogInfo("[RetooledPhysics] store memory quarantine enabled");
+#else
         g_Globals.reallocate = [](void* memory, uint64_t size) { return std::realloc(memory, static_cast<size_t>(size)); };
         g_Globals.release = std::free;
-        const char* memoryChecks = std::getenv("RETOOLED_MEMORY_CHECKS");
-        if (memoryChecks != nullptr && std::strcmp(memoryChecks, "1") == 0)
-        {
-            static StoreQuarantine quarantine;
-            s_Quarantine = &quarantine;
-            g_Globals.reallocate = ReallocateCheckedStoreBlock;
-            g_Globals.release = ReleaseCheckedStoreBlock;
-            LogInfo("[RetooledPhysics] store memory quarantine enabled");
-        }
+#endif
         g_Globals.retainMesh = RetainMesh;
         g_Globals.releaseMesh = ReleaseMesh;
         g_Globals.retainMaterial = RetainMaterial;
