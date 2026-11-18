@@ -89,6 +89,9 @@ namespace Unity.Physics.Configuration
                 UnityEngine.Debug.Log("[VesselSwitches] RETOOLED_STRUT_LOADS=0: each locked edge carries its whole subtree, and closures inside a section carry nothing");
             }
 
+            VesselSwitches.StrutExperiment = int.TryParse(Environment.GetEnvironmentVariable("STRUT_EXPERIMENT"), out int experiment)
+                ? experiment : 0;
+
             string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
             SolverSwitches.VesselFused = fused != "0";
             string fold = Environment.GetEnvironmentVariable("RETOOLED_SUBSTEP_FOLD");
