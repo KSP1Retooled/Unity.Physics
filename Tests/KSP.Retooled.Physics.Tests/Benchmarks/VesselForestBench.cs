@@ -39,7 +39,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
     [Category("Slow")]
     public class VesselForestBench : PhysicsScene
     {
-        private const int PartLayer = 30;
+        internal const int PartLayer = 30;
         private const int WarmUp = 20;
         /// <summary>
         /// Measured steps per configuration, from RETOOLED_BENCH_STEPS, default 60.
@@ -288,6 +288,11 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
 
         private List<Rigidbody> Build(Graph graph, bool ground, bool joints = true)
         {
+            return Build(graph, ground, Box, joints);
+        }
+
+        internal static List<Rigidbody> Build(Graph graph, bool ground, Func<Vector3, Vector3, GameObject> box, bool joints = true)
+        {
             var bodies = new List<Rigidbody>(graph.Parent.Length);
             float lowest = float.MaxValue;
             for (int i = 0; i < graph.Parent.Length; i++)
@@ -295,7 +300,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 float mass = Mathf.Max(graph.Mass[i], 1e-3f);
                 float inertia = Mathf.Max((graph.Inertia[i].x + graph.Inertia[i].y + graph.Inertia[i].z) / 3.0f, 1e-6f);
                 float side = Mathf.Clamp(Mathf.Sqrt(6.0f * inertia / mass), 0.05f, 5.0f);
-                GameObject part = Box(graph.Position[i], Vector3.one * side);
+                GameObject part = box(graph.Position[i], Vector3.one * side);
                 part.layer = PartLayer;
                 Rigidbody body = part.AddComponent<Rigidbody>();
                 body.mass = mass;
@@ -333,7 +338,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 bool fits = left > -190.0f && right < 190.0f;
                 float center = fits ? 0.0f : 0.5f * (left + right);
                 float width = fits ? 400.0f : right - left + 100.0f;
-                Box(new Vector3(center, lowest - 0.5f, 0.0f), new Vector3(width, 1.0f, 400.0f));
+                box(new Vector3(center, lowest - 0.5f, 0.0f), new Vector3(width, 1.0f, 400.0f));
             }
 
             return bodies;
@@ -621,7 +626,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         /// <summary>
         /// System and process CPU times in 100 ns units, summed over logical processors.
         /// </summary>
-        private struct CpuReading
+        internal struct CpuReading
         {
             public long Busy;
             public long Total;

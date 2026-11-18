@@ -1,0 +1,397 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using KSP.Retooled.Physics.Interop;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Entities;
+using Unity.Physics;
+using Unity.Physics.Collision.Colliders.Building;
+using Unity.Physics.Collision.Filter.Groups;
+using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Configuration;
+using Unity.Physics.Dynamics.Joint.Loads;
+using Unity.Physics.Stepping;
+using Unity.Physics.Stepping.Recording;
+using Unity.Physics.Store.Bodies;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.Memory;
+using Unity.Physics.Store.Shapes;
+using Unity.Physics.Store.Vehicles;
+using Unity.Physics.Store.World;
+using Mesh = Unity.Physics.Store.Shapes.Mesh;
+
+namespace KSP.Retooled.Physics.Tests.Tools
+{
+    /// <summary>Owns an offline store for one captured step.</summary>
+    internal sealed unsafe class ReplayStore : IDisposable
+    {
+        private const int MaxRecords = 1 << 24;
+        private readonly List<nint> allocations = new List<nint>();
+        private readonly Dictionary<ulong, nint> shapes = new Dictionary<ulong, nint>();
+        private readonly Dictionary<ulong, nint> bodiesByAddress = new Dictionary<ulong, nint>();
+        private readonly Dictionary<ulong, nint> jointsByAddress = new Dictionary<ulong, nint>();
+        private readonly Dictionary<int, nint> geometry = new Dictionary<int, nint>();
+        private readonly StoreGlobals* globals;
+        private readonly WorldData* world;
+        internal StoreStepper* Stepper { get; private set; }
+        internal WorldData* World => world;
+
+        internal ReplayStore()
+        {
+            globals = StoreMemory.Allocate<StoreGlobals>(NativeLibrary.RetooledPhysics_Globals());
+            var native = NativeLibrary.RetooledPhysics_Globals();
+            globals->reallocate = native->reallocate;
+            globals->release = native->release;
+            world = New<WorldData>();
+        }
+
+        internal void Read(BinaryReader reader, Dictionary<int, byte[]> payloads)
+        {
+            reader.ReadValue<RecordedPhysicsSettings>().Apply();
+            world->gravity = reader.ReadValue<Unity.Mathematics.float3>();
+            world->bounceThreshold = reader.ReadSingle();
+            world->staticsVersion = reader.ReadUInt32();
+            globals->materialVersion = reader.ReadUInt32();
+            uint builtMaterial = reader.ReadUInt32();
+            globals->ignoreVersion = reader.ReadUInt32();
+            globals->defaultMaterial = ReadMaterial(reader);
+            IgnoreTable.ReadRecording(reader, globals);
+
+            int shapeCount = reader.ReadCount(MaxRecords);
+            Shape* records = New<Shape>(shapeCount);
+            for (int i = 0; i < shapeCount; i++)
+            {
+                ulong address = reader.ReadUInt64();
+                shapes.TryAdd(address, (nint)(records + i));
+            }
+
+            int removed = reader.ReadCount(MaxRecords);
+            world->removedShapes = (Shape**)New<nint>(removed);
+            world->removedShapeCount = world->removedShapeCapacity = (uint)removed;
+            for (int i = 0; i < removed; i++)
+            {
+                world->removedShapes[i] = (Shape*)ResolveShape(reader.ReadUInt64());
+            }
+
+            int bodies = reader.ReadCount(MaxRecords);
+            world->bodies = New<BodyData>(bodies);
+            world->bodyCount = world->bodyCapacity = (uint)bodies;
+            var owners = New<Body>(bodies);
+            for (int i = 0; i < bodies; i++)
+            {
+                ReadBody(reader, payloads, i, owners + i);
+            }
+
+            int joints = reader.ReadCount(MaxRecords);
+            world->joints = (JointData**)New<nint>(joints);
+            world->jointCount = world->jointCapacity = (uint)joints;
+            var jointRecords = New<JointData>(joints);
+            var jointLoads = New<JointLoadState>(joints);
+            int jointsId = reader.ReadInt32();
+            if (joints != 0)
+            {
+                byte[] bytes = payloads[jointsId];
+                if (bytes.Length != checked(sizeof(int) + joints * sizeof(RecordedJoint)))
+                {
+                    throw new InvalidDataException("Invalid joint records.");
+                }
+
+                fixed (byte* payload = bytes)
+                {
+                    var recordsOfJoints = (RecordedJoint*)(payload + sizeof(int));
+                    for (int i = 0; i < joints; i++)
+                    {
+                        ref RecordedJoint source = ref recordsOfJoints[i];
+                        JointData* joint = jointRecords + i;
+                        *joint = source.Data;
+                        joint->body0 = Owner(source.Body0);
+                        joint->body1 = Owner(source.Body1);
+                        joint->userData = UserData(source.EngineId);
+                        world->joints[i] = joint;
+                        jointsByAddress.Add(source.Address, (nint)joint);
+                    }
+                }
+            }
+
+            if (reader.ReadCount(MaxRecords) != joints)
+            {
+                throw new InvalidDataException("Invalid joint loads.");
+            }
+
+            reader.ReadBlock(jointLoads, checked(joints * sizeof(JointLoadState)));
+            int vehicles = reader.ReadCount(MaxRecords);
+            world->vehicles = (VehicleData**)New<nint>(vehicles);
+            world->vehicleCount = world->vehicleCapacity = (uint)vehicles;
+            for (int i = 0; i < vehicles; i++)
+            {
+                Body* owner = Owner(reader.ReadInt32());
+                VehicleData value = reader.ReadValue<VehicleData>();
+                if (value.wheelCount > MaxRecords)
+                {
+                    throw new InvalidDataException("Invalid wheel count.");
+                }
+
+                var vehicle = (VehicleData*)New<byte>(checked(sizeof(VehicleData) + (int)value.wheelCount * sizeof(WheelSlot)));
+                world->vehicles[i] = vehicle;
+                *vehicle = value;
+                vehicle->body = owner;
+                WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
+                for (uint w = 0; w < vehicle->wheelCount; w++)
+                {
+                    void* userData = ReadUserData(reader);
+                    Shape* hit = (Shape*)ResolveShape(reader.ReadUInt64());
+                    wheels[w] = reader.ReadValue<WheelSlot>();
+                    wheels[w].userData = userData;
+                    wheels[w].hitShape = hit;
+                }
+            }
+
+            var state = New<StoreStepper>();
+            *state = new StoreStepper(world, globals, New<QueryWorld>());
+            Stepper = state;
+            state->RecorderBuiltMaterialVersion = builtMaterial;
+            UnsafeUtility.MemCpy(JointLoadStates.Of(world)->Ptr, jointLoads, (long)joints * sizeof(JointLoadState));
+            state->ReadContactCheckpoint(reader, ResolveShape);
+            byte[] build = payloads[reader.ReadInt32()];
+            using var buildReader = new BinaryReader(new MemoryStream(build, sizeof(int), build.Length - sizeof(int), writable: false));
+            state->ReadBuildCheckpoint(buildReader, ResolveBody, ResolveJoint);
+        }
+
+        private nint ResolveBody(ulong address)
+        {
+            if (!bodiesByAddress.TryGetValue(address, out nint result))
+            {
+                result = (nint)New<Body>();
+                bodiesByAddress.Add(address, result);
+            }
+
+            return result;
+        }
+
+        private nint ResolveJoint(ulong address)
+        {
+            if (!jointsByAddress.TryGetValue(address, out nint result))
+            {
+                result = (nint)New<JointData>();
+                jointsByAddress.Add(address, result);
+            }
+
+            return result;
+        }
+
+        private void ReadBody(BinaryReader reader, Dictionary<int, byte[]> payloads, int index, Body* storage)
+        {
+            BodyData* row = world->bodies + index;
+            row->flags = reader.ReadValue<BodyFlags>();
+            int oldCompound = reader.ReadInt32();
+            if (oldCompound == 0)
+            {
+                row->flags |= BodyFlags.ColliderDirty;
+            }
+            row->serial = reader.ReadUInt32();
+            row->jointEnds = reader.ReadInt32();
+            if (reader.ReadBoolean())
+            {
+                row->owner = storage;
+                storage->world = world;
+                storage->index = (uint)index;
+                bodiesByAddress.Add(reader.ReadUInt64(), (nint)storage);
+                storage->userData = ReadUserData(reader);
+                storage->serial = reader.ReadUInt32();
+                storage->collisionDetectionMode = reader.ReadInt32();
+                storage->positionIterations = reader.ReadUInt32();
+                storage->velocityIterations = reader.ReadUInt32();
+            }
+
+            storage->home = reader.ReadValue<BodyHome>();
+            row->pose = &storage->home.pose;
+            row->velocity = &storage->home.velocity;
+            row->mass = &storage->home.mass;
+            row->bodyMass = &storage->home.bodyMass;
+            row->damping = &storage->home.damping;
+            row->limits = &storage->home.limits;
+            row->sleep = &storage->home.sleep;
+            row->forces = &storage->home.forces;
+            row->target = &storage->home.target;
+            row->collider = &storage->home.collider;
+            if (oldCompound != 0)
+            {
+                byte[] data = payloads[oldCompound];
+                fixed (byte* blob = data)
+                {
+                    ColliderBuilder.SetCollider(row, BlobAssetReference<Collider>.Create(blob + sizeof(int), data.Length - sizeof(int)));
+                }
+            }
+
+            int count = reader.ReadCount(MaxRecords);
+            row->shapes = (ShapeData**)New<nint>(count);
+            row->shapeCount = (uint)count;
+            storage->shapes = row->shapes;
+            storage->shapeCount = storage->shapeCapacity = (uint)count;
+            for (int i = 0; i < count; i++)
+            {
+                var shape = (Shape*)ResolveShape(reader.ReadUInt64());
+                if (shape == null)
+                {
+                    throw new InvalidDataException("Missing shape.");
+                }
+
+                void* userData = ReadUserData(reader);
+                void* mesh = ReadGeometry(reader.ReadInt32(), payloads);
+                MaterialData* material = ReadMaterial(reader);
+                *shape = reader.ReadValue<Shape>();
+                shape->body = row->owner;
+                shape->data.owner = shape;
+                shape->data.mesh = mesh;
+                shape->data.material = material;
+                shape->data.userData = userData;
+                row->shapes[i] = &shape->data;
+            }
+        }
+
+        private nint ResolveShape(ulong address)
+        {
+            if (address == 0)
+            {
+                return 0;
+            }
+
+            if (!shapes.TryGetValue(address, out nint pointer))
+            {
+                pointer = (nint)New<Shape>();
+                shapes.Add(address, pointer);
+            }
+
+            return pointer;
+        }
+
+        private void* ReadGeometry(int id, Dictionary<int, byte[]> payloads)
+        {
+            if (id == 0)
+            {
+                return null;
+            }
+
+            if (geometry.TryGetValue(id, out nint existing))
+            {
+                return (void*)existing;
+            }
+
+            using var reader = new BinaryReader(new MemoryStream(payloads[id], writable: false));
+            if (reader.ReadInt32() != id)
+            {
+                throw new InvalidDataException("Invalid geometry ID.");
+            }
+
+            uint type = reader.ReadUInt32();
+            bool heightField = type == StoreConstants.GeometryHeightField;
+            int header = reader.ReadInt32();
+            int first = reader.ReadCount(payloads[id].Length);
+            int second = reader.ReadCount(payloads[id].Length);
+            if (header != (heightField ? sizeof(HeightField) : sizeof(Mesh)))
+            {
+                throw new InvalidDataException("Geometry layout does not match this build.");
+            }
+
+            byte* handle = New<byte>(header);
+            byte* data = New<byte>(first);
+            byte* cells = New<byte>(second);
+            reader.ReadBlock(handle, header);
+            reader.ReadBlock(data, first);
+            reader.ReadBlock(cells, second);
+            if (heightField)
+            {
+                ((HeightField*)handle)->heights = (short*)data;
+                ((HeightField*)handle)->cells = cells;
+            }
+            else
+            {
+                ((Mesh*)handle)->data = (MeshData*)data;
+            }
+
+            geometry.Add(id, (nint)handle);
+            return handle;
+        }
+
+        private Body* Owner(int row)
+        {
+            if (row == -1)
+            {
+                return null;
+            }
+
+            if (row < 0 || row >= world->bodyCount)
+            {
+                throw new InvalidDataException($"Invalid body row {row}.");
+            }
+
+            return world->bodies[row].owner;
+        }
+
+        private void* ReadUserData(BinaryReader reader) => UserData(reader.ReadUInt64());
+
+        private void* UserData(ulong id)
+        {
+            if (id == 0)
+            {
+                return null;
+            }
+
+            ulong* result = New<ulong>();
+            *result = id;
+            return result;
+        }
+
+        private MaterialData* ReadMaterial(BinaryReader reader)
+        {
+            if (!reader.ReadBoolean())
+            {
+                return null;
+            }
+
+            MaterialData* result = New<MaterialData>();
+            *result = reader.ReadValue<MaterialData>();
+            return result;
+        }
+
+        private T* New<T>(int count = 1) where T : unmanaged
+        {
+            if (count == 0)
+            {
+                return null;
+            }
+
+            long bytes = (long)count * sizeof(T);
+            void* result = StoreMemory.Reallocate(globals, null, (ulong)bytes);
+            if (result == null)
+            {
+                throw new OutOfMemoryException();
+            }
+
+            allocations.Add((nint)result);
+            UnsafeUtility.MemClear(result, bytes);
+            return (T*)result;
+        }
+
+        public void Dispose()
+        {
+            if (Stepper != null)
+            {
+                Stepper->Dispose();
+            }
+
+            IgnoreTable.FreeRecording(globals);
+            StoreMemory.Release(globals, world->jointBreaks);
+            StoreMemory.Release(globals, world->contactBodies);
+            StoreMemory.Release(globals, world->contactShapes);
+            StoreMemory.Release(globals, world->contactPoints);
+            StoreMemory.Release(globals, world->triggers);
+            for (int i = allocations.Count - 1; i >= 0; i--)
+            {
+                StoreMemory.Release(globals, (void*)allocations[i]);
+            }
+
+            StoreMemory.Release(globals, globals);
+        }
+    }
+}
