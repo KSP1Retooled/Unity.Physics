@@ -65,6 +65,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal VesselState VesselData;
         internal JointBuildState Joints;
         internal TreeState Trees;
         internal StaticRows StaticBodies;
@@ -79,21 +80,6 @@ namespace Unity.Physics.Stepping
         // Pre-solve jobs that FinishStepSystem completes before FinishStep reads their lists.
         internal JobHandle preparedInputs;
 
-        // The vessels compiled from the joints, and whether compilation has been completed for the current groups.
-        private VesselBuild vesselBuild;
-        private VesselSet vesselSet;
-        private bool compiled;
-
-        // Whether the vessel build holds cached edges and closures, and the joint settings version that they were
-        // computed from. See VesselEdgeFill.FillVesselEdgesJob.RefillAll.
-        private bool cacheFilled;
-        private uint cachedSettings;
-
-        // The jobs that fill the vessels' edges and closures for this step. Only the solve waits for them.
-        private JobHandle vesselsFilled;
-
-        // The step at which the oldest tombstone in the vessels expires, or -1. See VesselCompiler.CompileVesselsJob.
-        private int tombstoneExpiry;
         private SolverIslandCache solverIslandCache;
         private NativeList<QueryBody> queryBodies;
         private NativeList<QueryShape> queryShapes;
@@ -145,7 +131,7 @@ namespace Unity.Physics.Stepping
         internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
-            tombstoneExpiry = -1;
+            VesselData.InitializeTombstones();
             this.store = store;
             this.globals = globals;
             this.query = query;
@@ -156,7 +142,7 @@ namespace Unity.Physics.Stepping
             Partition.Initialize();
             Joints.Initialize(store);
             directSolverCache = IslandSolverCache.Create();
-            vesselBuild = VesselBuild.Create();
+            VesselData.Initialize();
             solverIslandCache = SolverIslandCache.Create();
             queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
             queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
@@ -196,7 +182,7 @@ namespace Unity.Physics.Stepping
             collidersBuilt.Complete();
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
-            vesselsFilled.Complete();
+            VesselData.vesselsFilled.Complete();
             ReleaseDeadColliders();
             for (uint i = 0; i < store->bodyCount; i++)
             {
@@ -214,7 +200,7 @@ namespace Unity.Physics.Stepping
             Partition.Dispose();
             Joints.Dispose(store);
             directSolverCache.Dispose();
-            vesselBuild.Dispose();
+            VesselData.Dispose();
             solverIslandCache.Dispose();
             queryBodies.Dispose();
             queryShapes.Dispose();
@@ -392,10 +378,10 @@ namespace Unity.Physics.Stepping
         internal uint NextContactStep() => ++stepCount;
 
         /// <summary>The vessels compiled during the last build. Used by tests.</summary>
-        internal readonly VesselBuild Vessels => vesselBuild;
+        internal readonly VesselBuild Vessels => VesselData.vesselBuild;
 
         /// <summary>The set of vessels supplied to the step during the last build. Used by tests.</summary>
-        internal readonly VesselSet VesselSet => vesselSet;
+        internal readonly VesselSet VesselSet => VesselData.vesselSet;
 
         /// <summary>
         /// Remove unsolved overlaps before island finding and supply this step's vessels.
@@ -403,7 +389,7 @@ namespace Unity.Physics.Stepping
         internal JobHandle SortIslands(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
             using var span = StepScheduleMarker.Auto();
-            input.VesselSet = vesselSet;
+            input.VesselSet = VesselData.vesselSet;
 
             Simulation* simulation = singleton.AsSimulationPtr();
             if (input.World.NumDynamicBodies == 0)
@@ -423,9 +409,9 @@ namespace Unity.Physics.Stepping
                 Learned = learnedBodyPairs.AsParallelWriter(),
                 World = store,
                 Units = Joints.jointUnits.AsDeferredJobArray(),
-                BodyVessels = vesselBuild.BodyVessels.AsArray(),
-                VesselActive = vesselBuild.Active.AsArray(),
-                VesselPairUnits = vesselBuild.PairUnits,
+                BodyVessels = VesselData.vesselBuild.BodyVessels.AsArray(),
+                VesselActive = VesselData.vesselBuild.Active.AsArray(),
+                VesselPairUnits = VesselData.vesselBuild.PairUnits,
             }.Schedule(pairs, ParallelBatchSize, dependency);
 
             // No job in this step reads the newly learned body pairs. Saving those pairs can therefore run in parallel
@@ -529,15 +515,15 @@ namespace Unity.Physics.Stepping
                 Caps = ForestSwitches.Caps,
             };
             input.IslandSolverCache = directSolverCache;
-            input.VesselSet = vesselSet;
+            input.VesselSet = VesselData.vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
-            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled);
+            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled);
             return new WarmStart.WarmStartJob
             {
                 WarmStarts = warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = Partition.dynamicIndices.Length,
-            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, vesselsFilled));
+            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled));
         }
 
         /// <summary>
@@ -553,7 +539,7 @@ namespace Unity.Physics.Stepping
             Joints.groupLoads.ResizeUninitialized(Joints.jointGroups.Length);
             UnsafeUtility.MemClear(Joints.groupLoads.GetUnsafePtr(), (long)Joints.groupLoads.Length * sizeof(JointLoad));
 
-            bool listed = vesselSet.IsCreated;
+            bool listed = VesselData.vesselSet.IsCreated;
             int seededJoints = listed ? Joints.otherJoints.Length : jointCount;
             int sharedGroups = listed ? Joints.otherGroups.Length : Joints.jointGroups.Length;
             JobHandle loaded = new JointLoads.SeedJointLoadsJob
@@ -641,7 +627,7 @@ namespace Unity.Physics.Stepping
                 throw new InvalidOperationException("the joints' load states and the store's joints differ in number");
             }
 
-            if (!vesselSet.IsCreated)
+            if (!VesselData.vesselSet.IsCreated)
             {
                 return default;
             }
@@ -656,16 +642,16 @@ namespace Unity.Physics.Stepping
                 MotionDatas = world.MotionDatas,
                 BuiltIndices = Partition.builtIndices.AsArray(),
                 DeltaTime = deltaTime,
-                PartUnits = vesselBuild.PartUnits.AsArray(),
-                ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
-                PartIsBody0 = vesselBuild.PartIsBody0.AsArray(),
-                UnitVessels = vesselBuild.UnitVessels.AsArray(),
-                Active = vesselBuild.Active.AsArray(),
-                EdgeLoads = vesselBuild.EdgeLoads.AsArray(),
-                ClosureLoads = vesselBuild.ClosureLoads.AsArray(),
+                PartUnits = VesselData.vesselBuild.PartUnits.AsArray(),
+                ClosureUnits = VesselData.vesselBuild.ClosureUnits.AsArray(),
+                PartIsBody0 = VesselData.vesselBuild.PartIsBody0.AsArray(),
+                UnitVessels = VesselData.vesselBuild.UnitVessels.AsArray(),
+                Active = VesselData.vesselBuild.Active.AsArray(),
+                EdgeLoads = VesselData.vesselBuild.EdgeLoads.AsArray(),
+                ClosureLoads = VesselData.vesselBuild.ClosureLoads.AsArray(),
                 JointLoads = Joints.jointLoads.AsArray(),
                 Overloaded = Joints.jointsOverloaded.AsArray(),
-            }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
+            }.Schedule(VesselData.vesselBuild.PartUnits.Length + VesselData.vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 
         /// <summary>
@@ -676,11 +662,11 @@ namespace Unity.Physics.Stepping
         {
             // Schedule post-solve work now. Include manifold and warm-start dependencies even when nothing is
             // solved.
-            JobHandle solved = JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, vesselsFilled);
+            JobHandle solved = JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, VesselData.vesselsFilled);
 
             // The jobs below read only the solved motions, so they don't wait for the jobs that free the solve's
             // buffers and export the events of its direct islands. Those jobs only read the motions too.
-            JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vesselsFilled);
+            JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, VesselData.vesselsFilled);
 
             // Schedule write-back first because the main thread waits for it first.
             JobHandle writtenBack = new StoreBodies.WriteBackJob
@@ -1016,7 +1002,7 @@ namespace Unity.Physics.Stepping
         private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
         {
             // An interrupted step may leave vessel fill jobs running. Finish them before resizing vessel lists.
-            vesselsFilled.Complete();
+            VesselData.vesselsFilled.Complete();
             using (BuildPartitionMarker.Auto())
             {
                 Partition.Rebuild(store);
@@ -1088,43 +1074,8 @@ namespace Unity.Physics.Stepping
                 bool forest = ForestSwitches.Enabled || vessels;
                 bool regrouped = Joints.FindGroups(store, forest, dependency, out JobHandle groupsFound);
 
-                // Recompile vessels when topology or forest settings change, support is enabled, or a tombstone
-                // expires.
-                // Run synchronously because island scheduling needs the vessel count.
-                bool tombstoneExpired = tombstoneExpiry >= 0 && (int)stepCount >= tombstoneExpiry;
-                bool compiledThisStep = false;
-                if (vessels && (!compiled || regrouped || tombstoneExpired))
-                {
-                    compiledThisStep = true;
-                    groupsFound.Complete();
-                    new VesselCompiler.CompileVesselsJob
-                    {
-                        World = store,
-                        Units = Joints.jointUnits.AsArray(),
-                        Roles = Joints.jointRoles.AsArray(),
-                        Groups = Joints.jointGroups.AsArray(),
-                        Members = Joints.jointGroupMembers.AsArray(),
-                        Build = vesselBuild,
-                        Step = (int)stepCount,
-                        TombstoneSteps = VesselSwitches.TombstoneSteps,
-                        MinimumParts = VesselSwitches.MinimumParts,
-                    }.Run();
-                    compiled = true;
-                    tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselSwitches.TombstoneSteps);
-                }
-                else if (!vessels && compiled)
-                {
-                    vesselBuild.Clear(0);
-                    compiled = false;
-                    tombstoneExpiry = -1;
-                }
-
-                vesselSet = default;
-                if (vessels)
-                {
-                    vesselBuild.ChooseStepVessels(store, Partition.builtIndices.AsArray(), Partition.dynamicIndices.Length);
-                    vesselSet = vesselBuild.Set();
-                }
+                bool compiledThisStep = VesselData.CompileAndChoose(store, ref Joints, ref Partition,
+                    vessels, regrouped, ref stepCount, groupsFound);
 
                 // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
                 // separate stream range for each unit.
@@ -1146,80 +1097,12 @@ namespace Unity.Physics.Stepping
                     Locking = forest && ForestSwitches.Locking,
                     LockFraction = ForestSwitches.LockFraction,
                     YieldFraction = ForestSwitches.YieldFraction,
-                    Vessels = vesselSet.IsCreated,
-                    UnitVessels = vesselBuild.UnitVessels.AsArray(),
-                    VesselActive = vesselBuild.Active.AsArray(),
+                    Vessels = VesselData.vesselSet.IsCreated,
+                    UnitVessels = VesselData.vesselBuild.UnitVessels.AsArray(),
+                    VesselActive = VesselData.vesselBuild.Active.AsArray(),
                 }.Schedule(Joints.jointUnits, JointBatchSize, allocated);
 
-                // Fill vessel constraints alongside joint and broadphase work; only the solve needs their
-                // results.
-                vesselsFilled = default;
-                if (vesselSet.IsCreated)
-                {
-                    // Reuse vessel constraints unless motion frames or joint settings changed.
-                    // Check per-joint settings stamps only when the shared version changes.
-                    uint settings = JointSettings.Version;
-                    bool resized = vesselBuild.SizeCaches();
-                    bool refillAll = resized || compiledThisStep || !cacheFilled;
-                    bool settingsChanged = settings != cachedSettings;
-                    cacheFilled = true;
-                    cachedSettings = settings;
-                    JobHandle edgesFilled = new VesselEdgeFill.FillVesselEdgesJob
-                    {
-                        World = store,
-                        Units = Joints.jointUnits.AsDeferredJobArray(),
-                        Groups = Joints.jointGroups.AsDeferredJobArray(),
-                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
-                        UnitVessels = vesselBuild.UnitVessels.AsArray(),
-                        Active = vesselBuild.Active.AsArray(),
-                        PartStoreBodies = vesselBuild.PartStoreBodies.AsArray(),
-                        PartUnits = vesselBuild.PartUnits.AsArray(),
-                        PartParents = vesselBuild.PartParents.AsArray(),
-                        PartIsBody0 = vesselBuild.PartIsBody0.AsArray(),
-                        PartVesselFirst = vesselBuild.PartVesselFirst.AsArray(),
-                        Edges = vesselBuild.Edges.AsArray(),
-                        RefillAll = refillAll,
-                        SettingsChanged = settingsChanged,
-                        EdgeCache = vesselBuild.EdgeCache.AsArray(),
-                        EdgeCacheFrames = vesselBuild.EdgeCacheFrames.AsArray(),
-                        EdgeCacheStamps = vesselBuild.EdgeCacheStamps.AsArray(),
-                    }.Schedule(vesselBuild.PartUnits.Length, ParallelBatchSize, groupsFound);
-
-                    JobHandle closuresFilled = new VesselClosureFill.FillVesselClosuresJob
-                    {
-                        World = store,
-                        Units = Joints.jointUnits.AsDeferredJobArray(),
-                        Groups = Joints.jointGroups.AsDeferredJobArray(),
-                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
-                        UnitVessels = vesselBuild.UnitVessels.AsArray(),
-                        Active = vesselBuild.Active.AsArray(),
-                        ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
-                        ClosurePartA = vesselBuild.ClosurePartA.AsArray(),
-                        ClosurePartB = vesselBuild.ClosurePartB.AsArray(),
-                        Vessels = vesselBuild.Vessels.AsArray(),
-                        PartStoreBodies = vesselBuild.PartStoreBodies.AsArray(),
-                        Closures = vesselBuild.Closures.AsArray(),
-                        RefillAll = refillAll,
-                        SettingsChanged = settingsChanged,
-                        ClosureCache = vesselBuild.ClosureCache.AsArray(),
-                        ClosureCacheFrames = vesselBuild.ClosureCacheFrames.AsArray(),
-                        ClosureCacheStamps = vesselBuild.ClosureCacheStamps.AsArray(),
-                    }.Schedule(vesselBuild.ClosureUnits.Length, ParallelBatchSize, groupsFound);
-                    // The joint loads at the end of the step need this list. Waiting for JointTranslation.BuildJointsJob keeps the job
-                    // from reading a group while JointTranslation.BuildJointsJob writes it.
-                    JobHandle listed = new VesselLoads.ListOtherJointsJob
-                    {
-                        Units = Joints.jointUnits.AsDeferredJobArray(),
-                        Groups = Joints.jointGroups.AsDeferredJobArray(),
-                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
-                        UnitVessels = vesselBuild.UnitVessels.AsArray(),
-                        Active = vesselBuild.Active.AsArray(),
-                        OtherJoints = Joints.otherJoints,
-                        OtherGroups = Joints.otherGroups,
-                    }.Schedule(emitted);
-                    JobHandle loadsCleared = vesselBuild.ScheduleClearLoads(dependency);
-                    vesselsFilled = JobHandle.CombineDependencies(JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed), loadsCleared);
-                }
+                VesselData.FillConstraints(store, ref Joints, compiledThisStep, groupsFound, emitted, dependency);
 
                 JobHandle laidOut = new JointGrouping.LayOutJointsJob
                 {
