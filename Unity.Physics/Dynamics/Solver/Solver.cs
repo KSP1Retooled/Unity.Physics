@@ -490,6 +490,17 @@ namespace Unity.Physics
                         JacobianType jacType = ((int)(contactHeader.JacobianFlags) & (int)(JacobianFlags.IsTrigger)) != 0 ?
                             JacobianType.Trigger : JacobianType.Contact;
 
+                        int numContacts = contactHeader.NumContacts - math.countbits(contactHeader.RejectedPoints);
+                        if (numContacts == 0)
+                        {
+                            for (int j = 0; j < contactHeader.NumContacts; j++)
+                            {
+                                contactReader.Read<ContactPoint>();
+                            }
+
+                            continue;
+                        }
+
                         JacobianFlags jacFlags = contactHeader.JacobianFlags;
 
                         if (jacType == JacobianType.Contact && pair.SolverType == SolverType.Direct)
@@ -501,7 +512,7 @@ namespace Unity.Physics
                         }
 
                         // Write size before every jacobian and allocate all necessary data for this jacobian
-                        int jacobianSize = JacobianHeader.CalculateSize(jacType, jacFlags, contactHeader.NumContacts);
+                        int jacobianSize = JacobianHeader.CalculateSize(jacType, jacFlags, numContacts);
                         jacobianWriter.Write(jacobianSize);
                         byte* jacobianPtr = jacobianWriter.Allocate(jacobianSize);
 
@@ -516,7 +527,7 @@ namespace Unity.Physics
 
                         var baseJac = new BaseContactJacobian
                         {
-                            NumContacts = contactHeader.NumContacts,
+                            NumContacts = numContacts,
                             Normal = contactHeader.Normal
                         };
 
@@ -553,16 +564,24 @@ namespace Unity.Physics
                             var centerA = new float3(0.0f);
                             var centerB = new float3(0.0f);
                             int solveCount = 0; // tracks if a bounce has been solved for the current iteration. Used to update friction
+                            int pointIndex = 0;
                             for (int j = 0; j < contactHeader.NumContacts; j++)
                             {
-                                ContactJacobian.BuildIndividualContactJacobians(j, contactJacobian.BaseJacobian.Normal,
+                                ContactPoint point = contactReader.Read<ContactPoint>();
+                                if ((contactHeader.RejectedPoints & (1u << j)) != 0)
+                                {
+                                    continue;
+                                }
+
+                                int keptIndex = pointIndex++;
+                                ContactJacobian.BuildIndividualContactJacobians(keptIndex, contactJacobian.BaseJacobian.Normal,
                                     worldFromA, worldFromB, invTimestep, numSubsteps, velocityA, velocityB,
                                     sumInvMass, maxDepenetrationVelocity, ref jacobianHeader, ref centerA, ref centerB,
-                                    ref contactReader);
+                                    point);
 
                                 if (contactJacobian.CoefficientOfRestitution > 0.0f)
                                 {
-                                    ref ContactJacAngAndVelToReachCp jacAngular = ref jacobianHeader.AccessAngularJacobian(j);
+                                    ref ContactJacAngAndVelToReachCp jacAngular = ref jacobianHeader.AccessAngularJacobian(keptIndex);
 
                                     float dv = ContactJacobian.CalculateRelativeVelocityAlongNormal(velocityA, velocityB, ref jacAngular,
                                         contactJacobian.BaseJacobian.Normal, out float relativeVelocity);
@@ -642,7 +661,7 @@ namespace Unity.Physics
                                 ContactJacobian.BuildIndividualContactJacobians(
                                     j, triggerJacobian.BaseJacobian.Normal, worldFromA, worldFromB,
                                     invTimestep, numSubsteps, velocityA, velocityB, sumInvMass, maxDepenetrationVelocity,
-                                    ref jacobianHeader, ref centerA, ref centerB, ref contactReader);
+                                    ref jacobianHeader, ref centerA, ref centerB, contactReader.Read<ContactPoint>());
                             }
                         }
 

@@ -18,6 +18,9 @@ namespace Unity.Physics
         public float CoefficientOfRestitution;
         public ColliderKeyPair ColliderKeys;
 
+        // One bit per point, in stream order. Keep rejected points available for contact reporting.
+        public uint RejectedPoints;
+
         // followed by NumContacts * ContactPoint
     }
 
