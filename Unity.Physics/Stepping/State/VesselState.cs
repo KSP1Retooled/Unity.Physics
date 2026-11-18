@@ -15,7 +15,7 @@ namespace Unity.Physics.Stepping.State
     /// Compiles on first use, joint regrouping, or tombstone expiry. Reuses constraints while the joint settings
     /// and motion frames match.
     /// </summary>
-    internal unsafe struct VesselState
+    internal unsafe partial struct VesselState
     {
         // The vessels compiled from the joints, and whether compilation has been completed for the current groups.
         internal VesselBuild vesselBuild;

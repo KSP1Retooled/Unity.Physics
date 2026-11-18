@@ -81,7 +81,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                     {
                         DirectIsland island = Islands[teams[t].Island];
                         IslandWorkCounters.CountFusedSolve();
-                        SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
+                        SolveFusedVesselIsland(teams[t].Island, island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
                             (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
                             StepInput, Lanes > 1 ? &teams[t].Team : null);
                         teams[t].Team.Finish();

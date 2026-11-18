@@ -10,6 +10,7 @@ using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Stepping.Recording;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
@@ -102,7 +103,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var linear = (float3*)bodyLinear.GetUnsafePtr();
             var angular = (float3*)bodyAngular.GetUnsafePtr();
-            long solved = SolveVesselBoundary(ref run, problem, headers, headerList, worldBodies, compactBodies, holdsPositions,
+            long solved = SolveVesselBoundary(islandIndex, ref run, problem, headers, headerList, worldBodies, compactBodies, holdsPositions,
                 motionVelocities, motionDatas, stepInput, jacobianRows, recovery, team, impulses, linear,
                 angular);
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
@@ -123,7 +124,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// solve when needed.
         /// Apply impulses and deep-contact push-out. Return first-solve completion time for profiling.
         /// </summary>
-        static unsafe long SolveVesselBoundary(ref ForestRun run, in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+        static unsafe long SolveVesselBoundary(int islandIndex, ref ForestRun run, in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<System.IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool holdsPositions,
             in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, in StepInput stepInput,
             in JacobianRows jacobianRows, float* recovery, WorkTeam* team, float* impulses,
@@ -133,6 +134,8 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             // If the boundary ran out of pivoting rounds, SolveForest returns false, but its impulses are still inside
             // their bounds and near the answer, so the vessel applies them. BoundaryCounters counts such solves.
+            stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.Forest
+                | (run.BoundaryCount > 0 ? RecordedSolverPath.BoundaryBlock : 0));
             SolveForest(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solved - started);
@@ -164,11 +167,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             ApplySparseImpulses(problem, null, linear, angular, (int*)worldBodies.GetUnsafeReadOnlyPtr(), headerList, impulses,
                 motionVelocities, motionDatas, team);
             long pushing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            if (recovery != null)
+            if (recovery != null && SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
+                math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
+                (ForestRun*)UnsafeUtility.AddressOf(ref run)))
             {
-                SolvePushOut(problem, headers, worldBodies, recovery, motionVelocities, motionDatas, stepInput.Timestep,
-                    math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity),
-                    (ForestRun*)UnsafeUtility.AddressOf(ref run));
+                stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.PushOut);
             }
 
             BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
@@ -188,7 +191,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// Solve all substeps for an island of vessel parts in one job, retaining state by first vessel ID.
         /// Update boundary rows, solve vessel constraints, compute loads and integrate bodies with shared kernels.
         /// </summary>
-        internal static unsafe void SolveFusedVesselIsland(in DirectIsland island, IslandHeader* islandHeaders, int* islandVessels,
+        internal static unsafe void SolveFusedVesselIsland(int islandIndex, in DirectIsland island, IslandHeader* islandHeaders, int* islandVessels,
             NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, NativeArray<RigidBody> rigidBodies,
             StepInput stepInput, WorkTeam* team)
         {
@@ -209,7 +212,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             // Reuse layout only when vessels, versions, counts and body numbering match.
             // Imported lock states require a fresh layout.
-            bool known = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
+            bool known = forest->VesselMode && !forest->RecordedLayoutPending && !forest->TakesStates && forest->VesselSignature.Length == 1 + 3 * islandVesselCount
                 && forest->VesselSignature[0] == (ulong)islandVesselCount;
             int closureStart = 0;
             for (int v = 0; known && v < islandVesselCount; v++)
@@ -464,7 +467,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 {
                     // The same boundary solve as the ordinary vessel island's, and then the lanes integrate the bodies.
                     var impulses = new NativeArray<float>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                    solved = SolveVesselBoundary(ref run, problem, (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(), setup.Headers,
+                    solved = SolveVesselBoundary(islandIndex, ref run, problem, (JacobianHeader**)setup.Headers.GetUnsafeReadOnlyPtr(), setup.Headers,
                         setup.WorldBodies, compactBodies, setup.HoldsPositions, motionVelocities, motionDatas, substepInput,
                         new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, team,
                         (float*)impulses.GetUnsafePtr(), linear, angular);
@@ -476,6 +479,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 }
                 else
                 {
+                    stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.Forest);
                     // With no boundary rows, the sections' velocities are the ones from the vessels' own rows.
                     UnsafeUtility.MemCpy(run.Velocity.GetUnsafePtr(), run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
                     solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
@@ -651,7 +655,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 }
             }
 
-            bool same = forest->VesselMode && !forest->TakesStates && forest->VesselSignature.Length == signature.Length;
+            bool same = forest->VesselMode && !forest->RecordedLayoutPending && !forest->TakesStates && forest->VesselSignature.Length == signature.Length;
             for (int i = 0; same && i < signature.Length; i++)
             {
                 same = forest->VesselSignature[i] == signature[i];
@@ -661,6 +665,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             if (!same)
             {
                 CarryVesselStates(forest, signature, run, partCount, closureCount);
+                forest->RecordedLayoutPending = false;
             }
 
             // The edges, the closures and the mapping between parts and bodies stay the same for every substep of a step,

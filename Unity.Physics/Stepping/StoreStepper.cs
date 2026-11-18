@@ -81,6 +81,7 @@ namespace Unity.Physics.Stepping
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
             VesselData.vesselsFilled.Complete();
+            FreeRecorderIslands();
             Colliders.ReleaseWorldColliders(store);
 
             store->queryDirty = 1;

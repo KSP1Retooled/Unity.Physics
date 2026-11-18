@@ -13,6 +13,7 @@ using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Stepping.Recording;
 using Unity.Profiling;
 
 namespace Unity.Physics.Dynamics.Solver.Vessels
@@ -174,6 +175,8 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
                 if (started)
                 {
+                    stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.Forest
+                        | (run.BoundaryCount > 0 ? RecordedSolverPath.BoundaryBlock : 0));
                     SolveForest(ref run, problem.RightHandSide, impulsesPtr);
                     long solvedAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                     stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solvedAt - lap);
@@ -209,11 +212,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
                     ApplySparseImpulses(problem, null, linearPtr, angularPtr, islandBodies, headers, impulsesPtr,
                         motionVelocities, motionDatas, team);
-                    if (recovery != null)
+                    if (recovery != null && SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                        motionVelocities, motionDatas, stepInput.Timestep,
+                        math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run))
                     {
-                        SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
-                            motionVelocities, motionDatas, stepInput.Timestep,
-                            math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity), &run);
+                        stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.PushOut);
                     }
 
                     float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
@@ -248,6 +251,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 }
             }
 
+            stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.Sparse);
             SparseConstraintSolver* kept = stepInput.IslandSolverCache.Solver(islandIndex);
             var temporary = default(SparseConstraintSolver);
             if (kept == null)
@@ -277,11 +281,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             drift.Dispose();
             ApplySparseImpulses(problem, kept, null, null, islandBodies, headers, impulsesPtr, motionVelocities,
                 motionDatas, team);
-            if (recovery != null)
+            if (recovery != null && SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
+                motionVelocities, motionDatas, stepInput.Timestep,
+                math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity)))
             {
-                SolvePushOut(problem, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), setup.WorldBodies, recovery,
-                    motionVelocities, motionDatas, stepInput.Timestep,
-                    math.max(stepInput.MaxStaticDepenetrationVelocity, stepInput.MaxDynamicDepenetrationVelocity));
+                stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.PushOut);
             }
 
             kept->Team = null;

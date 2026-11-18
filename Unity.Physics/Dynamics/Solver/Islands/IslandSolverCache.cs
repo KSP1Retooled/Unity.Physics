@@ -5,6 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Configuration;
+using Unity.Physics.Stepping.Recording;
 
 namespace Unity.Physics.Dynamics.Solver.Islands
 {
@@ -13,8 +14,21 @@ namespace Unity.Physics.Dynamics.Solver.Islands
     /// The caller owns the cache and passes it through SimulationStepInput.
     /// Solvers validate analysis before reuse; forests retain locks by body identity.
     /// </summary>
-    internal unsafe struct IslandSolverCache : IDisposable
+    internal unsafe partial struct IslandSolverCache : IDisposable
     {
+        [NativeDisableUnsafePtrRestriction]
+        internal RecordedIsland* RecorderIslands;
+        [NativeDisableUnsafePtrRestriction]
+        internal RecordedSolverPath* RecorderPaths;
+
+        internal readonly void RecordPath(int island, RecordedSolverPath path)
+        {
+            if (RecorderPaths != null)
+            {
+                RecorderPaths[island] |= path;
+            }
+        }
+
         // Initial capacity of the substep island slot table. Grow when all slots were used recently.
         const int InitialCapacity = 64;
 
