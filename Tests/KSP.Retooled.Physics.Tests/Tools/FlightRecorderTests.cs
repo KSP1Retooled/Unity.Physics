@@ -75,7 +75,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
         public void ManualSaveReplaysRollingWindow(bool vessels, bool fused)
         {
             SetMode(vessels, fused);
-            Ground();
+            GameObject ground = Ground();
             Rigidbody root = WeightlessBox(new Vector3(0, 0.49f, 0));
             Rigidbody child = WeightlessBox(new Vector3(0, 1.49f, 0));
             StackJoint(child, root);
@@ -89,6 +89,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             probe.AddForce(new Vector3(3, 0, 1), ForceMode.Impulse);
             child.GetComponent<ConfigurableJoint>().targetAngularVelocity = new Vector3(0, 0.4f, 0.1f);
             child.mass *= 1.25f;
+            UnityEngine.Physics.IgnoreCollision(probe.GetComponent<Collider>(), ground.GetComponent<Collider>());
             Rigidbody removed = DynamicBox(new Vector3(7, 1, 0));
             Simulate(2);
             Object.DestroyImmediate(removed.gameObject);
@@ -179,10 +180,13 @@ namespace KSP.Retooled.Physics.Tests.Tools
             TestContext.WriteLine($"Terrain recording {new FileInfo(path).Length:N0} bytes");
         }
 
-        [Test]
-        public void SixSecondWindowReplaysFromAWorldAlreadyInMotion()
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void SixSecondWindowReplaysFromAWorldAlreadyInMotion(bool vessels, bool fused)
         {
-            SetMode(true, true);
+            SetMode(vessels, fused);
             FlightRecorderSwitches.WindowSteps = 300;
             Ground();
             Rigidbody root = DynamicBox(new Vector3(0, 0.55f, 0));
