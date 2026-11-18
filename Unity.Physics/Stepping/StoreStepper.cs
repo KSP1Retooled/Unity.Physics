@@ -222,71 +222,8 @@ namespace Unity.Physics.Stepping
         /// <summary>Reads the contacts produced by the narrow phase before the Jacobians are built from them.</summary>
         internal JobHandle ReadContacts(SimulationSingleton singleton, float deltaTime, JobHandle dependency)
         {
-            using var span = StepScheduleMarker.Auto();
-
-            // Submit the batched jobs so that workers can run them while the main thread schedules the jobs below.
-            JobHandle.ScheduleBatchedJobs();
-
-            // Drop impulses for removed shapes before new contacts can reuse their addresses.
-            if (store->removedShapeCount != 0 && Contacts.lastImpulses.Count != 0)
-            {
-                new ImpulseMemory.ForgetRemovedImpulsesJob { World = store, LastImpulses = Contacts.lastImpulses }.Run();
-            }
-
-            Contacts.manifolds.Clear();
-            Contacts.manifoldPoints.Clear();
-            JobHandle read = dependency;
-            JobHandle merged = dependency;
-            NativeStream contacts = singleton.AsSimulationPtr()->StepContext.Contacts;
-            if (contacts.IsCreated)
-            {
-                NativeStream.Reader reader = contacts.AsReader();
-                read = new ContactBuckets.PrepareContactBucketsJob
-                {
-                    Contacts = reader,
-                    Buckets = Contacts.contactBuckets,
-                    Filled = Contacts.filledContactBuckets,
-                }.Schedule(read);
-                read = new ContactMaterials.ReadContactsJob
-                {
-                    Contacts = reader,
-                    Buckets = Contacts.contactBuckets,
-                    Store = store->bodies,
-                    Globals = globals,
-                    Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
-                    LastImpulses = Contacts.lastImpulses,
-                    DeltaTime = deltaTime,
-                    BounceThreshold = store->bounceThreshold,
-                }.ScheduleUnsafe(contacts, 1, read);
-
-                merged = new ContactBuckets.MergeContactBucketsJob
-                {
-                    Filled = Contacts.filledContactBuckets,
-                    Buckets = Contacts.contactBuckets,
-                    Records = Contacts.manifolds,
-                    Points = Contacts.manifoldPoints,
-                }.Schedule(read);
-            }
-
-            // Only warm starting requires the merged manifolds before solving. Merging the manifolds can therefore run
-            // in parallel with building the Jacobians.
-            warmStartsIndexed = new WarmStart.IndexWarmStartsJob { Records = Contacts.manifolds, WarmStarts = Contacts.warmStarts }.Schedule(merged);
-
-            // If there are no contacts, no more bodies need to be woken. Bodies connected by joints were already woken
-            // at the start of the step.
-            if (!contacts.IsCreated)
-            {
-                return read;
-            }
-
-            return new WakePropagation.WakeTouchedBodiesJob
-            {
-                World = store,
-                Filled = Contacts.filledContactBuckets,
-                Buckets = Contacts.contactBuckets,
-                DynamicIndices = Partition.dynamicIndices.AsArray(),
-                Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
-            }.Schedule(read);
+            return ContactStage.ReadContacts(store, globals, ref world, ref Partition, ref Contacts,
+                ref warmStartsIndexed, singleton, deltaTime, dependency);
         }
 
         /// <summary>Warm starts the Jacobians.</summary>

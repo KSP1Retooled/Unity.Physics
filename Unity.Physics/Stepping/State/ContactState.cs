@@ -94,5 +94,15 @@ namespace Unity.Physics.Stepping.State
                 }
             }
         }
+
+        internal void ForgetRemovedImpulses(WorldData* store)
+        {
+            // Drop impulses for removed shapes before new contacts can reuse their addresses.
+            if (store->removedShapeCount != 0 && lastImpulses.Count != 0)
+            {
+                new ImpulseMemory.ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
+            }
+        }
+
     }
 }
