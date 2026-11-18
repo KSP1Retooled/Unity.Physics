@@ -215,44 +215,8 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal JobHandle SortIslands(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            using var span = StepScheduleMarker.Auto();
-            input.VesselSet = VesselData.vesselSet;
-
-            Simulation* simulation = singleton.AsSimulationPtr();
-            if (input.World.NumDynamicBodies == 0)
-            {
-                return dependency;
-            }
-
-            NativeList<DispatchPairSequencer.DispatchPair> pairs = simulation->StepContext.PairsToSortByIsland;
-            JobHandle filtered = new PairFilter.DropIgnoredPairsJob
-            {
-                Pairs = pairs.AsDeferredJobArray(),
-                Store = store->bodies,
-                Globals = globals,
-                Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
-                Known = Contacts.knownBodyPairs,
-                WholeBuilds = Colliders.wholeColliderBuilds,
-                Learned = Contacts.learnedBodyPairs.AsParallelWriter(),
-                World = store,
-                Units = Joints.jointUnits.AsDeferredJobArray(),
-                BodyVessels = VesselData.vesselBuild.BodyVessels.AsArray(),
-                VesselActive = VesselData.vesselBuild.Active.AsArray(),
-                VesselPairUnits = VesselData.vesselBuild.PairUnits,
-            }.Schedule(pairs, ParallelBatchSize, dependency);
-
-            // No job in this step reads the newly learned body pairs. Saving those pairs can therefore run in parallel
-            // with finding islands.
-            JobHandle remembered = new PairFilter.RememberBodyPairsJob
-            {
-                Known = Contacts.knownBodyPairs,
-                Learned = Contacts.learnedBodyPairs,
-                Bodies = (int)store->bodyCount,
-            }.Schedule(filtered);
-
-            SimulationStepInput keeping = input;
-            keeping.SolverIslandCache = SolverCaches.solverIslandCache;
-            return JobHandle.CombineDependencies(simulation->ScheduleIslandJobs(keeping, filtered), remembered);
+            return IslandStage.SortIslands(store, globals, ref world, ref Contacts, ref Colliders, ref Joints,
+                ref VesselData, ref SolverCaches, singleton, ref input, dependency);
         }
 
         /// <summary>Reads the contacts produced by the narrow phase before the Jacobians are built from them.</summary>
