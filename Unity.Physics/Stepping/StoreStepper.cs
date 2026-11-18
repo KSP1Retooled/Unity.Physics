@@ -41,7 +41,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
         private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
         private static readonly ProfilerMarker StepReadJointForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");
-        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
         private static readonly ProfilerMarker StepSleepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Sleep");
         private static readonly ProfilerMarker StepWaitForSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
         private static readonly ProfilerMarker StepWriteBackMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
@@ -145,22 +144,7 @@ namespace Unity.Physics.Stepping
         internal readonly int StaticsChanged => StaticBodies.staticsChanged ? 1 : 0;
 
         /// <summary>The settings that the simulation systems use to build their input for a step.</summary>
-        internal readonly PhysicsStep Settings
-        {
-            get
-            {
-                PhysicsStep settings = PhysicsStep.Default;
-                settings.Gravity = float3.zero;
-                settings.DirectIslandSubsteps = SolverConstants.DirectIslandSubsteps;
-                settings.SolverIterationCount = SolverConstants.SolverIterations;
-                settings.MaxDynamicDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;
-                settings.MaxStaticDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;
-
-                // FinishStep synchronizes the collision world while reading the results of the step.
-                settings.SynchronizeCollisionWorld = 0;
-                return settings;
-            }
-        }
+        internal readonly PhysicsStep Settings => SolveStage.Settings;
 
         /// <summary>
         /// Complete outstanding work and invalidate queries before the caller prepares body pointers for jobs.
@@ -229,29 +213,8 @@ namespace Unity.Physics.Stepping
         /// <summary>Warm starts the Jacobians.</summary>
         internal JobHandle PrepareSolve(SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
-            using var span = StepScheduleMarker.Auto();
-
-            SolverCaches.directSolverCache.Forest = new ForestSettings
-            {
-                Enabled = ForestSwitches.Enabled || VesselSwitches.Enabled,
-                BoundaryRowCap = ForestSwitches.BoundaryRowCap,
-                Locking = ForestSwitches.Locking,
-                LockAngle = ForestSwitches.LockAngle,
-                YieldAngle = ForestSwitches.YieldAngle,
-                MinimumHoldSteps = ForestSwitches.MinimumHoldSteps,
-                DeflectionSmoothingSteps = ForestSwitches.DeflectionSmoothingSteps,
-                Caps = ForestSwitches.Caps,
-            };
-            input.IslandSolverCache = SolverCaches.directSolverCache;
-            input.VesselSet = VesselData.vesselSet;
-            preparedSimulation = singleton.AsSimulationPtr();
-            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled);
-            return new WarmStart.WarmStartJob
-            {
-                WarmStarts = Contacts.warmStarts,
-                Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
-                MotionCount = Partition.dynamicIndices.Length,
-            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled));
+            return SolveStage.PrepareSolve(ref world, ref Partition, ref Contacts, ref VesselData, ref SolverCaches,
+                warmStartsIndexed, out preparedSimulation, out preparedInputs, singleton, ref input, dependency);
         }
 
         /// <summary>
@@ -334,52 +297,8 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal void ReadVesselLoads(float deltaTime)
         {
-            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, default);
+            JobHandle vesselsSettled = SolveStage.ScheduleVesselLoads(store, ref world, ref Partition, ref Joints, ref VesselData, deltaTime, default);
             ReadJointForces(default, deltaTime, vesselsSettled).Complete();
-        }
-
-        /// <summary>
-        /// Schedule vessel joint load extraction after solving. Read solved motion poses without waiting for
-        /// write-back.
-        /// </summary>
-        private JobHandle ScheduleVesselLoads(float deltaTime, JobHandle dependency)
-        {
-            const int vesselLoadsPerBatch = 32;
-
-            // The jobs write the joint loads through arrays that the safety system doesn't track, so the list must not
-            // change size after this point in the step.
-            Joints.jointLoads.ResizeUninitialized((int)store->jointCount);
-            Joints.jointsOverloaded.ResizeUninitialized((int)store->jointCount);
-            if (Joints.jointStates->Length != (int)store->jointCount)
-            {
-                throw new InvalidOperationException("the joints' load states and the store's joints differ in number");
-            }
-
-            if (!VesselData.vesselSet.IsCreated)
-            {
-                return default;
-            }
-
-            return new VesselLoads.VesselLoadsJob
-            {
-                World = store,
-                States = Joints.jointStates->Ptr,
-                Units = Joints.jointUnits.AsArray(),
-                Groups = Joints.jointGroups.AsArray(),
-                Members = Joints.jointGroupMembers.AsArray(),
-                MotionDatas = world.MotionDatas,
-                BuiltIndices = Partition.builtIndices.AsArray(),
-                DeltaTime = deltaTime,
-                PartUnits = VesselData.vesselBuild.PartUnits.AsArray(),
-                ClosureUnits = VesselData.vesselBuild.ClosureUnits.AsArray(),
-                PartIsBody0 = VesselData.vesselBuild.PartIsBody0.AsArray(),
-                UnitVessels = VesselData.vesselBuild.UnitVessels.AsArray(),
-                Active = VesselData.vesselBuild.Active.AsArray(),
-                EdgeLoads = VesselData.vesselBuild.EdgeLoads.AsArray(),
-                ClosureLoads = VesselData.vesselBuild.ClosureLoads.AsArray(),
-                JointLoads = Joints.jointLoads.AsArray(),
-                Overloaded = Joints.jointsOverloaded.AsArray(),
-            }.Schedule(VesselData.vesselBuild.PartUnits.Length + VesselData.vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 
         /// <summary>
@@ -406,7 +325,7 @@ namespace Unity.Physics.Stepping
             }.Schedule(Partition.dynamicIndices.Length, ParallelBatchSize, motionsSolved);
 
             // Vessel loads read solved motions, so they can run alongside pose write-back.
-            JobHandle vesselsSettled = ScheduleVesselLoads(deltaTime, motionsSolved);
+            JobHandle vesselsSettled = SolveStage.ScheduleVesselLoads(store, ref world, ref Partition, ref Joints, ref VesselData, deltaTime, motionsSolved);
 
             // Refit the dynamic tree to solved poses alongside write-back. The step returns without waiting for
             // the refit.
