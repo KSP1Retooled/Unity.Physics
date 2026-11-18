@@ -111,6 +111,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
         [TestCase(180.0f)]
         [TestCase(5.0f)]
+        [TestCase(10.0f)]
         public void ForestLockYieldsOnSmoothedDriveForce(float angle)
         {
             Fresh(true);
@@ -212,11 +213,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void APairLocksYieldsAndLocksAgainUnderARampedLoad()
         {
-            const int steps = 240;
-            // The backend turns a drive's spring into a frequency at its own estimate of the joint's mass, so the rows hold
-            // at about 17,600 N m/rad here; the forest reads its deflection from the rows.
+            const int rampSteps = 600;
+            const int steps = rampSteps + 120;
+            // Let the drive settle at zero torque so the pair has time to relock after the ramp.
             const float spring = 2000.0f;
-            const float peak = 50.0f;
+            const float peak = 18.0f;
             var turn = new float[2][];
             var lockedAt = new bool[steps];
             var estimate = new float[steps];
@@ -230,7 +231,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Fresh(pass == 1);
                 Rigidbody a = WeightlessBox(new Vector3(-0.5f, 5.0f, 0.0f), 2.0f);
                 Rigidbody b = WeightlessBox(new Vector3(0.5f, 5.0f, 0.0f), 2.0f);
-                SpringJoint(b, a, new Vector3(0.0f, 5.0f, 0.0f), spring);
+                ConfigurableJoint joint = SpringJoint(b, a, new Vector3(0.0f, 5.0f, 0.0f), spring);
+                JointDrive drive = joint.angularYZDrive;
+                drive.positionDamper = 40.0f;
+                joint.angularYZDrive = drive;
 
                 // Locked, the torques cancel inside the section and nothing moves, so the bodies would fall asleep.
                 a.sleepThreshold = 0.0f;
@@ -238,7 +242,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 turn[pass] = new float[steps];
                 for (int i = 0; i < steps; i++)
                 {
-                    float torque = peak * Mathf.Sin(Mathf.PI * i / steps);
+                    float torque = i < rampSteps ? peak * Mathf.Sin(Mathf.PI * i / rampSteps) : 0.0f;
                     b.AddTorque(new Vector3(0.0f, torque, 0.0f));
                     a.AddTorque(new Vector3(0.0f, -torque, 0.0f));
                     Simulate();

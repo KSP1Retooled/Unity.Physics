@@ -186,6 +186,55 @@ namespace KSP.Retooled.Physics.Tests.Tools
             return first;
         }
 
+        private sealed class BendTrace
+        {
+            private readonly List<(ConfigurableJoint Joint, Rigidbody Body, Rigidbody Parent, Quaternion InitialRotation)> drives = new();
+            private double squaredAngle;
+            private int samples;
+            private float maximum;
+
+            public BendTrace(List<ConfigurableJoint> joints)
+            {
+                foreach (ConfigurableJoint joint in joints)
+                {
+                    if (joint.connectedBody == null || (joint.angularXDrive.positionSpring <= 0.0f
+                        && joint.angularYZDrive.positionSpring <= 0.0f && joint.slerpDrive.positionSpring <= 0.0f))
+                    {
+                        continue;
+                    }
+
+                    var body = joint.GetComponent<Rigidbody>();
+                    Rigidbody parent = joint.connectedBody;
+                    drives.Add((joint, body, parent, Quaternion.Inverse(parent.rotation) * body.rotation));
+                }
+            }
+
+            public void Sample()
+            {
+                foreach (var drive in drives)
+                {
+                    if (drive.Joint == null)
+                    {
+                        continue;
+                    }
+
+                    Quaternion relative = Quaternion.Inverse(drive.Parent.rotation) * drive.Body.rotation;
+                    Quaternion delta = relative * Quaternion.Inverse(drive.InitialRotation);
+                    float sine = new Vector3(delta.x, delta.y, delta.z).magnitude;
+                    float angle = 2.0f * Mathf.Atan2(sine, Mathf.Abs(delta.w)) * Mathf.Rad2Deg;
+                    maximum = Mathf.Max(maximum, angle);
+                    squaredAngle += (double)angle * angle;
+                    samples++;
+                }
+            }
+
+            public void Report(string scene)
+            {
+                TestContext.Out.WriteLine(FormattableString.Invariant(
+                    $"{scene} driven-joint relative rotation, {samples} samples: RMS {System.Math.Sqrt(squaredAngle / System.Math.Max(1, samples)):G6} degrees, maximum {maximum:G6} degrees."));
+            }
+        }
+
         [Test]
         public unsafe void Write()
         {
@@ -195,6 +244,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             }
 
             string tag = Environment.GetEnvironmentVariable("TRACE_TAG") ?? "run";
+            bool measureBend = Environment.GetEnvironmentVariable("TRACE_BEND") == "1";
             float breakForce = float.TryParse(Environment.GetEnvironmentVariable("TRACE_BREAK"), out float value) ? value : 2e4f;
             var trace = new StringBuilder();
             ContactHash.Hash = 14695981039346656037UL;
@@ -225,11 +275,14 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
 
                 trace.Append($"tu160: {bodies.Count} bodies, {joints.Count} joints, break force {breakForce}\n");
+                BendTrace bend = measureBend ? new BendTrace(joints) : null;
                 for (int step = 0; step < Steps; step++)
                 {
                     Simulate(1);
                     Record(trace, step, joints, bodies);
+                    bend?.Sample();
                 }
+                bend?.Report("Tu-160");
             }
             finally
             {
@@ -285,10 +338,12 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
 
                 trace.Append($"tower: {bodies.Count} bodies, {joints.Count} joints\n");
+                BendTrace bend = measureBend ? new BendTrace(joints) : null;
                 for (int step = 0; step < Steps; step++)
                 {
                     Simulate(1);
                     Record(trace, step, joints, bodies);
+                    bend?.Sample();
                     if (step == 100)
                     {
                         // Halve the limits of the chain between steps.
@@ -301,6 +356,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
                         }
                     }
                 }
+                bend?.Report("Tower");
             }
 
             // TRACE_STATICS=1 adds a third scene after the others, so that the first two stay comparable with a trace that

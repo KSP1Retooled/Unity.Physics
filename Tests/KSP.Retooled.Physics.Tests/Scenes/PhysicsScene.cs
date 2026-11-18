@@ -3,6 +3,7 @@ using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using UnityEngine;
 using Unity.Physics.Dynamics.Joint.Loads;
+using Unity.Physics.Store.Joints;
 
 namespace KSP.Retooled.Physics.Tests.Scenes
 {
@@ -101,6 +102,11 @@ namespace KSP.Retooled.Physics.Tests.Scenes
 
         internal static unsafe JointLoadState FullJointLoad(Joint joint)
         {
+            return *JointLoadStates.Find(JointRecord(joint));
+        }
+
+        internal static unsafe JointData* JointRecord(Joint joint)
+        {
             if (!BackendInfo.IsRetooled)
             {
                 Assert.Ignore("Only the Retooled backend exposes its internal joint loads.");
@@ -113,7 +119,7 @@ namespace KSP.Retooled.Physics.Tests.Scenes
                 var record = step->Store->joints[i];
                 if (record->userData != null && *(ulong*)((byte*)record->userData + step->Globals->engineObjectIdOffset) == id)
                 {
-                    return *JointLoadStates.Find(record);
+                    return record;
                 }
             }
 
