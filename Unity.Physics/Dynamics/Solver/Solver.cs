@@ -16,6 +16,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
@@ -276,8 +277,8 @@ namespace Unity.Physics
                 var iterativeJacobiansHandle = new ParallelBuildJacobiansJob
                 {
                     Input = input,
-                    Timestep = input.SubstepTimeStep,
-                    NumSubsteps = input.NumSubsteps,
+                    Timestep = input.TimeStep,
+                    NumSubsteps = 1,
                     MotorImpulseScale = 1.0f,
                     GravityMagnitude = gravityMagnitude,
                     ContactsReader = contacts.AsReader(),
@@ -289,8 +290,8 @@ namespace Unity.Physics
                 var couplingJacobiansHandle = new ParallelBuildJacobiansJob
                 {
                     Input = input,
-                    Timestep = input.SubstepTimeStep,
-                    NumSubsteps = input.NumSubsteps,
+                    Timestep = input.TimeStep,
+                    NumSubsteps = 1,
                     MotorImpulseScale = 1.0f,
                     GravityMagnitude = gravityMagnitude,
                     ContactsReader = contacts.AsReader(),
@@ -301,13 +302,13 @@ namespace Unity.Physics
 
                 // Divide motor limits by the direct island substep count because each substep applies its own
                 // limit.
-                int directSubsteps = input.DirectIslandSubsteps > 0 ? input.DirectIslandSubsteps : input.NumSubsteps;
+                const int directSubsteps = SolverConstants.DirectIslandSubsteps;
                 var directJacobiansHandle = new ParallelBuildJacobiansJob
                 {
                     Input = input,
                     Timestep = input.TimeStep / directSubsteps,
                     NumSubsteps = directSubsteps,
-                    MotorImpulseScale = input.DirectIslandSubsteps > 0 ? 1.0f / input.DirectIslandSubsteps : 1.0f,
+                    MotorImpulseScale = 1.0f / directSubsteps,
                     GravityMagnitude = gravityMagnitude,
                     ContactsReader = contacts.AsReader(),
                     JacobiansWriter = jacobians.AsWriter(),
@@ -345,7 +346,7 @@ namespace Unity.Physics
 
             public void Execute()
             {
-                BuildJacobians(Input, DispatchPairs, ref SolverSchedulerInfo, ref ContactsReader, ref JacobiansWriter);
+                BuildIslandJacobians(Input, DispatchPairs, SolverSchedulerInfo, ContactsReader, JacobiansWriter);
             }
         }
 
@@ -386,51 +387,35 @@ namespace Unity.Physics
         /// <summary>
         /// Build Jacobians from the contacts and joints stored in the simulation context.
         /// </summary>
-        internal static void BuildJacobians(in SimulationStepInput input,
-            NativeArray<DispatchPairSequencer.DispatchPair> dispatchPairs, ref DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo,
-            ref NativeStream.Reader contactsReader, ref NativeStream.Writer jacobiansWriter)
+        internal static void BuildIslandJacobians(in SimulationStepInput input,
+            NativeArray<DispatchPairSequencer.DispatchPair> dispatchPairs, in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo,
+            NativeStream.Reader contactsReader, NativeStream.Writer jacobiansWriter)
         {
-            var timeStep = input.SubstepTimeStep; // Note: need to use substep timestep for each sub-solve and for building/updating the required Jacobians
-            var gravityMagnitude = math.length(input.Gravity);
-            var numSubsteps = input.NumSubsteps;
-            var numSolverIterations = input.NumSolverIterations;
-            var maxDynamicDepenetrationVelocity = input.MaxDynamicDepenetrationVelocity;
-            var maxStaticDepenetrationVelocity = input.MaxStaticDepenetrationVelocity;
-            var directTimeStep = input.DirectIslandSubsteps > 0 ? input.TimeStep / input.DirectIslandSubsteps : timeStep;
-
-            var workItemIndex = 0;
-
-            // pure iterative pairs:
-            if (solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value > 0)
+            var job = new ParallelBuildJacobiansJob
             {
-                BuildJacobians(input.World, timeStep, gravityMagnitude, numSubsteps, numSolverIterations,
-                    maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
-                    workItemIndex++, dispatchPairs,
-                    solverSchedulerInfo.IterativePairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.IterativePairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
-                    directTimestep: directTimeStep);
+                Input = input,
+                Timestep = input.TimeStep,
+                NumSubsteps = 1,
+                MotorImpulseScale = 1.0f,
+                GravityMagnitude = math.length(input.Gravity),
+                ContactsReader = contactsReader,
+                JacobiansWriter = jacobiansWriter,
+                DispatchPairs = dispatchPairs,
+                IterativeSolverSchedulerInfo = solverSchedulerInfo.IterativePairsIterativeScheduling,
+            };
+            for (int i = 0; i < job.IterativeSolverSchedulerInfo.NumWorkItems[0]; i++)
+            {
+                job.Execute(i);
             }
 
-            // iterative coupling pairs:
-            if (solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value > 0)
+            const int substeps = SolverConstants.DirectIslandSubsteps;
+            job.Timestep = input.TimeStep / substeps;
+            job.NumSubsteps = substeps;
+            job.MotorImpulseScale = 1.0f / substeps;
+            job.IterativeSolverSchedulerInfo = solverSchedulerInfo.DirectPairsIterativeScheduling;
+            for (int i = 0; i < job.IterativeSolverSchedulerInfo.NumWorkItems[0]; i++)
             {
-                BuildJacobians(input.World, timeStep, gravityMagnitude, numSubsteps, numSolverIterations,
-                    maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
-                    workItemIndex++, dispatchPairs,
-                    solverSchedulerInfo.CouplingPairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.CouplingPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
-                    directTimestep: directTimeStep);
-            }
-
-            // direct solver pairs:
-            if (solverSchedulerInfo.DirectPairsIterativeScheduling.NumDispatchPairs.Value > 0)
-            {
-                BuildJacobians(input.World, timeStep, gravityMagnitude, numSubsteps, numSolverIterations,
-                    maxDynamicDepenetrationVelocity, maxStaticDepenetrationVelocity, input.DirectSolverSettings,
-                    workItemIndex, dispatchPairs,
-                    solverSchedulerInfo.DirectPairsIterativeScheduling.FirstDispatchPairIndex.Value,
-                    solverSchedulerInfo.DirectPairsIterativeScheduling.NumDispatchPairs.Value, ref contactsReader, ref jacobiansWriter,
-                    directTimestep: directTimeStep);
+                job.Execute(i);
             }
         }
 

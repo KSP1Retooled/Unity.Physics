@@ -27,7 +27,6 @@ namespace Unity.Physics.Stepping.Stages
             {
                 PhysicsStep settings = PhysicsStep.Default;
                 settings.Gravity = float3.zero;
-                settings.DirectIslandSubsteps = SolverConstants.DirectIslandSubsteps;
                 settings.SolverIterationCount = SolverConstants.SolverIterations;
                 settings.MaxDynamicDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;
                 settings.MaxStaticDepenetrationVelocity = SolverConstants.MaxDepenetrationVelocity;

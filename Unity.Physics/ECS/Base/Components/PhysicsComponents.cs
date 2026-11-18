@@ -344,8 +344,6 @@ namespace Unity.Physics
         public bool EnableGyroscopicTorque;
         /// <summary>   Number of substeps. </summary>
         public int SubstepCount;
-        /// <summary> See <see cref="SimulationStepInput.DirectIslandSubsteps"/>. </summary>
-        public int DirectIslandSubsteps;
         /// <summary>   Number of Gauss-Seidel solver iterations. </summary>
         public int SolverIterationCount;
         /// <summary> The direct solver settings. </summary>

@@ -48,13 +48,6 @@ namespace Unity.Physics
         public Solver.DirectSolverSettings DirectSolverSettings;
 
         /// <summary>
-        /// When positive, solve constraints by island: use iterative solving for islands fitting within
-        /// NumIslandPhases,
-        /// and direct solving with this many substeps for larger islands.
-        /// </summary>
-        public int DirectIslandSubsteps;
-
-        /// <summary>
         /// The caller-owned cache for reusing work between direct solves. The default value disables caching.
         /// </summary>
         internal IslandSolverCache IslandSolverCache;

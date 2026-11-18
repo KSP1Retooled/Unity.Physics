@@ -11,10 +11,10 @@ namespace Unity.Physics
         internal JobHandle MotionsSolvedHandle => StepContext.HasMotionsSolved ? StepContext.MotionsSolved : FinalSimulationJobHandle;
 
         /// <summary>
-        /// Group filtered pairs into islands when DirectIslandSubsteps is positive.
+        /// Group the filtered pairs into islands.
         /// Remove unsolved pairs before calling so that they do not connect islands or occupy phases.
         /// </summary>
-        internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps)
+        internal JobHandle ScheduleIslandJobs(SimulationStepInput input, JobHandle inputDeps, bool multiThreaded = true)
         {
             if (input.World.NumDynamicBodies == 0)
             {
@@ -22,7 +22,8 @@ namespace Unity.Physics
             }
 
             JobHandle handle = DispatchPairSequencer.ScheduleSortPairsByIsland(input, StepContext.PairsToSortByIsland,
-                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps, out JobHandle disposed);
+                StepContext.PhasedDispatchPairs, StepContext.SolverSchedulerInfo, inputDeps, out JobHandle disposed, multiThreaded);
+            StepContext.IslandsSorted = true;
 
             StepContext.CreateDispatchPairsJobHandle = handle;
             m_StepHandles.FinalDisposeHandle = JobHandle.CombineDependencies(m_StepHandles.FinalDisposeHandle,

@@ -6,6 +6,22 @@ namespace Unity.Physics
 {
     partial struct DispatchPairSequencer
     {
+        internal static void SortPairsForIslands(in PhysicsWorld world, NativeStream.Reader dynamicPairs,
+            NativeStream.Reader staticPairs, NativeList<DispatchPair> unsortedPairs, NativeList<DispatchPair> sortedPairs)
+        {
+            using var pairCount = new NativeReference<int>(Allocator.Temp);
+            new SortPairsForIslandsJob
+            {
+                Joints = world.Joints,
+                DynamicVsDynamicPairs = dynamicPairs,
+                StaticVsDynamicPairs = staticPairs,
+                NumBodies = world.NumBodies,
+                UnsortedPairs = unsortedPairs,
+                SortedPairs = sortedPairs,
+                PairCount = pairCount,
+            }.Execute();
+        }
+
         /// <summary>
         /// Sort island dispatch pairs and disable contacts forbidden by joints, matching the parallel chain's
         /// order.

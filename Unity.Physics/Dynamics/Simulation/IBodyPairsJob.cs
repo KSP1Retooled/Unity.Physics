@@ -117,12 +117,13 @@ namespace Unity.Physics
         {
             SafetyChecks.CheckSimulationStageAndThrow(simulation.m_SimulationScheduleStage, SimulationScheduleStage.PostCreateBodyPairs);
 
-            if (simulation.StepContext.PhasedDispatchPairs.IsCreated)
+            var pairs = simulation.StepContext.IslandsSorted ? simulation.StepContext.PhasedDispatchPairs : simulation.StepContext.PairsToSortByIsland;
+            if (pairs.IsCreated)
             {
                 var data = new BodyPairsJobData<T>
                 {
                     UserJobData = job,
-                    PhasedDispatchPairs = simulation.StepContext.PhasedDispatchPairs.AsDeferredJobArray(),
+                    PhasedDispatchPairs = pairs.AsDeferredJobArray(),
                     Bodies = world.Bodies,
                     IsParallel = false
                 };
@@ -143,12 +144,13 @@ namespace Unity.Physics
         {
             SafetyChecks.CheckSimulationStageAndThrow(simulation.m_SimulationScheduleStage, SimulationScheduleStage.PostCreateBodyPairs);
 
-            if (simulation.StepContext.PhasedDispatchPairs.IsCreated)
+            var pairs = simulation.StepContext.IslandsSorted ? simulation.StepContext.PhasedDispatchPairs : simulation.StepContext.PairsToSortByIsland;
+            if (pairs.IsCreated)
             {
                 var data = new BodyPairsJobData<T>
                 {
                     UserJobData = job,
-                    PhasedDispatchPairs = simulation.StepContext.PhasedDispatchPairs.AsDeferredJobArray(),
+                    PhasedDispatchPairs = pairs.AsDeferredJobArray(),
                     Bodies = world.Bodies,
                     IsParallel = true
                 };
@@ -157,7 +159,7 @@ namespace Unity.Physics
                 BodyPairsJobProcess<T>.CheckReflectionDataCorrect(jobReflectionData);
 
                 var parameters = new JobsUtility.JobScheduleParameters(UnsafeUtility.AddressOf(ref data), jobReflectionData, inputDeps, ScheduleMode.Parallel);
-                var listDataPtr = simulation.StepContext.PhasedDispatchPairs.GetUnsafeList();
+                var listDataPtr = pairs.GetUnsafeList();
                 return JobsUtility.ScheduleParallelForDeferArraySize(ref parameters, innerLoopBatchCount, listDataPtr, null);
             }
 
@@ -210,7 +212,7 @@ namespace Unity.Physics
                         DispatchPairSequencer.DispatchPair dispatchPair = jobData.PhasedDispatchPairs[currentIdx];
 
                         // Skip joint pairs and invalid pairs
-                        if (dispatchPair.IsJoint || !dispatchPair.IsValid)
+                        if (dispatchPair.IsJoint || !dispatchPair.IsValid || !dispatchPair.IsCollisionEnabled)
                         {
                             continue;
                         }

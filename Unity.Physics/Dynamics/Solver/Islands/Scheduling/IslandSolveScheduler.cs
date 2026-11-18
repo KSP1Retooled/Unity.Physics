@@ -39,8 +39,29 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
             in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData,
-            JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle motionsSolved)
+            JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle motionsSolved, bool multiThreaded)
         {
+            if (!multiThreaded)
+            {
+                motionsSolved = new SolveIslandsJob
+                {
+                    World = world,
+                    Input = stepInput,
+                    Jacobians = jacobians,
+                    CollisionEvents = collisionEvents,
+                    TriggerEvents = triggerEvents,
+                    ImpulseEvents = impulseEvents,
+                    Info = solverSchedulerInfo,
+                    Stabilization = solverStabilizationData,
+                }.Schedule(JobHandle.CombineDependencies(jacobiansBuilt, inputDeps));
+
+                return new SimulationJobHandles(motionsSolved)
+                {
+                    FinalDisposeHandle = JobHandle.CombineDependencies(jacobians.Dispose(motionsSolved),
+                        solverSchedulerInfo.ScheduleDisposeJob(motionsSolved)),
+                };
+            }
+
             NativeArray<MotionVelocity> motionVelocities = world.MotionVelocities;
             DispatchPairSequencer.IterativeSolverSchedulerInfo iterativePairs = solverSchedulerInfo.IterativePairsIterativeScheduling;
 
@@ -401,14 +422,14 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             // Atomic claim for the one fused lane that executes unfused substeps.
             [NativeDisableUnsafePtrRestriction] public int* UnfusedClaim;
 
-            public DirectIslandBuffers(int substeps, Allocator allocator)
+            public DirectIslandBuffers(int substeps, Allocator allocator, bool configureTeams)
             {
                 // The team after the substeps' teams never runs. The main thread configures it here, because only the
                 // main thread can read the clock's conversion rate, and each fused island's team starts as a copy of it.
                 Teams = UnsafeList<WorkTeam>.Create(substeps + 1, allocator);
                 FusedTeams = UnsafeList<FusedTeam>.Create(4, allocator);
                 Teams->Resize(substeps + 1, NativeArrayOptions.ClearMemory);
-                for (int substep = 0; substep <= substeps; substep++)
+                for (int substep = 0; configureTeams && substep <= substeps; substep++)
                 {
                     Teams->ElementAt(substep).Configure();
                 }
@@ -514,11 +535,11 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             /// </summary>
             public NativeList<int> UnfusedBodies;
 
-            public DirectIslandWork(int substeps, Allocator allocator)
+            public DirectIslandWork(int substeps, Allocator allocator, bool configureTeams = true)
             {
                 Headers = new NativeList<IslandHeader>(allocator);
                 Islands = new NativeList<DirectIsland>(allocator);
-                Buffers = new DirectIslandBuffers(substeps, allocator);
+                Buffers = new DirectIslandBuffers(substeps, allocator, configureTeams);
                 IslandVessels = new NativeList<int>(allocator);
                 UnfusedBodies = new NativeList<int>(allocator);
             }

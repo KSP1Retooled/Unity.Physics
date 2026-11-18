@@ -26,8 +26,20 @@ namespace Unity.Physics
         /// Return pair-sorting completion separately from temporary-list disposal in disposed.
         /// </summary>
         internal static JobHandle ScheduleSortPairsByIsland(in SimulationStepInput stepInput, NativeList<DispatchPair> sortedPairs,
-            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps, out JobHandle disposed)
+            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo solverSchedulerInfo, JobHandle inputDeps, out JobHandle disposed, bool multiThreaded)
         {
+            if (!multiThreaded)
+            {
+                disposed = default;
+                return new SortPairsByIslandJob
+                {
+                    Input = stepInput,
+                    SortedPairs = sortedPairs,
+                    PhasedPairs = phasedPairs,
+                    Info = solverSchedulerInfo,
+                }.Schedule(inputDeps);
+            }
+
             int numDynamicBodies = stepInput.World.NumDynamicBodies;
             var islands = new NativeList<SolverIsland>(Allocator.TempJob);
             var islandPairs = new NativeList<DispatchPair>(Allocator.TempJob);
@@ -79,6 +91,76 @@ namespace Unity.Physics
                 JobHandle.CombineDependencies(islands.Dispose(handle), islandPairs.Dispose(handle), islandBodies.Dispose(handle)),
                 JobHandle.CombineDependencies(phasesUsed.Dispose(handle), linksInPhases.Dispose(handle), islandVessels.Dispose(handle)));
             return handle;
+        }
+
+        [BurstCompile]
+        struct SortPairsByIslandJob : IJob
+        {
+            [ReadOnly] public SimulationStepInput Input;
+            [ReadOnly] public NativeList<DispatchPair> SortedPairs;
+            public NativeList<DispatchPair> PhasedPairs;
+            public SolverSchedulerInfo Info;
+
+            public void Execute()
+            {
+                SortPairsByIsland(Input, SortedPairs, PhasedPairs, Info);
+            }
+        }
+
+        internal static void SortPairsByIsland(in SimulationStepInput input, NativeList<DispatchPair> sortedPairs,
+            NativeList<DispatchPair> phasedPairs, in SolverSchedulerInfo info)
+        {
+            int numDynamicBodies = input.World.NumDynamicBodies;
+            using var islands = new NativeList<SolverIsland>(Allocator.Temp);
+            using var islandPairs = new NativeList<DispatchPair>(Allocator.Temp);
+            using var islandBodies = new NativeList<int>(Allocator.Temp);
+            using var islandVessels = new NativeList<int>(Allocator.Temp);
+            using var phasesUsed = new NativeList<byte>(Allocator.Temp);
+            using var linksInPhases = new NativeList<int>(Allocator.Temp);
+            using var bucketCounts = new NativeArray<int>(NumIslandBuckets, Allocator.Temp);
+
+            new FindSolverIslandsJob
+            {
+                DispatchPairs = sortedPairs.AsArray(),
+                Joints = input.World.Joints,
+                NumDynamicBodies = numDynamicBodies,
+                Islands = islands,
+                IslandPairs = islandPairs,
+                IslandBodies = islandBodies,
+                IslandVessels = islandVessels,
+                PhasedDispatchPairs = phasedPairs,
+                PhasesUsed = phasesUsed,
+                LinksInPhases = linksInPhases,
+                Cache = input.SolverIslandCache,
+                Vessels = VesselSet.OrTestSet(input.VesselSet),
+            }.Execute();
+
+            var sort = new SortIslandIntoBucketsJob
+            {
+                IslandPairs = islandPairs.AsArray(),
+                Islands = islands.AsArray(),
+                PhasesUsed = phasesUsed.AsArray(),
+                LinksInPhases = linksInPhases.AsArray(),
+                PhasedDispatchPairs = phasedPairs.AsArray(),
+                BucketCounts = bucketCounts,
+                NumDynamicBodies = numDynamicBodies,
+            };
+            for (int i = 0; i < islands.Length; i++)
+            {
+                sort.Execute(i);
+            }
+
+            new PublishIslandBucketsJob
+            {
+                Islands = islands.AsArray(),
+                IslandBodies = islandBodies.AsArray(),
+                IslandVessels = islandVessels.AsArray(),
+                BucketCounts = bucketCounts,
+                SolverSchedulerInfo = info,
+                PhasedDispatchPairs = phasedPairs.AsArray(),
+                NumDynamicBodies = numDynamicBodies,
+                OneWorkItemPerBucket = true,
+            }.Execute();
         }
 
         /// <summary>
@@ -957,9 +1039,11 @@ namespace Unity.Physics
 
             public int NumDynamicBodies;
 
-            static IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem, int linkedNumDynamicBodies)
+            public bool OneWorkItemPerBucket;
+
+            IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem, int linkedNumDynamicBodies)
             {
-                int batchSize = math.min(CreateDispatchPairPhasesJob.kMaxBatchSize, numPairs);
+                int batchSize = OneWorkItemPerBucket ? numPairs : math.min(CreateDispatchPairPhasesJob.kMaxBatchSize, numPairs);
                 return new IterativeSolverSchedulerInfo.SolvePhaseInfo
                 {
                     DispatchPairCount = numPairs,

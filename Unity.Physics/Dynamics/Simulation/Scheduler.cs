@@ -230,8 +230,8 @@ namespace Unity.Physics
         [NoAlias]
         internal struct SolverSchedulerInfo : IDisposable
         {
-            // One work item each for iterative, coupling and direct pairs (see FinalizeIterativeWorkItemInfo)
-            internal const int k_MaxSingleThreadedWorkItems = 3;
+            // The serial step uses at most one work item per island bucket.
+            internal const int k_MaxSingleThreadedWorkItems = NumIslandBuckets;
 
             [NoAlias]
             public IterativeSolverSchedulerInfo IterativePairsIterativeScheduling;
@@ -1118,8 +1118,7 @@ namespace Unity.Physics
             pairsToSortByIsland = default;
 
             // Use one sorting job for small island workloads to avoid the parallel chain's scheduling overhead.
-            if (multiThreaded && stepInput.DirectIslandSubsteps > 0 && !stepInput.DirectSolverSettings.ForceDirectSolver
-                && islandPairCount.IsCreated && islandPairCount.Value <= SolverSwitches.SerialIslandPairLimit)
+            if (!multiThreaded || (islandPairCount.IsCreated && islandPairCount.Value <= SolverSwitches.SerialIslandPairLimit))
             {
                 dispatchPairs = new NativeList<DispatchPair>(Allocator.TempJob);
                 pairsToSortByIsland = new NativeList<DispatchPair>(Allocator.TempJob);
@@ -1140,31 +1139,6 @@ namespace Unity.Physics
                     dynamicVsDynamicBroadphasePairsStream.Dispose(sorted), staticVsDynamicBroadphasePairsStream.Dispose(sorted));
                 return returnHandles;
             }
-
-            if (!multiThreaded)
-            {
-                dispatchPairs = new NativeList<DispatchPair>(Allocator.TempJob);
-
-                solverSchedulerInfo = new SolverSchedulerInfo(numPhases: 1);
-
-                returnHandles.FinalExecutionHandle = new CreateDispatchPairsJob
-                {
-                    StepInput = stepInput,
-                    SolverSchedulerInfo = solverSchedulerInfo,
-                    DispatchPairs = dispatchPairs,
-                    DynamicVsDynamicBroadphasePairsStream = dynamicVsDynamicBroadphasePairsStream,
-                    StaticVsDynamicBroadphasePairsStream = staticVsDynamicBroadphasePairsStream,
-                }.Schedule(inputDeps);
-
-                // We must dispose pair streams here, since we don't have access to them
-                // where we would ideally like to schedule their disposal
-                returnHandles.FinalExecutionHandle = JobHandle.CombineDependencies(
-                    dynamicVsDynamicBroadphasePairsStream.Dispose(returnHandles.FinalExecutionHandle),
-                    staticVsDynamicBroadphasePairsStream.Dispose(returnHandles.FinalExecutionHandle));
-
-                return returnHandles;
-            }
-            // else: (multiThreaded)
 
             // Parallel Scheduler:
             //
@@ -1321,67 +1295,6 @@ namespace Unity.Physics
             disposeHandles.Add(staticVsDynamicStreamPrefixSum.Dispose(dispatchPairsHandle));
             disposeHandles.Add(jointDispatchPairsStream.Dispose(dispatchPairsHandle));
 
-            // if direct solver is forced on, mark all pairs as direct
-            if (stepInput.DirectSolverSettings.ForceDirectSolver)
-            {
-                // The direct solver will be used for all constraints. Therefore, there are no coupling constraints, which means, we
-                // don't need to set the direct solver body flags or the coupling flags.
-                // Also, the solver type will have to be forced to be direct for all constraints.
-                dispatchPairsHandle = new ForceDirectSolverOnAllPairsJob
-                {
-                    DispatchPairs = unsortedPairs,
-                }.Schedule(unsortedPairs, 32, dispatchPairsHandle);
-
-                // Make sure that the direct solver used flag is set in order to enable subsequent direct solver related phases
-                directSolverUsed.Value = 1;
-            }
-            else if (stepInput.DirectIslandSubsteps == 0)
-            {
-                // In parallel, and if required, set direct solver body flags for later coupling detection.
-                // Note: we only enable this phase if the direct solver is not forced on for everything. In this case,
-                // there is no coupling and we don't need to prepare for the coupling detection consequently.
-
-                JobHandle enableDirectSolverPairProcessingHandle = new EnableDirectSolverPairProcessing
-                {
-                    Joints = stepInput.World.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
-                    DynamicVsDynamicBroadphaseStream = dynamicVsDynamicBroadphasePairsStream,
-                    StaticVsDynamicBroadphaseStream = staticVsDynamicBroadphasePairsStream,
-                    DirectSolverEnabledFlag = stepInput.World.DynamicsWorld.DirectSolverEnabledFlag,
-                    NumJointsToProcess = numJointsToProcessForDirectSolver,
-                    NumDynamicVsDynamicBroadphaseStreamsToProcess = numDynamicVsDynamicStreamsToProcessForDirectSolver,
-                    NumStaticVsDynamicBroadphaseStreamsToProcess = numStaticVsDynamicStreamsToProcessForDirectSolver
-                }.Schedule(inputDeps);
-
-                JobHandle directSolverBodyFlagsJointsHandle = new SetDirectSolverBodyFlagsForJointsJob
-                {
-                    StepInput = stepInput,
-                    DirectSolverBodyFlags = directSolverBodyFlags,
-                    DirectSolverUsed = directSolverUsed
-                }.ScheduleUnsafe(numJointsToProcessForDirectSolver, 16, enableDirectSolverPairProcessingHandle);
-
-                JobHandle directSolverBodyFlagsDynamicVsDynamicHandle = new SetDirectSolverBodyFlagsForBroadphasePairsJob
-                {
-                    OverlapResultsReader = dynamicVsDynamicBroadphasePairsStream.AsReader(),
-                    DirectSolverBodyFlags = directSolverBodyFlags,
-                    DirectSolverUsed = directSolverUsed,
-                    DirectSolverEnabledFlag = stepInput.World.DynamicsWorld.DirectSolverEnabledFlag,
-                    StaticDynamicOverlaps = false
-                }.ScheduleUnsafe(numDynamicVsDynamicStreamsToProcessForDirectSolver, 1, enableDirectSolverPairProcessingHandle);
-
-                JobHandle directSolverBodyFlagsStaticVsDynamicHandle = new SetDirectSolverBodyFlagsForBroadphasePairsJob
-                {
-                    OverlapResultsReader = staticVsDynamicBroadphasePairsStream.AsReader(),
-                    DirectSolverBodyFlags = directSolverBodyFlags,
-                    DirectSolverUsed = directSolverUsed,
-                    DirectSolverEnabledFlag = stepInput.World.DynamicsWorld.DirectSolverEnabledFlag,
-                    StaticDynamicOverlaps = true
-                }.ScheduleUnsafe(numStaticVsDynamicStreamsToProcessForDirectSolver, 1, enableDirectSolverPairProcessingHandle);
-
-                dispatchPairsHandle = JobHandle.CombineDependencies(dispatchPairsHandle,
-                    JobHandle.CombineDependencies(directSolverBodyFlagsJointsHandle,
-                        directSolverBodyFlagsDynamicVsDynamicHandle, directSolverBodyFlagsStaticVsDynamicHandle));
-            }
-
             // Now, dispose the broad phase pairs
             disposeHandles.Add(dynamicVsDynamicBroadphasePairsStream.Dispose(dispatchPairsHandle));
             disposeHandles.Add(staticVsDynamicBroadphasePairsStream.Dispose(dispatchPairsHandle));
@@ -1389,53 +1302,10 @@ namespace Unity.Physics
             disposeHandles.Add(numDynamicVsDynamicStreamsToProcessForDirectSolver.Dispose(dispatchPairsHandle));
             disposeHandles.Add(numStaticVsDynamicStreamsToProcessForDirectSolver.Dispose(dispatchPairsHandle));
 
-            // Enable coupling detection (and later pair grouping) if needed, i.e., if the direct solver is in use indicated
-            // by the DirectSolverUsed flag. The EnableCouplingDetectionAndPairGroupingJob checks this flag and sets the number
-            // of pairs to process for the coupling analysis to 0 or the total number of dispatch pairs accordingly.
-            // Analogously, it sets the number of workers for the grouping process to 0 or the actual worker count.
-            // A step that solves by island neither detects coupling nor groups pairs, so it skips this job. The job also
-            // holds the whole world, and in such a step, gravity is applied to the motions while this chain runs.
-            JobHandle couplingDetectionHandle = dispatchPairsHandle;
-            if (stepInput.DirectIslandSubsteps == 0)
-            {
-                couplingDetectionHandle = new EnableCouplingDetectionAndPairGroupingJob
-                {
-                    StepInput = stepInput,
-                    DispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                    NumPairsToProcessForCouplingDetection = numPairsToProcessForCouplingDetection,
-                    DirectSolverUsed = directSolverUsed,
-                    NumWorkersForPairGrouping = numWorkersForPairGrouping,
-                    NumWorkers = numWorkers
-                }.Schedule(dispatchPairsHandle);
-            }
+            disposeHandles.Add(numPairsToProcessForCouplingDetection.Dispose(dispatchPairsHandle));
+            disposeHandles.Add(directSolverBodyFlags.Dispose(dispatchPairsHandle));
 
-            // Detect coupling unless all pairs are forced to use the direct solver or solver selection is determined
-            // per island.
-            if (!stepInput.DirectSolverSettings.ForceDirectSolver && stepInput.DirectIslandSubsteps == 0)
-            {
-                couplingDetectionHandle = new DetectCouplingConstraintsJob
-                {
-                    DispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                    DirectSolverBodyFlags = directSolverBodyFlags
-                }.ScheduleUnsafe(numPairsToProcessForCouplingDetection, 16, couplingDetectionHandle);
-            }
-
-            disposeHandles.Add(numPairsToProcessForCouplingDetection.Dispose(couplingDetectionHandle));
-            disposeHandles.Add(directSolverBodyFlags.Dispose(couplingDetectionHandle));
-
-            dispatchPairsHandle = couplingDetectionHandle;
-
-            // Sort dispatch pairs. Here, we have two cases:
-            //  1)  Direct solver pairs are present. In this case, we need to ultimately re-organize all pairs
-            //      into [purely iterative pairs][coupling pairs][direct pairs] order, with each section internally
-            //      lexicographically sorted and then phased.
-            //  2)  No direct solver pairs are present. In this case, we only have purely iterative pairs, and don't need
-            //      the above re-organization.
-            // However, in both cases, we need to have a first, global lexicographical sorting of all pairs in order to implement
-            // the joints' "Enable Collisions" feature, which requires the corresponding pair ordering.
-            //
-            // Here, we start with the global lexicographical first sorting, followed by the "Enable Collisions" feature.
-            // After that, we will do perform the optional pair re-organization from (1) and then the phasing.
+            // Sort the pairs so that collision pairs can be disabled by their joints.
             JobHandle sortHandle = ScheduleSortJob(stepInput.World.NumBodies, unsortedPairs, sortedPairs, dispatchPairsHandle);
 
             sortHandle = new SetDisableCollisionFlagsJob
@@ -1444,188 +1314,21 @@ namespace Unity.Physics
                 NumWorkers = numWorkers
             }.Schedule(numWorkers, 1, sortHandle);
 
-            if (stepInput.DirectIslandSubsteps > 0)
+            dispatchPairs = unsortedPairs;
+            solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
+            pairsToSortByIsland = sortedPairs;
+            if (islandPairCount.IsCreated)
             {
-                dispatchPairs = unsortedPairs;
-                solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
-                pairsToSortByIsland = sortedPairs;
-                if (islandPairCount.IsCreated)
-                {
-                    sortHandle = new CountIslandPairsJob { Pairs = sortedPairs, PairCount = islandPairCount }.Schedule(sortHandle);
-                }
-
-                returnHandles.FinalExecutionHandle = sortHandle;
-                disposeHandles.Add(numWorkersForPairGrouping.Dispose(sortHandle));
-                disposeHandles.Add(directSolverUsed.Dispose(sortHandle));
-                returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandles.AsArray());
-                return returnHandles;
+                sortHandle = new CountIslandPairsJob { Pairs = sortedPairs, PairCount = islandPairCount }.Schedule(sortHandle);
             }
 
-            // Create phases for multi-threading in iterative solvers and islands for the direct solver.
-            // 2 cases:
-            // 1) No direct pairs: phase all pairs as iterative pairs
-            // 2) Direct pairs: group pairs into purely iterative pairs, coupling pairs and direct pairs, and phase each
-            //      category separately. Also, find direct solver islands.
-            // Both cases are implemented by grouping pairs into the three required categories if required and overwriting
-            // the sortedPairs array correspondingly. The sortedPairs array will then be organized as follows:
-            //     [ iterative pairs [iterative coupling pairs] ][ direct pairs ]
-
-            // Set output data structures:
-            solverSchedulerInfo = new SolverSchedulerInfo(kMaxNumPhases);
-            dispatchPairs = unsortedPairs;
-
-            // Stage 1: Pair grouping into [ iterative pairs [iterative coupling pairs] ][ direct pairs ]
-            // First we need to identify the pairs that are iterative, coupling and direct, and group them accordingly.
-            // To this end we launch "worker count" jobs that each have associated stream buffers of 3 streams to fill,
-            // one for each pair type "iterative, coupling and direct".
-            // They are all responsible for a section of the dispatch pairs and will copy them into the corresponding
-            // streams (scatter phase).
-            // Once done, we will compute the offsets of the pairs in each stream buffer into the final array, i.e.,
-            // the prefix sum of the series of pair counts of each stream's buffers.
-            // Afterwards, the workers will copy the pairs from their associated stream buffers into the final array at
-            // the appropriate offsets in parallel (gather phase).
-            // Note that the resultant sub-arrays will still be lexicographically sorted by design given that they were already
-            // lexicographically sorted previously. The lexicographical order is a pre-requisite for the quality and speed
-            // of the iterative solver, ensuring that data of bodies involved in constraints is accessed in a cache friendly
-            // manner during the solve, and that certain constraint types (e.g. contacts) are solved last for reduced constraint error.
-
-            var iterativePairsStream = new NativeStream(numWorkers, Allocator.TempJob);
-            var couplingPairsStream = new NativeStream(numWorkers, Allocator.TempJob);
-            var directPairsStream = new NativeStream(numWorkers, Allocator.TempJob);
-            var iterativePairsStreamPrefixSum = new NativeList<int>(numWorkers + 1, Allocator.TempJob);
-            var couplingPairsStreamPrefixSum = new NativeList<int>(numWorkers + 1, Allocator.TempJob);
-            var directPairsStreamPrefixSum = new NativeList<int>(numWorkers + 1, Allocator.TempJob);
-            var numDirectPairs = new NativeReference<int>(0, Allocator.TempJob);
-            var numIterativeCouplingPairs = new NativeReference<int>(0, Allocator.TempJob);
-
-            // grouping:
-            JobHandle groupPairsHandle = new ScatterDispatchPairsByTypeJob
-            {
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                IterativePairsWriter = iterativePairsStream.AsWriter(),
-                CouplingPairsWriter = couplingPairsStream.AsWriter(),
-                DirectPairsWriter = directPairsStream.AsWriter(),
-                NumWorkers = numWorkers
-            }.ScheduleUnsafe(numWorkersForPairGrouping, 1, sortHandle);
-
-            var iterativePairsPrefixSumHandle = new CreateStreamPrefixSumJobDefer
-            {
-                Reader = iterativePairsStream.AsReader(),
-                StreamPrefixSum = iterativePairsStreamPrefixSum
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle);
-
-            var couplingPairsPrefixSumHandle = new CreateStreamPrefixSumJobDefer
-            {
-                Reader = couplingPairsStream.AsReader(),
-                StreamPrefixSum = couplingPairsStreamPrefixSum
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle);
-
-            var directPairsPrefixSumHandle = new CreateStreamPrefixSumJobDefer
-            {
-                Reader = directPairsStream.AsReader(),
-                StreamPrefixSum = directPairsStreamPrefixSum
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle);
-
-            groupPairsHandle = JobHandle.CombineDependencies(iterativePairsPrefixSumHandle,
-                couplingPairsPrefixSumHandle, directPairsPrefixSumHandle);
-
-            groupPairsHandle = new GatherDispatchPairsByTypeJob
-            {
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                IterativePairsReader = iterativePairsStream.AsReader(),
-                CouplingPairsReader = couplingPairsStream.AsReader(),
-                DirectPairsReader = directPairsStream.AsReader(),
-                IterativePairsStreamPrefixSum = iterativePairsStreamPrefixSum.AsDeferredJobArray(),
-                CouplingPairsStreamPrefixSum = couplingPairsStreamPrefixSum.AsDeferredJobArray(),
-                DirectPairsStreamPrefixSum = directPairsStreamPrefixSum.AsDeferredJobArray()
-            }.ScheduleUnsafe(numWorkersForPairGrouping, 1, groupPairsHandle);
-
-            disposeHandles.Add(numWorkersForPairGrouping.Dispose(groupPairsHandle));
-            disposeHandles.Add(iterativePairsStream.Dispose(groupPairsHandle));
-            disposeHandles.Add(couplingPairsStream.Dispose(groupPairsHandle));
-            disposeHandles.Add(directPairsStream.Dispose(groupPairsHandle));
-
-            // if required (direct solver is used), we now set the number of direct pairs and iterative coupling pairs for the phasing below
-            groupPairsHandle = new SetPairTypeCountJob
-            {
-                DispatchPairs = sortedPairs,
-                PhasedDispatchPairs = unsortedPairs,
-                IterativePairsStreamPrefixSum = iterativePairsStreamPrefixSum.AsDeferredJobArray(),
-                CouplingPairsStreamPrefixSum = couplingPairsStreamPrefixSum.AsDeferredJobArray(),
-                DirectPairsStreamPrefixSum = directPairsStreamPrefixSum.AsDeferredJobArray(),
-                NumDirectPairs = numDirectPairs,
-                NumCouplingPairs = numIterativeCouplingPairs
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle);
-
-            disposeHandles.Add(iterativePairsStreamPrefixSum.Dispose(groupPairsHandle));
-            disposeHandles.Add(couplingPairsStreamPrefixSum.Dispose(groupPairsHandle));
-            disposeHandles.Add(directPairsStreamPrefixSum.Dispose(groupPairsHandle));
-
-            // phasing:
-            JobHandle phaseIterativePairsHandle = new CreateDispatchPairPhasesJob
-            {
-                ProcessedPairType = CreateDispatchPairPhasesJob.PairType.Iterative,
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                SolverSchedulerInfo = solverSchedulerInfo,
-                NumDynamicBodies = stepInput.World.NumDynamicBodies,
-                PhasedDispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                NumDirectPairs = numDirectPairs,
-                NumCouplingPairs = numIterativeCouplingPairs
-            }.Schedule(groupPairsHandle);
-
-            JobHandle phaseCouplingPairsHandle = new CreateDispatchPairPhasesJobDefer
-            {
-                ProcessedPairType = CreateDispatchPairPhasesJob.PairType.Coupling,
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                SolverSchedulerInfo = solverSchedulerInfo,
-                NumDynamicBodies = stepInput.World.NumDynamicBodies,
-                PhasedDispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                NumDirectPairs = numDirectPairs,
-                NumCouplingPairs = numIterativeCouplingPairs
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle); // skip if direct solver not used
-
-            JobHandle phaseDirectPairsHandle = new CreateDispatchPairPhasesJobDefer
-            {
-                ProcessedPairType = CreateDispatchPairPhasesJob.PairType.Direct,
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                SolverSchedulerInfo = solverSchedulerInfo,
-                NumDynamicBodies = stepInput.World.NumDynamicBodies,
-                PhasedDispatchPairs = unsortedPairs.AsDeferredJobArray(),
-                NumDirectPairs = numDirectPairs,
-                NumCouplingPairs = numIterativeCouplingPairs
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle); // skip if direct solver not used
-
-            // island search:
-            JobHandle directSolverIslandsHandle = new FindDirectSolverIslandsJob
-            {
-                DispatchPairs = sortedPairs.AsDeferredJobArray(),
-                DirectSolverSchedulerInfo = solverSchedulerInfo.DirectPairsDirectScheduling,
-                NumDirectPairs = numDirectPairs,
-                NumDynamicBodies = stepInput.World.NumDynamicBodies
-            }.ScheduleUnsafe(directSolverUsed, 1, groupPairsHandle); // skip if direct solver not used
-
-            var phasedDispatchPairsHandle = JobHandle.CombineDependencies(phaseIterativePairsHandle,
-                phaseCouplingPairsHandle, phaseDirectPairsHandle);
-
-            // Finalize iterative work item info
-            phasedDispatchPairsHandle = new FinalizeIterativeWorkItemInfoJob
-            {
-                SolverSchedulerInfo = solverSchedulerInfo
-            }.Schedule(phasedDispatchPairsHandle);
-
-            var schedulerHandle = JobHandle.CombineDependencies(phasedDispatchPairsHandle, directSolverIslandsHandle);
-            returnHandles.FinalExecutionHandle = schedulerHandle;
-
-            // Finalize disposing
-            disposeHandles.Add(directSolverUsed.Dispose(schedulerHandle));
-            disposeHandles.Add(sortedPairs.Dispose(schedulerHandle));
-            disposeHandles.Add(numDirectPairs.Dispose(schedulerHandle));
-            disposeHandles.Add(numIterativeCouplingPairs.Dispose(schedulerHandle));
-
+            returnHandles.FinalExecutionHandle = sortHandle;
+            disposeHandles.Add(numWorkersForPairGrouping.Dispose(sortHandle));
+            disposeHandles.Add(directSolverUsed.Dispose(sortHandle));
             returnHandles.FinalDisposeHandle = JobHandle.CombineDependencies(disposeHandles.AsArray());
-
             return returnHandles;
         }
+
 
         #region Helpers
 
