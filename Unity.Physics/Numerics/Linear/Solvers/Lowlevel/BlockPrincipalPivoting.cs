@@ -188,6 +188,7 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
                 }
             }
 
+            bool changedAfterPivoting = false;
             if (bounded && (result || found))
             {
                 // Fit coupled bounds to the returned answer's own source impulses, which may differ from the
@@ -203,13 +204,33 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
                     result = true;
                 }
 
-                FitCoupledRows(couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
+                changedAfterPivoting = FitCoupledRows(couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
             }
             else if (!result)
             {
                 // No feasible answer was found before the cap. Finish with bounded projected Gauss-Seidel
                 // sweeps and return false.
                 FinishBySweeps(n, w, q, couplings, couplingCount, problemLower, problemUpper, lower, upper, states, z);
+                changedAfterPivoting = true;
+            }
+
+            if (changedAfterPivoting)
+            {
+                // Friction can change after pivoting, and sweeps only approximate the response of a joint.
+                // Solve the unbounded rows against the final bounded impulses.
+                bool hasEquality = false;
+                for (int i = 0; i < n; i++)
+                {
+                    bool equality = !coupled[i] && problemLower[i] <= float.MinValue && problemUpper[i] >= float.MaxValue;
+                    hasEquality |= equality;
+                    guess[i] = equality ? Free : LowerTight;
+                    lower[i] = z[i];
+                }
+
+                if (hasEquality)
+                {
+                    factor.SolveFree(w, q, lower, upper, guess, z, false);
+                }
             }
 
             if (stats != null)
@@ -312,11 +333,12 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
             /// <summary>
             /// Sets each row that is at a bound to that bound. Then solves W_FF z_F = q_F - W_FT z_T for the free rows.
             /// </summary>
-            public void SolveFree(double* w, double* q, double* lower, double* upper, byte* states, double* z)
+            public void SolveFree(double* w, double* q, double* lower, double* upper, byte* states, double* z, bool countRound = true)
             {
                 int* order = (int*)orderArray.GetUnsafePtr();
                 int* place = (int*)placeArray.GetUnsafePtr();
                 double* rhs = (double*)rhsArray.GetUnsafePtr();
+                BlockPrincipalPivotingStats* stats = countRound ? this.stats : null;
 
                 // Find the rows at a bound, and how the free rows differ from the rows that the factor holds. The rows
                 // of the factor before the first row that left the free set can stay.
@@ -757,10 +779,11 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
         /// <summary>
         /// Fit coupled rows to bounds derived from the answer's source impulses and update their states.
         /// </summary>
-        static void FitCoupledRows(BoundCoupling* couplings, int couplingCount, double* problemLower, double* problemUpper,
+        static bool FitCoupledRows(BoundCoupling* couplings, int couplingCount, double* problemLower, double* problemUpper,
             double* lower, double* upper, byte* states, double* z)
         {
             SetCoupledBounds(couplings, couplingCount, problemLower, problemUpper, lower, upper, z);
+            bool changed = false;
             for (int c = 0; c < couplingCount; c++)
             {
                 BoundCoupling coupling = couplings[c];
@@ -768,11 +791,13 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
                 {
                     if (lower[row] == upper[row] || z[row] <= lower[row])
                     {
+                        changed |= z[row] != lower[row];
                         z[row] = lower[row];
                         states[row] = LowerTight;
                     }
                     else if (z[row] >= upper[row])
                     {
+                        changed |= z[row] != upper[row];
                         z[row] = upper[row];
                         states[row] = UpperTight;
                     }
@@ -784,6 +809,8 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
                     }
                 }
             }
+
+            return changed;
         }
 
         /// <summary>

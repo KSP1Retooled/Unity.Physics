@@ -343,5 +343,33 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel.Tests
             Assert.That(Solve(hard, 8, out double[] z, out byte[] states, out _), Is.True);
             CheckAnswer(hard, z, states, "capped");
         }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void AJointRespondsToTheFinalBoundedImpulses(bool finishBySweeps)
+        {
+            // The warm start allows two units of friction. The first solve gives back 1.5 units of normal impulse,
+            // leaving a friction bound of 0.5. The joint must respond to the reduction in friction.
+            double* w = stackalloc double[] { 2, 0, 1, 0, 2, -1, 1, -1, 2 };
+            double* q = stackalloc double[] { 0, -1, -10 };
+            double* lower = stackalloc double[] { float.MinValue, -2, 0 };
+            double* upper = stackalloc double[] { float.MaxValue, float.MaxValue, 0 };
+            byte* states = stackalloc byte[] { 0, finishBySweeps ? LowerTight : (byte)0, LowerTight };
+            double* z = stackalloc double[3];
+            var coupling = new BoundCoupling
+            {
+                FirstRow = 2,
+                RowCount = 1,
+                FirstSourceRow = 1,
+                SourceRowCount = 1,
+                HeldSourceImpulse = 2,
+                Factor = 1,
+            };
+
+            Assert.That(BlockPrincipalPivoting.Solve(3, w, q, lower, upper, states, &coupling, 1, true, z, 1, true,
+                out _), Is.EqualTo(!finishBySweeps));
+            Assert.That(z[2], Is.EqualTo(-(2 + z[1])).Within(1e-12));
+            Assert.That(2 * z[0] + z[2], Is.EqualTo(q[0]).Within(1e-12));
+        }
     }
 }
