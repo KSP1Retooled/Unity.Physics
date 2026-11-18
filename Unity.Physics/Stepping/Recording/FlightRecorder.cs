@@ -168,31 +168,11 @@ namespace Unity.Physics.Stepping.Recording
             }
 
             int triggerRow = -1;
-            string reason = null;
+            FlightTriggerReason reason = FlightTriggerReason.None;
             RecordedBody triggerBefore = default;
-            bool canTrigger = triggerNumber == 0 && HasFileSlot;
-            lastRows.Clear();
-            for (int i = 0; canTrigger && i < bodyCount; i++)
+            if (triggerNumber == 0 && HasFileSlot)
             {
-                RecordedBody input = before[i];
-                reason = (bodies[i].SolverPath & (int)RecordedSolverPath.RestoredMotion) != 0
-                    ? "write-back restored non-finite motion"
-                    : Check(input, bodies[i]);
-                if (reason == null && input.Serial != 0 && TryPrevious(i, input.Serial, out RecordedBody previous))
-                {
-                    reason = Check(previous, input);
-                    if (reason != null)
-                    {
-                        input = previous;
-                    }
-                }
-
-                if (reason != null)
-                {
-                    triggerRow = i;
-                    triggerBefore = input;
-                    break;
-                }
+                triggerRow = FindTrigger(bodies, bodyCount, out reason, out triggerBefore);
             }
 
             step.Bodies = bodies;
@@ -218,7 +198,7 @@ namespace Unity.Physics.Stepping.Recording
                 {
                     triggerNumber = step.Number;
                     postSteps = math.clamp(FlightRecorderSwitches.PostTriggerSteps, 0, 1_000);
-                    step.Trigger = Summary(stepper, step, triggerRow, triggerBefore, before[triggerRow], reason);
+                    step.Trigger = Summary(stepper, step, triggerRow, triggerBefore, before[triggerRow], Describe(reason));
                 }
             }
             else
@@ -231,6 +211,53 @@ namespace Unity.Physics.Stepping.Recording
                 Save($"automatic trigger at step {triggerNumber}");
                 triggerNumber = 0;
             }
+        }
+
+        private int FindTrigger(RecordedBody[] bodies, int count, out FlightTriggerReason reason, out RecordedBody input)
+        {
+            float linear = FlightRecorderSwitches.LinearVelocityThreshold;
+            float angular = FlightRecorderSwitches.AngularVelocityThreshold;
+            FlightTriggerReason found = FlightTriggerReason.None;
+            int previousRow = -1;
+            int row;
+            fixed (RecordedBody* first = before)
+            fixed (RecordedBody* last = lastBodies)
+            fixed (RecordedBody* output = bodies)
+            {
+                row = RecordedBody.FindTrigger(first, output, count, last, lastBodyCount, linear, angular, &found, &previousRow);
+            }
+
+            if (found != FlightTriggerReason.ReorderedBodies)
+            {
+                reason = found;
+                input = previousRow >= 0 ? lastBodies[previousRow] : row >= 0 ? before[row] : default;
+                return row;
+            }
+
+            lastRows.Clear();
+            for (; row < count; row++)
+            {
+                input = before[row];
+                reason = RecordedBody.CheckStep(input, bodies[row], linear, angular);
+                if (reason != FlightTriggerReason.None)
+                {
+                    return row;
+                }
+
+                if (input.Serial != 0 && TryPrevious(row, input.Serial, out RecordedBody previous))
+                {
+                    reason = RecordedBody.Check(previous, input, linear, angular);
+                    if (reason != FlightTriggerReason.None)
+                    {
+                        input = previous;
+                        return row;
+                    }
+                }
+            }
+
+            reason = FlightTriggerReason.None;
+            input = default;
+            return -1;
         }
 
         private bool TryPrevious(int row, uint serial, out RecordedBody previous)
@@ -268,29 +295,16 @@ namespace Unity.Physics.Stepping.Recording
             }
         }
 
-        private static string Check(RecordedBody first, RecordedBody second)
+        private static string Describe(FlightTriggerReason reason)
         {
-            if (!first.Finite || !second.Finite)
+            switch (reason)
             {
-                return "non-finite pose or velocity";
+                case FlightTriggerReason.RestoredMotion: return "write-back restored non-finite motion";
+                case FlightTriggerReason.NonFiniteMotion: return "non-finite pose or velocity";
+                case FlightTriggerReason.LinearVelocity: return "linear velocity change";
+                case FlightTriggerReason.AngularVelocity: return "angular velocity change";
+                default: throw new ArgumentOutOfRangeException(nameof(reason));
             }
-
-            if (second.Dynamic)
-            {
-                float linear = FlightRecorderSwitches.LinearVelocityThreshold;
-                if (linear >= 0 && math.lengthsq(second.Linear - first.Linear) > linear * linear)
-                {
-                    return "linear velocity change";
-                }
-
-                float angular = FlightRecorderSwitches.AngularVelocityThreshold;
-                if (angular >= 0 && math.lengthsq(second.WorldAngular - first.WorldAngular) > angular * angular)
-                {
-                    return "angular velocity change";
-                }
-            }
-
-            return null;
         }
 
         private static string Summary(StoreStepper* stepper, RecordedStep step, int row, RecordedBody previous,
