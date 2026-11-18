@@ -131,6 +131,9 @@ namespace Retooled
 
     // Fills the plugin's half of StoreGlobals. Before any command, so a kernel always finds it.
     void InitializeGlobals();
+#ifdef RETOOLED_STORE_QUARANTINE
+    void AdvanceStoreQuarantine();
+#endif
 
     inline Float3 ToFloat3(const Physics::Vec3& v)
     {

@@ -2,6 +2,9 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
 #include "Commands.h"
 
@@ -9,6 +12,106 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
+#ifdef RETOOLED_STORE_QUARANTINE
+    struct RetiredStoreBlock
+    {
+        void* address;
+        uint64_t releaseStep;
+    };
+
+    // Construct only when checking is enabled. Managed jobs may allocate at the same time.
+    struct StoreQuarantine
+    {
+        std::mutex mutex;
+        std::unordered_map<void*, size_t> live;
+        std::deque<RetiredStoreBlock> retired;
+        uint64_t step = 0;
+
+        ~StoreQuarantine()
+        {
+            for (const RetiredStoreBlock& block : retired)
+            {
+                std::free(block.address);
+            }
+        }
+    };
+
+    static StoreQuarantine s_Quarantine;
+
+    // Call with the quarantine locked. The pointer remains allocated but will read as NaN through a float view.
+    static void RetireStoreBlock(StoreQuarantine& quarantine, void* memory)
+    {
+        if (memory == nullptr)
+        {
+            return;
+        }
+
+        auto entry = quarantine.live.find(memory);
+        if (entry == quarantine.live.end())
+        {
+            LogError("[RetooledPhysics] store allocator received a release for a non-live allocation");
+            std::abort();
+        }
+
+        std::memset(memory, 0xff, entry->second);
+        quarantine.retired.push_back({ memory, quarantine.step + 4 });
+        quarantine.live.erase(entry);
+    }
+
+    static void ReleaseCheckedStoreBlock(void* memory)
+    {
+        StoreQuarantine& quarantine = s_Quarantine;
+        std::lock_guard lock(quarantine.mutex);
+        RetireStoreBlock(quarantine, memory);
+    }
+
+    static void* ReallocateCheckedStoreBlock(void* memory, uint64_t size)
+    {
+        StoreQuarantine& quarantine = s_Quarantine;
+        std::lock_guard lock(quarantine.mutex);
+        if (memory != nullptr && size == 0)
+        {
+            RetireStoreBlock(quarantine, memory);
+            return nullptr;
+        }
+
+        void* replacement = std::malloc(static_cast<size_t>(size));
+        if (replacement == nullptr)
+        {
+            return nullptr;
+        }
+
+        if (memory != nullptr)
+        {
+            auto entry = quarantine.live.find(memory);
+            if (entry == quarantine.live.end())
+            {
+                LogError("[RetooledPhysics] store allocator received a resize for a non-live allocation");
+                std::abort();
+            }
+            size_t oldSize = entry->second;
+            size_t copySize = oldSize < size ? oldSize : static_cast<size_t>(size);
+            std::memcpy(replacement, memory, copySize);
+            RetireStoreBlock(quarantine, memory);
+        }
+
+        quarantine.live.emplace(replacement, static_cast<size_t>(size));
+        return replacement;
+    }
+
+    void AdvanceStoreQuarantine()
+    {
+        StoreQuarantine& quarantine = s_Quarantine;
+        std::lock_guard lock(quarantine.mutex);
+        ++quarantine.step;
+        while (!quarantine.retired.empty() && quarantine.retired.front().releaseStep <= quarantine.step)
+        {
+            std::free(quarantine.retired.front().address);
+            quarantine.retired.pop_front();
+        }
+    }
+#endif
+
     // PhysicMaterial's defaults; Unity overwrites them for every material it creates.
     static constexpr float kDefaultFriction = 0.6f;
 
@@ -48,8 +151,14 @@ namespace Retooled
     void InitializeGlobals()
     {
         g_Globals.defaultMaterial = &s_DefaultMaterial;
+#ifdef RETOOLED_STORE_QUARANTINE
+        g_Globals.reallocate = ReallocateCheckedStoreBlock;
+        g_Globals.release = ReleaseCheckedStoreBlock;
+        LogInfo("[RetooledPhysics] store memory quarantine enabled");
+#else
         g_Globals.reallocate = [](void* memory, uint64_t size) { return std::realloc(memory, static_cast<size_t>(size)); };
         g_Globals.release = std::free;
+#endif
         g_Globals.retainMesh = RetainMesh;
         g_Globals.releaseMesh = ReleaseMesh;
         g_Globals.retainMaterial = RetainMaterial;

@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Sparse;
+using Unity.Physics.Configuration;
 
 namespace Unity.Physics.Dynamics.Solver.Islands
 {
@@ -476,6 +477,11 @@ namespace Unity.Physics.Dynamics.Solver.Islands
                 return;
             }
 
+            if (StepCacheSwitches.ClearSolverSlots)
+            {
+                ClearAssignments();
+            }
+
             long now = ++*step;
             int islandCount = firstBodies.Length;
             slotOfIsland->Resize(islandCount);
@@ -508,6 +514,10 @@ namespace Unity.Physics.Dynamics.Solver.Islands
 
             if (unmatchedCount == 0)
             {
+                if (StepCacheSwitches.MemoryChecks)
+                {
+                    ValidateAssignments(firstIdentities);
+                }
                 return;
             }
 
@@ -542,6 +552,11 @@ namespace Unity.Physics.Dynamics.Solver.Islands
                     {
                         slotOfIdentity->Remove(previous);
                     }
+
+                    if (previous != firstIdentities[island])
+                    {
+                        ResetSlot(ref table[chosen]);
+                    }
                 }
                 else if (!full)
                 {
@@ -565,6 +580,63 @@ namespace Unity.Physics.Dynamics.Solver.Islands
             }
 
             free.Dispose();
+            if (StepCacheSwitches.MemoryChecks)
+            {
+                ValidateAssignments(firstIdentities);
+            }
+        }
+
+        private void ClearAssignments()
+        {
+            ForgetForests();
+            slotOfIdentity->Clear();
+            for (int i = 0; i < slots->Length; i++)
+            {
+                ref Slot slot = ref slots->Ptr[i];
+                slot.Key = -1;
+                slot.Identity = NoSlot;
+                slot.LastUsed = NeverUsed;
+                if (slot.Created)
+                {
+                    slot.Solver.InvalidateAnalysis();
+                }
+            }
+        }
+
+        private void ValidateAssignments(NativeArray<ulong> firstIdentities)
+        {
+            using var seen = new NativeArray<byte>(slots->Length, Allocator.Temp);
+            byte* seenSlots = (byte*)seen.GetUnsafePtr();
+            for (int island = 0; island < firstIdentities.Length; island++)
+            {
+                int index = (*slotOfIsland)[island];
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                if (index >= slots->Length || seen[index] != 0 || firstIdentities[island] == NoSlot
+                    || slots->Ptr[index].Identity != firstIdentities[island] || slots->Ptr[index].LastUsed != *step)
+                {
+                    throw new InvalidOperationException("An island was assigned a solver slot for a different identity or step.");
+                }
+                seenSlots[index] = 1;
+            }
+        }
+
+        private void ResetSlot(ref Slot slot)
+        {
+            if (slot.Forest != null)
+            {
+                ForgetOwners(slot.Forest);
+                ForestIsland.Destroy(slot.Forest);
+                slot.Forest = null;
+            }
+
+            if (slot.Created)
+            {
+                slot.Solver.InvalidateAnalysis();
+            }
         }
 
         /// <summary>

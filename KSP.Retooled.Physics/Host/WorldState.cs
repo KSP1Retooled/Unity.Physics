@@ -47,6 +47,11 @@ namespace KSP.Retooled.Physics.Host
 
         public void Dispose()
         {
+            if (StepEntryPoints.Current == state)
+            {
+                StepEntryPoints.Current = null;
+            }
+
             state->Dispose();
             UnsafeUtility.FreeTracked(state, Allocator.Persistent);
             UnsafeUtility.FreeTracked(query, Allocator.Persistent);

@@ -5,6 +5,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Unity.Burst;
+using Unity.Collections;
 using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
@@ -28,6 +30,7 @@ namespace KSP.Retooled.Physics.EditorService
 
         private static readonly string Folder = Environment.GetEnvironmentVariable("RETOOLED_TEST_SERVICE");
         private static double nextPoll;
+        private static (bool Enabled, bool Forced, NativeLeakDetectionMode Leaks)? previousSafety;
 
         static RetooledTestService()
         {
@@ -114,6 +117,15 @@ namespace KSP.Retooled.Physics.EditorService
             }
 
             SessionState.SetString(StageKey, "running");
+            if (current.Environment.TryGetValue("RETOOLED_TEST_SAFETY", out string safety) && safety == "1")
+            {
+                BurstCompilerOptions options = BurstCompiler.Options;
+                previousSafety = (options.EnableBurstSafetyChecks, options.ForceEnableBurstSafetyChecks, NativeLeakDetection.Mode);
+                options.EnableBurstSafetyChecks = true;
+                options.ForceEnableBurstSafetyChecks = true;
+                NativeLeakDetection.Mode = NativeLeakDetectionMode.EnabledWithStackTrace;
+                UnityEngine.Debug.Log($"[RetooledTestService] Burst compilation {options.EnableBurstCompilation}, forced safety {options.ForceEnableBurstSafetyChecks}, leak detection {NativeLeakDetection.Mode}");
+            }
             var filter = new Filter
             {
                 testMode = TestMode.EditMode,
@@ -156,6 +168,14 @@ namespace KSP.Retooled.Physics.EditorService
         /// <summary>Writes done.txt with the request's id and the summary, and makes the service ready for the next request.</summary>
         private static void Finish(Request request, string summary)
         {
+            if (previousSafety is { } safety)
+            {
+                BurstCompiler.Options.ForceEnableBurstSafetyChecks = safety.Forced;
+                BurstCompiler.Options.EnableBurstSafetyChecks = safety.Enabled;
+                NativeLeakDetection.Mode = safety.Leaks;
+                previousSafety = null;
+            }
+
             string done = Path.Combine(Folder, "done.txt");
             string temporary = done + ".tmp";
             File.WriteAllText(temporary, "id=" + request.Id + "\n" + summary);

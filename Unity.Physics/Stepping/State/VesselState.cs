@@ -6,6 +6,7 @@ using Unity.Physics.Dynamics.Vessels.Detection;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
+using System;
 
 namespace Unity.Physics.Stepping.State
 {
@@ -84,6 +85,10 @@ namespace Unity.Physics.Stepping.State
             vesselSet = default;
             if (vessels)
             {
+                if (StepCacheSwitches.MemoryChecks)
+                {
+                    ValidatePartRows(store);
+                }
                 vesselBuild.ChooseStepVessels(store, partition.builtIndices.AsArray(), partition.dynamicIndices.Length);
                 vesselSet = vesselBuild.Set();
             }
@@ -103,7 +108,7 @@ namespace Unity.Physics.Stepping.State
                 // Check per-joint settings stamps only when the shared version changes.
                 uint settings = JointSettings.Version;
                 bool resized = vesselBuild.SizeCaches();
-                bool refillAll = resized || compiledThisStep || !cacheFilled;
+                bool refillAll = resized || compiledThisStep || !cacheFilled || StepCacheSwitches.RefillVesselEdges;
                 bool settingsChanged = settings != cachedSettings;
                 cacheFilled = true;
                 cachedSettings = settings;
@@ -162,6 +167,19 @@ namespace Unity.Physics.Stepping.State
                 }.Schedule(emitted);
                 JobHandle loadsCleared = vesselBuild.ScheduleClearLoads(dependency);
                 vesselsFilled = JobHandle.CombineDependencies(JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed), loadsCleared);
+            }
+        }
+
+        private void ValidatePartRows(WorldData* store)
+        {
+            for (int part = 0; part < vesselBuild.PartStoreBodies.Length; part++)
+            {
+                int row = vesselBuild.PartStoreBodies[part];
+                if ((uint)row >= store->bodyCount || store->bodies[row].serial != vesselBuild.PartBodySerials[part]
+                    || (IntPtr)store->bodies[row].owner != vesselBuild.PartBodyRecords[part])
+                {
+                    throw new InvalidOperationException($"Vessel part {part} refers to a different body at store row {row}.");
+                }
             }
         }
     }

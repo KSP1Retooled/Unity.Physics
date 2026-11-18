@@ -343,6 +343,84 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
         }
 
         [Test]
+        public void WorldJointSurvivesOtherBodiesBeingRemovedAndAdded()
+        {
+            Assume.That(UnityEngine.Physics.GetCurrentIntegrationInfo().isFallback, Is.False);
+            Rigidbody debris = WeightlessBox(new Vector3(20.0f, 5.0f, 0.0f));
+            Rigidbody held = WeightlessBox(new Vector3(0.0f, 5.0f, 0.0f));
+            MakeWorldClamp(held);
+            GameObject oldStatic = Box(new Vector3(0.0f, -10.0f, 0.0f), Vector3.one);
+            Simulate();
+
+            Vector3 expected = new Vector3(0.0f, 5.0f, 0.0f);
+            Object.DestroyImmediate(debris.gameObject);
+            Object.DestroyImmediate(oldStatic);
+            AssertHeldForThreeSteps(held, expected);
+
+            for (int i = 0; i < 256; i++)
+            {
+                WeightlessBox(new Vector3(20.0f + 2.0f * i, 5.0f, 0.0f));
+            }
+            Box(new Vector3(0.0f, -10.0f, 0.0f), Vector3.one);
+            AssertHeldForThreeSteps(held, expected);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void WorldJointAfterAnOriginShift(bool moveConnectedAnchor)
+        {
+            IntegrationInfo backend = UnityEngine.Physics.GetCurrentIntegrationInfo();
+            Assume.That(backend.isFallback, Is.False);
+            Rigidbody held = WeightlessBox(new Vector3(0.0f, 5.0f, 0.0f));
+            ConfigurableJoint clamp = MakeWorldClamp(held);
+            GameObject ground = Ground();
+            Simulate();
+            AssertVector(new Vector3(0.0f, 5.0f, 0.0f), held.position, 0.001f, "initial clamped pose");
+
+            Vector3 shift = new Vector3(-512.0f, 0.0f, 0.0f);
+            Vector3 shiftedPosition = held.position + shift;
+            held.transform.position += shift;
+            ground.transform.position += shift;
+            if (moveConnectedAnchor)
+            {
+                clamp.connectedAnchor += shift;
+            }
+            UnityEngine.Physics.SyncTransforms();
+
+            if (moveConnectedAnchor)
+            {
+                AssertHeldForThreeSteps(held, shiftedPosition);
+            }
+            else
+            {
+                Simulate();
+                TestContext.WriteLine($"{backend.name} first step after shift: position {held.position}, velocity {held.linearVelocity}");
+                Assert.That(held.position.x - shiftedPosition.x, Is.GreaterThan(0.01f));
+                Assert.That(clamp.connectedAnchor.x, Is.EqualTo(0.0f));
+            }
+        }
+
+        private static ConfigurableJoint MakeWorldClamp(Rigidbody held)
+        {
+            ConfigurableJoint clamp = held.gameObject.AddComponent<ConfigurableJoint>();
+            clamp.autoConfigureConnectedAnchor = false;
+            clamp.connectedAnchor = held.position;
+            clamp.xMotion = clamp.yMotion = clamp.zMotion = ConfigurableJointMotion.Locked;
+            clamp.angularXMotion = clamp.angularYMotion = clamp.angularZMotion = ConfigurableJointMotion.Locked;
+            return clamp;
+        }
+
+        private static void AssertHeldForThreeSteps(Rigidbody held, Vector3 position)
+        {
+            for (int step = 0; step < 3; step++)
+            {
+                Simulate();
+                Assert.That(held.linearVelocity.magnitude, Is.LessThan(0.001f), $"step {step}");
+                AssertVector(position, held.position, 0.001f, $"step {step} position");
+            }
+        }
+
+        [Test]
         public void HingeSwingsAboutItsAxisOnly()
         {
             Rigidbody body = DynamicBox(new Vector3(0.0f, 0.0f, 1.0f));

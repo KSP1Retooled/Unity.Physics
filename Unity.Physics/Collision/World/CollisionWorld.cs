@@ -91,23 +91,40 @@ namespace Unity.Physics
         /// <param name="numDynamicBodies"> Number of dynamic bodies. </param>
         public void Reset(int numStaticBodies, int numDynamicBodies)
         {
-            SetCapacity(numStaticBodies + numDynamicBodies);
+            ResetAndKeepBodies(numStaticBodies, numDynamicBodies, false, out _);
+        }
+
+        internal bool ResetAndKeepBodies(int numStaticBodies, int numDynamicBodies, bool keepReplaced,
+            out NativeArray<RigidBody> replaced)
+        {
+            bool keptBodies = SetCapacity(numStaticBodies + numDynamicBodies, keepReplaced, out replaced);
             Broadphase.Reset(numStaticBodies, numDynamicBodies);
             EntityBodyIndexMap.Clear();
+            return keptBodies;
         }
 
         /// <summary>   Sets the capacity. </summary>
         ///
         /// <param name="numBodies">    Number of bodies. </param>
-        private void SetCapacity(int numBodies)
+        private bool SetCapacity(int numBodies, bool keepReplaced, out NativeArray<RigidBody> replaced)
         {
+            replaced = default;
             // Increase body storage if necessary
             if (m_Bodies.Length < numBodies)
             {
-                m_Bodies.Dispose();
+                if (keepReplaced)
+                {
+                    replaced = m_Bodies;
+                }
+                else
+                {
+                    m_Bodies.Dispose();
+                }
                 m_Bodies = new NativeArray<RigidBody>(numBodies, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
                 EntityBodyIndexMap.Capacity = m_Bodies.Length;
+                return false;
             }
+            return true;
         }
 
         /// <summary>   Free internal memory. </summary>

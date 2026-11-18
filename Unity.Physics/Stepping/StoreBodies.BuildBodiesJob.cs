@@ -55,7 +55,7 @@ namespace Unity.Physics.Stepping
             public bool ReadSources;
 
             /// <summary>
-            /// Reuse retained static rows and the anchor, writing only dynamic bodies when true.
+            /// Write only dynamic bodies when true. The caller writes the anchor when static rows are retained.
             /// </summary>
             public bool KeepStatics;
 
