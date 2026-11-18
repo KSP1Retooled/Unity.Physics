@@ -141,7 +141,10 @@ namespace KSP.Retooled.Physics.Tests.Tools
             state->ReadContactCheckpoint(reader, ResolveShape);
             byte[] build = payloads[reader.ReadInt32()];
             using var buildReader = new BinaryReader(new MemoryStream(build, sizeof(int), build.Length - sizeof(int), writable: false));
-            state->ReadBuildCheckpoint(buildReader, ResolveBody, ResolveJoint);
+            state->ReadBuildCheckpoint(buildReader);
+            byte[] vessels = payloads[reader.ReadInt32()];
+            using var vesselReader = new BinaryReader(new MemoryStream(vessels, sizeof(int), vessels.Length - sizeof(int), writable: false));
+            state->ReadVesselCheckpoint(vesselReader, ResolveBody, ResolveJoint);
         }
 
         private nint ResolveBody(ulong address)

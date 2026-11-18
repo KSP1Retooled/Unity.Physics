@@ -63,6 +63,7 @@ namespace Unity.Physics.Stepping.Recording
 
             stepper->WriteContactCheckpoint(writer);
             writer.Write(geometry.CaptureBuild(stepper, step));
+            writer.Write(geometry.CaptureVessels(stepper, step));
             step.Input = writer.Buffer;
             step.InputLength = writer.Length;
         }

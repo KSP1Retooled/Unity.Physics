@@ -22,6 +22,8 @@ namespace Unity.Physics.Stepping.Recording
         private uint jointTopology;
         private uint jointSettings;
         private byte[] build;
+        private byte[] vessels;
+        private uint vesselVersion;
         private byte[] shapes;
         private byte[] filters;
         private uint filterVersion;
@@ -52,6 +54,28 @@ namespace Unity.Physics.Stepping.Recording
             return count == 0 ? 0 : Share(ref shapes, rows, checked(count * sizeof(RecordedStoreShape)), step);
         }
         private readonly RecordingWriter buildBuffer = new RecordingWriter();
+
+        internal int CaptureVessels(StoreStepper* stepper, RecordedStep step)
+        {
+            uint version = stepper->RecorderVesselCompilationVersion;
+            if (vessels != null && vesselVersion == version)
+            {
+                step.Geometry.Add(vessels);
+                fixed (byte* payload = vessels)
+                {
+                    return *(int*)payload;
+                }
+            }
+
+            buildBuffer.Clear();
+            stepper->WriteVesselCheckpoint(buildBuffer);
+            fixed (byte* source = buildBuffer.Buffer)
+            {
+                int id = Share(ref vessels, source, buildBuffer.Length, step);
+                vesselVersion = version;
+                return id;
+            }
+        }
 
         internal int CaptureBuild(StoreStepper* stepper, RecordedStep step)
         {

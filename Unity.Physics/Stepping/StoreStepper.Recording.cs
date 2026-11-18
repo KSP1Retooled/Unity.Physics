@@ -3,6 +3,7 @@ using System.IO;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Dynamics.Contacts;
+using Unity.Physics.Dynamics.Vessels.Detection;
 using Unity.Physics.Stepping.Recording;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.Versions;
@@ -110,10 +111,10 @@ namespace Unity.Physics.Stepping
                 writer.WriteList(Joints.jointsWritten);
             }
 
-            VesselData.WriteRecording(writer);
+            writer.Write(VesselCompiler.RecordingId);
         }
 
-        internal void ReadBuildCheckpoint(BinaryReader reader, Func<ulong, nint> resolveBody, Func<ulong, nint> resolveJoint)
+        internal void ReadBuildCheckpoint(BinaryReader reader)
         {
             Joints.grouped = reader.ReadBoolean();
             if (Joints.grouped)
@@ -127,8 +128,15 @@ namespace Unity.Physics.Stepping
                 reader.ReadList(Joints.jointsWritten);
             }
 
-            VesselData.ReadRecording(reader, resolveBody, resolveJoint);
+            VesselCompiler.RecordingId = reader.ReadInt64();
         }
+
+        internal readonly uint RecorderVesselCompilationVersion => VesselData.CompilationVersion;
+
+        internal readonly void WriteVesselCheckpoint(RecordingWriter writer) => VesselData.WriteRecording(writer);
+
+        internal void ReadVesselCheckpoint(BinaryReader reader, Func<ulong, nint> resolveBody, Func<ulong, nint> resolveJoint)
+            => VesselData.ReadRecording(reader, resolveBody, resolveJoint);
 
         internal void ReadContactCheckpoint(BinaryReader reader, Func<ulong, nint> resolveShape)
         {

@@ -1,16 +1,16 @@
 using System;
 using System.IO;
 using Unity.Collections;
-using Unity.Physics.Dynamics.Vessels.Detection;
 using Unity.Physics.Stepping.Recording;
 
 namespace Unity.Physics.Stepping.State
 {
     internal unsafe partial struct VesselState
     {
+        internal uint CompilationVersion { get; private set; }
+
         internal readonly void WriteRecording(RecordingWriter writer)
         {
-            writer.Write(VesselCompiler.RecordingId);
             writer.Write(compiled);
             writer.Write(tombstoneExpiry);
             writer.WriteList(vesselBuild.Vessels);
@@ -42,7 +42,6 @@ namespace Unity.Physics.Stepping.State
 
         internal void ReadRecording(BinaryReader reader, Func<ulong, nint> resolveBody, Func<ulong, nint> resolveJoint)
         {
-            VesselCompiler.RecordingId = reader.ReadInt64();
             compiled = reader.ReadBoolean();
             // Fill recomputes each used edge and closure from its restored unit, joint settings and motion frames.
             cacheFilled = false;

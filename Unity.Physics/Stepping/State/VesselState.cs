@@ -73,12 +73,14 @@ namespace Unity.Physics.Stepping.State
                     MinimumParts = VesselSwitches.MinimumParts,
                 }.Run();
                 compiled = true;
+                CompilationVersion++;
                 tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselSwitches.TombstoneSteps);
             }
             else if (!vessels && compiled)
             {
                 vesselBuild.Clear(0);
                 compiled = false;
+                CompilationVersion++;
                 tombstoneExpiry = -1;
             }
 
