@@ -18,6 +18,12 @@ namespace Unity.Physics.Stepping.Recording
         private byte[] jointBuffer = Array.Empty<byte>();
         private byte[] joints;
         private byte[] build;
+        private byte[] shapes;
+
+        internal int ShareShapes(RecordedStoreShape* rows, int count, RecordedStep step)
+        {
+            return count == 0 ? 0 : Share(ref shapes, rows, checked(count * sizeof(RecordedStoreShape)), step);
+        }
         private readonly RecordingWriter buildBuffer = new RecordingWriter();
 
         internal int CaptureBuild(StoreStepper* stepper, RecordedStep step)

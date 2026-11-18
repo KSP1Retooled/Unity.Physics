@@ -57,30 +57,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             globals->defaultMaterial = ReadMaterial(reader);
             IgnoreTable.ReadRecording(reader, globals);
 
-            int shapeCount = reader.ReadCount(MaxRecords);
-            Shape* records = New<Shape>(shapeCount);
-            for (int i = 0; i < shapeCount; i++)
-            {
-                ulong address = reader.ReadUInt64();
-                shapes.TryAdd(address, (nint)(records + i));
-            }
-
-            int removed = reader.ReadCount(MaxRecords);
-            world->removedShapes = (Shape**)New<nint>(removed);
-            world->removedShapeCount = world->removedShapeCapacity = (uint)removed;
-            for (int i = 0; i < removed; i++)
-            {
-                world->removedShapes[i] = (Shape*)ResolveShape(reader.ReadUInt64());
-            }
-
-            int bodies = reader.ReadCount(MaxRecords);
-            world->bodies = New<BodyData>(bodies);
-            world->bodyCount = world->bodyCapacity = (uint)bodies;
-            var owners = New<Body>(bodies);
-            for (int i = 0; i < bodies; i++)
-            {
-                ReadBody(reader, payloads, i, owners + i);
-            }
+            ReadBodies(reader, payloads);
 
             int joints = reader.ReadCount(MaxRecords);
             world->joints = (JointData**)New<nint>(joints);
@@ -185,31 +162,110 @@ namespace KSP.Retooled.Physics.Tests.Tools
             return result;
         }
 
-        private void ReadBody(BinaryReader reader, Dictionary<int, byte[]> payloads, int index, Body* storage)
+        private void ReadBodies(BinaryReader reader, Dictionary<int, byte[]> payloads)
+        {
+            int removed = reader.ReadCount(MaxRecords);
+            var removedAddresses = new ulong[removed];
+            for (int i = 0; i < removed; i++)
+            {
+                removedAddresses[i] = reader.ReadUInt64();
+            }
+
+            int count = reader.ReadCount(MaxRecords);
+            var rows = new RecordedStoreRow[count];
+            fixed (RecordedStoreRow* records = rows)
+            {
+                reader.ReadBlock(records, checked(count * sizeof(RecordedStoreRow)));
+                int shapeId = reader.ReadInt32();
+                byte[] chunk = shapeId == 0 ? Array.Empty<byte>() : payloads[shapeId];
+                int shapeBytes = shapeId == 0 ? 0 : chunk.Length - sizeof(int);
+                if (shapeBytes % sizeof(RecordedStoreShape) != 0)
+                {
+                    throw new InvalidDataException("Invalid shape records.");
+                }
+
+                int shapeCount = shapeBytes / sizeof(RecordedStoreShape);
+                fixed (byte* bytes = chunk)
+                {
+                    var shapeRows = (RecordedStoreShape*)(bytes + sizeof(int));
+                    DefineShapeAddresses(shapeRows, shapeCount, removedAddresses);
+
+                    world->removedShapes = (Shape**)New<nint>(removed);
+                    world->removedShapeCount = world->removedShapeCapacity = (uint)removed;
+                    for (int i = 0; i < removed; i++)
+                    {
+                        world->removedShapes[i] = (Shape*)ResolveShape(removedAddresses[i]);
+                    }
+
+                    world->bodies = New<BodyData>(count);
+                    world->bodyCount = world->bodyCapacity = (uint)count;
+                    Body* owners = New<Body>(count);
+                    int firstShape = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        ref RecordedStoreRow source = ref records[i];
+                        if (source.ShapeCount > shapeCount - firstShape)
+                        {
+                            throw new InvalidDataException("Invalid body shape count.");
+                        }
+
+                        ReadBody(payloads, i, owners + i, source, shapeRows + firstShape);
+                        firstShape += (int)source.ShapeCount;
+                    }
+
+                    if (firstShape != shapeCount)
+                    {
+                        throw new InvalidDataException("Extra shape records.");
+                    }
+                }
+            }
+        }
+
+        // Contact keys order shape pointers. Allocate in the same relative order as the recorded addresses.
+        private void DefineShapeAddresses(RecordedStoreShape* shapes, int count, ulong[] removed)
+        {
+            var addresses = new ulong[checked(count + removed.Length)];
+            for (int i = 0; i < count; i++)
+            {
+                addresses[i] = shapes[i].Address;
+            }
+
+            Array.Copy(removed, 0, addresses, count, removed.Length);
+            Array.Sort(addresses);
+            Shape* records = New<Shape>(addresses.Length);
+            for (int i = 0; i < addresses.Length; i++)
+            {
+                this.shapes.TryAdd(addresses[i], (nint)(records + i));
+            }
+        }
+
+        private void ReadBody(Dictionary<int, byte[]> payloads, int index, Body* storage, in RecordedStoreRow source,
+            RecordedStoreShape* shapes)
         {
             BodyData* row = world->bodies + index;
-            row->flags = reader.ReadValue<BodyFlags>();
-            int oldCompound = reader.ReadInt32();
+            row->flags = source.Flags;
+            int oldCompound = source.MovingCompound;
             if (oldCompound == 0)
             {
                 row->flags |= BodyFlags.ColliderDirty;
             }
-            row->serial = reader.ReadUInt32();
-            row->jointEnds = reader.ReadInt32();
-            if (reader.ReadBoolean())
+
+            row->serial = source.Serial;
+            row->jointEnds = source.JointEnds;
+            if (source.Address != 0)
             {
                 row->owner = storage;
                 storage->world = world;
                 storage->index = (uint)index;
-                bodiesByAddress.Add(reader.ReadUInt64(), (nint)storage);
-                storage->userData = ReadUserData(reader);
-                storage->serial = reader.ReadUInt32();
-                storage->collisionDetectionMode = reader.ReadInt32();
-                storage->positionIterations = reader.ReadUInt32();
-                storage->velocityIterations = reader.ReadUInt32();
+                bodiesByAddress.Add(source.Address, (nint)storage);
+                storage->userData = UserData(source.EngineId);
+                storage->serial = source.OwnerSerial;
+                storage->collisionDetectionMode = source.CollisionDetectionMode;
+                storage->positionIterations = source.PositionIterations;
+                storage->velocityIterations = source.VelocityIterations;
             }
 
-            storage->home = reader.ReadValue<BodyHome>();
+            storage->home = source.Home;
             row->pose = &storage->home.pose;
             row->velocity = &storage->home.velocity;
             row->mass = &storage->home.mass;
@@ -229,28 +285,31 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
             }
 
-            int count = reader.ReadCount(MaxRecords);
+            int count = (int)source.ShapeCount;
             row->shapes = (ShapeData**)New<nint>(count);
             row->shapeCount = (uint)count;
             storage->shapes = row->shapes;
             storage->shapeCount = storage->shapeCapacity = (uint)count;
             for (int i = 0; i < count; i++)
             {
-                var shape = (Shape*)ResolveShape(reader.ReadUInt64());
+                ref RecordedStoreShape record = ref shapes[i];
+                var shape = (Shape*)ResolveShape(record.Address);
                 if (shape == null)
                 {
                     throw new InvalidDataException("Missing shape.");
                 }
 
-                void* userData = ReadUserData(reader);
-                void* mesh = ReadGeometry(reader.ReadInt32(), payloads);
-                MaterialData* material = ReadMaterial(reader);
-                *shape = reader.ReadValue<Shape>();
+                *shape = record.Shape;
                 shape->body = row->owner;
                 shape->data.owner = shape;
-                shape->data.mesh = mesh;
-                shape->data.material = material;
-                shape->data.userData = userData;
+                shape->data.mesh = ReadGeometry(record.GeometryId, payloads);
+                if (record.HasMaterial)
+                {
+                    shape->data.material = New<MaterialData>();
+                    *shape->data.material = record.Material;
+                }
+
+                shape->data.userData = UserData(record.EngineId);
                 row->shapes[i] = &shape->data;
             }
         }

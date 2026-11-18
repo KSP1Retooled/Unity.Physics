@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Joint.Loads;
@@ -10,9 +9,12 @@ using Unity.Physics.Store.World;
 
 namespace Unity.Physics.Stepping.Recording
 {
-    internal static unsafe class RecordStore
+    internal sealed unsafe class RecordStore
     {
-        internal static void Write(StoreStepper* stepper, RecordedStep step, RecordedGeometry geometry, RecordingWriter writer)
+        private RecordedStoreRow[] rows = Array.Empty<RecordedStoreRow>();
+        private RecordedStoreShape[] shapes = Array.Empty<RecordedStoreShape>();
+
+        internal void Write(StoreStepper* stepper, RecordedStep step, RecordedGeometry geometry, RecordingWriter writer)
         {
             WorldData* world = stepper->Store;
             StoreGlobals* globals = stepper->Globals;
@@ -26,39 +28,9 @@ namespace Unity.Physics.Stepping.Recording
             WriteMaterial(writer, globals->defaultMaterial);
             IgnoreTable.WriteRecording(writer, globals);
 
-            var addresses = new List<ulong>(checked((int)world->bodyCount));
-            for (uint i = 0; i < world->bodyCount; i++)
-            {
-                BodyData* body = world->bodies + i;
-                for (uint s = 0; s < body->shapeCount; s++)
-                {
-                    addresses.Add((ulong)body->shapes[s]);
-                }
-            }
-
-            for (uint i = 0; i < world->removedShapeCount; i++)
-            {
-                addresses.Add((ulong)world->removedShapes[i]);
-            }
-
-            addresses.Sort();
-            writer.Write(addresses.Count);
-            foreach (ulong address in addresses)
-            {
-                writer.Write(address);
-            }
-
             writer.Write(world->removedShapeCount);
-            for (uint i = 0; i < world->removedShapeCount; i++)
-            {
-                writer.Write((ulong)world->removedShapes[i]);
-            }
-
-            writer.Write(world->bodyCount);
-            for (uint i = 0; i < world->bodyCount; i++)
-            {
-                WriteBody(writer, world->bodies + i, globals, step, geometry);
-            }
+            writer.WriteBlock(world->removedShapes, checked((int)world->removedShapeCount * sizeof(ulong)));
+            WriteBodies(world, globals, writer, step, geometry);
 
             writer.Write(world->jointCount);
             writer.Write(geometry.CaptureJoints(world, globals, step));
@@ -96,54 +68,48 @@ namespace Unity.Physics.Stepping.Recording
             step.InputLength = writer.Length;
         }
 
-        private static void WriteBody(RecordingWriter writer, BodyData* row, StoreGlobals* globals, RecordedStep step,
+        private void WriteBodies(WorldData* world, StoreGlobals* globals, RecordingWriter writer, RecordedStep step,
             RecordedGeometry geometry)
         {
-            writer.WriteValue(row->flags);
-            writer.Write(geometry.CaptureMovingCompound(row, step));
-            writer.Write(row->serial);
-            writer.Write(row->jointEnds);
-            Body* body = row->owner;
-            writer.Write(body != null);
-            if (body != null)
+            int bodyCount = checked((int)world->bodyCount);
+            int shapeCount = 0;
+            for (int i = 0; i < bodyCount; i++)
             {
-                writer.Write((ulong)body);
-                writer.Write(FlightRecorder.EngineId(body->userData, globals->engineObjectIdOffset));
-                writer.Write(body->serial);
-                writer.Write(body->collisionDetectionMode);
-                writer.Write(body->positionIterations);
-                writer.Write(body->velocityIterations);
+                shapeCount = checked(shapeCount + (int)world->bodies[i].shapeCount);
             }
 
-            writer.WriteValue(new BodyHome
+            if (rows.Length < bodyCount)
             {
-                pose = *row->pose,
-                velocity = *row->velocity,
-                mass = *row->mass,
-                bodyMass = *row->bodyMass,
-                damping = *row->damping,
-                limits = *row->limits,
-                sleep = *row->sleep,
-                forces = *row->forces,
-                target = *row->target,
-            });
+                rows = new RecordedStoreRow[bodyCount];
+            }
+            if (shapes.Length < shapeCount)
+            {
+                shapes = new RecordedStoreShape[shapeCount];
+            }
 
-            writer.Write(row->shapeCount);
-            for (uint i = 0; i < row->shapeCount; i++)
+            fixed (RecordedStoreRow* bodyRows = rows)
+            fixed (RecordedStoreShape* shapeRows = shapes)
             {
-                Shape* source = (Shape*)row->shapes[i];
-                Shape shape = *source;
-                writer.Write((ulong)source);
-                writer.Write(FlightRecorder.EngineId(shape.data.userData, globals->engineObjectIdOffset));
-                writer.Write(geometry.Capture(&shape.data, step));
-                WriteMaterial(writer, shape.data.material);
-                shape.body = null;
-                shape.data.owner = null;
-                shape.data.mesh = null;
-                shape.data.material = null;
-                shape.data.userData = null;
-                shape.nextOnField = null;
-                writer.WriteValue(shape);
+                RecordedStoreRow.Capture(world, globals->engineObjectIdOffset, bodyRows);
+                RecordedStoreShape.Capture(world, globals->engineObjectIdOffset, shapeRows);
+                for (int i = 0; i < bodyCount; i++)
+                {
+                    if ((bodyRows[i].Flags & BodyFlags.CollidersMoved) != 0)
+                    {
+                        bodyRows[i].MovingCompound = geometry.CaptureMovingCompound(world->bodies + i, step);
+                    }
+                }
+                for (int i = 0; i < shapeCount; i++)
+                {
+                    if (shapeRows[i].Shape.data.geometryType >= StoreConstants.GeometryConvexMesh)
+                    {
+                        shapeRows[i].GeometryId = geometry.Capture((ShapeData*)shapeRows[i].Address, step);
+                    }
+                }
+
+                writer.Write(bodyCount);
+                writer.WriteBlock(bodyRows, checked(bodyCount * sizeof(RecordedStoreRow)));
+                writer.Write(geometry.ShareShapes(shapeRows, shapeCount, step));
             }
         }
 

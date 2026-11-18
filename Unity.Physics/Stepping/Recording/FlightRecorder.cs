@@ -24,6 +24,7 @@ namespace Unity.Physics.Stepping.Recording
         private static Task writerTask = Task.CompletedTask;
 
         private readonly Queue<RecordedStep> window = new Queue<RecordedStep>();
+        private RecordStore capture = new RecordStore();
         private RecordedGeometry geometry = new RecordedGeometry();
         private readonly long currentGeneration = generation;
         private long stepNumber;
@@ -56,6 +57,7 @@ namespace Unity.Physics.Stepping.Recording
             foreach (FlightRecorder recorder in active)
             {
                 recorder.window.Clear();
+                recorder.capture = null;
                 recorder.geometry = null;
                 recorder.frame = null;
                 recorder.reusable = null;
@@ -128,7 +130,7 @@ namespace Unity.Physics.Stepping.Recording
                 RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, null, null, input);
             }
 
-            RecordStore.Write(stepper, step, geometry, frame);
+            capture.Write(stepper, step, geometry, frame);
             lastInputLength = step.InputLength;
             geometry.Finish(step.Number);
             return step;
