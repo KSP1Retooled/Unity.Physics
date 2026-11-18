@@ -247,16 +247,18 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     return false;
                 }
 
-                if (JointConstraints.WholeRotationDrive(joint) != null)
+                JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+                if (wholeRotation != null)
                 {
-                    return true;
+                    return wholeRotation->driveUsesAcceleration == 0;
                 }
 
                 for (int i = 0; i < 3; i++)
                 {
                     JointAxis* drive = AngularDrive(joint, i);
                     bool locked = JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked;
-                    if (!locked && HasAxisDrive(drive) && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce))
+                    if (!locked && HasAxisDrive(drive)
+                        && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce || drive->driveUsesAcceleration != 0))
                     {
                         return false;
                     }
@@ -750,7 +752,6 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
             private void AddLinearDrives(JointData* joint)
             {
-                float mass = JointConstraints.LinearMass(joint);
                 float3 current = JointConstraints.RelativePosition(joint);
                 for (int i = 0; i < 3; i++)
                 {
@@ -766,8 +767,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     float velocityOffset = axis->driveDamper / spring * joint->targetLinearVelocity[i];
                     float target = (axis->driveSpring > 0.0f ? joint->targetPosition[i] : current[i]) + velocityOffset;
 
-                    Softness(spring, axis->driveDamper, mass, axis->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis), frequency, damping)));
+                    float mass = JointConstraints.LinearDriveMass(joint, i);
+                    Add(WithDrive(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis))), axis, spring, mass));
                 }
             }
 
@@ -776,40 +777,22 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
                 JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
                 JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
-                float directInertia = 0.0f;
-                if (math.cmin(NearAngularLimits(joint)) < NearAngle)
-                {
-                    // The direct solver converts drive frequency back into stiffness using the sum of the moving
-                    // bodies' mean inertias. Use that same inertia for a drive that competes with a narrow stop.
-                    directInertia = MeanInertia(joint->body0) + MeanInertia(joint->body1);
-                }
-
                 if (wholeRotation != null)
                 {
-                    AddSoftRotation(joint, wholeRotation, directInertia);
+                    AddSoftRotation(joint, wholeRotation);
                 }
                 else
                 {
-                    AddAxisDrive(joint, 0, twist, directInertia);
-                    AddAxisDrive(joint, 1, swing, directInertia);
-                    AddAxisDrive(joint, 2, swing, directInertia);
+                    AddAxisDrive(joint, 0, twist);
+                    AddAxisDrive(joint, 1, swing);
+                    AddAxisDrive(joint, 2, swing);
                 }
-            }
-
-            private static float MeanInertia(Body* body)
-            {
-                return HeldInPlace(body) ? 0.0f : math.csum(math.rcp(StoreMemory.Row(body)->mass->InverseInertia)) / 3.0f;
-            }
-
-            private static float DriveInertia(JointData* joint, int axis, float directInertia)
-            {
-                return directInertia > 0.0f && math.isfinite(directInertia) ? directInertia : JointConstraints.AngularMass(joint, axis);
             }
 
             /// <summary>
             /// Build whole-rotation spring and damper constraints at the target. Drives emit no impulse events.
             /// </summary>
-            private void AddSoftRotation(JointData* joint, JointAxis* drive, float directInertia)
+            private void AddSoftRotation(JointData* joint, JointAxis* drive)
             {
                 Flush();
 
@@ -818,34 +801,45 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 quaternion target = math.mul(joint->targetRotation, quaternion.AxisAngle(math.normalizesafe(velocityOffset, new float3(1.0f, 0.0f, 0.0f)), math.length(velocityOffset)));
 
                 pending.AFromJoint = new MTransform(math.mul(joint->rotation1, math.conjugate(target)), joint->position1);
-                float mass = DriveInertia(joint, 1, directInertia);
-                Softness(spring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                AddLockedAngles(new bool3(true), frequency, damping, Constraint.DefaultMaxImpulse);
+                for (int i = 0; i < 3; i++)
+                {
+                    Constraint row = Constraint.Twist(i, new FloatRange(0.0f, 0.0f), Constraint.DefaultMaxImpulse);
+                    Add(WithDrive(row, drive, spring, JointConstraints.AngularMass(joint, i)));
+                }
                 Flush();
 
                 pending.AFromJoint = new MTransform(joint->rotation1, joint->position1);
             }
 
-            private void AddAxisDrive(JointData* joint, int index, JointAxis* drive, float directInertia)
+            private void AddAxisDrive(JointData* joint, int index, JointAxis* drive)
             {
                 if (JointData.AxisOf(joint, StoreConstants.AxisAngularX + index)->dofLock == StoreConstants.DofLocked || drive->driveMaxForce <= 0.0f)
                 {
                     return;
                 }
 
-                float mass = DriveInertia(joint, index, directInertia);
+                float mass = JointConstraints.AngularMass(joint, index);
                 if (drive->driveSpring > 0.0f)
                 {
                     float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                     float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
-                    Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive), frequency, damping)));
+                    Add(WithDrive(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive))), drive, drive->driveSpring, mass));
                 }
                 else if (drive->driveDamper > 0.0f)
                 {
-                    Softness(drive->driveDamper * PureDamperSpringRatio, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(index, Constraint.AngularVelocityMotor(JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive), frequency, damping)));
+                    Constraint motor = OnAxis(index, Constraint.AngularVelocityMotor(JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive)));
+                    Add(WithDrive(motor, drive, drive->driveDamper * PureDamperSpringRatio, mass));
                 }
+            }
+
+            /// <summary>Give the direct solver the drive's spring and damping in force units.</summary>
+            private static Constraint WithDrive(Constraint constraint, JointAxis* drive, float spring, float mass)
+            {
+                bool acceleration = drive->driveUsesAcceleration != 0;
+                Softness(spring, drive->driveDamper, mass, acceleration, out constraint.SpringFrequency, out constraint.DampingRatio);
+                constraint.HasDriveCoefficients = true;
+                constraint.DriveCoefficients = new float2(spring, drive->driveDamper) * (acceleration ? mass : 1.0f);
+                return constraint;
             }
 
             /// <summary>

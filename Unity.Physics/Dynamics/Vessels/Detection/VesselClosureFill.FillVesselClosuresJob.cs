@@ -127,12 +127,6 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 }
 
                 UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
-                int softest = 0;
-                for (int axis = 1; axis < 3; axis++)
-                {
-                    softest = parameters.Stiffness[axis] < parameters.Stiffness[softest] ? axis : softest;
-                }
-
                 var filled = new VesselClosure
                 {
                     PartA = ClosurePartA[closure],
@@ -142,8 +136,8 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     Frame = UnitParameters.Frame(bodyA, parameters.Rotation0),
                     Rest = UnitParameters.Rest(bodyA, parameters.Rotation0, bodyB, parameters.Rotation1),
                     LinearStiffness = double.PositiveInfinity,
-                    AngularStiffness = parameters.Stiffness[softest],
-                    AngularDamping = parameters.Damping[softest],
+                    AngularStiffness = parameters.Stiffness,
+                    AngularDamping = parameters.Damping,
                 };
                 Closures[closure] = filled;
                 ClosureCache[closure] = filled;

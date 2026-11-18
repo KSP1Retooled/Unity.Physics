@@ -22,8 +22,8 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         public double4 Rest;
 
         public double LinearStiffness;
-        public double AngularStiffness;
+        public double3 AngularStiffness;
         public double LinearDamping;
-        public double AngularDamping;
+        public double3 AngularDamping;
     }
 }
