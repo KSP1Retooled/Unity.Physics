@@ -75,11 +75,29 @@ namespace Unity.Physics.Dynamics.Contacts
             }
         }
 
-        /// <summary>
-        /// Merges the records retained by <see cref="ContactMaterials.ReadContactsJob"/> into this step's manifolds, in bucket order.
-        /// </summary>
+        internal static JobHandle ScheduleMerge(NativeReference<int> filled, NativeList<ContactBucket> buckets,
+            NativeList<int2> offsets, NativeList<ManifoldRecord> records, NativeList<ManifoldPoint> points, JobHandle dependency)
+        {
+            JobHandle sized = new SizeMergedContactsJob
+            {
+                Filled = filled,
+                Buckets = buckets,
+                Offsets = offsets,
+                Records = records,
+                Points = points,
+            }.Schedule(dependency);
+            return new CopyContactBucketsJob
+            {
+                Buckets = buckets,
+                Offsets = offsets.AsDeferredJobArray(),
+                Records = records.AsDeferredJobArray(),
+                Points = points.AsDeferredJobArray(),
+            }.ScheduleUnsafe(filled, 1, sized);
+        }
+
+        /// <summary>Finds where each bucket goes and sizes the output lists in bucket order.</summary>
         [BurstCompile]
-        internal unsafe struct MergeContactBucketsJob : IJob
+        private struct SizeMergedContactsJob : IJob
         {
             [ReadOnly]
             public NativeReference<int> Filled;
@@ -87,25 +105,54 @@ namespace Unity.Physics.Dynamics.Contacts
             [ReadOnly]
             public NativeList<ContactBucket> Buckets;
 
-            [NativeDisableContainerSafetyRestriction]
+            public NativeList<int2> Offsets;
             public NativeList<ManifoldRecord> Records;
-
-            [NativeDisableContainerSafetyRestriction]
             public NativeList<ManifoldPoint> Points;
 
             public void Execute()
             {
-                for (int bucket = 0; bucket < Filled.Value; bucket++)
+                int count = Filled.Value;
+                Offsets.ResizeUninitialized(count);
+                int2 next = int2.zero;
+                for (int bucket = 0; bucket < count; bucket++)
                 {
-                    ContactBucket kept = Buckets[bucket];
-                    int firstRecord = Records.Length;
-                    int pointOffset = Points.Length;
-                    Records.AddRange(kept.Records.Ptr, kept.Records.Length);
-                    Points.AddRange(kept.Points.Ptr, kept.Points.Length);
-                    for (int i = firstRecord; i < Records.Length; i++)
-                    {
-                        Records.ElementAt(i).FirstPoint += pointOffset;
-                    }
+                    Offsets[bucket] = next;
+                    next += new int2(Buckets[bucket].Records.Length, Buckets[bucket].Points.Length);
+                }
+
+                Records.ResizeUninitialized(next.x);
+                Points.ResizeUninitialized(next.y);
+            }
+        }
+
+        /// <summary>Copies each bucket into its own range and adjusts the first point of each record.</summary>
+        [BurstCompile]
+        private unsafe struct CopyContactBucketsJob : IJobParallelForDefer
+        {
+            [ReadOnly]
+            public NativeList<ContactBucket> Buckets;
+
+            [ReadOnly]
+            public NativeArray<int2> Offsets;
+
+            [NativeDisableParallelForRestriction]
+            public NativeArray<ManifoldRecord> Records;
+
+            [NativeDisableParallelForRestriction]
+            public NativeArray<ManifoldPoint> Points;
+
+            public void Execute(int bucket)
+            {
+                ContactBucket source = Buckets[bucket];
+                int2 offset = Offsets[bucket];
+                var records = (ManifoldRecord*)Records.GetUnsafePtr() + offset.x;
+                UnsafeUtility.MemCpy(records, source.Records.Ptr, (long)source.Records.Length * sizeof(ManifoldRecord));
+                UnsafeUtility.MemCpy((ManifoldPoint*)Points.GetUnsafePtr() + offset.y, source.Points.Ptr,
+                    (long)source.Points.Length * sizeof(ManifoldPoint));
+
+                for (int i = 0; i < source.Records.Length; i++)
+                {
+                    records[i].FirstPoint += offset.y;
                 }
             }
         }

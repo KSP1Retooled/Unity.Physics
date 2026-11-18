@@ -56,13 +56,8 @@ namespace Unity.Physics.Stepping.Stages
                     BounceThreshold = store->bounceThreshold,
                 }.ScheduleUnsafe(contacts, 1, read);
 
-                merged = new ContactBuckets.MergeContactBucketsJob
-                {
-                    Filled = contactState.filledContactBuckets,
-                    Buckets = contactState.contactBuckets,
-                    Records = contactState.manifolds,
-                    Points = contactState.manifoldPoints,
-                }.Schedule(read);
+                merged = ContactBuckets.ScheduleMerge(contactState.filledContactBuckets, contactState.contactBuckets,
+                    contactState.mergeOffsets, contactState.manifolds, contactState.manifoldPoints, read);
             }
 
             // Only warm starting requires the merged manifolds before solving. Merging the manifolds can therefore run
