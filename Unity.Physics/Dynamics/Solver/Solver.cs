@@ -956,6 +956,7 @@ namespace Unity.Physics
                         impulseEventData.AccumulatedImpulse = float3.zero;
                         impulseEventData.JointEntity = joint.Entity;
                         impulseEventData.MaxImpulse = math.abs(constraint.MaxImpulse);
+                        impulseEventData.IsConfigurableLimit = constraint.IsConfigurableLimit;
                     }
                 }
             }
@@ -1248,6 +1249,7 @@ namespace Unity.Physics
                                 impulseEventsWriter.Write(new ImpulseEventData
                                 {
                                     Type = linear ? ConstraintType.Linear : ConstraintType.Angular,
+                                    IsConfigurableLimit = impulseEventData.IsConfigurableLimit,
                                     Impulse = impulse,
                                     JointEntity = impulseEventData.JointEntity,
                                     BodyIndices = header.BodyPair

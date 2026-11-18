@@ -54,8 +54,8 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                 bool asleep = JointLoads.IsAsleep(World->joints[index]);
                 Loads[index] = new JointLoad
                 {
-                    Force = asleep ? States[index].Force : float3.zero,
-                    Torque = asleep ? States[index].Torque : float3.zero,
+                    Force = asleep ? States[index].FullForce : float3.zero,
+                    Torque = asleep ? States[index].FullTorque : float3.zero,
                 };
             }
         }
@@ -120,10 +120,18 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                         if (impulse.Type == ConstraintType.Linear)
                         {
                             load.Force -= impulse.Impulse;
+                            if (impulse.IsConfigurableLimit)
+                            {
+                                load.LimitForce -= impulse.Impulse;
+                            }
                         }
                         else
                         {
                             load.Torque -= impulse.Impulse;
+                            if (impulse.IsConfigurableLimit)
+                            {
+                                load.LimitTorque -= impulse.Impulse;
+                            }
                         }
 
                         loads[impulse.JointEntity.Index] = load;

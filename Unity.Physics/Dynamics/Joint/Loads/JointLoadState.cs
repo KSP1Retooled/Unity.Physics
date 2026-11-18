@@ -19,7 +19,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
     /// </summary>
     internal struct JointLoadState
     {
-        // The force and torque that the joint applied during the last step, as in JointData.
+        // The load on locks and limits during the last step, as in JointData.
         public float3 Force;
 
         // The smoothed magnitude of the force, used to decide whether the joint breaks.
@@ -28,6 +28,12 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         public float BreakingTorque;
         public float BreakForce;
         public float BreakTorque;
+
+        // Include the drive loads that the solver reports. Forest locking uses the smoothed magnitudes.
+        public float3 FullForce;
+        public float3 FullTorque;
+        public float SmoothedFullForce;
+        public float SmoothedFullTorque;
 
         // The joint's serial number. A command that reads the array checks that the slot belongs to its joint.
         public uint Serial;
@@ -45,6 +51,10 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                 BreakingTorque = joint->breakingTorque,
                 BreakForce = joint->breakForce,
                 BreakTorque = joint->breakTorque,
+                FullForce = joint->fullForce,
+                FullTorque = joint->fullTorque,
+                SmoothedFullForce = joint->smoothedFullForce,
+                SmoothedFullTorque = joint->smoothedFullTorque,
                 Serial = joint->serial,
                 Inactive = (joint->state & JointConstraints.Inactive) != 0 ? 1u : 0u,
             };

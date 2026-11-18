@@ -155,6 +155,7 @@ namespace Unity.Physics
                 {
                     Type = ConstraintType.Angular,
                     Impulse = impulseEventData.AccumulatedImpulse,
+                    IsConfigurableLimit = impulseEventData.IsConfigurableLimit,
                     JointEntity = impulseEventData.JointEntity,
                     BodyIndices = jacHeader.BodyPair
                 });

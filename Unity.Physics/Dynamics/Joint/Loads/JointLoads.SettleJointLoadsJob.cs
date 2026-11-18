@@ -4,6 +4,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics.Dynamics.Joint.Grouping;
+using Unity.Physics.Dynamics.Joint.Translation;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Memory;
@@ -69,31 +70,69 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                         state->Torque = float3.zero;
                         state->BreakingForce = 0.0f;
                         state->BreakingTorque = 0.0f;
-                    }
-                    else
-                    {
-                        state->Force = load.Force;
-                        state->Torque = load.Torque;
+                        state->FullForce = float3.zero;
+                        state->FullTorque = float3.zero;
+                        state->SmoothedFullForce = 0.0f;
+                        state->SmoothedFullTorque = 0.0f;
                     }
 
                     return false;
                 }
 
-                return SettleAwake(state, load, deltaTime);
+                return SettleAwake(joint, state, load, deltaTime);
             }
 
             /// <summary>
             /// Settle a joint load when the caller already knows that at least one moving body is awake.
             /// </summary>
-            internal static bool SettleAwake(JointLoadState* state, in JointLoad load, float deltaTime)
+            internal static bool SettleAwake(JointData* joint, JointLoadState* state, in JointLoad load, float deltaTime)
             {
-                state->Force = load.Force;
-                state->Torque = load.Torque;
+                state->FullForce = load.Force;
+                state->FullTorque = load.Torque;
+                if (joint->type == StoreConstants.JointTypeDof6)
+                {
+                    state->Force = ConstraintLoad(joint, StoreConstants.AxisLinearX, load.Force, load.LimitForce);
+                    state->Torque = ConstraintLoad(joint, StoreConstants.AxisAngularX, load.Torque, load.LimitTorque);
+                }
+                else
+                {
+                    state->Force = load.Force;
+                    state->Torque = load.Torque;
+                }
+
                 float follow = deltaTime / (BreakingTimeConstant + deltaTime);
+                float force = math.length(load.Force);
+                float torque = math.length(load.Torque);
+                state->SmoothedFullForce += (force - state->SmoothedFullForce) * follow;
+                state->SmoothedFullTorque += (torque - state->SmoothedFullTorque) * follow;
                 state->BreakingForce += (math.length(state->Force) - state->BreakingForce) * follow;
                 state->BreakingTorque += (math.length(state->Torque) - state->BreakingTorque) * follow;
                 bool overloaded = state->BreakingForce > state->BreakForce || state->BreakingTorque > state->BreakTorque;
                 return state->Inactive == 0 && overloaded;
+            }
+
+            /// <summary>
+            /// Keep the measured limit reaction and the part of the remaining load that acts along locked axes.
+            /// For mixed merged or vessel joints, projection estimates the split of the combined load.
+            /// </summary>
+            private static float3 ConstraintLoad(JointData* joint, int firstAxis, float3 total, float3 limit)
+            {
+                JointAxis* axes = JointData.AxisOf(joint, firstAxis);
+                bool3 locked = new bool3(axes[0].dofLock == StoreConstants.DofLocked,
+                    axes[1].dofLock == StoreConstants.DofLocked, axes[2].dofLock == StoreConstants.DofLocked);
+                if (math.all(locked))
+                {
+                    return total;
+                }
+
+                if (!math.any(locked))
+                {
+                    return limit;
+                }
+
+                quaternion frame = JointConstraints.WorldRotation0(joint);
+                float3 local = math.rotate(math.conjugate(frame), total - limit);
+                return limit + math.rotate(frame, math.select(float3.zero, local, locked));
             }
         }
     }

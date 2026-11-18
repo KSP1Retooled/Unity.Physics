@@ -244,6 +244,7 @@ namespace Unity.Physics
 
                 impulseEventsWriter.Write(new ImpulseEventData
                 {
+                    IsConfigurableLimit = impulseEventData.IsConfigurableLimit,
                     Type = ConstraintType.Linear,
                     Impulse = constraintSpaceImpulse,
                     JointEntity = impulseEventData.JointEntity,

@@ -178,8 +178,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 }
 
                 float fraction = math.max(
-                    state->BreakForce > 0.0f ? state->BreakingForce / state->BreakForce : 0.0f,
-                    state->BreakTorque > 0.0f ? state->BreakingTorque / state->BreakTorque : 0.0f);
+                    state->BreakForce > 0.0f ? state->SmoothedFullForce / state->BreakForce : 0.0f,
+                    state->BreakTorque > 0.0f ? state->SmoothedFullTorque / state->BreakTorque : 0.0f);
                 return (fraction < LockFraction ? JointForestLock.Lockable : JointForestLock.None)
                     | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
             }
@@ -568,8 +568,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             /// <summary>
-            /// Treat an unlimited linear drive with zero targets as a lock so that its force contributes to joint
-            /// breaking.
+            /// Solve an unlimited linear drive with zero targets as a hard row.
             /// </summary>
             private static bool HeldByDrive(JointData* joint, int index)
             {
@@ -601,7 +600,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
                     Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
                     bool signed = limited.x ^ limited.y ^ limited.z && !math.all(limited);
-                    Add(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
+                    AddLimit(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
                 }
             }
 
@@ -635,11 +634,16 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     AddLockedAngles(locked, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
                 }
 
+                AddAngularLimits(joint);
+            }
+
+            private void AddAngularLimits(JointData* joint)
+            {
                 JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
                 if (twist->dofLock == StoreConstants.DofLimited && (twist->min > -math.PI || twist->max < math.PI))
                 {
                     Softness(twist->limitSpring, twist->limitDamping, JointConstraints.AngularMass(joint, 0), false, out float frequency, out float damping);
-                    Add(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
+                    AddLimit(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
                 }
 
                 // The shared swing limit stores the angle about y in min and the angle about z in max.
@@ -651,7 +655,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     Softness(swing->limitSpring, swing->limitDamping, JointConstraints.AngularMass(joint, 1), false, out float frequency, out float damping);
                     if (limitedY && limitedZ && swing->min == swing->max)
                     {
-                        Add(Constraint.Cone(0, new FloatRange(0.0f, swing->min), ReportEveryImpulse, frequency, damping));
+                        AddLimit(Constraint.Cone(0, new FloatRange(0.0f, swing->min), ReportEveryImpulse, frequency, damping));
                     }
                     else
                     {
@@ -659,15 +663,21 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                         // angles, forming a box from the angles that Unity supplied.
                         if (limitedY)
                         {
-                            Add(Constraint.Twist(1, new FloatRange(-swing->min, swing->min), ReportEveryImpulse, frequency, damping));
+                            AddLimit(Constraint.Twist(1, new FloatRange(-swing->min, swing->min), ReportEveryImpulse, frequency, damping));
                         }
 
                         if (limitedZ)
                         {
-                            Add(Constraint.Twist(2, new FloatRange(-swing->max, swing->max), ReportEveryImpulse, frequency, damping));
+                            AddLimit(Constraint.Twist(2, new FloatRange(-swing->max, swing->max), ReportEveryImpulse, frequency, damping));
                         }
                     }
                 }
+            }
+
+            private void AddLimit(Constraint constraint)
+            {
+                constraint.IsConfigurableLimit = true;
+                Add(constraint);
             }
 
             /// <summary>

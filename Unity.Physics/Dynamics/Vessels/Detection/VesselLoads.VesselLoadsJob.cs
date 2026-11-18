@@ -136,7 +136,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 JointUnit jointUnit = Units[unit];
                 if (jointUnit.Group < 0)
                 {
-                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(States + jointUnit.Joint, jointLoad, DeltaTime);
+                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], States + jointUnit.Joint, jointLoad, DeltaTime);
                     Overloaded[jointUnit.Joint] = overloaded ? (byte)1 : (byte)0;
                     return;
                 }
@@ -152,7 +152,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 for (int i = 0; i < group.MemberCount; i++)
                 {
                     int joint = Members[group.FirstMember + i].Joint;
-                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(States + joint, JointLoads[joint], DeltaTime);
+                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(World->joints[joint], States + joint, JointLoads[joint], DeltaTime);
                     Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
                 }
             }

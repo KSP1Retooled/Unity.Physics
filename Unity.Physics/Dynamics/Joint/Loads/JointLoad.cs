@@ -18,5 +18,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
     {
         public float3 Force;
         public float3 Torque;
+        public float3 LimitForce;
+        public float3 LimitTorque;
     }
 }
