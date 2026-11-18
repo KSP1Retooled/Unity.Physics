@@ -894,9 +894,9 @@ namespace Unity.Physics
                     if (solverTypeOverride == SolverType.Direct)
                     {
                         // Use the direct solver's substep duration for regularization.
-                        // Reuse matching row-kind and spring settings unless LegacyRowBuild is enabled.
+                        // Reuse regularization when the row kind and spring settings match.
                         uint kind = (header.IsAngular ? 1u : 0u) | (header.IsVelocityConstraint ? 2u : 0u);
-                        bool same = regularized && !LegacyRowBuild && kind == regularizedKind
+                        bool same = regularized && kind == regularizedKind
                             && math.asuint(constraint.SpringFrequency) == math.asuint(regularizedFrom.SpringFrequency)
                             && math.asuint(constraint.DampingRatio) == math.asuint(regularizedFrom.DampingRatio)
                             && math.asuint(constraint.DirectStiffnessScale) == math.asuint(regularizedFrom.DirectStiffnessScale);

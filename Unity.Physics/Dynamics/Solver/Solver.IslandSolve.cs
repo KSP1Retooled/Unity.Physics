@@ -220,7 +220,7 @@ namespace Unity.Physics
                 UnfusedBodies = work.UnfusedBodies,
                 Vessels = stepInput.VesselSet,
                 Cache = stepInput.IslandSolverCache,
-                Fuse = fusedVessels && !LegacyRowBuild,
+                Fuse = fusedVessels,
                 MinimumParts = SolverSwitches.FusedVesselParts,
                 Contacts = SolverSwitches.FusedContacts,
                 Buffers = work.Buffers,
@@ -235,7 +235,6 @@ namespace Unity.Physics
                 JacobiansReader = jacobians.AsReader(),
                 Buffers = work.Buffers,
                 StepInput = substepInput,
-                LegacyRowBuild = LegacyRowBuild,
             };
 
             if (fusedVessels)
@@ -276,8 +275,7 @@ namespace Unity.Physics
                 substepInput.CurrentSubstep = substep;
                 if (substep > 0)
                 {
-                    // Recount contacts before building rows. Update fixed-size joint Jacobians during row
-                    // construction unless using LegacyRowBuild.
+                    // Update contacts here. The row builder updates joints before building their rows.
                     handle = new UpdateIslandJacobiansJob
                     {
                         Headers = work.Headers.AsDeferredJobArray(),
@@ -286,7 +284,6 @@ namespace Unity.Physics
                         MotionDatas = world.MotionDatas,
                         Bodies = world.Bodies,
                         StepInput = substepInput,
-                        ContactsOnly = !LegacyRowBuild,
                     }.Schedule(work.Headers, headersPerBatch, handle);
 
                     handle = new CountIslandRowsJob { Work = work }.Schedule(handle);
@@ -301,8 +298,7 @@ namespace Unity.Physics
                     MotionDatas = world.MotionDatas,
                     Bodies = world.Bodies,
                     StepInput = substepInput,
-                    UpdateJoints = substep > 0 && !LegacyRowBuild,
-                    ShareRegularization = !LegacyRowBuild,
+                    UpdateJoints = substep > 0,
                 }.Schedule(work.Headers, headersPerBatch, handle);
 
                 JobHandle alone = new SolveDirectIslandJob
@@ -422,20 +418,6 @@ namespace Unity.Physics
         const int SharedSolveParts = 256;
 
         const int SharedSolveRows = 512;
-
-        /// <summary>
-        /// Use the reference row builder with separate joint updates and per-Jacobian regularization.
-        /// Test/benchmark option.
-        /// </summary>
-        internal static bool LegacyRowBuild
-        {
-            get => LegacyRowBuildFlag.Data;
-            set => LegacyRowBuildFlag.Data = value;
-        }
-
-        struct LegacyRowBuildKey { }
-
-        static readonly SharedStatic<bool> LegacyRowBuildFlag = SharedStatic<bool>.GetOrCreate<LegacyRowBuildKey>();
 
         unsafe struct IslandHeader
         {
@@ -750,12 +732,6 @@ namespace Unity.Physics
             [ReadOnly]
             public NativeArray<DirectIsland> Islands;
 
-            /// <summary>
-            /// When true, skips joint Jacobians so <see cref="BuildIslandRowsJob"/> updates them. Joints precede
-            /// contacts in each island.
-            /// </summary>
-            public bool ContactsOnly;
-
             [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
 
@@ -769,10 +745,9 @@ namespace Unity.Physics
 
             public void Execute(int index)
             {
-                // The fused vessel job updates the Jacobians of its own islands, at the same time as this job runs, so
-                // skip them here.
+                // The fused job updates its own islands. BuildIslandRowsJob updates the joints of other islands.
                 DirectIsland island = Islands[Headers[index].Island];
-                if (island.Fused || (ContactsOnly && index < island.JointEnd))
+                if (island.Fused || index < island.JointEnd)
                 {
                     return;
                 }
@@ -883,11 +858,6 @@ namespace Unity.Physics
             /// </summary>
             public bool UpdateJoints;
 
-            /// <summary>
-            /// Computes the substep's default regularization once per worker instead of once per Jacobian.
-            /// </summary>
-            public bool ShareRegularization;
-
             // Compute this when a worker builds its first Jacobian, and keep it in that worker's copy of the job.
             RowRegularization regularization;
             bool hasRegularization;
@@ -902,19 +872,14 @@ namespace Unity.Physics
                     return;
                 }
 
-                RowRegularization* shared = null;
-                if (ShareRegularization)
+                if (!hasRegularization)
                 {
-                    if (!hasRegularization)
-                    {
-                        regularization = RowRegularization.Of(StepInput);
-                        hasRegularization = true;
-                    }
-
-                    shared = (RowRegularization*)UnsafeUtility.AddressOf(ref regularization);
+                    regularization = RowRegularization.Of(StepInput);
+                    hasRegularization = true;
                 }
 
-                BuildIslandHeader(index, entry, Islands[entry.Island], Work, MotionVelocities, MotionDatas, Bodies, StepInput, UpdateJoints, shared);
+                BuildIslandHeader(index, entry, Islands[entry.Island], Work, MotionVelocities, MotionDatas, Bodies, StepInput,
+                    UpdateJoints, (RowRegularization*)UnsafeUtility.AddressOf(ref regularization));
             }
         }
 
@@ -1201,9 +1166,6 @@ namespace Unity.Physics
 
             /// <summary>The input of the first substep. Its time step is the substep's.</summary>
             public StepInput StepInput;
-
-            /// <summary>The value of <see cref="LegacyRowBuild"/> when the jobs were scheduled.</summary>
-            public bool LegacyRowBuild;
         }
 
         /// <summary>
@@ -1241,9 +1203,8 @@ namespace Unity.Physics
                             continue;
                         }
 
-                        // As UpdateIslandJacobiansJob does: contacts only, unless the rows are built the earlier way.
-                        int from = unfused.LegacyRowBuild ? island.FirstHeader : island.JointEnd;
-                        for (int h = from; h < island.HeaderEnd; h++)
+                        // The row builder updates the joints. Update the contacts before counting their rows.
+                        for (int h = island.JointEnd; h < island.HeaderEnd; h++)
                         {
                             UpdateJacobian(ref *headerPointer[h].Header, motionDatas, motionVelocities, bodies, input);
                         }
@@ -1253,8 +1214,7 @@ namespace Unity.Physics
                 }
 
                 RowRegularization regularization = RowRegularization.Of(input);
-                RowRegularization* shared = unfused.LegacyRowBuild ? null : &regularization;
-                bool updateJoints = substep > 0 && !unfused.LegacyRowBuild;
+                bool updateJoints = substep > 0;
                 for (int i = 0; i < islandCount; i++)
                 {
                     DirectIsland island = islandPointer[i];
@@ -1266,7 +1226,7 @@ namespace Unity.Physics
                     for (int h = island.FirstHeader; h < island.HeaderEnd; h++)
                     {
                         BuildIslandHeader(h, headerPointer[h], island, unfused.Buffers, motionVelocities, motionDatas, bodies, input,
-                            updateJoints, shared);
+                            updateJoints, &regularization);
                     }
                 }
 
