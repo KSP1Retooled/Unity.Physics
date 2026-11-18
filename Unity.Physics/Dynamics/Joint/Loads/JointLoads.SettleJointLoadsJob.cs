@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Memory;
@@ -60,8 +61,21 @@ namespace Unity.Physics.Dynamics.Joint.Loads
             {
                 if (JointLoads.IsAsleep(joint))
                 {
-                    state->Force = load.Force;
-                    state->Torque = load.Torque;
+                    if (JointGrouping.GroupJointsJob.Immobile(joint->body0) && JointGrouping.GroupJointsJob.Immobile(joint->body1))
+                    {
+                        // The joint cannot apply a load while both ends are held. Drop the break history
+                        // so that a load from before packing cannot break the joint after unpacking.
+                        state->Force = float3.zero;
+                        state->Torque = float3.zero;
+                        state->BreakingForce = 0.0f;
+                        state->BreakingTorque = 0.0f;
+                    }
+                    else
+                    {
+                        state->Force = load.Force;
+                        state->Torque = load.Torque;
+                    }
+
                     return false;
                 }
 
