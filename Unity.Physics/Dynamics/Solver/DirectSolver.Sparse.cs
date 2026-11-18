@@ -21,17 +21,6 @@ namespace Unity.Physics
         static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Solve");
         static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Setup");
 
-        /// <summary>The upstream direct solver applies the impulses after this call.</summary>
-        static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
-            int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
-            in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
-            in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray,
-            bool bounded, int contactPairs)
-        {
-            SolveSparsely<CoupledDirectPath>(directSolverSchedulerInfo, islandIndex, jacobiansReader, motionVelocities,
-                motionDatas, stepInput, rows, jacobianRows, eps, l, u, rhs, indexSetArray, bounded, contactPairs);
-        }
-
         /// <summary>The parts of the sparse solve that only the island scheduler runs.</summary>
         internal unsafe interface ISparseIslandPath
         {
@@ -44,24 +33,6 @@ namespace Unity.Physics
             void PushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
                 in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
                 in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest = null);
-        }
-
-        /// <summary>The upstream direct path supplies no compiled vessels and handles its own impulses.</summary>
-        unsafe struct CoupledDirectPath : ISparseIslandPath
-        {
-            public void SolveVessel(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
-                in NativeList<IntPtr> headerList, in NativeList<int> worldBodies, in NativeArray<int> compactBodies, bool bounded,
-                bool holdsPositions, int islandIndex, int* islandVessels, int islandVesselCount, in NativeArray<MotionVelocity> motionVelocities,
-                in NativeArray<MotionData> motionDatas, in StepInput stepInput, in JacobianRows jacobianRows, float* recovery,
-                bool sparseContacts, WorkTeam* team, bool applyImpulses, float* impulses)
-            {
-            }
-
-            public void PushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
-                in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
-                in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest)
-            {
-            }
         }
 
         /// <summary>

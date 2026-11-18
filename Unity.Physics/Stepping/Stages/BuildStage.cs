@@ -60,7 +60,6 @@ namespace Unity.Physics.Stepping.Stages
             using (BuildResetMarker.Auto())
             {
                 world.Reset(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0);
-                world.DynamicsWorld.EnableDirectSolver = true;
             }
 
             bool sameMemory = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;

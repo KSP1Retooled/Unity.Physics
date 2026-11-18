@@ -10,8 +10,6 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
-        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.BuildRows");
-
         /// <summary>
         /// Contiguous Jacobian rows, twelve floats per row. Preassigned row ranges allow independent construction.
         /// Temporary allocations are released with the job.
@@ -23,11 +21,6 @@ namespace Unity.Physics
             float* start;
             int count;
             int next;
-
-            public JacobianRows(int rows)
-                : this((float*)UnsafeUtility.Malloc(rows * Columns * (long)sizeof(float), 16, Allocator.Temp), rows)
-            {
-            }
 
             /// <summary>Rows in memory someone else owns, <see cref="Columns"/> floats each.</summary>
             public JacobianRows(float* start, int rows)
@@ -52,11 +45,11 @@ namespace Unity.Physics
                 return rows;
             }
 
-            public Vector Next(in MemoryManager heap)
+            public Vector Next()
             {
                 // A solve counts its rows before building them, so this only runs out if the two disagree.
                 SafetyChecks.CheckAreEqualAndThrow(true, next < count);
-                return Vector.Create(heap, start + next++ * (long)Columns, 1, Columns);
+                return Vector.Create(default, start + next++ * (long)Columns, 1, Columns);
             }
         }
 
@@ -93,12 +86,11 @@ namespace Unity.Physics
                 Recovery = buffers.Recovery,
                 IndexSetArray = flags,
                 SparseContacts = sparseContacts,
-                SolveSparsely = true,
                 Regularization = regularization,
             };
 
             Vector* JBlocks = stackalloc Vector[jacRows];
-            BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks, null);
+            BuildJacobianRows(ref header, startRow, jacRows, ref context, JBlocks);
             return context.IsLCP;
         }
     }

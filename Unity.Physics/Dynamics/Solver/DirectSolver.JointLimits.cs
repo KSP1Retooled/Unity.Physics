@@ -3,7 +3,6 @@ using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Numerics.Memory;
 using static Unity.Physics.Math;
 
 namespace Unity.Physics
@@ -11,7 +10,7 @@ namespace Unity.Physics
     public static partial class Solver
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static unsafe void AddAngularLimit1D(in MemoryManager heap, ref JacobianRows jacobianRows, Vector* JBlocks,
+        static unsafe void AddAngularLimit1D(ref JacobianRows jacobianRows, Vector* JBlocks,
             bool bodyAIsStatic, bool bodyBIsStatic, in float3 hingeAxis, float currentAngle, float minAngle, float maxAngle,
             int startRow, in Vector l, in Vector u, ref Vector eps, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
             in Vector rhs, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
@@ -20,7 +19,7 @@ namespace Unity.Physics
             const int startColumnA = 0;
             const int startColumnB = 6;
 
-            var J = jacobianRows.Next(heap);
+            var J = jacobianRows.Next();
             J.Clear();
             JBlocks[0] = J;
 

@@ -6,7 +6,6 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics.Systems;
 using Unity.Transforms;
-using static Unity.Physics.DispatchPairSequencer.IterativeSolverSchedulerInfo;
 
 namespace Unity.Physics.Authoring
 {
@@ -14,8 +13,8 @@ namespace Unity.Physics.Authoring
     [RequireMatchingQueriesForUpdate]
     [WorldSystemFilter(WorldSystemFilterFlags.Default)]
     [UpdateInGroup(typeof(PhysicsSimulationGroup))]
-    [UpdateAfter(typeof(PhysicsCreateBodyPairsGroup))]
-    [UpdateBefore(typeof(PhysicsCreateContactsGroup))]
+    [UpdateAfter(typeof(PhysicsCreateContactsGroup))]
+    [UpdateBefore(typeof(PhysicsCreateJacobiansGroup))]
     [BurstCompile]
     partial struct DisplayIterativeSolverPhasesSystem : ISystem
     {
@@ -44,10 +43,13 @@ namespace Unity.Physics.Authoring
                 m_LocalToWorldLookup.Update(ref state);
 
                 var simulationPtr = SystemAPI.GetSingleton<SimulationSingleton>().AsSimulationPtr();
+                if (!simulationPtr->StepContext.PhasedDispatchPairs.IsCreated)
+                {
+                    return;
+                }
+
                 var physicsWorld = SystemAPI.GetSingleton<PhysicsWorldSingleton>();
                 var debugDraw = SystemAPI.GetSingleton<DebugDraw>();
-
-                var colorsPerType = ColorIndex.kMaxColors / 3;
 
                 var displayIterativePairsHandle = new DisplayIterativeSolverPhasesJob
                 {
@@ -64,26 +66,11 @@ namespace Unity.Physics.Authoring
 #endif
                 }.Schedule(state.Dependency);
 
-                var displayCouplingPairsHandle = new DisplayIterativeSolverPhasesJob
-                {
-                    NumberSize = 0.15f,
-                    NumberSpacing = 1.5f,
-                    ColorIndexOffset = colorsPerType,
-                    DebugDraw = debugDraw,
-                    Bodies = physicsWorld.Bodies.AsReadOnly(),
-                    LocalToWorldLookup = m_LocalToWorldLookup,
-                    PhasedDispatchPairs = simulationPtr->StepContext.PhasedDispatchPairs.AsDeferredJobArray(),
-                    IterativeSolverSchedulerInfo = simulationPtr->StepContext.SolverSchedulerInfo.CouplingPairsIterativeScheduling
-#if UNITY_PHYSICS_DISPLAY_ADVANCED_SOLVER_DATA
-                    DrawIterativeSolverIndex = physicsDebugDisplayData.DrawIterativeSolverIndex != 0,
-#endif
-                }.Schedule(state.Dependency);
-
                 var displayDirectPairsHandle = new DisplayIterativeSolverPhasesJob
                 {
                     NumberSize = 0.15f,
                     NumberSpacing = 1.5f,
-                    ColorIndexOffset = colorsPerType * 2,
+                    ColorIndexOffset = ColorIndex.kMaxColors / 2,
                     DebugDraw = debugDraw,
                     Bodies = physicsWorld.Bodies.AsReadOnly(),
                     LocalToWorldLookup = m_LocalToWorldLookup,
@@ -94,7 +81,7 @@ namespace Unity.Physics.Authoring
 #endif
                 }.Schedule(state.Dependency);
 
-                state.Dependency = JobHandle.CombineDependencies(displayIterativePairsHandle, displayCouplingPairsHandle, displayDirectPairsHandle);
+                state.Dependency = JobHandle.CombineDependencies(displayIterativePairsHandle, displayDirectPairsHandle);
             }
         }
     }

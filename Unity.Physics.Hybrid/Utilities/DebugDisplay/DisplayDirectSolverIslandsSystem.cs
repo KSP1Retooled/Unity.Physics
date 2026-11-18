@@ -13,8 +13,8 @@ namespace Unity.Physics.Authoring
     [RequireMatchingQueriesForUpdate]
     [WorldSystemFilter(WorldSystemFilterFlags.Default)]
     [UpdateInGroup(typeof(PhysicsSimulationGroup))]
-    [UpdateAfter(typeof(PhysicsCreateBodyPairsGroup))]
-    [UpdateBefore(typeof(PhysicsCreateContactsGroup))]
+    [UpdateAfter(typeof(PhysicsCreateContactsGroup))]
+    [UpdateBefore(typeof(PhysicsCreateJacobiansGroup))]
     [BurstCompile]
     partial struct DisplayDirectSolverIslandsSystem : ISystem
     {
@@ -44,6 +44,11 @@ namespace Unity.Physics.Authoring
 
                 var simulationPtr = SystemAPI.GetSingleton<SimulationSingleton>().AsSimulationPtr();
                 var phasedDispatchPairs = simulationPtr->StepContext.PhasedDispatchPairs;
+                if (!phasedDispatchPairs.IsCreated)
+                {
+                    return;
+                }
+
                 var solverSchedulerInfo = simulationPtr->StepContext.SolverSchedulerInfo;
                 var physicsWorld = SystemAPI.GetSingleton<PhysicsWorldSingleton>();
                 var debugDraw = SystemAPI.GetSingleton<DebugDraw>();

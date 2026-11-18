@@ -19,6 +19,8 @@ namespace Unity.Physics
         internal const int NumIslandPhases = 4;
 
         /// <summary> One bucket of pairs for each phase, then one for the direct solver. </summary>
+        const int MaxPairsPerWorkItem = 8;
+
         const int NumIslandBuckets = NumIslandPhases + 1;
 
         /// <summary>
@@ -1043,7 +1045,7 @@ namespace Unity.Physics
 
             IterativeSolverSchedulerInfo.SolvePhaseInfo Phase(int numPairs, int firstPair, int firstWorkItem, int linkedNumDynamicBodies)
             {
-                int batchSize = OneWorkItemPerBucket ? numPairs : math.min(CreateDispatchPairPhasesJob.kMaxBatchSize, numPairs);
+                int batchSize = OneWorkItemPerBucket ? numPairs : math.min(MaxPairsPerWorkItem, numPairs);
                 return new IterativeSolverSchedulerInfo.SolvePhaseInfo
                 {
                     DispatchPairCount = numPairs,

@@ -178,7 +178,6 @@ namespace Unity.Physics.Systems
                         FirstBodyIndex = 0,
                         RigidBodies = world.Bodies,
                         EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap.AsParallelWriter(),
-                        DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
 
                         ChunkBaseEntityIndices = dynamicBodyChunkBaseEntityIndices
                     }.ScheduleParallel(dynamicEntityQuery, baseIndexJob);
@@ -222,7 +221,6 @@ namespace Unity.Physics.Systems
                         FirstBodyIndex = numDynamicBodies,
                         RigidBodies = world.Bodies,
                         EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap.AsParallelWriter(),
-                        DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
 
                         ChunkBaseEntityIndices = staticBodyChunkBaseEntityIndices
                     }.ScheduleParallel(staticEntityQuery, baseIndexJob);
@@ -249,7 +247,6 @@ namespace Unity.Physics.Systems
                         NumDynamicBodies = numDynamicBodies,
                         EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap,
                         EntityJointIndexMap = world.DynamicsWorld.EntityJointIndexMap.AsParallelWriter(),
-                        DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
                         ChunkBaseEntityIndices = chunkBaseEntityIndices
                     }.ScheduleParallel(jointEntityQuery, baseIndexJob);
                     jobHandles.Add(createJointsJob);
@@ -500,7 +497,6 @@ namespace Unity.Physics.Systems
                     FirstBodyIndex = 0,
                     RigidBodies = world.Bodies,
                     EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap.AsParallelWriter(),
-                    DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
 
                     ChunkBaseEntityIndices = chunkBaseEntityIndices
                 }.Run(dynamicEntityGroup);
@@ -539,7 +535,6 @@ namespace Unity.Physics.Systems
                     FirstBodyIndex = numDynamicBodies,
                     RigidBodies = world.Bodies,
                     EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap.AsParallelWriter(),
-                    DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
 
                     ChunkBaseEntityIndices = chunkBaseEntityIndices
                 }.Run(staticEntityGroup);
@@ -560,7 +555,6 @@ namespace Unity.Physics.Systems
                     NumDynamicBodies = numDynamicBodies,
                     EntityBodyIndexMap = world.CollisionWorld.EntityBodyIndexMap,
                     EntityJointIndexMap = world.DynamicsWorld.EntityJointIndexMap.AsParallelWriter(),
-                    DirectSolverEnabledFlag = world.DynamicsWorld.DirectSolverEnabledFlag,
                     ChunkBaseEntityIndices = chunkBaseEntityIndices
                 }.Run(jointEntityGroup);
             }
@@ -685,7 +679,6 @@ namespace Unity.Physics.Systems
 
                 [WriteOnly, NativeDisableContainerSafetyRestriction] public NativeArray<RigidBody> RigidBodies;
                 [NativeDisableContainerSafetyRestriction] public NativeParallelHashMap<Entity, int>.ParallelWriter EntityBodyIndexMap;
-                [WriteOnly, NativeDisableContainerSafetyRestriction] public NativeReference<bool> DirectSolverEnabledFlag;
 
                 [ReadOnly] public NativeArray<int> ChunkBaseEntityIndices;
 
@@ -707,7 +700,6 @@ namespace Unity.Physics.Systems
                     bool hasChunkLocalTransformType = chunkLocalTransforms.IsCreated;
 
                     RigidTransform worldFromBody = RigidTransform.identity;
-                    bool enableDirectSolver = false;
 
                     var entityEnumerator =
                         new ChunkEntityEnumerator(useEnabledMask, chunkEnabledMask, chunk.Count);
@@ -747,10 +739,6 @@ namespace Unity.Physics.Systems
                         if (hasChunkPhysicsSolverTypeType)
                         {
                             solverType = chunkSolverTypes[i].Value;
-                            if (solverType == SolverType.Direct)
-                            {
-                                enableDirectSolver = true;
-                            }
                         }
 
                         RigidBodies[rbIndex] = new RigidBody
@@ -764,11 +752,6 @@ namespace Unity.Physics.Systems
                         };
 
                         EntityBodyIndexMap.TryAdd(chunkEntities[i], rbIndex);
-                    }
-
-                    if (enableDirectSolver)
-                    {
-                        DirectSolverEnabledFlag.Value = true;
                     }
                 }
             }
@@ -913,7 +896,6 @@ namespace Unity.Physics.Systems
 
                 [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<Joint> Joints;
                 [NativeDisableParallelForRestriction] public NativeParallelHashMap<Entity, int>.ParallelWriter EntityJointIndexMap;
-                [WriteOnly, NativeDisableParallelForRestriction] public NativeReference<bool> DirectSolverEnabledFlag;
 
                 [ReadOnly] public NativeArray<int> ChunkBaseEntityIndices;
 
@@ -928,7 +910,6 @@ namespace Unity.Physics.Systems
                     NativeArray<Entity> chunkEntities = chunk.GetNativeArray(EntityType);
 
                     var hasChunkSolverType = chunk.Has(ref SolverTypeComponentType);
-                    bool enableDirectSolver = false;
 
                     var entityEnumerator =
                         new ChunkEntityEnumerator(useEnabledMask, chunkEnabledMask, chunk.Count);
@@ -971,10 +952,6 @@ namespace Unity.Physics.Systems
                         if (hasChunkSolverType)
                         {
                             solverType = chunkSolverType[i].Value;
-                            if (solverType == SolverType.Direct)
-                            {
-                                enableDirectSolver = true;
-                            }
                         }
 
                         Joints[firstEntityIndex + i] = new Joint
@@ -989,11 +966,6 @@ namespace Unity.Physics.Systems
                             Constraints = joint.m_Constraints
                         };
                         EntityJointIndexMap.TryAdd(chunkEntities[i], firstEntityIndex + i);
-                    }
-
-                    if (enableDirectSolver)
-                    {
-                        DirectSolverEnabledFlag.Value = true;
                     }
                 }
             }
