@@ -65,36 +65,11 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal JointBuildState Joints;
         internal TreeState Trees;
         internal StaticRows StaticBodies;
         internal BodyPartition Partition;
 
-        private NativeList<JointGroup> jointGroups;
-        private NativeList<JointGroupMember> jointGroupMembers;
-        private NativeList<JointUnit> jointUnits;
-        private NativeList<JointForestRole> jointRoles;
-        private NativeList<int> jointsWritten;
-
-        // The topology version and forest setting used to find the groups. The groups can be reused while these values
-        // are unchanged. See JointTopology.
-        private uint groupedTopology;
-        private bool groupedForest;
-        private bool grouped;
-        private NativeList<JointLoad> jointLoads;
-        private NativeList<JointLoad> groupLoads;
-
-        // For each joint, 1 if its smoothed load exceeded its break limits in this step, for JointBreaking.BreakJointsJob. The jobs
-        // that settle the loads write the flags. A byte for each joint is much less memory to write and to scan than
-        // a load.
-        private NativeList<byte> jointsOverloaded;
-
-        // The load state of each joint, in the order of the store's list of joints. The joint commands keep it in that
-        // order between steps. See JointLoadStates.
-        private UnsafeList<JointLoadState>* jointStates;
-
-        // The joints and groups outside the active vessels of this step. See VesselLoads.ListOtherJointsJob.
-        private NativeList<int> otherJoints;
-        private NativeList<int> otherGroups;
         private IslandSolverCache directSolverCache;
 
         // Prepared simulation, or null since the last FinishStep.
@@ -179,18 +154,7 @@ namespace Unity.Physics.Stepping
             Partition.InitializeRows();
             StaticBodies.Initialize();
             Partition.Initialize();
-            jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
-            jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
-            jointUnits = new NativeList<JointUnit>(Allocator.Persistent);
-            jointRoles = new NativeList<JointForestRole>(Allocator.Persistent);
-            jointsWritten = new NativeList<int>(Allocator.Persistent);
-            jointLoads = new NativeList<JointLoad>(Allocator.Persistent);
-            groupLoads = new NativeList<JointLoad>(Allocator.Persistent);
-            jointsOverloaded = new NativeList<byte>(Allocator.Persistent);
-            jointStates = UnsafeList<JointLoadState>.Create((int)store->jointCount, Allocator.Persistent);
-            JointLoadStates.Register(store, jointStates);
-            otherJoints = new NativeList<int>(Allocator.Persistent);
-            otherGroups = new NativeList<int>(Allocator.Persistent);
+            Joints.Initialize(store);
             directSolverCache = IslandSolverCache.Create();
             vesselBuild = VesselBuild.Create();
             solverIslandCache = SolverIslandCache.Create();
@@ -248,18 +212,7 @@ namespace Unity.Physics.Stepping
             Partition.DisposeRows();
             StaticBodies.Dispose();
             Partition.Dispose();
-            jointGroups.Dispose();
-            jointGroupMembers.Dispose();
-            jointUnits.Dispose();
-            jointRoles.Dispose();
-            jointsWritten.Dispose();
-            jointLoads.Dispose();
-            groupLoads.Dispose();
-            jointsOverloaded.Dispose();
-            JointLoadStates.Unregister(store);
-            UnsafeList<JointLoadState>.Destroy(jointStates);
-            otherJoints.Dispose();
-            otherGroups.Dispose();
+            Joints.Dispose(store);
             directSolverCache.Dispose();
             vesselBuild.Dispose();
             solverIslandCache.Dispose();
@@ -469,7 +422,7 @@ namespace Unity.Physics.Stepping
                 WholeBuilds = wholeColliderBuilds,
                 Learned = learnedBodyPairs.AsParallelWriter(),
                 World = store,
-                Units = jointUnits.AsDeferredJobArray(),
+                Units = Joints.jointUnits.AsDeferredJobArray(),
                 BodyVessels = vesselBuild.BodyVessels.AsArray(),
                 VesselActive = vesselBuild.Active.AsArray(),
                 VesselPairUnits = vesselBuild.PairUnits,
@@ -596,19 +549,19 @@ namespace Unity.Physics.Stepping
             const int groupsPerBatch = 16;
 
             // ScheduleVesselLoads has already sized the joint loads.
-            int jointCount = jointLoads.Length;
-            groupLoads.ResizeUninitialized(jointGroups.Length);
-            UnsafeUtility.MemClear(groupLoads.GetUnsafePtr(), (long)groupLoads.Length * sizeof(JointLoad));
+            int jointCount = Joints.jointLoads.Length;
+            Joints.groupLoads.ResizeUninitialized(Joints.jointGroups.Length);
+            UnsafeUtility.MemClear(Joints.groupLoads.GetUnsafePtr(), (long)Joints.groupLoads.Length * sizeof(JointLoad));
 
             bool listed = vesselSet.IsCreated;
-            int seededJoints = listed ? otherJoints.Length : jointCount;
-            int sharedGroups = listed ? otherGroups.Length : jointGroups.Length;
+            int seededJoints = listed ? Joints.otherJoints.Length : jointCount;
+            int sharedGroups = listed ? Joints.otherGroups.Length : Joints.jointGroups.Length;
             JobHandle loaded = new JointLoads.SeedJointLoadsJob
             {
                 World = store,
-                States = jointStates->Ptr,
-                Loads = jointLoads.AsArray(),
-                Joints = otherJoints.AsArray(),
+                States = Joints.jointStates->Ptr,
+                Loads = Joints.jointLoads.AsArray(),
+                Joints = Joints.otherJoints.AsArray(),
                 Listed = listed,
             }.Schedule(seededJoints, ParallelBatchSize);
             if (events.IsCreated)
@@ -617,36 +570,36 @@ namespace Unity.Physics.Stepping
                 {
                     Events = events.AsReader(),
                     World = store,
-                    Groups = jointGroups.AsArray(),
+                    Groups = Joints.jointGroups.AsArray(),
                     DeltaTime = deltaTime,
                 }.ScheduleUnsafe(events, 1, default);
 
                 loaded = new JointLoads.SumJointImpulsesJob
                 {
                     Events = events.AsReader(),
-                    JointLoads = jointLoads.AsArray(),
-                    GroupLoads = groupLoads.AsArray(),
+                    JointLoads = Joints.jointLoads.AsArray(),
+                    GroupLoads = Joints.groupLoads.AsArray(),
                 }.Schedule(JobHandle.CombineDependencies(loaded, rotated));
             }
 
             JobHandle shared = new JointLoads.ShareGroupLoadsJob
             {
                 World = store,
-                Groups = jointGroups.AsArray(),
-                Members = jointGroupMembers.AsArray(),
-                GroupLoads = groupLoads.AsArray(),
-                JointLoads = jointLoads.AsArray(),
-                ListedGroups = otherGroups.AsArray(),
+                Groups = Joints.jointGroups.AsArray(),
+                Members = Joints.jointGroupMembers.AsArray(),
+                GroupLoads = Joints.groupLoads.AsArray(),
+                JointLoads = Joints.jointLoads.AsArray(),
+                ListedGroups = Joints.otherGroups.AsArray(),
                 Listed = listed,
             }.Schedule(sharedGroups, groupsPerBatch, loaded);
 
             JobHandle settled = new JointLoads.SettleJointLoadsJob
             {
                 World = store,
-                States = jointStates->Ptr,
-                Loads = jointLoads.AsArray(),
-                Overloaded = jointsOverloaded.AsArray(),
-                Joints = otherJoints.AsArray(),
+                States = Joints.jointStates->Ptr,
+                Loads = Joints.jointLoads.AsArray(),
+                Overloaded = Joints.jointsOverloaded.AsArray(),
+                Joints = Joints.otherJoints.AsArray(),
                 Listed = listed,
                 DeltaTime = deltaTime,
             }.Schedule(seededJoints, ParallelBatchSize, shared);
@@ -656,8 +609,8 @@ namespace Unity.Physics.Stepping
             {
                 World = store,
                 Globals = globals,
-                States = jointStates->Ptr,
-                Overloaded = jointsOverloaded.AsArray(),
+                States = Joints.jointStates->Ptr,
+                Overloaded = Joints.jointsOverloaded.AsArray(),
                 EngineObjectIdOffset = globals->engineObjectIdOffset,
             }.Schedule(settled);
         }
@@ -681,9 +634,9 @@ namespace Unity.Physics.Stepping
 
             // The jobs write the joint loads through arrays that the safety system doesn't track, so the list must not
             // change size after this point in the step.
-            jointLoads.ResizeUninitialized((int)store->jointCount);
-            jointsOverloaded.ResizeUninitialized((int)store->jointCount);
-            if (jointStates->Length != (int)store->jointCount)
+            Joints.jointLoads.ResizeUninitialized((int)store->jointCount);
+            Joints.jointsOverloaded.ResizeUninitialized((int)store->jointCount);
+            if (Joints.jointStates->Length != (int)store->jointCount)
             {
                 throw new InvalidOperationException("the joints' load states and the store's joints differ in number");
             }
@@ -696,10 +649,10 @@ namespace Unity.Physics.Stepping
             return new VesselLoads.VesselLoadsJob
             {
                 World = store,
-                States = jointStates->Ptr,
-                Units = jointUnits.AsArray(),
-                Groups = jointGroups.AsArray(),
-                Members = jointGroupMembers.AsArray(),
+                States = Joints.jointStates->Ptr,
+                Units = Joints.jointUnits.AsArray(),
+                Groups = Joints.jointGroups.AsArray(),
+                Members = Joints.jointGroupMembers.AsArray(),
                 MotionDatas = world.MotionDatas,
                 BuiltIndices = Partition.builtIndices.AsArray(),
                 DeltaTime = deltaTime,
@@ -710,8 +663,8 @@ namespace Unity.Physics.Stepping
                 Active = vesselBuild.Active.AsArray(),
                 EdgeLoads = vesselBuild.EdgeLoads.AsArray(),
                 ClosureLoads = vesselBuild.ClosureLoads.AsArray(),
-                JointLoads = jointLoads.AsArray(),
-                Overloaded = jointsOverloaded.AsArray(),
+                JointLoads = Joints.jointLoads.AsArray(),
+                Overloaded = Joints.jointsOverloaded.AsArray(),
             }.Schedule(vesselBuild.PartUnits.Length + vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }
 
@@ -1133,25 +1086,7 @@ namespace Unity.Physics.Stepping
                 // build refreshes group data that depends on other state.
                 bool vessels = VesselSwitches.Enabled;
                 bool forest = ForestSwitches.Enabled || vessels;
-                uint topology = JointTopology.Version;
-                JobHandle groupsFound = dependency;
-                bool regrouped = !grouped || topology != groupedTopology || forest != groupedForest;
-                if (regrouped)
-                {
-                    groupsFound = new JointGrouping.GroupJointsJob
-                    {
-                        World = store,
-                        Groups = jointGroups,
-                        Members = jointGroupMembers,
-                        Units = jointUnits,
-                        Roles = jointRoles,
-                        Written = jointsWritten,
-                        Forest = forest,
-                    }.Schedule(dependency);
-                    grouped = true;
-                    groupedTopology = topology;
-                    groupedForest = forest;
-                }
+                bool regrouped = Joints.FindGroups(store, forest, dependency, out JobHandle groupsFound);
 
                 // Recompile vessels when topology or forest settings change, support is enabled, or a tombstone
                 // expires.
@@ -1165,10 +1100,10 @@ namespace Unity.Physics.Stepping
                     new VesselCompiler.CompileVesselsJob
                     {
                         World = store,
-                        Units = jointUnits.AsArray(),
-                        Roles = jointRoles.AsArray(),
-                        Groups = jointGroups.AsArray(),
-                        Members = jointGroupMembers.AsArray(),
+                        Units = Joints.jointUnits.AsArray(),
+                        Roles = Joints.jointRoles.AsArray(),
+                        Groups = Joints.jointGroups.AsArray(),
+                        Members = Joints.jointGroupMembers.AsArray(),
                         Build = vesselBuild,
                         Step = (int)stepCount,
                         TombstoneSteps = VesselSwitches.TombstoneSteps,
@@ -1193,28 +1128,28 @@ namespace Unity.Physics.Stepping
 
                 // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
                 // separate stream range for each unit.
-                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, jointUnits, groupsFound, Allocator.TempJob);
+                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, Joints.jointUnits, groupsFound, Allocator.TempJob);
                 JobHandle emitted = new JointTranslation.BuildJointsJob
                 {
                     World = store,
-                    States = jointStates->Ptr,
+                    States = Joints.jointStates->Ptr,
                     BuiltIndices = Partition.builtIndices.AsArray(),
-                    Units = jointUnits.AsDeferredJobArray(),
+                    Units = Joints.jointUnits.AsDeferredJobArray(),
                     Output = stream.AsWriter(),
-                    Written = jointsWritten.AsDeferredJobArray(),
-                    Groups = jointGroups.AsDeferredJobArray(),
-                    Members = jointGroupMembers.AsDeferredJobArray(),
+                    Written = Joints.jointsWritten.AsDeferredJobArray(),
+                    Groups = Joints.jointGroups.AsDeferredJobArray(),
+                    Members = Joints.jointGroupMembers.AsDeferredJobArray(),
                     DynamicCount = Partition.dynamicIndices.Length,
                     AnchorIndex = Partition.dynamicIndices.Length + Partition.staticIndices.Length,
                     DeltaTime = deltaTime,
-                    Roles = jointRoles.AsDeferredJobArray(),
+                    Roles = Joints.jointRoles.AsDeferredJobArray(),
                     Locking = forest && ForestSwitches.Locking,
                     LockFraction = ForestSwitches.LockFraction,
                     YieldFraction = ForestSwitches.YieldFraction,
                     Vessels = vesselSet.IsCreated,
                     UnitVessels = vesselBuild.UnitVessels.AsArray(),
                     VesselActive = vesselBuild.Active.AsArray(),
-                }.Schedule(jointUnits, JointBatchSize, allocated);
+                }.Schedule(Joints.jointUnits, JointBatchSize, allocated);
 
                 // Fill vessel constraints alongside joint and broadphase work; only the solve needs their
                 // results.
@@ -1232,9 +1167,9 @@ namespace Unity.Physics.Stepping
                     JobHandle edgesFilled = new VesselEdgeFill.FillVesselEdgesJob
                     {
                         World = store,
-                        Units = jointUnits.AsDeferredJobArray(),
-                        Groups = jointGroups.AsDeferredJobArray(),
-                        Members = jointGroupMembers.AsDeferredJobArray(),
+                        Units = Joints.jointUnits.AsDeferredJobArray(),
+                        Groups = Joints.jointGroups.AsDeferredJobArray(),
+                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
                         UnitVessels = vesselBuild.UnitVessels.AsArray(),
                         Active = vesselBuild.Active.AsArray(),
                         PartStoreBodies = vesselBuild.PartStoreBodies.AsArray(),
@@ -1253,9 +1188,9 @@ namespace Unity.Physics.Stepping
                     JobHandle closuresFilled = new VesselClosureFill.FillVesselClosuresJob
                     {
                         World = store,
-                        Units = jointUnits.AsDeferredJobArray(),
-                        Groups = jointGroups.AsDeferredJobArray(),
-                        Members = jointGroupMembers.AsDeferredJobArray(),
+                        Units = Joints.jointUnits.AsDeferredJobArray(),
+                        Groups = Joints.jointGroups.AsDeferredJobArray(),
+                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
                         UnitVessels = vesselBuild.UnitVessels.AsArray(),
                         Active = vesselBuild.Active.AsArray(),
                         ClosureUnits = vesselBuild.ClosureUnits.AsArray(),
@@ -1274,13 +1209,13 @@ namespace Unity.Physics.Stepping
                     // from reading a group while JointTranslation.BuildJointsJob writes it.
                     JobHandle listed = new VesselLoads.ListOtherJointsJob
                     {
-                        Units = jointUnits.AsDeferredJobArray(),
-                        Groups = jointGroups.AsDeferredJobArray(),
-                        Members = jointGroupMembers.AsDeferredJobArray(),
+                        Units = Joints.jointUnits.AsDeferredJobArray(),
+                        Groups = Joints.jointGroups.AsDeferredJobArray(),
+                        Members = Joints.jointGroupMembers.AsDeferredJobArray(),
                         UnitVessels = vesselBuild.UnitVessels.AsArray(),
                         Active = vesselBuild.Active.AsArray(),
-                        OtherJoints = otherJoints,
-                        OtherGroups = otherGroups,
+                        OtherJoints = Joints.otherJoints,
+                        OtherGroups = Joints.otherGroups,
                     }.Schedule(emitted);
                     JobHandle loadsCleared = vesselBuild.ScheduleClearLoads(dependency);
                     vesselsFilled = JobHandle.CombineDependencies(JobHandle.CombineDependencies(edgesFilled, closuresFilled, listed), loadsCleared);
@@ -1288,16 +1223,16 @@ namespace Unity.Physics.Stepping
 
                 JobHandle laidOut = new JointGrouping.LayOutJointsJob
                 {
-                    Written = jointsWritten,
+                    Written = Joints.jointsWritten,
                     Output = world.DynamicsWorld.InternalJointsList,
                 }.Schedule(emitted);
 
                 JobHandle copied = new JointGrouping.CopyJointsJob
                 {
                     Input = stream.AsReader(),
-                    FirstJoints = jointsWritten.AsDeferredJobArray(),
+                    FirstJoints = Joints.jointsWritten.AsDeferredJobArray(),
                     Output = world.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
-                }.Schedule(jointsWritten, CopyBatchSize, laidOut);
+                }.Schedule(Joints.jointsWritten, CopyBatchSize, laidOut);
 
                 joints = stream.Dispose(copied);
             }
