@@ -23,6 +23,7 @@ namespace Unity.Physics.Configuration
             initialized = true;
             ReadForest();
             ReadVessels();
+            StepCacheSwitches.PairSortReuseEnabled = Environment.GetEnvironmentVariable("RETOOLED_PAIR_SORT_REUSE") != "0";
             boundsCache = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CACHE");
             boundsCheck = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
             shapeBounds = Environment.GetEnvironmentVariable("RETOOLED_SHAPE_BOUNDS");

@@ -1,5 +1,6 @@
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Physics.Configuration;
 using Unity.Jobs;
 
 namespace Unity.Physics
@@ -37,6 +38,7 @@ namespace Unity.Physics
             public NativeList<DispatchPair> UnsortedPairs;
             public NativeList<DispatchPair> SortedPairs;
             public NativeReference<int> PairCount;
+            public IslandPairSortCache Cache;
 
             public void Execute()
             {
@@ -51,6 +53,7 @@ namespace Unity.Physics
                 SortedPairs.ResizeUninitialized(count);
                 if (count == 0)
                 {
+                    Cache.Clear();
                     return;
                 }
 
@@ -67,6 +70,13 @@ namespace Unity.Physics
                     }
                 }
 
+                bool keepPairs = Cache.IsCreated && StepCacheSwitches.PairSortReuseEnabled;
+                if (keepPairs && Cache.TryCopySorted(UnsortedPairs, SortedPairs))
+                {
+                    IslandPairSortCounters.RecordReuse();
+                    return;
+                }
+
                 // After the radix sort, entry b of the histogram is the index just past body b's pairs.
                 var histogram = new NativeArray<int>(NumBodies + 1, Allocator.Temp, NativeArrayOptions.ClearMemory);
                 RadixSortPerBodyAJob.RadixSortPerBodyA(pairs, SortedPairs.AsArray(), histogram, NumBodies - 1);
@@ -78,6 +88,10 @@ namespace Unity.Physics
 
                 histogram.Dispose();
                 SetDisableCollisionFlags(SortedPairs);
+                if (keepPairs)
+                {
+                    Cache.Remember(UnsortedPairs, SortedPairs);
+                }
             }
 
             static int Count(NativeStream.Reader reader)

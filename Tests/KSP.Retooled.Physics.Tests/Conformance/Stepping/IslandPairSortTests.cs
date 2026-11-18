@@ -1,3 +1,5 @@
+using System;
+using Unity.Physics;
 using Unity.Physics.Configuration;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using NUnit.Framework;
@@ -23,6 +25,37 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void RestoreLimit()
         {
             SolverSwitches.SerialIslandPairLimit = SolverSwitches.DefaultSerialIslandPairLimit;
+        }
+
+        [Test]
+        public void ReusingTheSortedPairsMovesTheBodiesExactlyAsSorting()
+        {
+            bool reuseEnabled = StepCacheSwitches.PairSortReuseEnabled;
+            try
+            {
+                StepCacheSwitches.PairSortReuseEnabled = true;
+                long before = IslandPairSortCounters.Reuses;
+                Vector3[] reused = Run(SolverSwitches.DefaultSerialIslandPairLimit);
+                long after = IslandPairSortCounters.Reuses;
+                Assert.That(after, Is.GreaterThan(before), "No step reused its sorted pairs.");
+
+                StepCacheSwitches.PairSortReuseEnabled = false;
+                Vector3[] sorted = Run(SolverSwitches.DefaultSerialIslandPairLimit);
+                Assert.That(IslandPairSortCounters.Reuses, Is.EqualTo(after));
+
+                for (int i = 0; i < reused.Length; i++)
+                {
+                    for (int axis = 0; axis < 3; axis++)
+                    {
+                        Assert.That(BitConverter.SingleToInt32Bits(reused[i][axis]),
+                            Is.EqualTo(BitConverter.SingleToInt32Bits(sorted[i][axis])), $"body {i}, axis {axis}");
+                    }
+                }
+            }
+            finally
+            {
+                StepCacheSwitches.PairSortReuseEnabled = reuseEnabled;
+            }
         }
 
         /// <summary>

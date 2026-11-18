@@ -14,7 +14,18 @@ namespace Unity.Physics.Configuration
             set => StaticReuseOff.Data = value ? 0 : 1;
         }
 
+        /// <summary>Reuse a serial island sort when its input is unchanged. RETOOLED_PAIR_SORT_REUSE=0 disables it.</summary>
+        internal static bool PairSortReuseEnabled
+        {
+            get => PairSortReuseOff.Data == 0;
+            set => PairSortReuseOff.Data = value ? 0 : 1;
+        }
+
         private struct StaticReuseOffKey { }
+
+        private struct PairSortReuseOffKey { }
+
+        private static readonly SharedStatic<int> PairSortReuseOff = SharedStatic<int>.GetOrCreate<PairSortReuseOffKey>();
 
         private static readonly SharedStatic<int> StaticReuseOff = SharedStatic<int>.GetOrCreate<StaticReuseOffKey>();
     }
