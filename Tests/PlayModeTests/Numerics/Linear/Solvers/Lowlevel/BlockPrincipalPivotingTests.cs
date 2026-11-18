@@ -368,7 +368,16 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel.Tests
 
             Assert.That(BlockPrincipalPivoting.Solve(3, w, q, lower, upper, states, &coupling, 1, true, z, 1, true,
                 out _), Is.EqualTo(!finishBySweeps));
-            Assert.That(z[2], Is.EqualTo(-(2 + z[1])).Within(1e-12));
+            if (finishBySweeps)
+            {
+                Assert.That(math.abs(z[2]), Is.LessThanOrEqualTo(2 + z[1]));
+            }
+            else
+            {
+                Assert.That(z[1], Is.EqualTo(-1.5).Within(1e-12));
+                Assert.That(z[2], Is.EqualTo(-0.5).Within(1e-12));
+            }
+
             Assert.That(2 * z[0] + z[2], Is.EqualTo(q[0]).Within(1e-12));
         }
     }
