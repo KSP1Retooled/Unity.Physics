@@ -776,10 +776,11 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
                         z[row] = upper[row];
                         states[row] = UpperTight;
                     }
-                    else if (states[row] != Free)
+                    else
                     {
-                        // A row that sat at a bound which has moved away from it stays at that bound.
-                        z[row] = states[row] == LowerTight ? lower[row] : upper[row];
+                        // Keep an impulse that is already within the new bounds. Moving it to a wider
+                        // bound would add an impulse that the other rows have not reacted to.
+                        states[row] = Free;
                     }
                 }
             }
