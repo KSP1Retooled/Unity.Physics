@@ -266,6 +266,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double3x3 frame;
             double4 rest;
             double3 linearStiffness, linearDamping, angularStiffness, angularDamping;
+            bool3 hardLinearAxes;
+            bool freeSwing = false;
             double driveTarget = 0.0;
 
             // Hard rows take their stiffness from the two sections' reduced mass and inertia, at the hard period.
@@ -283,8 +285,10 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 rest = edge->Rest;
                 linearStiffness = hardLinear;
                 linearDamping = hardLinear * dampingPerStiffness;
+                hardLinearAxes = true;
                 if (edge->State == VesselEdgeState.FreeAxis)
                 {
+                    freeSwing = true;
                     angularStiffness = new double3(edge->TwistStiffness, hardAngular, hardAngular);
                     angularDamping = new double3(edge->TwistDamping, hardAngular * dampingPerStiffness, hardAngular * dampingPerStiffness);
                     driveTarget = edge->DriveTarget;
@@ -304,11 +308,13 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 rest = closure->Rest;
                 linearStiffness = closure->LinearStiffness;
                 linearDamping = closure->LinearDamping;
+                hardLinearAxes = linearStiffness == double.PositiveInfinity;
                 angularStiffness = closure->AngularStiffness;
                 angularDamping = closure->AngularDamping;
             }
 
             // A stiffness of infinity asks for a hard row: the caller marks an axis that way when it is locked.
+            bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeSwing, freeSwing);
             Harden(ref linearStiffness, ref linearDamping, hardLinear, dampingPerStiffness);
             Harden(ref angularStiffness, ref angularDamping, hardAngular, dampingPerStiffness);
 
@@ -328,6 +334,17 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double3 rotation = (error.w < 0.0 ? -2.0 : 2.0) * error.xyz;
             double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
             double3 angularError = math.mul(math.transpose(axes), math.mul(parentRotation, rotation));
+
+            // Reconstructing two anchors and integrating a locked section in float can separate the anchors
+            // by several float spacings. When the section splits, hard rows can turn that disagreement into
+            // opposing loads with little effect on the section motion.
+            double positionScale = math.cmax(math.max(math.abs(child->Position), math.abs(parent->Position)));
+            double positionTolerance = 8.0 * math.EPSILON * math.max(1.0, positionScale);
+            linearError = RemoveRoundoff(linearError, hardLinearAxes, positionTolerance);
+
+            const double rotationTolerance = 64.0 * math.EPSILON;
+            angularError = RemoveRoundoff(angularError, hardAngularAxes, rotationTolerance);
+
             angularError.x -= driveTarget;
 
             double h = TimeStep;
@@ -393,6 +410,14 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             DoubleMath.Add3(childRhs + 3, -(math.cross(childArm, force) + torque));
             DoubleMath.Add3(parentRhs, force);
             DoubleMath.Add3(parentRhs + 3, math.cross(parentArm, force) + torque);
+        }
+
+        static double3 RemoveRoundoff(double3 error, bool3 hardAxes, double tolerance)
+        {
+            double3 hardError = math.select(0.0, error, hardAxes);
+            double distance = math.length(hardError);
+            double scale = distance > tolerance ? (distance - tolerance) / distance : 0.0;
+            return math.select(error, scale * hardError, hardAxes);
         }
 
         /// <summary>
