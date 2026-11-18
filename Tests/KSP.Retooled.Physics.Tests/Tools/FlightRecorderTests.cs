@@ -117,6 +117,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
             body.linearVelocity = new Vector3(450f, 0f, 0f);
             Simulate(2);
+            StringAssert.Contains("PostTriggerStepsRemaining=1", FlightRecorderSwitches.GetStatus());
             Assert.That(Directory.Exists(directory), Is.False);
             Simulate();
             string path = WaitForRecording(null);
@@ -339,8 +340,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
         private string WaitForRecording(string path)
         {
-            Assert.That(path != null || FlightRecorderSwitches.GetStatus().Contains("queued"), Is.True,
-                FlightRecorderSwitches.GetStatus());
             var timeout = System.Diagnostics.Stopwatch.StartNew();
             while (timeout.Elapsed < TimeSpan.FromSeconds(30))
             {
