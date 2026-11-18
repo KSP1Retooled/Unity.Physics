@@ -38,11 +38,6 @@ namespace Unity.Physics.Stepping
     /// </summary>
     internal unsafe partial struct StoreStepper
     {
-        private static readonly ProfilerMarker BuildJointsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Joints");
-        private static readonly ProfilerMarker BuildPartitionMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Partition");
-        private static readonly ProfilerMarker BuildResetMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Reset");
-        private static readonly ProfilerMarker BuildScheduleBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
-        private static readonly ProfilerMarker BuildScheduleBroadphaseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
         private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
         private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
         private static readonly ProfilerMarker StepReadJointForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadJointForces");
@@ -52,12 +47,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker StepWriteBackMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
 
         private const int ParallelBatchSize = 64;
-
-        // Building a joint costs much more than building a body, so each batch contains fewer joints.
-        private const int JointBatchSize = 8;
-
-        // Copying the joints for one unit requires copying a few hundred bytes.
-        private const int CopyBatchSize = 64;
 
         private readonly WorldData* store;
         private readonly StoreGlobals* globals;
@@ -193,48 +182,8 @@ namespace Unity.Physics.Stepping
         /// <summary>Builds the bodies, joints and broadphase for the simulation systems to advance.</summary>
         internal JobHandle BuildWorld(float deltaTime, JobHandle dependency)
         {
-            using var span = StepScheduleMarker.Auto();
-
-            // Every job below waits for the forces, including the collider jobs, which write the flags that the forces
-            // job reads.
-            dependency = JobHandle.CombineDependencies(dependency, forcesApplied);
-            JobHandle colliders = Colliders.RefreshColliders(store, globals, Trees.colliderChanges, dependency);
-            JobHandle broadphase = Build(deltaTime, colliders, out JobHandle joints);
-
-            using (BuildScheduleBroadphaseMarker.Auto())
-            {
-                // Build joints alongside the broadphase. Only dispatch pair creation needs to wait for them.
-                world.DynamicsWorld.JointsBuilt = joints;
-                return ScheduleWheels(deltaTime, broadphase, joints);
-            }
-        }
-
-        /// <summary>
-        /// Schedule wheel updates after the broadphase and before consumers of wheel-modified velocities and
-        /// joints.
-        /// Run only with wheels and a positive timestep.
-        /// </summary>
-        private JobHandle ScheduleWheels(float deltaTime, JobHandle broadphase, JobHandle joints)
-        {
-            if (store->vehicleCount == 0 || deltaTime <= 0.0f)
-            {
-                return broadphase;
-            }
-
-            JobHandle wheels = new WheelSolver.WheelJob
-            {
-                Store = store,
-                Globals = globals,
-                Collision = world.CollisionWorld,
-                MotionDatas = world.MotionDatas,
-                MotionVelocities = world.MotionVelocities,
-                BuiltIndices = Partition.builtIndices.AsArray(),
-                Joints = world.DynamicsWorld.InternalJointsList,
-                AnchorIndex = Partition.dynamicIndices.Length + Partition.staticIndices.Length,
-                DeltaTime = deltaTime,
-            }.Schedule(JobHandle.CombineDependencies(broadphase, joints));
-            world.DynamicsWorld.JointsBuilt = wheels;
-            return wheels;
+            return BuildStage.BuildWorld(store, globals, ref world, ref Partition, ref StaticBodies, ref Trees,
+                ref Joints, ref VesselData, ref Colliders, ref forcesApplied, ref Queries.builtWhole, ref Contacts.stepCount, deltaTime, dependency);
         }
 
         /// <summary>The store updated by this simulation state. Used by tests.</summary>
@@ -696,43 +645,14 @@ namespace Unity.Physics.Stepping
         /// <summary>Finish pending refit work and check whether queries need a new build.</summary>
         internal bool BeginQueryBuild()
         {
-            FinishPendingRefit();
-
-            // The world that the last step published is current now that its refit has finished.
-            if (store->queryDirty == StoreMemory.QueryTreePending && Queries.builtWhole)
-            {
-                return false;
-            }
-
-            store->queryWorld = null;
-            return true;
+            return BuildStage.BeginQueryBuild(store, ref Trees, ref Queries);
         }
 
         /// <summary>Update the built world from prepared store rows without advancing time.</summary>
         internal void BuildForQueries()
         {
-            // The last build is still valid except for the poses of static bodies. The query snapshot contains no data
-            // that depends on a pose.
-            if (store->queryDirty == StoreMemory.QueryStaticsMoved && Queries.builtWhole && globals->materialVersion == Colliders.builtMaterialVersion)
-            {
-                PoseStatics();
-                Queries.PublishQueryWorld(store, query, ref world);
-                return;
-            }
-
-            // A step that threw between ApplyForces and BuildWorld can have left the forces job running, and the collider
-            // jobs write the flags that it reads.
-            forcesApplied.Complete();
-            JobHandle colliders = Colliders.RefreshColliders(store, globals, Trees.colliderChanges, default);
-            JobHandle broadphase = Build(0.0f, colliders, out _);
-            Queries.ScheduleQuerySnapshot(store, globals, ref world, ref Partition, broadphase).Complete();
-            broadphase.Complete();
-            if (Trees.boundsCacheBuilt)
-            {
-                Trees.boundsCache.MarkCurrent();
-            }
-            Queries.FinishQuerySnapshot();
-            Queries.PublishQueryWorld(store, query, ref world);
+            BuildStage.BuildForQueries(store, globals, query, ref world, ref Partition, ref StaticBodies, ref Trees,
+                ref Queries, ref Colliders, ref forcesApplied, ref VesselData.vesselsFilled);
         }
 
         /// <summary>
@@ -752,152 +672,7 @@ namespace Unity.Physics.Stepping
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
         /// has finished.
         /// </summary>
-        internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && Queries.builtWhole && store->queryWorld != null;
+        internal readonly bool OnlyRefitPending => Queries.OnlyRefitPending(store);
 
-        /// <summary>
-        /// Update built statics and their tree from store poses, recording the version to avoid redundant work.
-        /// </summary>
-        private void PoseStatics()
-        {
-            StaticBodies.builtStaticsVersion = store->staticsVersion;
-            StaticBodies.staticsChanged = true;
-            Trees.treeMatchesHeld = true;
-            JobHandle posed = new StoreBodies.PoseStaticsJob
-            {
-                Store = store->bodies,
-                StaticIndices = Partition.staticIndices.AsArray(),
-                StaticBodies = world.StaticBodies,
-            }.Schedule(Partition.staticIndices.Length, ParallelBatchSize, default);
-
-            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, Trees.BuildStaticTree(StaticBodies.staticsChanged), Trees.ScheduleShiftStaticTree(store, ref world, StaticBodies.staticsChanged, Colliders.colliderWork, posed), true).Complete();
-        }
-
-        /// <summary>
-        /// Schedule body, broadphase and joint builds. Return tree completion and provide joint completion
-        /// separately.
-        /// </summary>
-        private JobHandle Build(float deltaTime, JobHandle dependency, out JobHandle joints)
-        {
-            // An interrupted step may leave vessel fill jobs running. Finish them before resizing vessel lists.
-            VesselData.vesselsFilled.Complete();
-            using (BuildPartitionMarker.Auto())
-            {
-                Partition.Rebuild(store);
-
-                // Indices in the static tree are relative to the static bodies. Queries and pair finding add the number
-                // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
-                StaticBodies.staticsChanged = !Queries.builtWhole || store->staticsVersion != StaticBodies.builtStaticsVersion;
-                StaticBodies.builtStaticsVersion = store->staticsVersion;
-                Trees.treeMatchesHeld = Queries.builtWhole;
-                Queries.builtWhole = false;
-            }
-
-            // Compare cached bounds only when body storage and dynamic count are retained and the cache remains
-            // valid.
-            void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            bool compareBodies = Trees.CanCompareBounds(ref world, ref Partition);
-            int dynamicBefore = world.NumDynamicBodies;
-            bool keepStaticRows = StaticBodies.KeepsStaticRows(world.NumStaticBodies, Partition.staticIndices);
-
-            // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
-            // read the joints, so jobs can be scheduled before the joint count is known.
-            using (BuildResetMarker.Auto())
-            {
-                world.Reset(Partition.staticIndices.Length + 1, Partition.dynamicIndices.Length, 0);
-                world.DynamicsWorld.EnableDirectSolver = true;
-            }
-
-            bool sameMemory = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
-            compareBodies &= sameMemory;
-            keepStaticRows = StaticBodies.RetainOrRemember(ref world, ref Partition, dynamicBefore, keepStaticRows, sameMemory);
-
-            DynamicBoundsCache.View boundsView = TreeState.BoundsCacheEnabled ? Trees.boundsCache.Resize(Partition.dynamicIndices.Length) : default;
-
-            // Schedule bodies and trees first: pair creation and island finding depend on them.
-            // Joint compilation and vessel work can proceed alongside them.
-            JobHandle broadphase;
-            using (BuildScheduleBodiesMarker.Auto())
-            {
-                var bodiesJob = new StoreBodies.BuildBodiesJob
-                {
-                    Store = store->bodies,
-                    DynamicIndices = Partition.dynamicIndices.AsArray(),
-                    StaticIndices = Partition.staticIndices.AsArray(),
-                    Bodies = world.Bodies,
-                    MotionDatas = world.MotionDatas,
-                    MotionVelocities = world.MotionVelocities,
-                    DeltaTime = deltaTime,
-                    Same = boundsView.Same,
-                    CompareBodies = compareBodies,
-                    KeepStatics = keepStaticRows,
-                };
-
-                JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
-                JobHandle.ScheduleBatchedJobs();
-                broadphase = Trees.ScheduleTrees(store, ref world, StaticBodies.staticsChanged, ref Partition, Colliders.colliderWork, deltaTime, bodiesBuilt);
-                JobHandle.ScheduleBatchedJobs();
-            }
-
-            // Queries need no solver joints. During simulation, joint builds wait for collider jobs that write
-            // body flags.
-            joints = dependency;
-            if (deltaTime > 0.0f)
-            {
-                using var jointsSpan = BuildJointsMarker.Auto();
-
-                // Reuse the groups if the topology and forest setting have not changed since they were found. The joint
-                // build refreshes group data that depends on other state.
-                bool vessels = VesselSwitches.Enabled;
-                bool forest = ForestSwitches.Enabled || vessels;
-                bool regrouped = Joints.FindGroups(store, forest, dependency, out JobHandle groupsFound);
-
-                bool compiledThisStep = VesselData.CompileAndChoose(store, ref Joints, ref Partition,
-                    vessels, regrouped, ref Contacts.stepCount, groupsFound);
-
-                // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
-                // separate stream range for each unit.
-                JobHandle allocated = NativeStream.ScheduleConstruct(out NativeStream stream, Joints.jointUnits, groupsFound, Allocator.TempJob);
-                JobHandle emitted = new JointTranslation.BuildJointsJob
-                {
-                    World = store,
-                    States = Joints.jointStates->Ptr,
-                    BuiltIndices = Partition.builtIndices.AsArray(),
-                    Units = Joints.jointUnits.AsDeferredJobArray(),
-                    Output = stream.AsWriter(),
-                    Written = Joints.jointsWritten.AsDeferredJobArray(),
-                    Groups = Joints.jointGroups.AsDeferredJobArray(),
-                    Members = Joints.jointGroupMembers.AsDeferredJobArray(),
-                    DynamicCount = Partition.dynamicIndices.Length,
-                    AnchorIndex = Partition.dynamicIndices.Length + Partition.staticIndices.Length,
-                    DeltaTime = deltaTime,
-                    Roles = Joints.jointRoles.AsDeferredJobArray(),
-                    Locking = forest && ForestSwitches.Locking,
-                    LockFraction = ForestSwitches.LockFraction,
-                    YieldFraction = ForestSwitches.YieldFraction,
-                    Vessels = VesselData.vesselSet.IsCreated,
-                    UnitVessels = VesselData.vesselBuild.UnitVessels.AsArray(),
-                    VesselActive = VesselData.vesselBuild.Active.AsArray(),
-                }.Schedule(Joints.jointUnits, JointBatchSize, allocated);
-
-                VesselData.FillConstraints(store, ref Joints, compiledThisStep, groupsFound, emitted, dependency);
-
-                JobHandle laidOut = new JointGrouping.LayOutJointsJob
-                {
-                    Written = Joints.jointsWritten,
-                    Output = world.DynamicsWorld.InternalJointsList,
-                }.Schedule(emitted);
-
-                JobHandle copied = new JointGrouping.CopyJointsJob
-                {
-                    Input = stream.AsReader(),
-                    FirstJoints = Joints.jointsWritten.AsDeferredJobArray(),
-                    Output = world.DynamicsWorld.InternalJointsList.AsDeferredJobArray(),
-                }.Schedule(Joints.jointsWritten, CopyBatchSize, laidOut);
-
-                joints = stream.Dispose(copied);
-            }
-
-            return broadphase;
-        }
     }
 }

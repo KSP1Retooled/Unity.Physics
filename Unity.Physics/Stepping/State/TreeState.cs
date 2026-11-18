@@ -368,12 +368,12 @@ namespace Unity.Physics.Stepping.State
         /// Schedules the broadphase trees. Only building the static tree depends on the decision to rebuild it.
         /// Building the dynamic tree can run in parallel with that decision.
         /// </summary>
-        internal JobHandle ScheduleTrees(WorldData* store, ref PhysicsWorld world, bool staticsChanged,
+        internal JobHandle ScheduleTrees(WorldData* store, ref PhysicsWorld world, ref StaticRows staticRows,
             ref BodyPartition partition, NativeList<ColliderBuilder.Work> colliderWork, float deltaTime, JobHandle built)
         {
             int threads = JobsUtility.JobWorkerCount + 1;
             Broadphase broadphase = world.CollisionWorld.Broadphase;
-            JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree(staticsChanged), ScheduleShiftStaticTree(store, ref world, staticsChanged, colliderWork, built));
+            JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree(staticRows.staticsChanged), ScheduleShiftStaticTree(store, ref world, staticRows.staticsChanged, colliderWork, built));
             boundsCacheBuilt = BoundsCacheEnabled;
             DynamicBoundsCache cache = boundsCacheBuilt ? boundsCache : default;
             JobHandle dynamics;
@@ -395,6 +395,11 @@ namespace Unity.Physics.Stepping.State
             }
 
             return JobHandle.CombineDependencies(statics, dynamics);
+        }
+
+        internal DynamicBoundsCache.View PrepareBounds(ref BodyPartition partition)
+        {
+            return BoundsCacheEnabled ? boundsCache.Resize(partition.dynamicIndices.Length) : default;
         }
 
         internal readonly bool CanCompareBounds(ref PhysicsWorld world, ref BodyPartition partition)

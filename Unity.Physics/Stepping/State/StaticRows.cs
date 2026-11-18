@@ -1,6 +1,7 @@
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Physics.Store.World;
 
 namespace Unity.Physics.Stepping.State
 {
@@ -15,7 +16,7 @@ namespace Unity.Physics.Stepping.State
         // permits.
         internal NativeList<int> staticRows;
         internal long keptStaticRowsCount;
-        internal uint builtStaticsVersion;
+        private uint builtStaticsVersion;
 
         /// <summary>
         /// Reuse unchanged static body rows. RETOOLED_STATIC_REUSE=0 disables it.
@@ -47,6 +48,18 @@ namespace Unity.Physics.Stepping.State
         /// <summary>The builds that kept the static bodies' rows of the last build. Used by tests.</summary>
         internal readonly long KeptStaticRowsCount => keptStaticRowsCount;
 
+        internal void NoteBuild(WorldData* store, ref bool builtWhole)
+        {
+            staticsChanged = !builtWhole || store->staticsVersion != builtStaticsVersion;
+            builtStaticsVersion = store->staticsVersion;
+        }
+
+        internal void NotePoseUpdate(WorldData* store)
+        {
+            builtStaticsVersion = store->staticsVersion;
+            staticsChanged = true;
+        }
+
         internal void Initialize()
         {
             staticRows = new NativeList<int>(Allocator.Persistent);
@@ -61,9 +74,10 @@ namespace Unity.Physics.Stepping.State
         /// Reuse static body rows and the anchor when the previous build completed, staticsVersion is unchanged,
         /// and static row order matches. The caller must also verify that body storage was retained.
         /// </summary>
-        internal readonly bool KeepsStaticRows(int staticCount, NativeList<int> staticIndices)
+        internal readonly bool KeepsStaticRows(ref PhysicsWorld world, ref BodyPartition partition)
         {
-            return StaticReuseEnabled && !staticsChanged && staticCount == staticIndices.Length + 1 && BodyPartition.SameRows(staticRows, staticIndices);
+            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == partition.staticIndices.Length + 1
+                && BodyPartition.SameRows(staticRows, partition.staticIndices);
         }
 
         /// <summary>

@@ -2,6 +2,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 
@@ -108,6 +109,29 @@ namespace Unity.Physics.Stepping.State
             query->ShapeCount = queryShapes.Length;
             store->queryWorld = query;
             builtWhole = true;
+        }
+
+        internal bool BeginBuild(WorldData* store)
+        {
+            // The world that the last step published is current now that its refit has finished.
+            if (store->queryDirty == StoreMemory.QueryTreePending && builtWhole)
+            {
+                return false;
+            }
+
+            store->queryWorld = null;
+            return true;
+        }
+
+        internal readonly bool CanUpdateStaticPoses(WorldData* store, StoreGlobals* globals, ref ColliderState colliders)
+        {
+            return store->queryDirty == StoreMemory.QueryStaticsMoved && builtWhole
+                && globals->materialVersion == colliders.builtMaterialVersion;
+        }
+
+        internal readonly bool OnlyRefitPending(WorldData* store)
+        {
+            return store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
         }
     }
 }
