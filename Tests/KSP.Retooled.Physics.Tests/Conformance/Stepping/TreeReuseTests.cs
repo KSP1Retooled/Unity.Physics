@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Physics.Stepping.State;
 using KSP.Retooled.Physics.Tests.Tools;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
@@ -48,7 +49,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            TreeState.TreeReuseEnabled = reuse;
+            BroadphaseSwitches.TreeReuseEnabled = reuse;
             ForestDiagnostics.ForgetIslands();
             var run = new Run();
             GameObject ground = Ground();
@@ -157,8 +158,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void ARefittedTreeGivesTheResultsOfATreeBuiltFromScratch()
         {
             // RETOOLED_TREE_REUSE=0 turns the reuse off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = TreeState.TreeReuseEnabled;
-            bool wasAlways = TreeState.TreeAlwaysRefitted;
+            bool wasEnabled = BroadphaseSwitches.TreeReuseEnabled;
+            bool wasAlways = BroadphaseSwitches.TreeAlwaysRefitted;
             bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(FallingLayer, 0);
             UnityEngine.Physics.IgnoreLayerCollision(FallingLayer, 0, true);
             try
@@ -197,10 +198,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                TreeState.TreeReuseEnabled = wasEnabled;
+                BroadphaseSwitches.TreeReuseEnabled = wasEnabled;
                 if (wasAlways)
                 {
-                    TreeState.TreeAlwaysRefitted = true;
+                    BroadphaseSwitches.TreeAlwaysRefitted = true;
                 }
 
                 UnityEngine.Physics.IgnoreLayerCollision(FallingLayer, 0, ignored);
@@ -214,8 +215,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         [Test]
         public void AClosestHitAtEqualDistancesDoesNotDependOnTheTree()
         {
-            bool wasEnabled = TreeState.TreeReuseEnabled;
-            bool wasAlways = TreeState.TreeAlwaysRefitted;
+            bool wasEnabled = BroadphaseSwitches.TreeReuseEnabled;
+            bool wasAlways = BroadphaseSwitches.TreeAlwaysRefitted;
             try
             {
                 string built = TieScene(refitted: false);
@@ -226,10 +227,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                TreeState.TreeReuseEnabled = wasEnabled;
+                BroadphaseSwitches.TreeReuseEnabled = wasEnabled;
                 if (wasAlways)
                 {
-                    TreeState.TreeAlwaysRefitted = true;
+                    BroadphaseSwitches.TreeAlwaysRefitted = true;
                 }
             }
         }
@@ -257,10 +258,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             // The first step makes the world's state, which reads the switches from the environment, so the test sets
             // them after that step. The first step builds the tree from scratch either way.
             Simulate();
-            TreeState.TreeReuseEnabled = refitted;
+            BroadphaseSwitches.TreeReuseEnabled = refitted;
             if (refitted)
             {
-                TreeState.TreeAlwaysRefitted = true;
+                BroadphaseSwitches.TreeAlwaysRefitted = true;
             }
 
             first.position = new Vector3(0.25f, 0.0f, 0.0f);

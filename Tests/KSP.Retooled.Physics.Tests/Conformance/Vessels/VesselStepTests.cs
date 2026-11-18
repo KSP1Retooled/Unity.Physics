@@ -38,17 +38,17 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselSwitches.Initialize();
-            ForestSwitches.Initialize();
+            EnvironmentSwitches.Read();
+            EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
             wasForest = ForestSwitches.Enabled;
 
             // These crafts are small, so let them compile into vessels.
             VesselSwitches.MinimumParts = 2;
-            wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
+            wasFusedParts = SolverSwitches.FusedVesselParts;
             if (FusedParts > 0)
             {
-                Unity.Physics.Solver.FusedVesselParts = FusedParts;
+                SolverSwitches.FusedVesselParts = FusedParts;
             }
 
             Fresh(true);
@@ -60,7 +60,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             VesselSwitches.Enabled = wasVessels;
             ForestSwitches.Enabled = wasForest;
             VesselSwitches.MinimumParts = 0;
-            Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
+            SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
         private void Fresh(bool vessels)

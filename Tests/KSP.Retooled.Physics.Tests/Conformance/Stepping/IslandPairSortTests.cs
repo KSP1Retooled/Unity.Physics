@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using NUnit.Framework;
 using UnityEngine;
@@ -21,7 +22,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         [TearDown]
         public void RestoreLimit()
         {
-            Unity.Physics.DispatchPairSequencer.SerialIslandPairLimit = Unity.Physics.DispatchPairSequencer.DefaultSerialIslandPairLimit;
+            SolverSwitches.SerialIslandPairLimit = SolverSwitches.DefaultSerialIslandPairLimit;
         }
 
         /// <summary>
@@ -30,7 +31,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         /// </summary>
         private Vector3[] Run(int limit)
         {
-            Unity.Physics.DispatchPairSequencer.SerialIslandPairLimit = limit;
+            SolverSwitches.SerialIslandPairLimit = limit;
             Ground();
             var bodies = new Rigidbody[8];
             for (int i = 0; i < 6; i++)
@@ -71,7 +72,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         [Test]
         public void OneJobAndTheParallelChainMoveTheBodiesAlike()
         {
-            Vector3[] serial = Run(Unity.Physics.DispatchPairSequencer.DefaultSerialIslandPairLimit);
+            Vector3[] serial = Run(SolverSwitches.DefaultSerialIslandPairLimit);
             Vector3[] parallel = Run(-1);
 
             for (int i = 0; i < serial.Length; i++)

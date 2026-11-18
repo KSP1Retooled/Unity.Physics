@@ -34,7 +34,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top of
             // what this fixture sets.
-            ForestSwitches.Initialize();
+            EnvironmentSwitches.Read();
             wasEnabled = ForestSwitches.Enabled;
             wasLocking = ForestSwitches.Locking;
             wasLegacy = Solver.LegacyRowBuild;

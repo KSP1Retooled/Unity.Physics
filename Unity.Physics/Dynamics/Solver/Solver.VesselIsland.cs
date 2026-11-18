@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -1553,7 +1554,7 @@ namespace Unity.Physics
         static unsafe void PrepareEquilibrium(ref ForestRun run)
         {
             ForestIsland* forest = run.Forest;
-            bool enabled = StrutLoads.Enabled;
+            bool enabled = VesselSwitches.StrutLoadsEnabled;
             if (forest->Equilibrium.BuiltFor == forest->StructureBuilds && forest->EquilibriumTimeStep == run.Timestep
                 && forest->EquilibriumEnabled == enabled)
             {

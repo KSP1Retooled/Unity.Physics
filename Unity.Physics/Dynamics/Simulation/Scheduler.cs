@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 //#define SERIAL_RADIX_SORT
 
 using System;
@@ -1118,7 +1119,7 @@ namespace Unity.Physics
 
             // Use one sorting job for small island workloads to avoid the parallel chain's scheduling overhead.
             if (multiThreaded && stepInput.DirectIslandSubsteps > 0 && !stepInput.DirectSolverSettings.ForceDirectSolver
-                && islandPairCount.IsCreated && islandPairCount.Value <= SerialIslandPairLimit)
+                && islandPairCount.IsCreated && islandPairCount.Value <= SolverSwitches.SerialIslandPairLimit)
             {
                 dispatchPairs = new NativeList<DispatchPair>(Allocator.TempJob);
                 pairsToSortByIsland = new NativeList<DispatchPair>(Allocator.TempJob);

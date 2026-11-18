@@ -1,4 +1,3 @@
-using Unity.Physics.Stepping.State;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Reports;
 using KSP.Retooled.Physics.Stepping;
@@ -27,11 +26,7 @@ namespace KSP.Retooled.Physics.Host
         internal WorldState(WorldData* store)
         {
             this.store = store;
-            ForestSwitches.Initialize();
-            VesselSwitches.Initialize();
-            TreeState.ReadBoundsCacheSwitches();
-            TreeState.ReadTreeReuseSwitch();
-            StaticRows.ReadStaticReuseSwitch();
+            EnvironmentSwitches.ApplyToWorld();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StoreStepper*)UnsafeUtility.MallocTracked(sizeof(StoreStepper), UnsafeUtility.AlignOf<StoreStepper>(), Allocator.Persistent, 0);
             *state = new StoreStepper(store, NativeLibrary.RetooledPhysics_Globals(), query);

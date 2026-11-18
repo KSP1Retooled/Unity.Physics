@@ -1,13 +1,11 @@
-using System;
 using Unity.Burst;
 using Unity.Physics.Dynamics.Solver.Forest;
-using Unity.Physics.Dynamics.Solver.Islands;
 
 namespace Unity.Physics.Configuration
 {
     /// <summary>
     /// Control forest solving and optional load-based locking of vessel joints.
-    /// RETOOLED_FOREST=1 enables the forest at attach; RETOOLED_LOCK=1 enables locking.
+    /// Set RETOOLED_FOREST=1 to enable the forest at the first world build. Set RETOOLED_LOCK=1 to enable locking.
     /// Locked bodies form a rigid section until deflection or load exceeds the configured yield limits.
     /// </summary>
     internal static class ForestSwitches
@@ -41,8 +39,6 @@ namespace Unity.Physics.Configuration
                 set => HoldPlusOne = value + 1;
             }
         }
-
-        private static bool initialized;
 
         /// <summary>The number of boundary rows above which the solver uses the sparse solver for the island.</summary>
         internal const int DefaultBoundaryRowCap = 512;
@@ -132,40 +128,6 @@ namespace Unity.Physics.Configuration
         {
             get => Fractions.Data.Yield > 0.0f ? Fractions.Data.Yield : DefaultYieldFraction;
             set => Fractions.Data.Yield = value;
-        }
-
-        /// <summary>Reads the environment once, on the main thread, before the first step.</summary>
-        internal static void Initialize()
-        {
-            if (initialized)
-            {
-                return;
-            }
-
-            initialized = true;
-            string value = Environment.GetEnvironmentVariable("RETOOLED_FOREST");
-            if (!string.IsNullOrEmpty(value))
-            {
-                Enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
-                UnityEngine.Debug.Log($"[VesselForest] RETOOLED_FOREST={value}: forest path {(Enabled ? "on" : "off")}");
-            }
-
-            string locking = Environment.GetEnvironmentVariable("RETOOLED_LOCK");
-            if (!string.IsNullOrEmpty(locking))
-            {
-                Locking = locking == "1" || locking.Equals("true", StringComparison.OrdinalIgnoreCase);
-                UnityEngine.Debug.Log($"[VesselForest] RETOOLED_LOCK={locking}: locking {(Locking ? "on" : "off")}");
-            }
-
-            // Dormant joint rows stay out of a vessel island's boundary unless RETOOLED_DORMANT_ROWS=0.
-            string dormant = Environment.GetEnvironmentVariable("RETOOLED_DORMANT_ROWS");
-            if (!string.IsNullOrEmpty(dormant))
-            {
-                BoundaryCaps caps = Caps;
-                caps.KeepDormantRows = dormant == "0" || dormant.Equals("false", StringComparison.OrdinalIgnoreCase);
-                Caps = caps;
-                UnityEngine.Debug.Log($"[VesselForest] RETOOLED_DORMANT_ROWS={dormant}: dormant rows {(caps.KeepDormantRows ? "kept in the boundary" : "left out")}");
-            }
         }
     }
 }

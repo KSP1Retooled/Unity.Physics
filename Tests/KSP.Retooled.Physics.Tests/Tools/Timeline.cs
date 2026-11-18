@@ -144,7 +144,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             bool wasLocking = ForestSwitches.Locking;
             bool wasVessels = VesselSwitches.Enabled;
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            ForestSwitches.Initialize();
+            EnvironmentSwitches.Read();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
             UnityEngine.Profiling.Profiler.maxUsedMemory = 1 << 30;
             // PROFILE_CRAFT lists the crafts, separated by commas, in the names that VesselForestBench reads: "tu160x2"
@@ -176,11 +176,11 @@ namespace KSP.Retooled.Physics.Tests.Tools
                             // "compiled:nocontacts" keeps the islands with contacts or joints out of the fused vessel job,
                             // and "compiled:parts=64" sends vessel islands of 64 parts or more to it.
                             string[] options = path.Split(':');
-                            Unity.Physics.Solver.FusedContacts = !options.Contains("nocontacts");
-                            Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+                            SolverSwitches.FusedContacts = !options.Contains("nocontacts");
+                            SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
                             foreach (string option in options.Where(o => o.StartsWith("parts=")))
                             {
-                                Unity.Physics.Solver.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
+                                SolverSwitches.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
                             }
 
                             ForestSwitches.Enabled = path != "sparse";
@@ -271,8 +271,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
             ForestSwitches.Enabled = wasForest;
             ForestSwitches.Locking = wasLocking;
             VesselSwitches.Enabled = wasVessels;
-            Unity.Physics.Solver.FusedContacts = true;
-            Unity.Physics.Solver.FusedVesselParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+            SolverSwitches.FusedContacts = true;
+            SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"Timeline-{tag}.txt"), report.ToString());
             Debug.Log("[Timeline] done");

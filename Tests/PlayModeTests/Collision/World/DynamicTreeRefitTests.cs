@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -584,10 +585,10 @@ namespace Unity.Physics.Tests.Collision.World
             var poses = new NativeArray<RigidTransform>(4000, Allocator.TempJob);
             var mismatches = new NativeReference<int>(0, Allocator.TempJob);
             var shaped = new NativeReference<int>(0, Allocator.TempJob);
-            bool wasEnabled = DynamicBoundsCache.ShapesEnabled;
+            bool wasEnabled = BroadphaseSwitches.ShapeBoundsEnabled;
             try
             {
-                DynamicBoundsCache.ShapesEnabled = true;
+                BroadphaseSwitches.ShapeBoundsEnabled = true;
                 var random = new Unity.Mathematics.Random(11);
                 for (int i = 0; i < poses.Length; i++)
                 {
@@ -609,7 +610,7 @@ namespace Unity.Physics.Tests.Collision.World
             }
             finally
             {
-                DynamicBoundsCache.ShapesEnabled = wasEnabled;
+                BroadphaseSwitches.ShapeBoundsEnabled = wasEnabled;
                 cache.Dispose();
                 poses.Dispose();
                 mismatches.Dispose();
@@ -628,10 +629,10 @@ namespace Unity.Physics.Tests.Collision.World
             BlobAssetReference<Collider> large = BoxCollider.Create(new BoxGeometry { Orientation = quaternion.identity, Size = new float3(4.0f) });
             uint colliderVersion = 1;
             var cache = new DynamicBoundsCache(&colliderVersion, Allocator.Temp);
-            bool wasEnabled = DynamicBoundsCache.ShapesEnabled;
+            bool wasEnabled = BroadphaseSwitches.ShapeBoundsEnabled;
             try
             {
-                DynamicBoundsCache.ShapesEnabled = true;
+                BroadphaseSwitches.ShapeBoundsEnabled = true;
                 DynamicBoundsCache.View view = cache.Resize(1);
 
                 // The test changes an entry by hand below, which the check would count as a mismatch.
@@ -673,7 +674,7 @@ namespace Unity.Physics.Tests.Collision.World
             }
             finally
             {
-                DynamicBoundsCache.ShapesEnabled = wasEnabled;
+                BroadphaseSwitches.ShapeBoundsEnabled = wasEnabled;
                 cache.Dispose();
                 small.Dispose();
                 large.Dispose();

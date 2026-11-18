@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Physics.Stepping.State;
 using KSP.Retooled.Physics.Tests.Tools;
 using KSP.Retooled.Physics.Tests.Benchmarks;
@@ -89,7 +90,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            StaticRows.StaticReuseEnabled = reuse;
+            StepCacheSwitches.StaticReuseEnabled = reuse;
             ForestDiagnostics.ForgetIslands();
             var run = new Run();
             GameObject ground = Ground();
@@ -257,7 +258,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void KeptStaticRowsGiveTheResultsOfRowsWrittenAgain()
         {
             // RETOOLED_STATIC_REUSE=0 turns the reuse off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = StaticRows.StaticReuseEnabled;
+            bool wasEnabled = StepCacheSwitches.StaticReuseEnabled;
             bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(IgnoringLayer, 0);
             UnityEngine.Physics.IgnoreLayerCollision(IgnoringLayer, 0, true);
             try
@@ -299,7 +300,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StaticRows.StaticReuseEnabled = wasEnabled;
+                StepCacheSwitches.StaticReuseEnabled = wasEnabled;
                 UnityEngine.Physics.IgnoreLayerCollision(IgnoringLayer, 0, ignored);
             }
         }

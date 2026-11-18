@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -17,33 +18,6 @@ namespace Unity.Physics.Stepping.State
         internal NativeList<int> staticRows;
         internal long keptStaticRowsCount;
         private uint builtStaticsVersion;
-
-        /// <summary>
-        /// Reuse unchanged static body rows. RETOOLED_STATIC_REUSE=0 disables it.
-        /// Stored in SharedStatic because Burst reads it.
-        /// </summary>
-        internal static bool StaticReuseEnabled
-        {
-            get => StaticReuseOff.Data == 0;
-            set => StaticReuseOff.Data = value ? 0 : 1;
-        }
-
-        private sealed class StaticReuseOffKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StaticRows, StaticReuseOffKey>();
-
-        /// <summary>Read RETOOLED_STATIC_REUSE. A value of 0 disables static row reuse.</summary>
-        internal static void ReadStaticReuseSwitch()
-        {
-            string reuse = Environment.GetEnvironmentVariable("RETOOLED_STATIC_REUSE");
-            StaticReuseEnabled = reuse != "0";
-            if (reuse == "0")
-            {
-                UnityEngine.Debug.Log("[StoreStepper] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
-            }
-        }
 
         /// <summary>The builds that kept the static bodies' rows of the last build. Used by tests.</summary>
         internal readonly long KeptStaticRowsCount => keptStaticRowsCount;
@@ -76,7 +50,7 @@ namespace Unity.Physics.Stepping.State
         /// </summary>
         internal readonly bool KeepsStaticRows(ref PhysicsWorld world, ref BodyPartition partition)
         {
-            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == partition.staticIndices.Length + 1
+            return StepCacheSwitches.StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == partition.staticIndices.Length + 1
                 && BodyPartition.SameRows(staticRows, partition.staticIndices);
         }
 
@@ -104,7 +78,7 @@ namespace Unity.Physics.Stepping.State
                 keptStaticRowsCount++;
                 MoveStaticRows(ref world, ref partition, dynamicBefore);
             }
-            else if (StaticReuseEnabled)
+            else if (StepCacheSwitches.StaticReuseEnabled)
             {
                 // With the reuse off, every build writes the rows, so the rows that they come from don't matter.
                 staticRows.CopyFrom(partition.staticIndices.AsArray());

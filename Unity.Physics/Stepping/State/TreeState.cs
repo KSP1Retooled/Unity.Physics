@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -74,46 +75,6 @@ namespace Unity.Physics.Stepping.State
         /// </summary>
         internal const float MaxTreeQualityGrowth = 1.5f;
 
-        /// <summary>
-        /// Enable dynamic tree reuse. RETOOLED_TREE_REUSE=0 disables it.
-        /// Burst reads this switch through SharedStatic. Always refitting bypasses the count and quality limits.
-        /// </summary>
-        internal static bool TreeReuseEnabled
-        {
-            get => TreeReuseMode.Data != 1;
-            set => TreeReuseMode.Data = value ? 0 : 1;
-        }
-
-        /// <summary>
-        /// Whether every build refits the dynamic tree when the dynamic bodies are the same, however bad the tree has
-        /// become. RETOOLED_TREE_REUSE=always turns it on, to check that a tree of any shape gives the same results.
-        /// </summary>
-        internal static bool TreeAlwaysRefitted
-        {
-            get => TreeReuseMode.Data == 2;
-            set => TreeReuseMode.Data = value ? 2 : 0;
-        }
-
-        private sealed class TreeReuseModeKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<TreeState, TreeReuseModeKey>();
-
-        /// <summary>
-        /// Read RETOOLED_TREE_REUSE. A value of 0 disables dynamic tree reuse. A value of "always" refits the tree
-        /// whenever the dynamic body rows match.
-        /// </summary>
-        internal static void ReadTreeReuseSwitch()
-        {
-            string reuse = Environment.GetEnvironmentVariable("RETOOLED_TREE_REUSE");
-            TreeReuseMode.Data = reuse == "0" ? 1 : reuse == "always" ? 2 : 0;
-            if (reuse == "0" || reuse == "always")
-            {
-                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_TREE_REUSE={reuse}: {(reuse == "0" ? "every build builds the dynamic tree from scratch" : "every build refits the dynamic tree when the dynamic bodies are the same")}");
-            }
-        }
-
         /// <summary>The builds of the dynamic tree from scratch since this state was made. Used by tests.</summary>
         internal readonly long TreeBuildCount => treeBuildCount;
 
@@ -122,39 +83,6 @@ namespace Unity.Physics.Stepping.State
 
         /// <summary>The refits that built the nodes' filters again because a body's filter had changed. Used by tests.</summary>
         internal readonly long TreeFilterRefitCount => treeFilterRefitCount;
-
-        /// <summary>
-        /// Reuse bounds cached by the previous refit. Tests can disable this for comparison.
-        /// </summary>
-        internal static bool BoundsCacheEnabled
-        {
-            get => BoundsCacheOff.Data == 0;
-            set => BoundsCacheOff.Data = value ? 0 : 1;
-        }
-
-        private sealed class BoundsCacheOffKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<TreeState, BoundsCacheOffKey>();
-
-        /// <summary>
-        /// RETOOLED_BOUNDS_CACHE=0 disables caching. RETOOLED_BOUNDS_CHECK=1 validates cached bounds.
-        /// RETOOLED_SHAPE_BOUNDS=0 disables reuse of cached collider geometry.
-        /// </summary>
-        internal static void ReadBoundsCacheSwitches()
-        {
-            string cache = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CACHE");
-            BoundsCacheEnabled = cache != "0";
-            string check = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
-            DynamicBoundsCache.CheckEnabled = check == "1";
-            string shapes = Environment.GetEnvironmentVariable("RETOOLED_SHAPE_BOUNDS");
-            DynamicBoundsCache.ShapesEnabled = shapes != "0";
-            if (cache == "0" || check == "1" || shapes == "0")
-            {
-                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
-            }
-        }
 
         /// <summary>Whether a refit that the last step left running may still be running. Used by tests.</summary>
         internal readonly bool RefitPending => refitPending;
@@ -325,14 +253,14 @@ namespace Unity.Physics.Stepping.State
                 {
                     treeBaseQuality = quality;
                 }
-                else if (quality > treeBaseQuality * MaxTreeQualityGrowth && !TreeAlwaysRefitted)
+                else if (quality > treeBaseQuality * MaxTreeQualityGrowth && !BroadphaseSwitches.TreeAlwaysRefitted)
                 {
                     return false;
                 }
             }
 
-            return TreeReuseEnabled && treeMatchesHeld && partition.dynamicIndices.Length > 0
-                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && BodyPartition.SameRows(treeRows, partition.dynamicIndices);
+            return BroadphaseSwitches.TreeReuseEnabled && treeMatchesHeld && partition.dynamicIndices.Length > 0
+                && (treeRefits < MaxTreeRefits || BroadphaseSwitches.TreeAlwaysRefitted) && BodyPartition.SameRows(treeRows, partition.dynamicIndices);
         }
 
         /// <summary>
@@ -372,7 +300,7 @@ namespace Unity.Physics.Stepping.State
             int threads = JobsUtility.JobWorkerCount + 1;
             Broadphase broadphase = world.CollisionWorld.Broadphase;
             JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree(staticRows.staticsChanged), ScheduleShiftStaticTree(store, ref world, staticRows.staticsChanged, colliderWork, built));
-            boundsCacheBuilt = BoundsCacheEnabled;
+            boundsCacheBuilt = BroadphaseSwitches.BoundsCacheEnabled;
             DynamicBoundsCache cache = boundsCacheBuilt ? boundsCache : default;
             JobHandle dynamics;
             if (RefitsDynamicTree(ref partition))
@@ -397,12 +325,12 @@ namespace Unity.Physics.Stepping.State
 
         internal DynamicBoundsCache.View PrepareBounds(ref BodyPartition partition)
         {
-            return BoundsCacheEnabled ? boundsCache.Resize(partition.dynamicIndices.Length) : default;
+            return BroadphaseSwitches.BoundsCacheEnabled ? boundsCache.Resize(partition.dynamicIndices.Length) : default;
         }
 
         internal readonly bool CanCompareBounds(ref PhysicsWorld world, ref BodyPartition partition)
         {
-            return boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == partition.dynamicIndices.Length;
+            return boundsCacheBuilt && BroadphaseSwitches.BoundsCacheEnabled && world.NumDynamicBodies == partition.dynamicIndices.Length;
         }
 
         internal readonly NativeReference<int>.ReadOnly BuildStaticTree(bool staticsChanged) => (staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();

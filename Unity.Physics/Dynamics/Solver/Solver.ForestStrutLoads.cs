@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -22,7 +23,7 @@ namespace Unity.Physics
         static unsafe void ForestStrutLoads(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses)
         {
             ForestIsland* forest = run.Forest;
-            if (!StrutLoads.Enabled)
+            if (!VesselSwitches.StrutLoadsEnabled)
             {
                 return;
             }

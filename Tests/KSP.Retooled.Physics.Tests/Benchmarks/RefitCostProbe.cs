@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using KSP.Retooled.Physics.Stepping;
 using System;
@@ -404,14 +405,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             }
 
             // The bodies that take their bounds from the cache in the build of each step.
-            bool wasChecking = DynamicBoundsCache.CheckEnabled;
-            DynamicBoundsCache.CheckEnabled = true;
+            bool wasChecking = BroadphaseSwitches.BoundsCheckEnabled;
+            BroadphaseSwitches.BoundsCheckEnabled = true;
             long hits0 = DynamicBoundsCache.Counts->Hits;
             long mismatches0 = DynamicBoundsCache.Counts->Mismatches;
             const int checkedSteps = 20;
             Simulate(checkedSteps);
             StepEntryPoints.Current->FinishPendingRefit();
-            DynamicBoundsCache.CheckEnabled = wasChecking;
+            BroadphaseSwitches.BoundsCheckEnabled = wasChecking;
             long hits = DynamicBoundsCache.Counts->Hits - hits0;
             report.Append($"cache: {hits / (double)checkedSteps:F0} of {count} bodies per step took their bounds from the cache, " +
                 $"{DynamicBoundsCache.Counts->Mismatches - mismatches0} mismatches\n");

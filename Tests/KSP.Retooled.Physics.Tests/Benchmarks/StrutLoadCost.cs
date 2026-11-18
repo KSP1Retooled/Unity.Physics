@@ -29,7 +29,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            VesselSwitches.Initialize();
+            EnvironmentSwitches.Read();
             double toMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                 / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
             var text = new System.Text.StringBuilder("[StrutLoadCost] craft | scene | steps | systems factored | unknowns each | ms per factor | " +

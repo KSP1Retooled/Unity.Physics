@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -209,7 +210,7 @@ namespace Unity.Physics
             substepInput.DisableExportEvents = true;
 
             // Fused islands own their bodies for the entire step; substep jobs must skip them.
-            bool fusedVessels = VesselFused;
+            bool fusedVessels = SolverSwitches.VesselFused;
             JobHandle fused = default;
             handle = new MarkFusedVesselIslandsJob
             {
@@ -220,8 +221,8 @@ namespace Unity.Physics
                 Vessels = stepInput.VesselSet,
                 Cache = stepInput.IslandSolverCache,
                 Fuse = fusedVessels && !LegacyRowBuild,
-                MinimumParts = FusedVesselParts,
-                Contacts = FusedContacts,
+                MinimumParts = SolverSwitches.FusedVesselParts,
+                Contacts = SolverSwitches.FusedContacts,
                 Buffers = work.Buffers,
             }.Schedule(handle);
 
@@ -408,32 +409,6 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Solve vessel-only islands in one fused job across all substeps, including their contact/joint boundary.
-        /// Enabled by default; RETOOLED_VESSEL_FUSED=0 disables it at first attach.
-        /// </summary>
-        public static bool VesselFused
-        {
-            get => !VesselFusedOff.Data;
-            set => VesselFusedOff.Data = !value;
-        }
-
-        struct VesselFusedKey { }
-
-        /// <summary>
-        /// Allow fused vessel islands with contact or joint boundary rows. Enabled by default; benchmarks may
-        /// disable it.
-        /// </summary>
-        internal static bool FusedContacts
-        {
-            get => !FusedContactsOff.Data;
-            set => FusedContactsOff.Data = !value;
-        }
-
-        struct FusedContactsKey { }
-
-        static readonly SharedStatic<bool> FusedContactsOff = SharedStatic<bool>.GetOrCreate<FusedContactsKey>();
-
-        /// <summary>
         /// The number of island solves, each one for a whole step, that the fused vessel job has done since the
         /// program started. Tests read it to check that an island went to the fused job.
         /// </summary>
@@ -442,25 +417,6 @@ namespace Unity.Physics
         struct FusedIslandSolveKey { }
 
         static readonly SharedStatic<long> FusedIslandSolveCount = SharedStatic<long>.GetOrCreate<FusedIslandSolveKey>();
-
-        static readonly SharedStatic<bool> VesselFusedOff = SharedStatic<bool>.GetOrCreate<VesselFusedKey>();
-
-        /// <summary>
-        /// Minimum vessel part count for fused solving. By default every eligible island is fused.
-        /// Read RETOOLED_VESSEL_FUSED_PARTS at first attach; tests may override it.
-        /// </summary>
-        public static int FusedVesselParts
-        {
-            get => FusedVesselPartsValue.Data > 0 ? FusedVesselPartsValue.Data : DefaultFusedVesselParts;
-            set => FusedVesselPartsValue.Data = value;
-        }
-
-        /// <summary>The value of <see cref="FusedVesselParts"/> until something sets it.</summary>
-        public const int DefaultFusedVesselParts = 1;
-
-        struct FusedVesselPartsKey { }
-
-        static readonly SharedStatic<int> FusedVesselPartsValue = SharedStatic<int>.GetOrCreate<FusedVesselPartsKey>();
 
         /// <summary> The number of vessel parts at which an island's solve is shared among lanes. </summary>
         const int SharedSolveParts = 256;
@@ -1377,27 +1333,6 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Select chained or serial unfused substeps. Auto uses previous-step work counts.
-        /// RETOOLED_SUBSTEP_FOLD=0 forces Chain; 1 forces Fold.
-        /// </summary>
-        internal enum SubstepFolding
-        {
-            Auto = 0,
-            Fold = 1,
-            Chain = 2,
-        }
-
-        internal static SubstepFolding UnfusedFolding
-        {
-            get => (SubstepFolding)UnfusedFoldingValue.Data;
-            set => UnfusedFoldingValue.Data = (int)value;
-        }
-
-        struct UnfusedFoldingKey { }
-
-        static readonly SharedStatic<int> UnfusedFoldingValue = SharedStatic<int>.GetOrCreate<UnfusedFoldingKey>();
-
-        /// <summary>
         /// The most rows that the islands that are not fused can have, at the first substep of the last step, for this
         /// step to run their substeps on one thread.
         /// </summary>
@@ -1418,10 +1353,10 @@ namespace Unity.Physics
         /// </summary>
         static bool FoldsUnfusedSubsteps(in IslandSolverCache cache)
         {
-            SubstepFolding folding = UnfusedFolding;
-            if (folding != SubstepFolding.Auto)
+            SolverSwitches.SubstepFolding folding = SolverSwitches.UnfusedFolding;
+            if (folding != SolverSwitches.SubstepFolding.Auto)
             {
-                return folding == SubstepFolding.Fold;
+                return folding == SolverSwitches.SubstepFolding.Fold;
             }
 
             if (!cache.IsCreated || !cache.LastUnfusedWork(out IslandSolverCache.UnfusedWork work))
@@ -1456,13 +1391,13 @@ namespace Unity.Physics
             public IslandSolverCache Cache;
 
             /// <summary>
-            /// Whether the fused job is on, and the value of <see cref="FusedVesselParts"/>, when the job was scheduled.
+            /// Whether the fused job is on, and the value of <see cref="SolverSwitches.FusedVesselParts"/>, when the job was scheduled.
             /// </summary>
             public bool Fuse;
 
             public int MinimumParts;
 
-            /// <summary>The value of <see cref="FusedContacts"/> when the job was scheduled.</summary>
+            /// <summary>The value of <see cref="SolverSwitches.FusedContacts"/> when the job was scheduled.</summary>
             public bool Contacts;
 
             /// <summary>The buffers that hold a team for each fused island and the configured team that they copy.</summary>

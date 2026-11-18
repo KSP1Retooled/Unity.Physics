@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using NUnit.Framework;
 using Unity.Burst;
@@ -386,8 +387,8 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
         public void LockedEdgesMatchVeryStiffYieldingOnes([Values("pegasus", "behemoth", "tu160")] string craft,
             [Values(VesselGraph.LockRule.LiveJointsOnly, VesselGraph.LockRule.StackLocked)] VesselGraph.LockRule rule)
         {
-            bool wasOn = StrutLoads.Enabled;
-            StrutLoads.Enabled = true;
+            bool wasOn = VesselSwitches.StrutLoadsEnabled;
+            VesselSwitches.StrutLoadsEnabled = true;
             try
             {
                 VesselGraph graph = VesselGraph.Load(craft);
@@ -411,7 +412,7 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
             }
             finally
             {
-                StrutLoads.Enabled = wasOn;
+                VesselSwitches.StrutLoadsEnabled = wasOn;
             }
         }
 
@@ -673,8 +674,8 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
         [Test]
         public void AStrutInALockedCantileverTakesItsShare([Values(1e-4, 1e-5)] double period)
         {
-            bool wasOn = StrutLoads.Enabled;
-            StrutLoads.Enabled = true;
+            bool wasOn = VesselSwitches.StrutLoadsEnabled;
+            VesselSwitches.StrutLoadsEnabled = true;
             const int count = 4;
             var mass = new double[] { 2.0, 1.0, 1.5, 0.8 };
             var position = new double3[count];
@@ -841,7 +842,7 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
                 stiffParts.Dispose();
                 stiffEdges.Dispose();
                 stiffClosures.Dispose();
-                StrutLoads.Enabled = wasOn;
+                VesselSwitches.StrutLoadsEnabled = wasOn;
             }
         }
 

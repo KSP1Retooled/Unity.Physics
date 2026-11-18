@@ -61,7 +61,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         }
 
         // The fused job's settings before the bench changes them for a path.
-        private static int fusedParts = Unity.Physics.Solver.DefaultFusedVesselParts;
+        private static int fusedParts = SolverSwitches.DefaultFusedVesselParts;
         private static bool fusedOn = true;
 
         /// <summary>
@@ -700,18 +700,18 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             double clear = Since(clock);
             // Compiled path options select the fused job: parts=n, nocontacts or off.
             string[] options = path.Split(':');
-            Unity.Physics.Solver.FusedVesselParts = fusedParts;
-            Unity.Physics.Solver.FusedContacts = true;
-            Unity.Physics.Solver.VesselFused = fusedOn;
+            SolverSwitches.FusedVesselParts = fusedParts;
+            SolverSwitches.FusedContacts = true;
+            SolverSwitches.VesselFused = fusedOn;
             for (int i = 1; i < options.Length; i++)
             {
                 if (options[i].StartsWith("parts="))
                 {
-                    Unity.Physics.Solver.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
+                    SolverSwitches.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
                 }
 
-                Unity.Physics.Solver.FusedContacts &= options[i] != "nocontacts";
-                Unity.Physics.Solver.VesselFused &= options[i] != "off";
+                SolverSwitches.FusedContacts &= options[i] != "nocontacts";
+                SolverSwitches.VesselFused &= options[i] != "off";
             }
 
             path = options[0];
@@ -762,9 +762,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
 
             JobsUtility.JobWorkerCount = workers;
             vesselSet?.Dispose();
-            Unity.Physics.Solver.FusedVesselParts = fusedParts;
-            Unity.Physics.Solver.FusedContacts = true;
-            Unity.Physics.Solver.VesselFused = fusedOn;
+            SolverSwitches.FusedVesselParts = fusedParts;
+            SolverSwitches.FusedContacts = true;
+            SolverSwitches.VesselFused = fusedOn;
             return results;
         }
 
@@ -1274,9 +1274,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             JobsUtility.JobDebuggerEnabled = false;
             Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
             int workers = JobsUtility.JobWorkerCount;
-            VesselSwitches.Initialize();
-            fusedParts = Unity.Physics.Solver.FusedVesselParts;
-            fusedOn = Unity.Physics.Solver.VesselFused;
+            EnvironmentSwitches.Read();
+            fusedParts = SolverSwitches.FusedVesselParts;
+            fusedOn = SolverSwitches.VesselFused;
             double load = SampleLoad();
             bool share = Environment.GetEnvironmentVariable("RETOOLED_BENCH_SHARE") == "1";
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +

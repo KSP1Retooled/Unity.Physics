@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using KSP.Retooled.Physics.Stepping;
 using System;
@@ -78,7 +79,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [TearDown]
         public void LetTheJobsWorkAgain()
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = false;
             SharedDynamicTreeRefit.ThrowForTestsEnabled = false;
             LogAssert.ignoreFailingMessages = false;
         }
@@ -92,7 +93,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [Timeout(120000)]
         public void AStepThatThrowsAfterItSchedulesTheRefitWaitsForTheSolvedMotions()
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = true;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = true;
             List<Rigidbody> bodies = FallingBoxes(Count);
             int throws = StoreStepper.ThrowsAfterRefitScheduled;
             LogAssert.ignoreFailingMessages = true;
@@ -123,7 +124,7 @@ namespace KSP.Retooled.Physics.Tests.Host
             }
 
             // The next steps run as before.
-            SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = false;
             Simulate(2);
             LogAssert.ignoreFailingMessages = false;
             using NativeArray<RaycastCommand> after = RaysOnto(bodies);
@@ -145,7 +146,7 @@ namespace KSP.Retooled.Physics.Tests.Host
             try
             {
                 JobsUtility.JobWorkerCount = 1;
-                SharedDynamicTreeRefit.JobsLeaveTheWork = true;
+                BroadphaseSwitches.RefitJobsLeaveTheWork = true;
                 List<Rigidbody> bodies = FallingBoxes(Count);
                 for (int round = 0; round < 5; round++)
                 {
@@ -162,7 +163,7 @@ namespace KSP.Retooled.Physics.Tests.Host
                     BackendHost.Attach();
                 }
 
-                SharedDynamicTreeRefit.JobsLeaveTheWork = false;
+                BroadphaseSwitches.RefitJobsLeaveTheWork = false;
                 Simulate(1);
                 using NativeArray<RaycastCommand> after = RaysOnto(bodies);
                 using var afterHits = new NativeArray<RaycastHit>(Count, Allocator.TempJob);
@@ -185,7 +186,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [Timeout(120000)]
         public void AThrowInTheRefitEndsTheWaitAndTheNextQueryBuildsTheWorld(bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             List<Rigidbody> bodies = FallingBoxes(Count);
             UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
             int throws = SharedDynamicTreeRefit.ThrowsForTests;
@@ -235,7 +236,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [TestCase(true)]
         public void AWorkerQueryRightAfterAStepFindsTheRefittedHits(bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             List<Rigidbody> bodies = FallingBoxes(Count);
             UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
             int pending = 0;
@@ -272,7 +273,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [TestCase(true)]
         public void AMainThreadQueryRightAfterAStepFindsTheRefittedHits(bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             List<Rigidbody> bodies = FallingBoxes(Count);
             UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
             for (int step = 0; step < 5; step++)
@@ -294,7 +295,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [TestCase(true)]
         public void DestroyingABodyRightAfterAStepLeavesTheOthersToTheRefit(bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             List<Rigidbody> bodies = FallingBoxes(Count);
             UnityEngine.PhysicsScene scene = UnityEngine.Physics.defaultPhysicsScene;
             for (int step = 0; step < 5; step++)
@@ -318,7 +319,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [TestCase(true)]
         public void DestroyingAWorldRightAfterItsStep(bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             for (int round = 0; round < 5; round++)
             {
                 Scene preview = EditorSceneManager.NewPreviewScene();
@@ -364,7 +365,7 @@ namespace KSP.Retooled.Physics.Tests.Host
         [Timeout(120000)]
         public void QueriesOnEveryThreadWhileTheRefitIsPendingDoNotDeadlock(int workers, bool queriesDoTheWork)
         {
-            SharedDynamicTreeRefit.JobsLeaveTheWork = queriesDoTheWork;
+            BroadphaseSwitches.RefitJobsLeaveTheWork = queriesDoTheWork;
             int defaultWorkers = JobsUtility.JobWorkerCount;
             try
             {

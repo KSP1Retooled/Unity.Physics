@@ -7,27 +7,6 @@ namespace Unity.Physics
     partial struct DispatchPairSequencer
     {
         /// <summary>
-        /// Maximum prior-step pair count for serial island sorting. Set to -1 to force the parallel chain.
-        /// Stored in SharedStatic for Burst.
-        /// </summary>
-        internal static int SerialIslandPairLimit
-        {
-            get => DefaultSerialIslandPairLimit + SerialIslandPairLimitValue.Data;
-            set => SerialIslandPairLimitValue.Data = value - DefaultSerialIslandPairLimit;
-        }
-
-        /// <summary>
-        /// The value of <see cref="SerialIslandPairLimit"/> until something sets it. One thread sorts this many pairs
-        /// in a few tens of microseconds, about as long as the parallel chain spends waiting between its jobs.
-        /// </summary>
-        internal const int DefaultSerialIslandPairLimit = 4096;
-
-        struct SerialIslandPairLimitKey { }
-
-        // Holds the limit minus the default, so that the zero that a SharedStatic starts with means the default.
-        static readonly SharedStatic<int> SerialIslandPairLimitValue = SharedStatic<int>.GetOrCreate<SerialIslandPairLimitKey>();
-
-        /// <summary>
         /// Sort island dispatch pairs and disable contacts forbidden by joints, matching the parallel chain's
         /// order.
         /// Record the pair count for next step's scheduling choice.

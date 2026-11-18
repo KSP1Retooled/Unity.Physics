@@ -265,7 +265,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            TreeState.BoundsCacheEnabled = boundsCache;
+            BroadphaseSwitches.BoundsCacheEnabled = boundsCache;
             ForestDiagnostics.ForgetIslands();
             GameObject ground = Ground();
             List<Rigidbody> bodies = Column(0.3f, false);
@@ -327,7 +327,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void TheBoundsCacheChangesNoPoseAndNoHit()
         {
             // RETOOLED_BOUNDS_CACHE=0 turns the cache off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = TreeState.BoundsCacheEnabled;
+            bool wasEnabled = BroadphaseSwitches.BoundsCacheEnabled;
             try
             {
                 // As above: the first scene of this shape can land a few ulps from every later one.
@@ -342,7 +342,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                TreeState.BoundsCacheEnabled = wasEnabled;
+                BroadphaseSwitches.BoundsCacheEnabled = wasEnabled;
             }
         }
 
@@ -353,12 +353,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public unsafe void ABoxWhoseColliderComesBackOnAnotherLayerIsFoundOnThatLayer()
         {
             const int layer = 29;
-            bool wasEnabled = TreeState.BoundsCacheEnabled;
-            bool wasChecked = Unity.Physics.DynamicBoundsCache.CheckEnabled;
+            bool wasEnabled = BroadphaseSwitches.BoundsCacheEnabled;
+            bool wasChecked = BroadphaseSwitches.BoundsCheckEnabled;
             try
             {
-                TreeState.BoundsCacheEnabled = true;
-                Unity.Physics.DynamicBoundsCache.CheckEnabled = true;
+                BroadphaseSwitches.BoundsCacheEnabled = true;
+                BroadphaseSwitches.BoundsCheckEnabled = true;
                 Rigidbody body = WeightlessBox(new Vector3(0.0f, 1.0f, 0.0f));
                 BoxCollider box = body.GetComponent<BoxCollider>();
                 Simulate(2);
@@ -386,8 +386,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                TreeState.BoundsCacheEnabled = wasEnabled;
-                Unity.Physics.DynamicBoundsCache.CheckEnabled = wasChecked;
+                BroadphaseSwitches.BoundsCacheEnabled = wasEnabled;
+                BroadphaseSwitches.BoundsCheckEnabled = wasChecked;
             }
         }
 

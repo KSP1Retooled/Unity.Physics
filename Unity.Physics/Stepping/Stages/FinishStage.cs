@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
@@ -170,7 +171,7 @@ namespace Unity.Physics.Stepping.Stages
             // The completed build wrote each body's current collider to its bounds cache entry. The refit writes it again.
             trees.MarkBoundsCurrent();
 
-            if (DynamicBoundsCache.CheckEnabled)
+            if (BroadphaseSwitches.BoundsCheckEnabled)
             {
                 TreeState.LogBoundsCheck();
             }

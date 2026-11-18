@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System.Threading;
 using Unity.Burst;
 using Unity.Burst.Intrinsics;
@@ -223,21 +224,6 @@ namespace Unity.Physics.Collision.World.Trees
         static readonly ProfilerMarker WaitMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Wait");
 
         /// <summary>
-        /// Test option leaving all refit work to queries or owner helpers instead of scheduled workers.
-        /// </summary>
-        internal static bool JobsLeaveTheWork
-        {
-            get => s_JobsLeaveTheWork.Data != 0;
-            set => s_JobsLeaveTheWork.Data = value ? 1 : 0;
-        }
-
-        sealed class JobsLeaveTheWorkKey
-        {
-        }
-
-        static readonly SharedStatic<int> s_JobsLeaveTheWork = SharedStatic<int>.GetOrCreate<SharedDynamicTreeRefit, JobsLeaveTheWorkKey>();
-
-        /// <summary>
         /// Inject an exception in the first body batch for Mono tests. Burst omits it; ThrowsForTests counts
         /// executions.
         /// </summary>
@@ -273,7 +259,7 @@ namespace Unity.Physics.Collision.World.Trees
 
             public void Execute(int index)
             {
-                if (s_JobsLeaveTheWork.Data == 0)
+                if (!BroadphaseSwitches.RefitJobsLeaveTheWork)
                 {
                     Refit->Help();
                 }

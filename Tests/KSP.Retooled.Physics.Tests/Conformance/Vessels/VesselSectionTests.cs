@@ -27,8 +27,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
-            ForestSwitches.Initialize();
-            VesselSwitches.Initialize();
+            EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
 
             // These test the forest path with Unity's joint rows, which vessels replace.
@@ -347,8 +346,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void ALockedStrutCarriesItsShareAsTheYieldingOne()
         {
-            bool wasStrutLoads = StrutLoads.Enabled;
-            StrutLoads.Enabled = true;
+            bool wasStrutLoads = VesselSwitches.StrutLoadsEnabled;
+            VesselSwitches.StrutLoadsEnabled = true;
             var strut = new Vector3[2];
             var arm = new Vector3[2];
             var lockedPairs = new long[2];
@@ -383,7 +382,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                StrutLoads.Enabled = wasStrutLoads;
+                VesselSwitches.StrutLoadsEnabled = wasStrutLoads;
             }
 
             float weight = 4.0f * PartMass * -Gravity;

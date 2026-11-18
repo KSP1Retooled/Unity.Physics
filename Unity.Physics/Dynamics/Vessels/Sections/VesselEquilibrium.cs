@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using Unity.Burst;
 using Unity.Collections;
@@ -87,7 +88,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 Entries.Ptr[e].Claimed = false;
             }
 
-            if (StrutLoads.Enabled)
+            if (VesselSwitches.StrutLoadsEnabled)
             {
                 // The closures inside each section, in the order of their indices.
                 for (int c = 0; c < closureCount; c++)

@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using System.Collections.Generic;
 using System.Globalization;
@@ -151,10 +152,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Queries
         private string Run(bool shapes)
         {
             DestroyAll();
-            bool wasEnabled = Unity.Physics.DynamicBoundsCache.ShapesEnabled;
-            bool wasChecking = Unity.Physics.DynamicBoundsCache.CheckEnabled;
-            Unity.Physics.DynamicBoundsCache.ShapesEnabled = shapes;
-            Unity.Physics.DynamicBoundsCache.CheckEnabled = true;
+            bool wasEnabled = BroadphaseSwitches.ShapeBoundsEnabled;
+            bool wasChecking = BroadphaseSwitches.BoundsCheckEnabled;
+            BroadphaseSwitches.ShapeBoundsEnabled = shapes;
+            BroadphaseSwitches.BoundsCheckEnabled = true;
             try
             {
                 var scene = new Scene();
@@ -197,8 +198,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Queries
             }
             finally
             {
-                Unity.Physics.DynamicBoundsCache.ShapesEnabled = wasEnabled;
-                Unity.Physics.DynamicBoundsCache.CheckEnabled = wasChecking;
+                BroadphaseSwitches.ShapeBoundsEnabled = wasEnabled;
+                BroadphaseSwitches.BoundsCheckEnabled = wasChecking;
             }
         }
 

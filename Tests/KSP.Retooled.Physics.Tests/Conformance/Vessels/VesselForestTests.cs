@@ -32,8 +32,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
-            ForestSwitches.Initialize();
-            VesselSwitches.Initialize();
+            EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
 
             // These test the forest path with Unity's joint rows, which vessels replace.

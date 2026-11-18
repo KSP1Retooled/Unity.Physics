@@ -30,13 +30,13 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            ForestSwitches.Initialize();
-            VesselSwitches.Initialize();
+            EnvironmentSwitches.Read();
+            EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
             wasMinimumParts = VesselSwitches.MinimumParts;
-            wasStrutLoads = StrutLoads.Enabled;
-            wasFused = Unity.Physics.Solver.VesselFused;
-            wasFusedParts = Unity.Physics.Solver.FusedVesselParts;
+            wasStrutLoads = VesselSwitches.StrutLoadsEnabled;
+            wasFused = SolverSwitches.VesselFused;
+            wasFusedParts = SolverSwitches.FusedVesselParts;
             VesselSwitches.MinimumParts = 2;
         }
 
@@ -45,9 +45,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             VesselSwitches.Enabled = wasVessels;
             VesselSwitches.MinimumParts = wasMinimumParts;
-            StrutLoads.Enabled = wasStrutLoads;
-            Unity.Physics.Solver.VesselFused = wasFused;
-            Unity.Physics.Solver.FusedVesselParts = wasFusedParts;
+            VesselSwitches.StrutLoadsEnabled = wasStrutLoads;
+            SolverSwitches.VesselFused = wasFused;
+            SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
         private void Fresh(bool vessels)
@@ -248,7 +248,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             for (int pass = 0; pass < 3; pass++)
             {
                 Fresh(pass > 0);
-                StrutLoads.Enabled = pass != 2;
+                VesselSwitches.StrutLoadsEnabled = pass != 2;
                 Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
                 Simulate(settle);
                 largest[pass] = 0.0f;
@@ -282,8 +282,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void BreaksInsideALockedSectionLeaveFinitePoses([Values] bool fused)
         {
-            Unity.Physics.Solver.VesselFused = fused;
-            Unity.Physics.Solver.FusedVesselParts = fused ? 1 : int.MaxValue;
+            SolverSwitches.VesselFused = fused;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
             Craft craft = BuildCraft(400.0f, 400.0f, false);
             foreach (Rigidbody body in craft.Bodies)
@@ -344,8 +344,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void ABurstOfBreaksLeavesFinitePoses([Values] bool fused)
         {
-            Unity.Physics.Solver.VesselFused = fused;
-            Unity.Physics.Solver.FusedVesselParts = fused ? 1 : int.MaxValue;
+            SolverSwitches.VesselFused = fused;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
             Craft craft = BuildCraft(20.0f, 20.0f);
             foreach (ConfigurableJoint joint in craft.Joints)

@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using System.Runtime.CompilerServices;
 using Unity.Burst;
@@ -121,7 +122,7 @@ namespace Unity.Physics
             public ColliderInfo* Colliders;
 
             /// <summary>
-            /// Cached geometry for the body last written at each index, or null when ShapesEnabled is false.
+            /// Cached geometry for the body last written at each index, or null when BroadphaseSwitches.ShapeBoundsEnabled is false.
             /// </summary>
             [NativeDisableUnsafePtrRestriction]
             public ShapeBounds* Shapes;
@@ -138,7 +139,7 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction]
             public uint* ColliderVersion;
 
-            /// <summary>The counts of the check, while the check is on (<see cref="CheckEnabled"/>), or null.</summary>
+            /// <summary>The counts of the check, while the check is on (<see cref="BroadphaseSwitches.BoundsCheckEnabled"/>), or null.</summary>
             [NativeDisableUnsafePtrRestriction]
             public CheckCounts* Check;
 
@@ -296,42 +297,9 @@ namespace Unity.Physics
         {
         }
 
-        sealed class CheckOnKey
-        {
-        }
-
         static readonly Unity.Burst.SharedStatic<CheckCounts> SharedCheckCounts = Unity.Burst.SharedStatic<CheckCounts>.GetOrCreate<DynamicBoundsCache, CheckCountsKey>();
-        static readonly Unity.Burst.SharedStatic<int> SharedCheckOn = Unity.Burst.SharedStatic<int>.GetOrCreate<DynamicBoundsCache, CheckOnKey>();
-
-        /// <summary>
-        /// Validate cached bounds, filters and responses against recomputed values while still using cached
-        /// results.
-        /// Record mismatches in Counts.
-        /// </summary>
-        public static bool CheckEnabled
-        {
-            get => SharedCheckOn.Data != 0;
-            set => SharedCheckOn.Data = value ? 1 : 0;
-        }
-
         /// <summary>The counts of the check since the program started.</summary>
         internal static CheckCounts* Counts => (CheckCounts*)UnsafeUtility.AddressOf(ref SharedCheckCounts.Data);
-
-        sealed class ShapesOffKey
-        {
-        }
-
-        static readonly Unity.Burst.SharedStatic<int> SharedShapesOff = Unity.Burst.SharedStatic<int>.GetOrCreate<DynamicBoundsCache, ShapesOffKey>();
-
-        /// <summary>
-        /// Whether the cache keeps what each body's collider needs to compute its bounds (<see cref="View.Shapes"/>).
-        /// On by default; RETOOLED_SHAPE_BOUNDS=0 turns it off. The views that the cache gives after a change take it.
-        /// </summary>
-        public static bool ShapesEnabled
-        {
-            get => SharedShapesOff.Data == 0;
-            set => SharedShapesOff.Data = value ? 0 : 1;
-        }
 
         NativeList<Aabb> bounds;
         NativeList<ColliderInfo> colliders;
@@ -379,12 +347,12 @@ namespace Unity.Physics
         {
             Bounds = bounds.GetUnsafePtr(),
             Colliders = colliders.GetUnsafePtr(),
-            Shapes = ShapesEnabled ? shapes.GetUnsafePtr() : null,
+            Shapes = BroadphaseSwitches.ShapeBoundsEnabled ? shapes.GetUnsafePtr() : null,
             Same = same.GetUnsafePtr(),
             Length = bounds.Length,
             HeldVersion = heldVersion.GetUnsafePtr(),
             ColliderVersion = colliderVersion,
-            Check = CheckEnabled ? Counts : null,
+            Check = BroadphaseSwitches.BoundsCheckEnabled ? Counts : null,
         };
 
         /// <summary>

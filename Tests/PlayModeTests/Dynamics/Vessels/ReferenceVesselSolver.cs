@@ -1,3 +1,4 @@
+using Unity.Physics.Configuration;
 using System;
 using Unity.Burst;
 using Unity.Collections;
@@ -79,7 +80,7 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
             *m_Context = default;
             m_Structure = (VesselStructure*)UnsafeUtility.Malloc(sizeof(VesselStructure), 16, Allocator.Persistent);
             *m_Structure = new VesselStructure(Allocator.Persistent);
-            StrutLoads.Initialize();
+            EnvironmentSwitches.Read();
             m_Equilibrium = (VesselEquilibrium*)UnsafeUtility.Malloc(sizeof(VesselEquilibrium), 16, Allocator.Persistent);
             *m_Equilibrium = VesselEquilibrium.Create(Allocator.Persistent);
             Sections = new NativeList<VesselSection>(Allocator.Persistent);

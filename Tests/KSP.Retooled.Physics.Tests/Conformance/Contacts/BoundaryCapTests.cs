@@ -28,8 +28,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
                 Assert.Ignore("Vessels are part of the Unity Physics backend.");
             }
 
-            VesselSwitches.Initialize();
-            ForestSwitches.Initialize();
+            EnvironmentSwitches.Read();
+            EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
             wasForest = ForestSwitches.Enabled;
             wasCaps = ForestSwitches.Caps;
