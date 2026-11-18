@@ -788,5 +788,21 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 #endif
             return array;
         }
+
+        /// <summary>
+        /// Return a stable backend body identity using its unique entity version (the body serial).
+        /// Ignore entity indices, which move with store rows. Fall back to world indices when no entity is
+        /// available.
+        /// </summary>
+        internal static ulong BodyIdentity(RigidBody* bodies, int bodyCount, int worldBody)
+        {
+            if (bodies == null || (uint)worldBody >= (uint)bodyCount)
+            {
+                return (uint)worldBody;
+            }
+
+            int version = bodies[worldBody].Entity.Version;
+            return version != 0 ? (ulong)(uint)version << 32 : (uint)worldBody;
+        }
     }
 }

@@ -1,3 +1,4 @@
+using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
 using Unity.Collections;
@@ -1833,7 +1834,7 @@ namespace Unity.Physics
         /// external forces.
         /// Use inverse dynamics for locked edges. Push-out starts sections at rest and writes body impulses only.
         /// </summary>
-        static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
+        internal static unsafe void SettleVessel(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
         {
             ForestIsland* forest = run.Forest;

@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Forest;
 using System.Threading;
 using Unity.Burst.Intrinsics;
 using Unity.Collections.LowLevel.Unsafe;
@@ -322,7 +323,7 @@ namespace Unity.Physics.Base.Threading
             }
             else if (stage.Kind == ForestFactorKind)
             {
-                Solver.ForestFactorTask(stage.Context, task);
+                ForestSolver.ForestFactorTask(stage.Context, task);
             }
             else if (stage.Kind == ForestForwardKind)
             {
@@ -334,11 +335,11 @@ namespace Unity.Physics.Base.Threading
             }
             else if (stage.Kind == ForestSectionsKind)
             {
-                Solver.ForestSectionTask(stage.Context, task);
+                ForestSolver.ForestSectionTask(stage.Context, task);
             }
             else if (stage.Kind == ForestClassifyKind)
             {
-                Solver.ForestClassifyTask(stage.Context, task);
+                ForestSolver.ForestClassifyTask(stage.Context, task);
             }
             else if (stage.Kind == ForestVesselKind)
             {
@@ -346,7 +347,7 @@ namespace Unity.Physics.Base.Threading
             }
             else if (stage.Kind == ForestBoundaryKind)
             {
-                Solver.ForestBoundaryTask(stage.Context, task);
+                ForestSolver.ForestBoundaryTask(stage.Context, task);
             }
             else
             {

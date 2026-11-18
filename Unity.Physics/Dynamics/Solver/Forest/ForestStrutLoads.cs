@@ -1,17 +1,18 @@
+using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Configuration;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Dynamics.Vessels.Structure;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Forest
 {
-    public static partial class Solver
+    /// <summary>Recover forces on redundant forest links using the equilibrium kernels.</summary>
+    internal static class ForestStrutLoads
     {
         /// <summary>
         /// The forest path's strut loads: inside a locked section, the locked pairs on a closure's loop and the closure's
@@ -20,7 +21,7 @@ namespace Unity.Physics
         /// subtree's need. Runs after <see cref="SplitLoadsTask"/> and replaces the impulses of the looped pairs' rows and of
         /// the closures' rows, which are zero before.
         /// </summary>
-        static unsafe void ForestStrutLoads(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses)
+        internal static unsafe void Recover(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses)
         {
             ForestIsland* forest = run.Forest;
             if (!VesselSwitches.StrutLoadsEnabled)

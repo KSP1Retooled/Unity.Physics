@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Configuration;
 using Unity.Burst;
@@ -591,7 +592,7 @@ namespace Unity.Physics
                     {
                         int first = Info.IslandBodies[Info.FirstIslandBodyIndices[island]];
                         firstBodies->Ptr[island] = first;
-                        firstIdentities->Ptr[island] = IslandSolverCache.BodyIdentity(bodies, Bodies.Length, first);
+                        firstIdentities->Ptr[island] = ForestIsland.BodyIdentity(bodies, Bodies.Length, first);
                     }
 
                     Cache.ClearCompactIndex(MotionCount);

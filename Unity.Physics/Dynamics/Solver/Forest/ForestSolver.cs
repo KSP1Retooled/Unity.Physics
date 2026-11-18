@@ -1,3 +1,4 @@
+using static Unity.Physics.Solver;
 using System;
 using System.Threading;
 using Unity.Burst;
@@ -7,7 +8,6 @@ using Unity.Mathematics;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Numerics.Kernels;
 using Unity.Physics.Base.Threading;
-using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
@@ -15,9 +15,10 @@ using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Dynamics.Vessels.Structure;
 using Unity.Profiling;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Forest
 {
-    public static partial class Solver
+    /// <summary>Factor and solve forest sections through the vessel kernels, then recover the row impulses.</summary>
+    internal static class ForestSolver
     {
         static readonly ProfilerMarker ForestFactorMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Factor");
         static readonly ProfilerMarker ForestBoundaryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Boundary");
@@ -32,11 +33,11 @@ namespace Unity.Physics
         static readonly ProfilerMarker ForestStructureMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Structure");
 
         const byte ForestRowClass = 0;
-        const byte BoundaryRowClass = 1;
-        const byte FixedRowClass = 2;
+        internal const byte BoundaryRowClass = 1;
+        internal const byte FixedRowClass = 2;
 
         /// <summary>A forest row between two bodies of one section: a locked pair's, whose load comes from inverse dynamics, or an inert closure's.</summary>
-        const byte SectionRowClass = 3;
+        internal const byte SectionRowClass = 3;
 
         /// <summary>
         /// Boundary row excluded by a cap. Keep its warm impulse unless SolveHeldRows adjusts a normal row
@@ -54,7 +55,7 @@ namespace Unity.Physics
         /// Forest and boundary state for one island solve, including reusable factor, row classes and W =
         /// J_b*A^-1*J_b^T + E_b.
         /// </summary>
-        unsafe struct ForestRun
+        internal unsafe struct ForestRun
         {
             public ForestIsland* Forest;
             public SparseConstraintSolver.Problem Problem;
@@ -230,7 +231,7 @@ namespace Unity.Physics
         /// Solve forest and boundary rows, writing impulses. Return false without changes if no forest rows exist
         /// or the boundary exceeds its cap.
         /// </summary>
-        static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
+        internal static unsafe bool TryStartForest(in SparseConstraintSolver.Problem problem, JacobianHeader** headers, bool bounded,
             ForestIsland* forest, in ForestSettings settings, WorkTeam* team, int* worldBodies, RigidBody* rigidBodies,
             int rigidBodyCount, in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas, float timestep, int substep,
             out ForestRun run, out int fallbackBoundaryRows)
@@ -333,7 +334,7 @@ namespace Unity.Physics
             var identities = new NativeArray<ulong>(math.max(1, bodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             for (int b = 0; b < bodyCount; b++)
             {
-                identities[b] = IslandSolverCache.BodyIdentity(rigidBodies, rigidBodyCount, worldBodies[b]);
+                identities[b] = ForestIsland.BodyIdentity(rigidBodies, rigidBodyCount, worldBodies[b]);
             }
 
             ref UnsafeList<ulong> signature = ref forest->Signature;
@@ -595,7 +596,7 @@ namespace Unity.Physics
         /// Build W = J_b*A^-1*J_b^T + E_b from boundary-row elimination-tree paths.
         /// Each entry sums contributions from sections shared by the two paths.
         /// </summary>
-        static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows)
+        internal static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows)
         {
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             ForestIsland* forest = run.Forest;
@@ -1477,10 +1478,10 @@ namespace Unity.Physics
         }
 
         /// <summary>Radians per second below which a section's spin is taken as none.</summary>
-        const double MinimumSpin = 1e-9;
+        internal const double MinimumSpin = 1e-9;
 
         /// <summary>Whether section s has more than one body.</summary>
-        static unsafe bool Multi(ForestIsland* forest, int s) =>
+        internal static unsafe bool Multi(ForestIsland* forest, int s) =>
             forest->Structure.SectionPartStart[s + 1] - forest->Structure.SectionPartStart[s] > 1;
 
         /// <summary>A body's angular velocity in world space.</summary>
@@ -1510,7 +1511,7 @@ namespace Unity.Physics
         /// finishing sweeps.
         /// Velocity solves may apply them and count an unsettled solve; push-out skips them.
         /// </summary>
-        static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
+        internal static unsafe bool SolveForest(ref ForestRun run, float* rhs, float* impulses)
         {
             using ProfilerMarker.AutoScope span = ForestSolveMarker.Auto();
 
@@ -1888,7 +1889,7 @@ namespace Unity.Physics
         /// Convert section velocity changes to body impulses in linear and angular.
         /// For velocity solves, recover locked-row impulses by inverse dynamics; push-out starts sections at rest.
         /// </summary>
-        static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
+        internal static unsafe void SettleForest(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses,
             float3* linear, float3* angular, bool pushOut)
         {
             long summing = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
@@ -1991,7 +1992,7 @@ namespace Unity.Physics
             run.SubtreeTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - subtreeStarted;
             tasks.Phase = SectionTasks.SplitLoads;
             WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestSectionsKind, partTasks, null);
-            ForestStrutLoads(ref run, problem, impulses);
+            ForestStrutLoads.Recover(ref run, problem, impulses);
         }
 
         /// <summary>
@@ -2132,7 +2133,7 @@ namespace Unity.Physics
         /// Weight a locked row by spring stiffness gamma/epsilon, excluding damper effects so that static load
         /// sharing matches yielding rows.
         /// </summary>
-        static unsafe double RowStiffness(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int k, int row) =>
+        internal static unsafe double RowStiffness(ref ForestRun run, in SparseConstraintSolver.Problem problem, int pair, int k, int row) =>
             PairBlockGamma(run, k) / (double)problem.Epsilon[row];
 
         /// <summary>A row's rate at the bodies' velocities after the solve, which the motions hold by then.</summary>
@@ -2215,7 +2216,7 @@ namespace Unity.Physics
         /// Accumulate across substeps and use the mean for the next step's lock tests. Return the largest current
         /// deflection.
         /// </summary>
-        static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep,
+        internal static unsafe float RecordDeflections(ref ForestRun run, JacobianHeader** headers, float* impulses, int substep,
             int smoothingSteps)
         {
             float largest = 0.0f;
@@ -2285,7 +2286,7 @@ namespace Unity.Physics
         }
 
         /// <summary>x = A^-1 x against the forest's factor, by chunks on the team's lanes.</summary>
-        static unsafe void SolveAgainstFactor(ref ForestRun run, double* x)
+        internal static unsafe void SolveAgainstFactor(ref ForestRun run, double* x)
         {
             ref VesselContext context = ref run.Forest->Context;
             VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);

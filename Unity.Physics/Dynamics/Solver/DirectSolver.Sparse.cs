@@ -1,3 +1,4 @@
+using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using Unity.Collections;
