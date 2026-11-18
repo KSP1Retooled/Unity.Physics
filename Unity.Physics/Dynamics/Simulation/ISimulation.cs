@@ -28,8 +28,6 @@ namespace Unity.Physics
     /// <summary>   Parameters for a simulation step. </summary>
     public struct SimulationStepInput
     {
-        int m_NumSubsteps;
-
         /// <summary>   Physics world to be stepped. </summary>
         public PhysicsWorld World;
         /// <summary>   Portion of time to step the physics world for. This is the frame timestep. </summary>
@@ -38,10 +36,7 @@ namespace Unity.Physics
         public float3 Gravity;
         /// <summary>   Enables gyroscopic torque, which will be added to dynamic bodies in every simulation step. </summary>
         public bool EnableGyroscopicTorque;
-        /// <summary>   Number of substep iterations to perform while solving constraints. No substepping will occur when set to 1. </summary>
-        public int NumSubsteps { get => m_NumSubsteps; set => m_NumSubsteps = value <= 0 ? 1 : value; }
-
-        /// <summary>   Number of Gauss-Seidel iterations to perform while solving constraints. </summary>
+        /// <summary>   Number of iterations for islands that use the iterative solver. </summary>
         public int NumSolverIterations;
 
         /// <summary>   Settings for the direct solver. </summary>
@@ -88,9 +83,6 @@ namespace Unity.Physics
         public Solver.StabilizationHeuristicSettings SolverStabilizationHeuristicSettings;
         /// <summary>   Used for optimization of static body synchronization. </summary>
         public NativeReference<int>.ReadOnly HaveStaticBodiesChanged;
-
-        /// <summary>   Time step used by the Jacobians during build and solve for substepping. </summary>
-        public float SubstepTimeStep => TimeStep / NumSubsteps;
     }
 
     /// <summary>   Result of ISimulation.ScheduleStepJobs() </summary>

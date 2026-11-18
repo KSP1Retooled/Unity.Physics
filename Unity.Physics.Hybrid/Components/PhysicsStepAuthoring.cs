@@ -54,21 +54,10 @@ namespace Unity.Physics.Authoring
             "the stability of rotating dynamic bodies.")]
         bool m_EnableGyroscopicTorque = Default.EnableGyroscopicTorque;
 
-        /// <summary>
-        ///     Specifies the number of substep iterations the physics engine will perform.
-        ///     Higher values mean more stability.
-        /// </summary>
-        public int SubstepCount
-        {
-            get => m_SubstepCount;
-            set => m_SubstepCount = value;
-        }
+        // The editor binds to this serialized field. Keep it for existing assets and the inspector.
         [SerializeField]
-        [Tooltip("Specifies the number of substep iterations the physics engine will perform.\n" +
-            "Higher values mean smaller timesteps will be taken per frame. This can be more \n" +
-            "stable up to a point where the timestep becomes so small computational numerical " +
-            "errors can be introduced.")]
-        int m_SubstepCount = Default.SubstepCount;
+        [Tooltip("The island solver uses a fixed number of substeps. This field has no effect.")]
+        int m_SubstepCount = 1;
 
         /// <summary>
         ///     Specifies the number of solver iterations the physics engine will perform.
@@ -207,7 +196,6 @@ namespace Unity.Physics.Authoring
             SimulationType = SimulationType,
             Gravity = Gravity,
             EnableGyroscopicTorque = EnableGyroscopicTorque,
-            SubstepCount = SubstepCount,
             SolverIterationCount = SolverIterationCount,
             DirectSolverSettings = DirectSolverSettings,
             SolverStabilizationHeuristicSettings = EnableSolverStabilizationHeuristic ?
@@ -230,7 +218,10 @@ namespace Unity.Physics.Authoring
 
         void OnValidate()
         {
-            SubstepCount = math.max(1, SubstepCount);
+            if (m_SubstepCount != 1)
+            {
+                m_SubstepCount = 1;
+            }
             SolverIterationCount = math.max(1, SolverIterationCount);
         }
     }

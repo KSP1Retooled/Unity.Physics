@@ -36,7 +36,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         /// export.
         /// Motion-only consumers may wait for motionsSolved, while event readers must wait for final completion.
         /// </summary>
-        internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput, int directIslandSubsteps,
+        internal static unsafe SimulationJobHandles ScheduleIslandSolveJobs(in PhysicsWorld world, StepInput stepInput,
             in NativeStream jacobians, in NativeStream collisionEvents, in NativeStream triggerEvents, in NativeStream impulseEvents,
             in DispatchPairSequencer.SolverSchedulerInfo solverSchedulerInfo, StabilizationData solverStabilizationData,
             JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle motionsSolved, bool multiThreaded)
@@ -110,7 +110,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             JobHandle iterativeSolved = iterativeHandle;
             iterativeHandle = new DestroyTeamsJob { Teams = teams }.Schedule(iterativeHandle);
 
-            JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, directIslandSubsteps, jacobians,
+            JobHandle islandHandle = ScheduleDirectIslandJobs(world, stepInput, jacobians,
                 solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps, out JobHandle islandsSolved);
             motionsSolved = JobHandle.CombineDependencies(iterativeSolved, islandsSolved);
 
@@ -210,9 +210,10 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         /// Schedule direct island Jacobian updates, row construction, solves and integration for each substep.
         /// Count rows serially; run other stages in parallel. Return solved before buffer disposal.
         /// </summary>
-        static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, int substeps, in NativeStream jacobians,
+        static unsafe JobHandle ScheduleDirectIslandJobs(in PhysicsWorld world, StepInput stepInput, in NativeStream jacobians,
             in DispatchPairSequencer.DirectSolverSchedulerInfo info, JobHandle jacobiansBuilt, JobHandle inputDeps, out JobHandle solved)
         {
+            const int substeps = SolverConstants.DirectIslandSubsteps;
             const int headersPerBatch = 16;
             const int bodiesPerBatch = 32;
 

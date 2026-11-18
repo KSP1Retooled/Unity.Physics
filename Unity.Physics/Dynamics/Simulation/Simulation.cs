@@ -1,4 +1,3 @@
-using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Solver.Islands.Scheduling;
 using Unity.Physics.Dynamics.Solver.Vessels;
 using System;
@@ -554,7 +553,7 @@ namespace Unity.Physics
             jobHandle = JobHandle.CombineDependencies(jobHandle, streamJobHandle);
 
             var stepInput = CreateSolverInput(input);
-            m_StepHandles = IslandSolveScheduler.ScheduleIslandSolveJobs(input.World, stepInput, SolverConstants.DirectIslandSubsteps,
+            m_StepHandles = IslandSolveScheduler.ScheduleIslandSolveJobs(input.World, stepInput,
                 StepContext.Jacobians, SimulationContext.CollisionEventDataStream,
                 SimulationContext.TriggerEventDataStream, SimulationContext.ImpulseEventDataStream,
                 StepContext.SolverSchedulerInfo, solverStabilizationData, executionHandle, jobHandle, out JobHandle motionsSolved,

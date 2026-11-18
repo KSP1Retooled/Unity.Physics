@@ -456,7 +456,6 @@ namespace Unity.Physics.Tests.Dynamics
                     TimeStep = 1/60f,
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
-                    NumSubsteps = 1,
                     DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
@@ -511,7 +510,6 @@ namespace Unity.Physics.Tests.Dynamics
                     TimeStep = 1/60f,
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
-                    NumSubsteps = 1,
                     DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };
@@ -561,7 +559,6 @@ namespace Unity.Physics.Tests.Dynamics
                     TimeStep = 1/60f,
                     Gravity = new float3(0, -9.81f, 0),
                     NumSolverIterations = 4,
-                    NumSubsteps = 1,
                     DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
                     HaveStaticBodiesChanged = haveStaticBodiesChanged
                 };

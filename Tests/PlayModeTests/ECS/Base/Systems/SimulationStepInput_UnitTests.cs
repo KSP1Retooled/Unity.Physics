@@ -27,7 +27,6 @@ namespace Unity.Physics.Tests.Systems
                     TimeStep = timeStep,
                     Gravity = new float3(0, -9.81f, 0),
                     SynchronizeCollisionWorld = false,
-                    NumSubsteps = 3,
                     NumSolverIterations = numSolverIterations,
                     SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                     HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
@@ -77,7 +76,6 @@ namespace Unity.Physics.Tests.Systems
                     TimeStep = timeStep,
                     Gravity = new float3(0, -9.81f, 0),
                     SynchronizeCollisionWorld = false,
-                    NumSubsteps = 3,
                     NumSolverIterations = numSolverIterations,
                     SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                     HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
@@ -113,7 +111,6 @@ namespace Unity.Physics.Tests.Systems
                     TimeStep = 0.02f,
                     Gravity = new float3(0, -9.81f, 0),
                     SynchronizeCollisionWorld = false,
-                    NumSubsteps = 3,
                     //NumSolverIterations = DNE,
                     SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                     HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
@@ -145,7 +142,6 @@ namespace Unity.Physics.Tests.Systems
                     TimeStep = 0.02f,
                     Gravity = new float3(0, -9.81f, 0),
                     SynchronizeCollisionWorld = false,
-                    NumSubsteps = 3,
                     //NumSolverIterations = DNE,
                     SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                     HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
@@ -213,7 +209,6 @@ namespace Unity.Physics.Tests.Systems
                     TimeStep = timeStep,
                     Gravity = new float3(0, -10.0f, 0),
                     SynchronizeCollisionWorld = false,
-                    //NumSubsteps = DNE,
                     NumSolverIterations = 3,
                     SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
                     HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)

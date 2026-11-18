@@ -68,7 +68,6 @@ namespace Unity.Physics.Tests.Dynamics.Joints
             {
                 World = m_World,
                 Gravity = new float3(0, -9.81f, 0),
-                NumSubsteps = 1,
                 NumSolverIterations = 4,
                 TimeStep = 1 / 60f,
                 SynchronizeCollisionWorld = false // we don't need any collisions in these tests

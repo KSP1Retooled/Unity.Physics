@@ -342,9 +342,7 @@ namespace Unity.Physics
         ///     enhances the stability of rotating dynamic bodies.
         /// </summary>
         public bool EnableGyroscopicTorque;
-        /// <summary>   Number of substeps. </summary>
-        public int SubstepCount;
-        /// <summary>   Number of Gauss-Seidel solver iterations. </summary>
+        /// <summary>   Number of iterations for islands that use the iterative solver. </summary>
         public int SolverIterationCount;
         /// <summary> The direct solver settings. </summary>
         public Solver.DirectSolverSettings DirectSolverSettings;
@@ -397,7 +395,6 @@ namespace Unity.Physics
             SimulationType = SimulationType.UnityPhysics,
             Gravity = -9.81f * math.up(),
             EnableGyroscopicTorque = false,
-            SubstepCount = 1,
             SolverIterationCount = 4,
             DirectSolverSettings = Solver.DirectSolverSettings.Default,
             SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
