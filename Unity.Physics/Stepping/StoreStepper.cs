@@ -65,6 +65,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal ContactState Contacts;
         internal VesselState VesselData;
         internal JointBuildState Joints;
         internal TreeState Trees;
@@ -92,37 +93,20 @@ namespace Unity.Physics.Stepping
         private NativeList<int> snapshotDynamic;
         private NativeList<int> snapshotStatic;
         private long keptSnapshots;
-        private NativeList<ManifoldRecord> manifolds;
-        private NativeList<ManifoldPoint> manifoldPoints;
-        private NativeList<ContactBuckets.ContactBucket> contactBuckets;
-        private NativeReference<int> filledContactBuckets;
-        private NativeHashMap<ShapePairKey, ShapePairState> touching;
-
-        // The events that end trigger pairs whose shapes were removed, which the next contact report sends to Unity.
-        private NativeList<ShapePairKey> removedTriggerPairs;
-
-        // The version of PairFilterVersion that the last step checked the touching pairs against.
-        private uint seenPairFilterVersion;
-
         private NativeList<int> sleepParents;
         private NativeList<int> sleepContacts;
         private NativeList<bool> sleepTouchesStill;
         private NativeList<int> fallingAsleep;
         private NativeArray<int> sleepRunOut;
-        private NativeHashMap<PersistentManifoldKey, float> lastImpulses;
-        private NativeHashMap<JacobianKey, float2> warmStarts;
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
 
-        private NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair> knownBodyPairs;
-        private NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
 
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
-        private uint stepCount;
         private uint builtMaterialVersion;
 
         // False from the start of a build until the query world is published. If a build fails, the next build rebuilds
@@ -149,25 +133,18 @@ namespace Unity.Physics.Stepping
             queryFirstShapes = new NativeList<int>(Allocator.Persistent);
             snapshotDynamic = new NativeList<int>(Allocator.Persistent);
             snapshotStatic = new NativeList<int>(Allocator.Persistent);
-            manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);
-            manifoldPoints = new NativeList<ManifoldPoint>(Allocator.Persistent);
-            contactBuckets = new NativeList<ContactBuckets.ContactBucket>(Allocator.Persistent);
-            filledContactBuckets = new NativeReference<int>(0, Allocator.Persistent);
-            touching = new NativeHashMap<ShapePairKey, ShapePairState>(64, Allocator.Persistent);
-            removedTriggerPairs = new NativeList<ShapePairKey>(Allocator.Persistent);
+            Contacts.Initialize();
             sleepParents = new NativeList<int>(Allocator.Persistent);
             sleepContacts = new NativeList<int>(Allocator.Persistent);
             sleepTouchesStill = new NativeList<bool>(Allocator.Persistent);
             fallingAsleep = new NativeList<int>(Allocator.Persistent);
             sleepRunOut = new NativeArray<int>(1, Allocator.Persistent);
-            lastImpulses = new NativeHashMap<PersistentManifoldKey, float>(64, Allocator.Persistent);
-            warmStarts = new NativeHashMap<JacobianKey, float2>(64, Allocator.Persistent);
+            Contacts.InitializeImpulseMemory();
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
             wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
             Trees.Initialize(store);
-            knownBodyPairs = new NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair>(1024, Allocator.Persistent);
-            learnedBodyPairs = new NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
+            Contacts.InitializePairCache();
         }
 
         internal void Dispose()
@@ -207,30 +184,18 @@ namespace Unity.Physics.Stepping
             queryFirstShapes.Dispose();
             snapshotDynamic.Dispose();
             snapshotStatic.Dispose();
-            manifolds.Dispose();
-            manifoldPoints.Dispose();
-            for (int i = 0; i < contactBuckets.Length; i++)
-            {
-                contactBuckets[i].Dispose();
-            }
-
-            contactBuckets.Dispose();
-            filledContactBuckets.Dispose();
-            touching.Dispose();
-            removedTriggerPairs.Dispose();
+            Contacts.Dispose();
             sleepParents.Dispose();
             sleepContacts.Dispose();
             sleepTouchesStill.Dispose();
             fallingAsleep.Dispose();
             sleepRunOut.Dispose();
-            lastImpulses.Dispose();
-            warmStarts.Dispose();
+            Contacts.DisposeImpulseMemory();
             colliderWork.Dispose();
             colliderResults.Dispose();
             wholeColliderBuilds.Dispose();
             Trees.Dispose();
-            knownBodyPairs.Dispose();
-            learnedBodyPairs.Dispose();
+            Contacts.DisposePairCache();
         }
 
         /// <summary>The direct solver's cache, including the counts of solves that used the forest.</summary>
@@ -289,16 +254,7 @@ namespace Unity.Physics.Stepping
 
             using (StepApplyForcesMarker.Auto())
             {
-                // Wake refiltered pairs before joint wake propagation and the narrow phase.
-                uint filterVersion = PairFilterVersion.Version;
-                if (filterVersion != seenPairFilterVersion)
-                {
-                    seenPairFilterVersion = filterVersion;
-                    if (!touching.IsEmpty)
-                    {
-                        new TouchingPairs.WakeRefilteredPairsJob { World = store, Touching = touching }.Run();
-                    }
-                }
+                Contacts.WakeRefilteredPairs(store);
 
                 new WakePropagation.WakeJointedBodiesJob { World = store }.Run();
 
@@ -363,19 +319,19 @@ namespace Unity.Physics.Stepping
         internal readonly WorldData* Store => store;
 
         /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
-        internal readonly NativeList<ManifoldRecord> Manifolds => manifolds;
+        internal readonly NativeList<ManifoldRecord> Manifolds => Contacts.manifolds;
 
         internal readonly StoreGlobals* Globals => globals;
 
-        internal readonly NativeHashMap<ShapePairKey, ShapePairState> Touching => touching;
+        internal readonly NativeHashMap<ShapePairKey, ShapePairState> Touching => Contacts.touching;
 
-        internal readonly NativeList<ManifoldPoint> ManifoldPoints => manifoldPoints;
+        internal readonly NativeList<ManifoldPoint> ManifoldPoints => Contacts.manifoldPoints;
 
-        internal readonly NativeList<ShapePairKey> RemovedTriggerPairs => removedTriggerPairs;
+        internal readonly NativeList<ShapePairKey> RemovedTriggerPairs => Contacts.removedTriggerPairs;
 
         internal bool CanWriteContainers() => Partition.CanWriteContainers();
 
-        internal uint NextContactStep() => ++stepCount;
+        internal uint NextContactStep() => ++Contacts.stepCount;
 
         /// <summary>The vessels compiled during the last build. Used by tests.</summary>
         internal readonly VesselBuild Vessels => VesselData.vesselBuild;
@@ -404,9 +360,9 @@ namespace Unity.Physics.Stepping
                 Store = store->bodies,
                 Globals = globals,
                 Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
-                Known = knownBodyPairs,
+                Known = Contacts.knownBodyPairs,
                 WholeBuilds = wholeColliderBuilds,
-                Learned = learnedBodyPairs.AsParallelWriter(),
+                Learned = Contacts.learnedBodyPairs.AsParallelWriter(),
                 World = store,
                 Units = Joints.jointUnits.AsDeferredJobArray(),
                 BodyVessels = VesselData.vesselBuild.BodyVessels.AsArray(),
@@ -418,8 +374,8 @@ namespace Unity.Physics.Stepping
             // with finding islands.
             JobHandle remembered = new PairFilter.RememberBodyPairsJob
             {
-                Known = knownBodyPairs,
-                Learned = learnedBodyPairs,
+                Known = Contacts.knownBodyPairs,
+                Learned = Contacts.learnedBodyPairs,
                 Bodies = (int)store->bodyCount,
             }.Schedule(filtered);
 
@@ -437,13 +393,13 @@ namespace Unity.Physics.Stepping
             JobHandle.ScheduleBatchedJobs();
 
             // Drop impulses for removed shapes before new contacts can reuse their addresses.
-            if (store->removedShapeCount != 0 && lastImpulses.Count != 0)
+            if (store->removedShapeCount != 0 && Contacts.lastImpulses.Count != 0)
             {
-                new ImpulseMemory.ForgetRemovedImpulsesJob { World = store, LastImpulses = lastImpulses }.Run();
+                new ImpulseMemory.ForgetRemovedImpulsesJob { World = store, LastImpulses = Contacts.lastImpulses }.Run();
             }
 
-            manifolds.Clear();
-            manifoldPoints.Clear();
+            Contacts.manifolds.Clear();
+            Contacts.manifoldPoints.Clear();
             JobHandle read = dependency;
             JobHandle merged = dependency;
             NativeStream contacts = singleton.AsSimulationPtr()->StepContext.Contacts;
@@ -453,33 +409,33 @@ namespace Unity.Physics.Stepping
                 read = new ContactBuckets.PrepareContactBucketsJob
                 {
                     Contacts = reader,
-                    Buckets = contactBuckets,
-                    Filled = filledContactBuckets,
+                    Buckets = Contacts.contactBuckets,
+                    Filled = Contacts.filledContactBuckets,
                 }.Schedule(read);
                 read = new ContactMaterials.ReadContactsJob
                 {
                     Contacts = reader,
-                    Buckets = contactBuckets,
+                    Buckets = Contacts.contactBuckets,
                     Store = store->bodies,
                     Globals = globals,
                     Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
-                    LastImpulses = lastImpulses,
+                    LastImpulses = Contacts.lastImpulses,
                     DeltaTime = deltaTime,
                     BounceThreshold = store->bounceThreshold,
                 }.ScheduleUnsafe(contacts, 1, read);
 
                 merged = new ContactBuckets.MergeContactBucketsJob
                 {
-                    Filled = filledContactBuckets,
-                    Buckets = contactBuckets,
-                    Records = manifolds,
-                    Points = manifoldPoints,
+                    Filled = Contacts.filledContactBuckets,
+                    Buckets = Contacts.contactBuckets,
+                    Records = Contacts.manifolds,
+                    Points = Contacts.manifoldPoints,
                 }.Schedule(read);
             }
 
             // Only warm starting requires the merged manifolds before solving. Merging the manifolds can therefore run
             // in parallel with building the Jacobians.
-            warmStartsIndexed = new WarmStart.IndexWarmStartsJob { Records = manifolds, WarmStarts = warmStarts }.Schedule(merged);
+            warmStartsIndexed = new WarmStart.IndexWarmStartsJob { Records = Contacts.manifolds, WarmStarts = Contacts.warmStarts }.Schedule(merged);
 
             // If there are no contacts, no more bodies need to be woken. Bodies connected by joints were already woken
             // at the start of the step.
@@ -491,8 +447,8 @@ namespace Unity.Physics.Stepping
             return new WakePropagation.WakeTouchedBodiesJob
             {
                 World = store,
-                Filled = filledContactBuckets,
-                Buckets = contactBuckets,
+                Filled = Contacts.filledContactBuckets,
+                Buckets = Contacts.contactBuckets,
                 DynamicIndices = Partition.dynamicIndices.AsArray(),
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
             }.Schedule(read);
@@ -520,7 +476,7 @@ namespace Unity.Physics.Stepping
             preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled);
             return new WarmStart.WarmStartJob
             {
-                WarmStarts = warmStarts,
+                WarmStarts = Contacts.warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
                 MotionCount = Partition.dynamicIndices.Length,
             }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, VesselData.vesselsFilled));
@@ -734,7 +690,7 @@ namespace Unity.Physics.Stepping
             contactsJoined = new FallAsleep.SleepContactsJob
             {
                 World = store,
-                Records = manifolds,
+                Records = Contacts.manifolds,
                 Parents = sleepParents,
                 Contacts = sleepContacts,
                 TouchesStill = sleepTouchesStill,
@@ -758,7 +714,7 @@ namespace Unity.Physics.Stepping
             if (store->removedShapeCount != 0)
             {
                 forces.Complete();
-                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = touching, RemovedTriggerPairs = removedTriggerPairs }.Run();
+                new TouchingPairs.ForgetRemovedShapesJob { World = store, Touching = Contacts.touching, RemovedTriggerPairs = Contacts.removedTriggerPairs }.Run();
             }
 
             JobHandle counted = new SleepCounters.UpdateWakeCountersJob
@@ -783,10 +739,10 @@ namespace Unity.Physics.Stepping
             {
                 if (world.NumDynamicBodies != 0)
                 {
-                    new ImpulseMemory.ReadImpulsesJob { Records = manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
+                    new ImpulseMemory.ReadImpulsesJob { Records = Contacts.manifolds, Events = simulation.CollisionEvents, Built = world }.Run();
                 }
 
-                new ImpulseMemory.RememberImpulsesJob { Records = manifolds, LastImpulses = lastImpulses }.Run();
+                new ImpulseMemory.RememberImpulsesJob { Records = Contacts.manifolds, LastImpulses = Contacts.lastImpulses }.Run();
             }
         }
 
@@ -1075,7 +1031,7 @@ namespace Unity.Physics.Stepping
                 bool regrouped = Joints.FindGroups(store, forest, dependency, out JobHandle groupsFound);
 
                 bool compiledThisStep = VesselData.CompileAndChoose(store, ref Joints, ref Partition,
-                    vessels, regrouped, ref stepCount, groupsFound);
+                    vessels, regrouped, ref Contacts.stepCount, groupsFound);
 
                 // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
                 // separate stream range for each unit.
