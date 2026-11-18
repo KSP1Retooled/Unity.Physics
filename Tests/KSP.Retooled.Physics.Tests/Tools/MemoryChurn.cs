@@ -25,6 +25,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
         public void Write()
         {
             Assume.That(BackendInfo.IsRetooled);
+            EnvironmentSwitches.Read();
             Assert.That(StepCacheSwitches.MemoryChecks, Is.True, "set RETOOLED_MEMORY_CHECKS=1");
             string tag = StepCacheSwitches.ClearSolverSlots ? "off" : "on";
             string path = Path.Combine(Application.dataPath, "..", "Logs", $"MemoryChurn-{tag}.txt");
