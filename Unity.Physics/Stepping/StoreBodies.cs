@@ -11,6 +11,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Collision.Colliders.Building;
 using Unity.Physics.Dynamics.Joint.Translation;
+using System.Threading;
 
 namespace Unity.Physics.Stepping
 {
@@ -49,37 +50,67 @@ namespace Unity.Physics.Stepping
             [NativeDisableUnsafePtrRestriction]
             public BodyData* Store;
 
+            [NativeDisableUnsafePtrRestriction]
+            public StoreStepperCounters* Counters;
+
             [ReadOnly]
             public NativeArray<int> DynamicIndices;
 
-            [ReadOnly]
             public NativeArray<MotionData> MotionDatas;
 
-            [ReadOnly]
             public NativeArray<MotionVelocity> MotionVelocities;
 
             public void Execute(int index)
             {
                 ref BodyData body = ref Store[DynamicIndices[index]];
-                if ((body.flags & BodyFlags.Sleeping) != 0)
+                MotionVelocity velocity = MotionVelocities[index];
+                MotionData motion = MotionDatas[index];
+                bool sleeping = (body.flags & BodyFlags.Sleeping) != 0;
+                bool kinematic = (body.flags & BodyFlags.Kinematic) != 0;
+                bool hasTarget = !sleeping && kinematic && (body.flags & BodyFlags.HasKinematicTarget) != 0;
+                float3 position = body.pose->Position;
+                quaternion rotation = body.pose->Rotation;
+                if (hasTarget)
                 {
+                    position = body.target->Position;
+                    rotation = body.target->Rotation;
+                    body.flags &= ~BodyFlags.HasKinematicTarget;
+                }
+                else if (!sleeping && !kinematic)
+                {
+                    BodyKinematics.SolvedPose(motion, out position, out rotation);
+                }
+
+                if (!math.all(math.isfinite(position)) || !math.all(math.isfinite(rotation.value))
+                    || !math.all(math.isfinite(motion.WorldFromMotion.pos)) || !math.all(math.isfinite(motion.WorldFromMotion.rot.value))
+                    || !math.all(math.isfinite(velocity.LinearVelocity)) || !math.all(math.isfinite(velocity.AngularVelocity)))
+                {
+                    // The store still holds the pose from before the solve. Restore the built world too, so
+                    // the bounds refit and queries never see the invalid motion.
+                    motion.WorldFromMotion = math.mul(new RigidTransform(body.pose->Rotation, body.pose->Position), motion.BodyFromMotion);
+                    velocity.LinearVelocity = float3.zero;
+                    velocity.AngularVelocity = float3.zero;
+                    MotionDatas[index] = motion;
+                    MotionVelocities[index] = velocity;
+                    body.velocity->Linear = float3.zero;
+                    body.velocity->Angular = float3.zero;
+                    Interlocked.Increment(ref Counters->NonFiniteBodies);
                     return;
                 }
 
-                if ((body.flags & BodyFlags.Kinematic) != 0)
+                if (sleeping || kinematic)
                 {
-                    if ((body.flags & BodyFlags.HasKinematicTarget) != 0)
+                    if (hasTarget)
                     {
-                        body.pose->Position = body.target->Position;
-                        BodyKinematics.SetRotation(body, body.target->Rotation);
-                        body.flags &= ~BodyFlags.HasKinematicTarget;
+                        body.pose->Position = position;
+                        BodyKinematics.SetRotation(body, rotation);
                     }
 
                     return;
                 }
 
-                MotionVelocity velocity = MotionVelocities[index];
-                BodyKinematics.SolvedPose(MotionDatas[index], out body.pose->Position, out body.pose->Rotation);
+                body.pose->Position = position;
+                body.pose->Rotation = rotation;
                 body.velocity->Linear = ExternalForces.ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.limits->MaxLinearVelocity);
                 body.velocity->Angular = ExternalForces.ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.limits->MaxAngularVelocity);
             }
