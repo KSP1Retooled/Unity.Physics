@@ -1,3 +1,4 @@
+using Unity.Physics.Stepping.State;
 using KSP.Retooled.Physics.Tests.Tools;
 using KSP.Retooled.Physics.Tests.Benchmarks;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
@@ -88,7 +89,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            StoreStepper.StaticReuseEnabled = reuse;
+            StaticRows.StaticReuseEnabled = reuse;
             ForestDiagnostics.ForgetIslands();
             var run = new Run();
             GameObject ground = Ground();
@@ -233,9 +234,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                         break;
                 }
 
-                long kept = StepEntryPoints.Current->KeptStaticRowsCount;
+                long kept = StepEntryPoints.Current->StaticBodies.KeptStaticRowsCount;
                 Simulate();
-                run.Kept.Add(StepEntryPoints.Current->KeptStaticRowsCount != kept);
+                run.Kept.Add(StepEntryPoints.Current->StaticBodies.KeptStaticRowsCount != kept);
                 AssertStaticRowsMatchTheStore(step);
                 Look("after");
                 found.Sort(string.CompareOrdinal);
@@ -256,7 +257,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void KeptStaticRowsGiveTheResultsOfRowsWrittenAgain()
         {
             // RETOOLED_STATIC_REUSE=0 turns the reuse off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = StoreStepper.StaticReuseEnabled;
+            bool wasEnabled = StaticRows.StaticReuseEnabled;
             bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(IgnoringLayer, 0);
             UnityEngine.Physics.IgnoreLayerCollision(IgnoringLayer, 0, true);
             try
@@ -298,7 +299,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StoreStepper.StaticReuseEnabled = wasEnabled;
+                StaticRows.StaticReuseEnabled = wasEnabled;
                 UnityEngine.Physics.IgnoreLayerCollision(IgnoringLayer, 0, ignored);
             }
         }

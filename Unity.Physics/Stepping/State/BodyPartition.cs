@@ -81,5 +81,11 @@ namespace Unity.Physics.Stepping.State
             }.Run();
             motionsMatchStore = partitionResult.Value != 0;
         }
+
+        internal static bool SameRows(NativeList<int> kept, NativeList<int> built)
+        {
+            return kept.Length == built.Length
+                && UnsafeUtility.MemCmp(kept.GetUnsafeReadOnlyPtr(), built.GetUnsafeReadOnlyPtr(), (long)kept.Length * sizeof(int)) == 0;
+        }
     }
 }

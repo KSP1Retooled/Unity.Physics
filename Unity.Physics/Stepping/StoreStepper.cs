@@ -67,6 +67,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal StaticRows StaticBodies;
         internal BodyPartition Partition;
 
         // Static tree jobs read these flags. keepStatics is constant after initialization;
@@ -74,13 +75,8 @@ namespace Unity.Physics.Stepping
         private NativeReference<int> rebuildStatics;
         private NativeReference<int> keepStatics;
         private StaticTreeShift.ShiftState treeShift;
-        private bool staticsChanged;
         private bool treeMatchesHeld;
 
-        // Store rows used for the retained static bodies. Reuse them and the anchor when KeepsStaticRows
-        // permits.
-        private NativeList<int> staticRows;
-        private long keptStaticRowsCount;
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
         private NativeList<JointUnit> jointUnits;
@@ -253,36 +249,6 @@ namespace Unity.Physics.Stepping
             }
         }
 
-        /// <summary>
-        /// Reuse unchanged static body rows. RETOOLED_STATIC_REUSE=0 disables it.
-        /// Stored in SharedStatic because Burst reads it.
-        /// </summary>
-        internal static bool StaticReuseEnabled
-        {
-            get => StaticReuseOff.Data == 0;
-            set => StaticReuseOff.Data = value ? 0 : 1;
-        }
-
-        private sealed class StaticReuseOffKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, StaticReuseOffKey>();
-
-        /// <summary>Reads RETOOLED_STATIC_REUSE from the environment: 0 turns off the reuse of the static rows.</summary>
-        internal static void ReadStaticReuseSwitch()
-        {
-            string reuse = Environment.GetEnvironmentVariable("RETOOLED_STATIC_REUSE");
-            StaticReuseEnabled = reuse != "0";
-            if (reuse == "0")
-            {
-                UnityEngine.Debug.Log("[StoreStepper] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
-            }
-        }
-
-        /// <summary>The builds that kept the static bodies' rows of the last build. Used by tests.</summary>
-        internal readonly long KeptStaticRowsCount => keptStaticRowsCount;
-
         /// <summary>The builds of the dynamic tree from scratch since this state was made. Used by tests.</summary>
         internal readonly long TreeBuildCount => treeBuildCount;
 
@@ -333,7 +299,6 @@ namespace Unity.Physics.Stepping
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
         private uint stepCount;
-        private uint builtStaticsVersion;
         private uint builtMaterialVersion;
 
         // False from the start of a build until the query world is published. If a build fails, the next build rebuilds
@@ -351,7 +316,7 @@ namespace Unity.Physics.Stepping
             keepStatics = new NativeReference<int>(0, Allocator.Persistent);
             treeShift = StaticTreeShift.ShiftState.Create();
             Partition.InitializeRows();
-            staticRows = new NativeList<int>(Allocator.Persistent);
+            StaticBodies.Initialize();
             Partition.Initialize();
             jointGroups = new NativeList<JointGroup>(Allocator.Persistent);
             jointGroupMembers = new NativeList<JointGroupMember>(Allocator.Persistent);
@@ -432,7 +397,7 @@ namespace Unity.Physics.Stepping
             keepStatics.Dispose();
             treeShift.Dispose();
             Partition.DisposeRows();
-            staticRows.Dispose();
+            StaticBodies.Dispose();
             Partition.Dispose();
             jointGroups.Dispose();
             jointGroupMembers.Dispose();
@@ -493,9 +458,9 @@ namespace Unity.Physics.Stepping
         /// <summary>The index of each store body in the built world.</summary>
         internal readonly NativeList<int> BuiltIndices => Partition.builtIndices;
 
-        internal readonly int StaticsChanged => staticsChanged ? 1 : 0;
+        internal readonly int StaticsChanged => StaticBodies.staticsChanged ? 1 : 0;
 
-        private readonly NativeReference<int>.ReadOnly BuildStaticTree => (staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
+        private readonly NativeReference<int>.ReadOnly BuildStaticTree => (StaticBodies.staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
 
         /// <summary>The settings that the simulation systems use to build their input for a step.</summary>
         internal readonly PhysicsStep Settings
@@ -1228,8 +1193,8 @@ namespace Unity.Physics.Stepping
         /// </summary>
         private void PoseStatics()
         {
-            builtStaticsVersion = store->staticsVersion;
-            staticsChanged = true;
+            StaticBodies.builtStaticsVersion = store->staticsVersion;
+            StaticBodies.staticsChanged = true;
             treeMatchesHeld = true;
             JobHandle posed = new StoreBodies.PoseStaticsJob
             {
@@ -1300,31 +1265,7 @@ namespace Unity.Physics.Stepping
             }
 
             return TreeReuseEnabled && treeMatchesHeld && Partition.dynamicIndices.Length > 0
-                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && Same(treeRows, Partition.dynamicIndices);
-        }
-
-        /// <summary>
-        /// Reuse static body rows and the anchor when the previous build completed, staticsVersion is unchanged,
-        /// and static row order matches. The caller must also verify that body storage was retained.
-        /// </summary>
-        private readonly bool KeepsStaticRows()
-        {
-            return StaticReuseEnabled && !staticsChanged && world.NumStaticBodies == Partition.staticIndices.Length + 1 && Same(staticRows, Partition.staticIndices);
-        }
-
-        /// <summary>
-        /// Move retained static rows and the anchor after the new dynamic body range when its size changes.
-        /// Call only while the built world is inaccessible to queries and jobs.
-        /// </summary>
-        private void MoveStaticRows(int dynamicBefore)
-        {
-            if (dynamicBefore == Partition.dynamicIndices.Length)
-            {
-                return;
-            }
-
-            RigidBody* bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            UnsafeUtility.MemMove(bodies + Partition.dynamicIndices.Length, bodies + dynamicBefore, (long)(Partition.staticIndices.Length + 1) * sizeof(RigidBody));
+                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && BodyPartition.SameRows(treeRows, Partition.dynamicIndices);
         }
 
         /// <summary>
@@ -1333,7 +1274,7 @@ namespace Unity.Physics.Stepping
         /// </summary>
         private JobHandle ScheduleShiftStaticTree(JobHandle built)
         {
-            if (!staticsChanged)
+            if (!StaticBodies.staticsChanged)
             {
                 return built;
             }
@@ -1361,7 +1302,7 @@ namespace Unity.Physics.Stepping
         private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
         {
             uint version = QuerySnapshotVersion.Version;
-            if (snapshotTaken && version == snapshotVersion && Same(snapshotDynamic, Partition.dynamicIndices) && Same(snapshotStatic, Partition.staticIndices))
+            if (snapshotTaken && version == snapshotVersion && BodyPartition.SameRows(snapshotDynamic, Partition.dynamicIndices) && BodyPartition.SameRows(snapshotStatic, Partition.staticIndices))
             {
                 keptSnapshots++;
                 return dependency;
@@ -1398,12 +1339,6 @@ namespace Unity.Physics.Stepping
         private void FinishQuerySnapshot()
         {
             snapshotTaken = true;
-        }
-
-        private static bool Same(NativeList<int> kept, NativeList<int> built)
-        {
-            return kept.Length == built.Length
-                && UnsafeUtility.MemCmp(kept.GetUnsafeReadOnlyPtr(), built.GetUnsafeReadOnlyPtr(), (long)kept.Length * sizeof(int)) == 0;
         }
 
         /// <summary>The number of steps and query builds that kept the last query snapshot. Used by tests.</summary>
@@ -1475,8 +1410,8 @@ namespace Unity.Physics.Stepping
 
                 // Indices in the static tree are relative to the static bodies. Queries and pair finding add the number
                 // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
-                staticsChanged = !builtWhole || store->staticsVersion != builtStaticsVersion;
-                builtStaticsVersion = store->staticsVersion;
+                StaticBodies.staticsChanged = !builtWhole || store->staticsVersion != StaticBodies.builtStaticsVersion;
+                StaticBodies.builtStaticsVersion = store->staticsVersion;
                 treeMatchesHeld = builtWhole;
                 builtWhole = false;
             }
@@ -1486,7 +1421,7 @@ namespace Unity.Physics.Stepping
             void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
             bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == Partition.dynamicIndices.Length;
             int dynamicBefore = world.NumDynamicBodies;
-            bool keepStaticRows = KeepsStaticRows();
+            bool keepStaticRows = StaticBodies.KeepsStaticRows(world.NumStaticBodies, Partition.staticIndices);
 
             // Reset the world with no joints; the joint build job will fill them. Unity Physics uses deferred arrays to
             // read the joints, so jobs can be scheduled before the joint count is known.
@@ -1498,17 +1433,7 @@ namespace Unity.Physics.Stepping
 
             bool sameMemory = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies) == bodiesBefore;
             compareBodies &= sameMemory;
-            keepStaticRows &= sameMemory;
-            if (keepStaticRows)
-            {
-                keptStaticRowsCount++;
-                MoveStaticRows(dynamicBefore);
-            }
-            else if (StaticReuseEnabled)
-            {
-                // With the reuse off, every build writes the rows, so the rows that they come from don't matter.
-                staticRows.CopyFrom(Partition.staticIndices.AsArray());
-            }
+            keepStaticRows = StaticBodies.RetainOrRemember(ref world, ref Partition, dynamicBefore, keepStaticRows, sameMemory);
 
             DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(Partition.dynamicIndices.Length) : default;
 
