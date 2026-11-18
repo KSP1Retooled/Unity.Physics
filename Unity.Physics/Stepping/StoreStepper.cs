@@ -42,7 +42,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker BuildResetMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Reset");
         private static readonly ProfilerMarker BuildScheduleBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
         private static readonly ProfilerMarker BuildScheduleBroadphaseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
-        private static readonly ProfilerMarker RefreshCollidersMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.RefreshColliders");
         private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
         private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
         private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
@@ -65,6 +64,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal ColliderState Colliders;
         internal QuerySnapshotState Queries;
         internal SleepState Sleep;
         internal ContactState Contacts;
@@ -84,17 +84,9 @@ namespace Unity.Physics.Stepping
         internal JobHandle preparedInputs;
 
         private SolverIslandCache solverIslandCache;
-        private NativeList<ColliderBuilder.Work> colliderWork;
-        private NativeList<long> colliderResults;
-        private NativeReference<uint> wholeColliderBuilds;
-
-        private JobHandle collidersBuilt;
-
         // The job that ApplyForces leaves running. BuildWorld makes the build wait for it.
         private JobHandle forcesApplied;
         private JobHandle warmStartsIndexed;
-        private uint builtMaterialVersion;
-
         internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
@@ -115,9 +107,7 @@ namespace Unity.Physics.Stepping
             Contacts.Initialize();
             Sleep.Initialize();
             Contacts.InitializeImpulseMemory();
-            colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
-            colliderResults = new NativeList<long>(Allocator.Persistent);
-            wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
+            Colliders.Initialize();
             Trees.Initialize(store);
             Contacts.InitializePairCache();
         }
@@ -131,18 +121,11 @@ namespace Unity.Physics.Stepping
             Trees.DisposeRefit();
 
             forcesApplied.Complete();
-            collidersBuilt.Complete();
+            Colliders.collidersBuilt.Complete();
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
             VesselData.vesselsFilled.Complete();
-            ReleaseDeadColliders();
-            for (uint i = 0; i < store->bodyCount; i++)
-            {
-                BodyData* body = store->bodies + i;
-                ColliderBuilder.Release((*body).Collider()->Value.GetUnsafePtr());
-                ColliderBuilder.SetCollider(body, default);
-                body->flags |= BodyFlags.ColliderDirty;
-            }
+            Colliders.ReleaseWorldColliders(store);
 
             store->queryDirty = 1;
             world.Dispose();
@@ -158,9 +141,7 @@ namespace Unity.Physics.Stepping
             Contacts.Dispose();
             Sleep.Dispose();
             Contacts.DisposeImpulseMemory();
-            colliderWork.Dispose();
-            colliderResults.Dispose();
-            wholeColliderBuilds.Dispose();
+            Colliders.Dispose();
             Trees.Dispose();
             Contacts.DisposePairCache();
         }
@@ -243,7 +224,7 @@ namespace Unity.Physics.Stepping
             // Every job below waits for the forces, including the collider jobs, which write the flags that the forces
             // job reads.
             dependency = JobHandle.CombineDependencies(dependency, forcesApplied);
-            JobHandle colliders = RefreshColliders(dependency);
+            JobHandle colliders = Colliders.RefreshColliders(store, globals, Trees.colliderChanges, dependency);
             JobHandle broadphase = Build(deltaTime, colliders, out JobHandle joints);
 
             using (BuildScheduleBroadphaseMarker.Auto())
@@ -328,7 +309,7 @@ namespace Unity.Physics.Stepping
                 Globals = globals,
                 Bodies = (RigidBody*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies),
                 Known = Contacts.knownBodyPairs,
-                WholeBuilds = wholeColliderBuilds,
+                WholeBuilds = Colliders.wholeColliderBuilds,
                 Learned = Contacts.learnedBodyPairs.AsParallelWriter(),
                 World = store,
                 Units = Joints.jointUnits.AsDeferredJobArray(),
@@ -758,7 +739,7 @@ namespace Unity.Physics.Stepping
         {
             // The last build is still valid except for the poses of static bodies. The query snapshot contains no data
             // that depends on a pose.
-            if (store->queryDirty == StoreMemory.QueryStaticsMoved && Queries.builtWhole && globals->materialVersion == builtMaterialVersion)
+            if (store->queryDirty == StoreMemory.QueryStaticsMoved && Queries.builtWhole && globals->materialVersion == Colliders.builtMaterialVersion)
             {
                 PoseStatics();
                 Queries.PublishQueryWorld(store, query, ref world);
@@ -768,7 +749,7 @@ namespace Unity.Physics.Stepping
             // A step that threw between ApplyForces and BuildWorld can have left the forces job running, and the collider
             // jobs write the flags that it reads.
             forcesApplied.Complete();
-            JobHandle colliders = RefreshColliders(default);
+            JobHandle colliders = Colliders.RefreshColliders(store, globals, Trees.colliderChanges, default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
             Queries.ScheduleQuerySnapshot(store, globals, ref world, ref Partition, broadphase).Complete();
             broadphase.Complete();
@@ -814,45 +795,7 @@ namespace Unity.Physics.Stepping
                 StaticBodies = world.StaticBodies,
             }.Schedule(Partition.staticIndices.Length, ParallelBatchSize, default);
 
-            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, Trees.BuildStaticTree(StaticBodies.staticsChanged), Trees.ScheduleShiftStaticTree(store, ref world, StaticBodies.staticsChanged, colliderWork, posed), true).Complete();
-        }
-
-        /// <summary>
-        /// Schedule requested collider updates. Consumers must wait for the returned handle before reading
-        /// colliders.
-        /// </summary>
-        private JobHandle RefreshColliders(JobHandle dependency)
-        {
-            using var span = RefreshCollidersMarker.Auto();
-
-            // Every step and query build completes the previous build, so this handle has already completed.
-            collidersBuilt.Complete();
-            ColliderBuilder.AskAgainForFailed(store, colliderWork, colliderResults);
-            ReleaseDeadColliders();
-
-            // Material changes can replace colliders at the same addresses. Invalidate static rows and the
-            // static tree.
-            uint materialVersion = globals->materialVersion;
-            bool all = materialVersion != builtMaterialVersion;
-            if (all)
-            {
-                store->staticsVersion++;
-            }
-
-            collidersBuilt = ColliderBuilder.ScheduleRefresh(store, all, colliderWork, colliderResults,
-                wholeColliderBuilds, Trees.colliderChanges, dependency);
-            builtMaterialVersion = materialVersion;
-            return collidersBuilt;
-        }
-
-        private void ReleaseDeadColliders()
-        {
-            for (uint i = 0; i < store->deadColliderCount; i++)
-            {
-                ColliderBuilder.Release(store->deadColliders[i]);
-            }
-
-            store->deadColliderCount = 0;
+            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, Trees.BuildStaticTree(StaticBodies.staticsChanged), Trees.ScheduleShiftStaticTree(store, ref world, StaticBodies.staticsChanged, Colliders.colliderWork, posed), true).Complete();
         }
 
         /// <summary>
@@ -917,7 +860,7 @@ namespace Unity.Physics.Stepping
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
                 JobHandle.ScheduleBatchedJobs();
-                broadphase = Trees.ScheduleTrees(store, ref world, StaticBodies.staticsChanged, ref Partition, colliderWork, deltaTime, bodiesBuilt);
+                broadphase = Trees.ScheduleTrees(store, ref world, StaticBodies.staticsChanged, ref Partition, Colliders.colliderWork, deltaTime, bodiesBuilt);
                 JobHandle.ScheduleBatchedJobs();
             }
 
