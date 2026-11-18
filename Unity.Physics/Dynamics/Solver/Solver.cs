@@ -1121,6 +1121,9 @@ namespace Unity.Physics
             [NativeDisableContainerSafetyRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
 
+            [ReadOnly]
+            public NativeArray<MotionData> MotionDatas;
+
             public NativeStream.Writer CollisionEventsWriter;
             public NativeStream.Writer TriggerEventsWriter;
             public NativeStream.Writer ImpulseEventsWriter;
@@ -1138,12 +1141,13 @@ namespace Unity.Physics
                 TriggerEventsWriter.PatchMinMaxRange(workItemIndex);
                 ImpulseEventsWriter.PatchMinMaxRange(workItemIndex);
 
-                ExportEvents(workItemIndex, Timestep, JacobiansReader, MotionVelocities,
+                ExportEvents(workItemIndex, Timestep, JacobiansReader, MotionVelocities, MotionDatas,
                     ref CollisionEventsWriter, ref TriggerEventsWriter, ref ImpulseEventsWriter);
             }
         }
 
-        static void ExportEvents(int workItemIndex, float timestep, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
+        static void ExportEvents(int workItemIndex, float timestep, in NativeStream.Reader jacobiansReader,
+            in NativeArray<MotionVelocity> motionVelocities, in NativeArray<MotionData> motionDatas,
             ref NativeStream.Writer collisionEventsWriter, ref NativeStream.Writer triggerEventsWriter, ref NativeStream.Writer impulseEventsWriter)
         {
             collisionEventsWriter.BeginForEachIndex(workItemIndex);
@@ -1209,13 +1213,23 @@ namespace Unity.Physics
                         if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
                         {
                             ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
+                            bool linear = header.Type == JacobianType.LinearLimit;
+                            float3 impulse = impulseEventData.AccumulatedImpulse;
+                            // As in the iterative kernel, linear thresholds use world axes. Angular thresholds
+                            // use the joint axes. Event consumers read linear impulses in frame B and angular
+                            // impulses in frame A, using the poses at the end of the step.
+                            if (linear && !math.any(math.abs(impulse) > impulseEventData.MaxImpulse))
+                            {
+                                break;
+                            }
 
-                            if (math.any(math.abs(impulseEventData.AccumulatedImpulse) > impulseEventData.MaxImpulse))
+                            impulse = math.rotate(math.conjugate(ImpulseEventFrame(ref header, motionDatas)), impulse);
+                            if (linear || math.any(math.abs(impulse) > impulseEventData.MaxImpulse))
                             {
                                 impulseEventsWriter.Write(new ImpulseEventData
                                 {
-                                    Type = header.Type == JacobianType.LinearLimit ? ConstraintType.Linear : ConstraintType.Angular,
-                                    Impulse = impulseEventData.AccumulatedImpulse,
+                                    Type = linear ? ConstraintType.Linear : ConstraintType.Angular,
+                                    Impulse = impulse,
                                     JointEntity = impulseEventData.JointEntity,
                                     BodyIndices = header.BodyPair
                                 });
@@ -1231,6 +1245,44 @@ namespace Unity.Physics
             collisionEventsWriter.EndForEachIndex();
             triggerEventsWriter.EndForEachIndex();
             impulseEventsWriter.EndForEachIndex();
+        }
+
+        static quaternion ImpulseEventFrame(ref JacobianHeader header, in NativeArray<MotionData> motionDatas)
+        {
+            int body = header.BodyPair.BodyIndexA;
+            quaternion worldFromMotion;
+            quaternion motionFromJoint;
+            switch (header.Type)
+            {
+                case JacobianType.LinearLimit:
+                    ref var linear = ref header.AccessBaseJacobian<LinearLimitJacobian>();
+                    body = header.BodyPair.BodyIndexB;
+                    worldFromMotion = linear.WorldFromB.rot;
+                    motionFromJoint = new quaternion(linear.BodyFromConstraintB.Rotation);
+                    break;
+                case JacobianType.AngularLimit1D:
+                    ref var twist = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
+                    worldFromMotion = twist.WorldFromMotionA;
+                    motionFromJoint = twist.MotionAFromJoint;
+                    break;
+                case JacobianType.AngularLimit2D:
+                    ref var swing = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
+                    worldFromMotion = swing.WorldFromA.rot;
+                    motionFromJoint = new quaternion(swing.AnchorFrameInBodyA.Rotation);
+                    break;
+                default:
+                    ref var orientation = ref header.AccessBaseJacobian<AngularLimit3DJacobian>();
+                    worldFromMotion = orientation.WorldFromA.rot;
+                    motionFromJoint = new quaternion(orientation.AnchorFrameInBodyA.Rotation);
+                    break;
+            }
+
+            if (body < motionDatas.Length)
+            {
+                worldFromMotion = motionDatas[body].WorldFromMotion.rot;
+            }
+
+            return math.mul(worldFromMotion, motionFromJoint);
         }
 
         #endregion // Events

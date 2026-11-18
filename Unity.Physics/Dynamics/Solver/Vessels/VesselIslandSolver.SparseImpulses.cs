@@ -100,7 +100,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             for (int block = headerTask * DriftBlocksPerTask; block < endBlock; block++)
             {
                 SparseConstraintSolver.ConstraintBlock rows = application->Problem.Blocks[block];
-                RecordImpulses(ref *application->Headers[block], application->Impulses + rows.FirstRow, rows.RowCount);
+                RecordImpulses(ref *application->Headers[block], application->Problem, rows, application->Impulses);
             }
         }
 
@@ -118,60 +118,30 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// Keeps what the events and the next substep read of one Jacobian's solved impulses. A Jacobian writes only its own
         /// data, so Jacobians can do this on any thread.
         /// </summary>
-        static unsafe void RecordImpulses(ref JacobianHeader header, float* lambda, int jacRows)
+        static unsafe void RecordImpulses(ref JacobianHeader header, in SparseConstraintSolver.Problem problem,
+            in SparseConstraintSolver.ConstraintBlock block, float* impulses)
         {
-            // Collect collision or joint impulses for later event exports
             if (header.Type == JacobianType.Contact)
             {
-                HandOverContactImpulses(ref header, lambda, ContactRowReach);
+                HandOverContactImpulses(ref header, impulses + block.FirstRow, ContactRowReach);
             }
             else if ((header.Flags & JacobianFlags.EnableImpulseEvents) != 0)
             {
-                // Note: motors don't support impulse event generation, and the JacobianFlags.EnableImpulseEvents
-                // flag is not set for them.
-
-                ref ImpulseEventSolverData impulseEventData = ref header.AccessImpulseEventSolverData();
-
-                // Add impulses to accumulated impulse
-                switch (header.Type)
+                // Each row contributes its impulse along its own direction. Report body A's share, using
+                // the opposite of body B's share when A is held in place. A linear event omits the moments
+                // about the bodies' centres of mass that come from the distance to the joint anchor.
+                bool useBodyA = block.BodyA >= 0;
+                int side = useBodyA ? 0 : SparseConstraintSolver.ColumnsPerRow / 2;
+                int component = header.Type == JacobianType.LinearLimit ? 0 : 3;
+                float sign = useBodyA ? 1.0f : -1.0f;
+                float3 impulse = float3.zero;
+                for (int row = block.FirstRow; row < block.FirstRow + block.RowCount; row++)
                 {
-                    case JacobianType.AngularLimit1D:
-                        ref var angLimit1D = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
-                        impulseEventData.AccumulatedImpulse[angLimit1D.AxisIndex] += lambda[0];
-                        break;
-                    case JacobianType.AngularLimit2D:
-                        ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
-                        impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexX] += lambda[0];
-                        if (jacRows == 1)
-                        {
-                            impulseEventData.AccumulatedImpulse[angLimit2D.ConstraintIndexY] += lambda[1];
-                        }
-                        break;
-                    case JacobianType.AngularLimit3D:
-                        for (int i = 0; i < jacRows; ++i)
-                        {
-                            impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                        }
-                        break;
-                    case JacobianType.LinearLimit:
-                        if (jacRows == 3)
-                        {
-                            // A ball and socket's rows run along the world axes, and an event reports the impulse in
-                            // constraint B's frame, as the iterative solver does.
-                            ref var linearLimit = ref header.AccessBaseJacobian<LinearLimitJacobian>();
-                            quaternion constraintBInWorld = math.mul(linearLimit.WorldFromB.rot, new quaternion(linearLimit.BodyFromConstraintB.Rotation));
-                            impulseEventData.AccumulatedImpulse += math.rotate(math.conjugate(constraintBInWorld), new float3(lambda[0], lambda[1], lambda[2]));
-                        }
-                        else
-                        {
-                            for (int i = 0; i < jacRows; ++i)
-                            {
-                                impulseEventData.AccumulatedImpulse[i] += lambda[i];
-                            }
-                        }
-
-                        break;
+                    float* axis = problem.Jacobian + row * SparseConstraintSolver.ColumnsPerRow + side + component;
+                    impulse += (sign * impulses[row]) * new float3(axis[0], axis[1], axis[2]);
                 }
+
+                header.AccessImpulseEventSolverData().AccumulatedImpulse += impulse;
             }
         }
 

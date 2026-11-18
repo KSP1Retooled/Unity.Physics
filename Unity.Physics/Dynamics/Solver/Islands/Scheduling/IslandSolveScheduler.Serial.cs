@@ -120,6 +120,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             {
                 JacobiansReader = jacobians.AsReader(),
                 MotionVelocities = world.MotionVelocities,
+                MotionDatas = world.MotionDatas,
                 CollisionEventsWriter = collisionEvents.AsWriter(),
                 TriggerEventsWriter = triggerEvents.AsWriter(),
                 ImpulseEventsWriter = impulseEvents.AsWriter(),

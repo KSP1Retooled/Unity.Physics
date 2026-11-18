@@ -12,7 +12,6 @@ namespace Unity.Physics.Tests.Dynamics.Joints
         const float JointTimestep = 1.0f / 60.0f;
 
         [Test]
-        [Ignore("The island solver exported zero impulse events on frame 1 as the joint's pivots moved from 0.286 m to 0.594 m across the 0.5 m limit.")]
         public void FireImpulseEventTest()
         {
             var bodyAFromJoint = BodyFrame.Identity;
@@ -80,26 +79,45 @@ namespace Unity.Physics.Tests.Dynamics.Joints
             var input = CreateStepInput(world, JointTimestep);
             input.Gravity = new float3(0, -9.81f, 0);
             using var simulation = Unity.Physics.Simulation.Create();
+            int activeFrames = 0;
+            int quietFrames = 0;
             for (int frame = 0; frame < 15; frame++)
             {
                 float startDistance = math.distance(
                     math.transform(motions[0].WorldFromMotion, bodyAFromJoint.Position),
                     math.transform(motions[1].WorldFromMotion, bodyBFromJoint.Position));
+                float3 freeVelocity = velocities[0].LinearVelocity + input.Gravity * input.TimeStep;
                 simulation.ResetSimulationContext(input);
                 simulation.Step(input);
                 float endDistance = math.distance(
                     math.transform(motions[0].WorldFromMotion, bodyAFromJoint.Position),
                     math.transform(motions[1].WorldFromMotion, bodyBFromJoint.Position));
+                float3 appliedImpulse = (velocities[0].LinearVelocity - freeVelocity) / velocityA.InverseMass;
                 int events = 0;
                 foreach (var impulse in simulation.ImpulseEvents)
                 {
                     Assert.That(impulse.BodyIndexA, Is.EqualTo(0));
                     Assert.That(impulse.BodyIndexB, Is.EqualTo(1));
+                    Assert.That(impulse.Type, Is.EqualTo(ConstraintType.Linear));
+                    Assert.That(math.distance(impulse.Impulse, appliedImpulse), Is.LessThan(1e-4f), $"Frame {frame}");
                     events++;
                 }
 
-                Assert.That(events, Is.EqualTo(1), $"Frame {frame}, pivot separation changed from {startDistance} m to {endDistance} m");
+                // A pivot crossing the limit does not imply that the solver applied an impulse that step.
+                bool applied = math.length(appliedImpulse) > 1e-5f;
+                Assert.That(events, Is.EqualTo(applied ? 1 : 0),
+                    $"Frame {frame}, pivot separation changed from {startDistance} m to {endDistance} m, impulse {appliedImpulse}");
+                if (frame <= 1)
+                {
+                    TestContext.WriteLine($"Frame {frame}: {startDistance:R} to {endDistance:R} m, impulse {appliedImpulse}, events {events}");
+                }
+
+                activeFrames += applied ? 1 : 0;
+                quietFrames += applied ? 0 : 1;
             }
+
+            Assert.That(activeFrames, Is.Positive);
+            Assert.That(quietFrames, Is.Positive);
         }
 
         static SimulationStepInput CreateStepInput(in PhysicsWorld world, float timeStep)
@@ -111,6 +129,62 @@ namespace Unity.Physics.Tests.Dynamics.Joints
                 NumSolverIterations = 4,
                 DirectSolverSettings = PhysicsSolver.DirectSolverSettings.Default,
             };
+        }
+
+        [TestCase(0.5f, 1)]
+        [TestCase(3.0f, 0)]
+        public void LinearImpulseThresholdUsesWorldAxes(float threshold, int expectedEvents)
+        {
+            quaternion rotation = quaternion.RotateZ(math.PIHALF);
+            var frame = new MTransform(rotation, float3.zero);
+            using var world = new PhysicsWorld(0, 2, 1);
+            var joints = world.Joints;
+            joints[0] = new Joint
+            {
+                AFromJoint = frame,
+                BFromJoint = frame,
+                BodyPair = new BodyIndexPair { BodyIndexA = 0, BodyIndexB = 1 },
+                Constraints = new ConstraintBlock3
+                {
+                    A = new Constraint
+                    {
+                        Type = ConstraintType.Linear,
+                        ConstrainedAxes = new bool3(true, false, false),
+                        Min = -0.5f,
+                        Max = 0.5f,
+                        SpringFrequency = Constraint.DefaultSpringFrequency,
+                        DampingRatio = Constraint.DefaultDampingRatio,
+                        MaxImpulse = new float3(float.MaxValue, threshold, float.MaxValue),
+                    },
+                    Length = 1,
+                },
+            };
+            var motions = world.MotionDatas;
+            motions[0] = new MotionData
+            {
+                WorldFromMotion = new RigidTransform(quaternion.identity, new float3(0, 0.5f, 0)),
+                BodyFromMotion = RigidTransform.identity,
+            };
+            motions[1] = new MotionData { WorldFromMotion = RigidTransform.identity, BodyFromMotion = RigidTransform.identity };
+            var velocities = world.MotionVelocities;
+            velocities[0] = new MotionVelocity { LinearVelocity = new float3(0, 2, 0), InverseMass = 1 };
+            velocities[1] = MotionVelocity.Zero;
+
+            using var simulation = Unity.Physics.Simulation.Create();
+            var input = CreateStepInput(world, JointTimestep);
+            simulation.ResetSimulationContext(input);
+            simulation.Step(input);
+
+            float3 appliedImpulse = velocities[0].LinearVelocity - new float3(0, 2, 0);
+            Assert.That(appliedImpulse.y, Is.EqualTo(-2.0f).Within(0.02f));
+            int events = 0;
+            foreach (var impulse in simulation.ImpulseEvents)
+            {
+                Assert.That(math.distance(impulse.Impulse, math.rotate(math.conjugate(rotation), appliedImpulse)), Is.LessThan(1e-4f));
+                events++;
+            }
+
+            Assert.That(events, Is.EqualTo(expectedEvents));
         }
 
         [Test]

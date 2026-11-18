@@ -94,6 +94,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
             iterativeHandle = Integrator.ScheduleIntegrateBodiesOutsideIslandsJob(world.DynamicsWorld,
                 solverSchedulerInfo.DirectPairsDirectScheduling.BodiesInIslands.AsDeferredJobArray(), stepInput.Timestep, iterativeHandle);
+            JobHandle outsideIslandsIntegrated = iterativeHandle;
 
             // After integration, remove penetration correction velocities. Keep iteration indices past the
             // solver's event-export range.
@@ -114,16 +115,19 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 solverSchedulerInfo.DirectPairsDirectScheduling, jacobiansBuilt, inputDeps, out JobHandle islandsSolved);
             motionsSolved = JobHandle.CombineDependencies(iterativeSolved, islandsSolved);
 
+            // A joint can refer to a kinematic body whose pose was integrated outside the direct island.
             islandHandle = new ParallelExportEventsJob
             {
                 JacobiansReader = jacobians.AsReader(),
                 MotionVelocities = motionVelocities,
+                MotionDatas = world.MotionDatas,
                 CollisionEventsWriter = collisionEvents.AsWriter(),
                 TriggerEventsWriter = triggerEvents.AsWriter(),
                 ImpulseEventsWriter = impulseEvents.AsWriter(),
                 IterativeSolverSchedulerInfo = solverSchedulerInfo.DirectPairsIterativeScheduling,
                 Timestep = stepInput.Timestep
-            }.ScheduleUnsafeIndex0(solverSchedulerInfo.DirectPairsIterativeScheduling.NumWorkItems, 1, islandHandle);
+            }.ScheduleUnsafeIndex0(solverSchedulerInfo.DirectPairsIterativeScheduling.NumWorkItems, 1,
+                JobHandle.CombineDependencies(islandHandle, outsideIslandsIntegrated));
 
             SimulationJobHandles returnHandles = default;
             returnHandles.FinalExecutionHandle = JobHandle.CombineDependencies(iterativeHandle, islandHandle);

@@ -100,6 +100,24 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
         }
 
         [Test]
+        public void DistanceLimitToWorldReportsTheImpulseAlongTheLineOfPull()
+        {
+            Vector3 direction = new Vector3(0.0f, 0.6f, 0.8f);
+            Rigidbody body = Weightless(direction * 0.5f);
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+            joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+            joint.linearLimit = new SoftJointLimit { limit = 0.5f };
+            Vector3 before = direction * 2.0f;
+            body.linearVelocity = before;
+
+            Simulate();
+
+            Vector3 reaction = body.mass * (body.linearVelocity - before) / Step;
+            Assert.That(reaction.magnitude, Is.GreaterThan(50.0f));
+            AssertVector(reaction, joint.currentForce, 0.5f, "force from the distance limit");
+        }
+
+        [Test]
         public void LinearLimitStopsAtItsDistance()
         {
             Rigidbody body = Weightless(Vector3.zero);
@@ -514,6 +532,34 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
 
             Assert.That(body.position.x, Is.EqualTo(2.0f).Within(0.01f));
             AssertVector(Vector3.zero, joint.currentTorque, 0.5f, "torque");
+        }
+
+        [Test]
+        public void SwingConeReportsTorqueAlongTheAxisThatItStops()
+        {
+            Rigidbody body = Weightless(Vector3.zero);
+            body.inertiaTensor = Vector3.one;
+            body.inertiaTensorRotation = Quaternion.identity;
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+            joint.angularXMotion = ConfigurableJointMotion.Free;
+            joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
+            joint.angularYLimit = joint.angularZLimit = new SoftJointLimit { limit = 15.0f };
+            body.angularVelocity = Vector3.forward * 3.0f;
+
+            for (int step = 0; step < 10; step++)
+            {
+                Vector3 before = body.angularVelocity;
+                Simulate();
+
+                Vector3 reaction = (body.angularVelocity - before) / Step;
+                if (reaction.magnitude > 10.0f)
+                {
+                    AssertVector(reaction, joint.currentTorque, 0.5f, "torque from the swing cone");
+                    return;
+                }
+            }
+
+            Assert.Fail("The swing did not reach the cone.");
         }
 
         [Test]

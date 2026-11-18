@@ -41,6 +41,30 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
         }
 
         [Test]
+        public void JointToWorldBreaksWhenLockedAndLimitedAxesAreLoadedTogether()
+        {
+            Rigidbody body = WeightlessBox(Vector3.up * 0.5f);
+            body.GetComponent<Collider>().enabled = false;
+            body.linearDamping = 0.0f;
+            BreakLog log = body.gameObject.AddComponent<BreakLog>();
+            ConfigurableJoint joint = body.gameObject.AddComponent<ConfigurableJoint>();
+            joint.autoConfigureConnectedAnchor = false;
+            joint.connectedAnchor = Vector3.zero;
+            joint.xMotion = ConfigurableJointMotion.Locked;
+            joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+            joint.linearLimit = new SoftJointLimit { limit = 0.5f };
+            const float breakForce = 15.0f;
+            joint.breakForce = breakForce;
+            body.linearVelocity = new Vector3(2.0f, 2.0f, 0.0f);
+
+            Simulate();
+
+            Assert.That(log.Breaks, Is.EqualTo(1));
+            Assert.That(log.Force, Is.GreaterThan(breakForce));
+            TestContext.WriteLine($"Break force reported by OnJointBreak: {log.Force:R} N");
+        }
+
+        [Test]
         public void AJointUnderItsLimitStaysQuiet()
         {
             Rigidbody body = DynamicBox(new Vector3(0.0f, 5.0f, 0.0f), 3.0f);
