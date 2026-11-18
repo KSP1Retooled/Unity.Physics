@@ -12,6 +12,8 @@ using namespace PhysicsCommands;
 
 namespace Retooled
 {
+    void AdvanceStoreQuarantine();
+
     // WorldCommands.CountBodies writes the counts through a pointer.
     static_assert(offsetof(Physics::SimulationStepStats, dynamicBodies) == 0);
     static_assert(offsetof(Physics::SimulationStepStats, activeDynamicBodies) == 4);
@@ -63,26 +65,26 @@ namespace Retooled
         g_Worlds.erase(std::find(g_Worlds.begin(), g_Worlds.end(), world));
         for (uint32_t i = 0; i < world->data.jointCount; i++)
         {
-            std::free(world->data.joints[i]);
+            g_Globals.release(world->data.joints[i]);
         }
 
-        std::free(world->data.joints);
+        g_Globals.release(world->data.joints);
 
         // A vehicle is one block, its wheels included.
         for (uint32_t i = 0; i < world->data.vehicleCount; i++)
         {
-            std::free(world->data.vehicles[i]);
+            g_Globals.release(world->data.vehicles[i]);
         }
 
-        std::free(world->data.jointBreaks);
-        std::free(world->data.contactBodies);
-        std::free(world->data.contactShapes);
-        std::free(world->data.contactPoints);
-        std::free(world->data.triggers);
-        std::free(world->data.removedShapes);
-        std::free(world->data.bodies);
-        std::free(world->data.deadColliders);
-        std::free(world->data.vehicles);
+        g_Globals.release(world->data.jointBreaks);
+        g_Globals.release(world->data.contactBodies);
+        g_Globals.release(world->data.contactShapes);
+        g_Globals.release(world->data.contactPoints);
+        g_Globals.release(world->data.triggers);
+        g_Globals.release(world->data.removedShapes);
+        g_Globals.release(world->data.bodies);
+        g_Globals.release(world->data.deadColliders);
+        g_Globals.release(world->data.vehicles);
         delete world;
     }
 
@@ -122,6 +124,7 @@ namespace Retooled
 
         std::unique_lock lock(world->queryLock);
         g_Managed.simulate(&world->data, command.deltaTime);
+        AdvanceStoreQuarantine();
         command.ranSimulation = true;
 
         // Unity reads the poses back next (see g_ReadBackWorld).
@@ -241,7 +244,7 @@ namespace Retooled
         Forward<WorldCmd::GetAllShapesByLayerMask, [](CommandArgs& a, const auto& c) { a.value = c.layerMask; }, [](const CommandArgs& a, auto& c)
         {
             c.callback(static_cast<void**>(a.pointer), static_cast<size_t>(a.size));
-            std::free(a.pointer);
+            g_Globals.release(a.pointer);
         }>(table);
     }
 }

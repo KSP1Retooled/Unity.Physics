@@ -28,6 +28,9 @@ namespace Unity.Physics.Configuration
             shapeBounds = Environment.GetEnvironmentVariable("RETOOLED_SHAPE_BOUNDS");
             treeReuse = Environment.GetEnvironmentVariable("RETOOLED_TREE_REUSE");
             staticReuse = Environment.GetEnvironmentVariable("RETOOLED_STATIC_REUSE");
+            StepCacheSwitches.MemoryChecks = Environment.GetEnvironmentVariable("RETOOLED_MEMORY_CHECKS") == "1";
+            StepCacheSwitches.RefillVesselEdges = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_EDGE_CACHE") == "0";
+            StepCacheSwitches.ClearSolverSlots = Environment.GetEnvironmentVariable("RETOOLED_SOLVER_SLOT_CACHE") == "0";
         }
 
         /// <summary>

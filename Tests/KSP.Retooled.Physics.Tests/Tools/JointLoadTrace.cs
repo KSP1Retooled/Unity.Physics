@@ -117,7 +117,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             return Mix(Mix(Mix(Mix(hash, value.x), value.y), value.z), value.w);
         }
 
-        private static void Record(StringBuilder trace, int step, List<ConfigurableJoint> joints, List<Rigidbody> bodies)
+        internal static void Record(StringBuilder trace, int step, List<ConfigurableJoint> joints, List<Rigidbody> bodies)
         {
             ulong velocities = 14695981039346656037UL;
             foreach (Rigidbody body in bodies)

@@ -57,9 +57,15 @@ namespace Unity.Physics.Stepping.Stages
             // Reset the world with no joints. The joint build job fills them later.
             // Unity Physics schedules jobs that read the joints through deferred arrays before it knows the count.
             bool keptBodies;
+            bool checkMemory = StepCacheSwitches.MemoryChecks;
             using (BuildResetMarker.Auto())
             {
-                keptBodies = world.ResetAndKeepBodies(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0);
+                keptBodies = world.ResetAndKeepBodies(partition.staticIndices.Length + 1, partition.dynamicIndices.Length, 0,
+                    checkMemory, out NativeArray<RigidBody> replaced);
+                if (checkMemory)
+                {
+                    staticRows.QuarantineReplacedBodies(replaced, deltaTime > 0.0f);
+                }
             }
 
             compareBodies &= keptBodies;
@@ -87,6 +93,11 @@ namespace Unity.Physics.Stepping.Stages
                 };
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
+                if (checkMemory)
+                {
+                    bodiesBuilt.Complete();
+                    StaticRows.Validate(store, ref world, ref partition);
+                }
                 JobHandle.ScheduleBatchedJobs();
                 broadphase = trees.ScheduleTrees(store, ref world, ref staticRows, ref partition, colliders.colliderWork, deltaTime, bodiesBuilt);
                 JobHandle.ScheduleBatchedJobs();

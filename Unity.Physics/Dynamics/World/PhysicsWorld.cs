@@ -85,12 +85,13 @@ namespace Unity.Physics
         /// <param name="numJoints">        Number of joints. </param>
         public void Reset(int numStaticBodies, int numDynamicBodies, int numJoints)
         {
-            ResetAndKeepBodies(numStaticBodies, numDynamicBodies, numJoints);
+            ResetAndKeepBodies(numStaticBodies, numDynamicBodies, numJoints, false, out _);
         }
 
-        internal bool ResetAndKeepBodies(int numStaticBodies, int numDynamicBodies, int numJoints)
+        internal bool ResetAndKeepBodies(int numStaticBodies, int numDynamicBodies, int numJoints,
+            bool keepReplaced, out NativeArray<RigidBody> replaced)
         {
-            bool keptBodies = CollisionWorld.ResetAndKeepBodies(numStaticBodies, numDynamicBodies);
+            bool keptBodies = CollisionWorld.ResetAndKeepBodies(numStaticBodies, numDynamicBodies, keepReplaced, out replaced);
             DynamicsWorld.Reset(numDynamicBodies, numJoints);
             return keptBodies;
         }

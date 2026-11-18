@@ -5,6 +5,8 @@ using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
+using Unity.Physics.Configuration;
+using System;
 
 namespace Unity.Physics.Stepping.State
 {
@@ -94,7 +96,63 @@ namespace Unity.Physics.Stepping.State
                 groupedTopology = topology;
                 groupedForest = forest;
             }
+            else if (StepCacheSwitches.MemoryChecks)
+            {
+                dependency.Complete();
+                ValidateGroups(store, forest);
+            }
             return regrouped;
+        }
+
+        private void ValidateGroups(WorldData* store, bool forest)
+        {
+            using var groups = new NativeList<JointGroup>(Allocator.TempJob);
+            using var members = new NativeList<JointGroupMember>(Allocator.TempJob);
+            using var units = new NativeList<JointUnit>(Allocator.TempJob);
+            using var roles = new NativeList<JointForestRole>(Allocator.TempJob);
+            using var written = new NativeList<int>(Allocator.TempJob);
+            new JointGrouping.GroupJointsJob
+            {
+                World = store,
+                Groups = groups,
+                Members = members,
+                Units = units,
+                Roles = roles,
+                Written = written,
+                Forest = forest,
+            }.Run();
+
+            if (groups.Length != jointGroups.Length || members.Length != jointGroupMembers.Length
+                || units.Length != jointUnits.Length || roles.Length != jointRoles.Length)
+            {
+                throw new InvalidOperationException("Rebuilt joint groups have different lengths.");
+            }
+
+            for (int i = 0; i < groups.Length; i++)
+            {
+                JointGroup expected = groups[i];
+                JointGroup kept = jointGroups[i];
+                if (kept.Leader != expected.Leader || kept.FirstMember != expected.FirstMember || kept.MemberCount != expected.MemberCount)
+                {
+                    throw new InvalidOperationException($"Retained joint group {i} differs from the rebuilt group.");
+                }
+            }
+
+            for (int i = 0; i < members.Length; i++)
+            {
+                if (jointGroupMembers[i].Joint != members[i].Joint)
+                {
+                    throw new InvalidOperationException($"Retained joint group member {i} differs from the rebuilt member.");
+                }
+            }
+
+            for (int i = 0; i < units.Length; i++)
+            {
+                if (jointUnits[i].Joint != units[i].Joint || jointUnits[i].Group != units[i].Group || jointRoles[i] != roles[i])
+                {
+                    throw new InvalidOperationException($"Retained joint unit {i} differs from the rebuilt unit.");
+                }
+            }
         }
     }
 }
