@@ -40,7 +40,7 @@ namespace Unity.Physics.Stepping.Stages
         /// <summary>Warm starts the Jacobians.</summary>
         internal static JobHandle PrepareSolve(ref PhysicsWorld world, ref BodyPartition partition,
             ref ContactState contactState, ref VesselState vessels, ref StepSolverCaches solverCaches,
-            JobHandle warmStartsIndexed, out Simulation* preparedSimulation, out JobHandle preparedInputs,
+            JobHandle warmStartsIndexed, out Simulation* preparedSimulation,
             SimulationSingleton singleton, ref SimulationStepInput input, JobHandle dependency)
         {
             using var span = StepScheduleMarker.Auto();
@@ -59,7 +59,6 @@ namespace Unity.Physics.Stepping.Stages
             input.IslandSolverCache = solverCaches.directSolverCache;
             input.VesselSet = vessels.vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
-            preparedInputs = JobHandle.CombineDependencies(dependency, warmStartsIndexed, vessels.vesselsFilled);
             return new WarmStart.WarmStartJob
             {
                 WarmStarts = contactState.warmStarts,
@@ -96,9 +95,9 @@ namespace Unity.Physics.Stepping.Stages
             {
                 World = store,
                 States = jointState.jointStates->Ptr,
-                Units = jointState.jointUnits.AsArray(),
-                Groups = jointState.jointGroups.AsArray(),
-                Members = jointState.jointGroupMembers.AsArray(),
+                Units = jointState.jointUnits.AsDeferredJobArray(),
+                Groups = jointState.jointGroups.AsDeferredJobArray(),
+                Members = jointState.jointGroupMembers.AsDeferredJobArray(),
                 MotionDatas = world.MotionDatas,
                 BuiltIndices = partition.builtIndices.AsArray(),
                 DeltaTime = deltaTime,
@@ -107,8 +106,8 @@ namespace Unity.Physics.Stepping.Stages
                 PartIsBody0 = vessels.vesselBuild.PartIsBody0.AsArray(),
                 UnitVessels = vessels.vesselBuild.UnitVessels.AsArray(),
                 Active = vessels.vesselBuild.Active.AsArray(),
-                EdgeLoads = vessels.vesselBuild.EdgeLoads.AsArray(),
-                ClosureLoads = vessels.vesselBuild.ClosureLoads.AsArray(),
+                EdgeLoads = vessels.vesselBuild.EdgeLoads.AsDeferredJobArray(),
+                ClosureLoads = vessels.vesselBuild.ClosureLoads.AsDeferredJobArray(),
                 JointLoads = jointState.jointLoads.AsArray(),
                 Overloaded = jointState.jointsOverloaded.AsArray(),
             }.Schedule(vessels.vesselBuild.PartUnits.Length + vessels.vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);

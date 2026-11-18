@@ -8,13 +8,11 @@ namespace KSP.Retooled.Physics.Reports
     {
         private static readonly ProfilerMarker StepPublishContactsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.PublishContacts");
 
-        internal static void Publish(StoreStepper* state, JobHandle contactsJoined)
+        internal static JobHandle Schedule(StoreStepper* state, JobHandle dependency)
         {
             using (StepPublishContactsMarker.Auto())
             {
-                // Sort the manifolds after the sleep contact job has read them.
-                contactsJoined.Complete();
-                new PublishContactsJob
+                return new PublishContactsJob
                 {
                     World = state->Store,
                     Globals = state->Globals,
@@ -23,7 +21,7 @@ namespace KSP.Retooled.Physics.Reports
                     Touching = state->Touching,
                     RemovedTriggerPairs = state->RemovedTriggerPairs,
                     Step = state->NextContactStep(),
-                }.Run();
+                }.Schedule(dependency);
             }
         }
     }
