@@ -754,7 +754,8 @@ namespace Unity.Physics
                                         startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
                                         in rhs, in stepInput, in jointRegularizationData,
                                         PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
-                                            !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
+                                            !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas,
+                                            IsNarrowConfigurableStop(ref header, angJacobian.MinAngle, angJacobian.MaxAngle)));
 
                                     break;
                                 }
@@ -837,6 +838,10 @@ namespace Unity.Physics
                                         var sinAngle = math.length(rotationAxis);
                                         var cosAngle = math.dot(axisAinB, angJacobian.AxisBinB);
                                         var currentAngle = math.atan2(sinAngle, cosAngle);
+                                        // A cone has no lower angular limit. Keep the bound finite because an
+                                        // unbounded row is treated as equality.
+                                        float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
+                                        bool narrow = IsNarrowConfigurableStop(ref header, minAngle, angJacobian.MaxAngle);
 
                                         if (sinAngle > math.EPSILON)
                                         {
@@ -849,20 +854,25 @@ namespace Unity.Physics
                                             // as rotation axis.
                                             rotationAxis = math.mul(angJacobian.WorldFromA.rot,
                                                 angJacobian.AnchorFrameInBodyA.Rotation[angJacobian.ConstraintIndexX]);
+                                            if (narrow)
+                                            {
+                                                float3 angularA = bodyAIsStatic ? float3.zero : math.rotate(angJacobian.WorldFromA.rot,
+                                                    motionVelocities[ixBodyA].AngularVelocity);
+                                                float3 angularB = bodyBIsStatic ? float3.zero : math.rotate(angJacobian.WorldFromB.rot,
+                                                    motionVelocities[ixBodyB].AngularVelocity);
+                                                float3 axis = math.rotate(angJacobian.WorldFromB.rot, angJacobian.AxisBinB);
+                                                float3 swing = angularA - angularB;
+                                                rotationAxis = math.normalizesafe(swing - math.dot(axis, swing) * axis, rotationAxis);
+                                            }
                                         }
 
-                                        var hingeAxis = rotationAxis;
-
-                                        // A cone has no lower angular limit. Keep the bound finite because an
-                                        // unbounded row is treated as equality.
-                                        float minAngle = angJacobian.MinAngle > 0.0f ? angJacobian.MinAngle : -float.MaxValue;
                                         AddAngularLimit1D(ref jacobianRows, JBlocks,
-                                            bodyAIsStatic, bodyBIsStatic, in hingeAxis, currentAngle,
+                                            bodyAIsStatic, bodyBIsStatic, in rotationAxis, currentAngle,
                                             minAngle, angJacobian.MaxAngle,
                                             startRow, in l, in u, ref eps, ref indexSetArray, ref isLCP,
                                             in rhs, in stepInput, in jointRegularizationData,
                                             PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
-                                                !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas));
+                                                !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas, narrow));
                                     }
 
                                     break;

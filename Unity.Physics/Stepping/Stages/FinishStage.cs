@@ -29,32 +29,21 @@ namespace Unity.Physics.Stepping.Stages
         /// Wait for body pose write-back before converting impulse events to world space.
         /// </summary>
         private static JobHandle ReadJointForces(WorldData* store, StoreGlobals* globals,
-            ref JointBuildState jointState, ref VesselState vessels, NativeStream events, float deltaTime,
-            JobHandle vesselsSettled, JobHandle motionsSolved, JobHandle solved, JobHandle writtenBack, ref JobHandle pending)
+            ref PhysicsWorld world, ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels,
+            NativeStream events, float deltaTime, JobHandle motionsSolved, JobHandle solved, JobHandle writtenBack, ref JobHandle pending)
         {
             const int groupsPerBatch = 16;
 
-            // ScheduleVesselLoads has already sized the joint loads.
+            SolveStage.ResizeJointLoads(store, ref jointState);
             int jointCount = jointState.jointLoads.Length;
-            JobHandle cleared = Track(ref pending, new ClearGroupLoadsJob
+            JobHandle loaded = Track(ref pending, new ClearJointLoadsJob
             {
-                Loads = jointState.groupLoads,
+                JointLoads = jointState.jointLoads.AsArray(),
+                GroupLoads = jointState.groupLoads,
                 Groups = jointState.jointGroups,
             }.Schedule(motionsSolved));
 
             bool listed = vessels.vesselSet.IsCreated;
-            var seed = new JointLoads.SeedJointLoadsJob
-            {
-                World = store,
-                States = jointState.jointStates->Ptr,
-                Loads = jointState.jointLoads.AsArray(),
-                Joints = jointState.otherJoints.AsDeferredJobArray(),
-                Listed = listed,
-            };
-            JobHandle seeded = Track(ref pending, listed
-                ? seed.Schedule(jointState.otherJoints, ParallelBatchSize, writtenBack)
-                : seed.Schedule(jointCount, ParallelBatchSize, writtenBack));
-            JobHandle loaded = JobHandle.CombineDependencies(seeded, cleared);
             if (events.IsCreated)
             {
                 JobHandle rotated = Track(ref pending, new JointLoads.RotateJointImpulsesJob
@@ -72,6 +61,10 @@ namespace Unity.Physics.Stepping.Stages
                     GroupLoads = jointState.groupLoads.AsDeferredJobArray(),
                 }.Schedule(JobHandle.CombineDependencies(loaded, rotated)));
             }
+
+            loaded = JobHandle.CombineDependencies(loaded, writtenBack);
+            JobHandle vesselsSettled = Track(ref pending, SolveStage.ScheduleVesselLoads(store, ref world, ref partition,
+                ref jointState, ref vessels, deltaTime, loaded));
 
             var share = new JointLoads.ShareGroupLoadsJob
             {
@@ -118,11 +111,10 @@ namespace Unity.Physics.Stepping.Stages
         internal static void ReadVesselLoads(WorldData* store, StoreGlobals* globals, ref PhysicsWorld world,
             ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels, float deltaTime)
         {
-            JobHandle vesselsSettled = SolveStage.ScheduleVesselLoads(store, ref world, ref partition, ref jointState, ref vessels, deltaTime, default);
-            JobHandle pending = vesselsSettled;
+            JobHandle pending = default;
             try
             {
-                ReadJointForces(store, globals, ref jointState, ref vessels, default, deltaTime, vesselsSettled,
+                ReadJointForces(store, globals, ref world, ref partition, ref jointState, ref vessels, default, deltaTime,
                     default, default, default, ref pending);
             }
             finally
@@ -152,9 +144,6 @@ namespace Unity.Physics.Stepping.Stages
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(partition.dynamicIndices.Length, ParallelBatchSize, canRepair));
 
-            JobHandle vesselsSettled = Track(ref pending, SolveStage.ScheduleVesselLoads(store, ref world, ref partition,
-                ref jointState, ref vessels, deltaTime, writtenBack));
-
             // Queries finish the refit when they need the tree. The step waits for its inputs.
             trees.SchedulePendingRefit(store, ref world, deltaTime, writtenBack);
             StoreStepper.ThrowAfterRefitScheduledIfRequested();
@@ -174,8 +163,8 @@ namespace Unity.Physics.Stepping.Stages
             JobHandle forces;
             using (StepReadJointForcesMarker.Auto())
             {
-                forces = ReadJointForces(store, globals, ref jointState, ref vessels,
-                    simulation.ImpulseEvents.EventDataStream, deltaTime, vesselsSettled, motionsSolved, solved, writtenBack, ref pending);
+                forces = ReadJointForces(store, globals, ref world, ref partition, ref jointState, ref vessels,
+                    simulation.ImpulseEvents.EventDataStream, deltaTime, motionsSolved, solved, writtenBack, ref pending);
             }
 
             JobHandle joinedAndBroken = JobHandle.CombineDependencies(contactsJoined, forces);
@@ -246,17 +235,19 @@ namespace Unity.Physics.Stepping.Stages
         }
 
         [BurstCompile]
-        private struct ClearGroupLoadsJob : IJob
+        private struct ClearJointLoadsJob : IJob
         {
-            public NativeList<JointLoad> Loads;
+            public NativeArray<JointLoad> JointLoads;
+            public NativeList<JointLoad> GroupLoads;
 
             [ReadOnly]
             public NativeList<JointGroup> Groups;
 
             public void Execute()
             {
-                Loads.ResizeUninitialized(Groups.Length);
-                UnsafeUtility.MemClear(Loads.GetUnsafePtr(), (long)Loads.Length * sizeof(JointLoad));
+                GroupLoads.ResizeUninitialized(Groups.Length);
+                UnsafeUtility.MemClear(GroupLoads.GetUnsafePtr(), (long)GroupLoads.Length * sizeof(JointLoad));
+                UnsafeUtility.MemClear(JointLoads.GetUnsafePtr(), (long)JointLoads.Length * sizeof(JointLoad));
             }
         }
     }

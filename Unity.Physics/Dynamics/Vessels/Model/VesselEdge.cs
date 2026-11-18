@@ -48,6 +48,12 @@ namespace Unity.Physics.Dynamics.Vessels.Model
 
         public double BreakTorque;
 
+        /// <summary>The torque at which a compliant axis at a narrow angular stop has used all its travel.</summary>
+        public double FlexYieldTorque;
+
+        /// <summary>The squared sine of half the angle at which the edge should stay unlocked.</summary>
+        public double UnlockRotationSquared;
+
         /// <summary>The fraction of the edge's break strength above which a locked edge starts to yield.</summary>
         public double YieldFraction;
 

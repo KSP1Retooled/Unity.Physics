@@ -92,7 +92,9 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                 if (joint->type == StoreConstants.JointTypeDof6)
                 {
                     state->Force = ConstraintLoad(joint, StoreConstants.AxisLinearX, load.Force, load.LimitForce);
-                    state->Torque = ConstraintLoad(joint, StoreConstants.AxisAngularX, load.Torque, load.LimitTorque);
+                    state->Torque = load.IncludesAngularDrive
+                        ? ConstraintLoad(joint, StoreConstants.AxisAngularX, load.Torque, load.LimitTorque)
+                        : load.Torque;
                 }
                 else
                 {
@@ -105,8 +107,10 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                 float torque = math.length(load.Torque);
                 state->SmoothedFullForce += (force - state->SmoothedFullForce) * follow;
                 state->SmoothedFullTorque += (torque - state->SmoothedFullTorque) * follow;
-                state->BreakingForce += (math.length(state->Force) - state->BreakingForce) * follow;
-                state->BreakingTorque += (math.length(state->Torque) - state->BreakingTorque) * follow;
+                float constraintForce = math.all(state->Force == load.Force) ? force : math.length(state->Force);
+                float constraintTorque = math.all(state->Torque == load.Torque) ? torque : math.length(state->Torque);
+                state->BreakingForce += (constraintForce - state->BreakingForce) * follow;
+                state->BreakingTorque += (constraintTorque - state->BreakingTorque) * follow;
                 bool overloaded = state->BreakingForce > state->BreakForce || state->BreakingTorque > state->BreakTorque;
                 return state->Inactive == 0 && overloaded;
             }

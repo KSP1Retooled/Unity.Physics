@@ -147,6 +147,12 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 // Use the softer swing axis because the edge uses one spring for both swing axes. Use the damping from that
                 // same axis.
                 int swing = parameters.Stiffness.y <= parameters.Stiffness.z ? 1 : 2;
+                var angles = JointTranslation.BuildJointsJob.NearAngularLimits(World->joints[Units[unit].Joint]);
+                var stiffness = new double3(parameters.Stiffness.x, parameters.Stiffness[swing], parameters.Stiffness[swing]);
+                bool3 narrow = angles < float.PositiveInfinity & stiffness < double.PositiveInfinity;
+                double flexTorque = math.cmin(math.select(double.PositiveInfinity, math.max(1e-12, (double3)angles * stiffness), narrow));
+                float nearest = math.cmin(angles);
+                double unlockRotation = nearest < float.PositiveInfinity ? math.sin(0.375 * math.max(0.001, nearest)) : 0.0;
                 var edge = new VesselEdge
                 {
                     Parent = PartParents[part],
@@ -162,6 +168,8 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     SwingDamping = parameters.Damping[swing],
                     BreakForce = parameters.BreakForce,
                     BreakTorque = parameters.BreakTorque,
+                    FlexYieldTorque = flexTorque,
+                    UnlockRotationSquared = unlockRotation * unlockRotation,
                 };
                 Edges[part] = edge;
                 EdgeCache[part] = edge;

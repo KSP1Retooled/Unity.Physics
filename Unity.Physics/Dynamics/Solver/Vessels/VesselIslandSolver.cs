@@ -826,9 +826,19 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             bool changed = false;
             VesselEdge edge = set.Edges[setPart];
             edge.Parent = edge.Parent >= 0 ? forest->PartVesselStart[part] + edge.Parent : -1;
-            if (edge.Parent >= 0 && firstSubstep && TestLock(forest, part, edge))
+            if (edge.Parent >= 0 && firstSubstep)
             {
-                changed = true;
+                if (edge.UnlockRotationSquared > 0.0)
+                {
+                    int parent = set.PartBodies[forest->PartSetPart[edge.Parent]];
+                    int child = set.PartBodies[setPart];
+                    quaternion relative = math.mul(math.conjugate(run.MotionDatas[parent].WorldFromMotion.rot),
+                        run.MotionDatas[child].WorldFromMotion.rot);
+                    quaternion displacement = math.mul(relative, math.conjugate(new quaternion((float4)edge.Rest)));
+                    edge.MayLock &= math.lengthsq(displacement.value.xyz) < edge.UnlockRotationSquared;
+                }
+
+                changed = TestLock(forest, part, edge);
             }
 
             if (edge.Parent >= 0 && forest->PartLocked[part] != 0)
@@ -1455,7 +1465,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     VesselEdgeLoad load = forest->KernelEdgeLoads[part];
                     load.Ratio = Ratio(load, edge->BreakForce, edge->BreakTorque);
                     set.EdgeLoads[setPart] = load;
-                    forest->PartRatio[part] = (float)load.Ratio;
+                    forest->PartRatio[part] = LockRatio(load, *edge);
                 }
 
                 for (int c = equilibrium.SectionClosureStart[s]; c < equilibrium.SectionClosureStart[s + 1]; c++)
@@ -2100,7 +2110,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 set.EdgeLocked[setPart] = edge->State == VesselEdgeState.Locked;
                 if (last)
                 {
-                    forest->PartRatio[item] = (float)sum.Ratio;
+                    forest->PartRatio[item] = LockRatio(sum, *edge);
                 }
 
                 return;
@@ -2120,6 +2130,16 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             double force = breakForce > 0.0 && !double.IsInfinity(breakForce) ? math.length(load.Force) / breakForce : 0.0;
             double torque = breakTorque > 0.0 && !double.IsInfinity(breakTorque) ? math.length(load.Torque) / breakTorque : 0.0;
             return math.max(force, torque);
+        }
+
+        static float LockRatio(in VesselEdgeLoad load, in VesselEdge edge)
+        {
+            if (edge.FlexYieldTorque > 0.0 && !double.IsInfinity(edge.FlexYieldTorque))
+            {
+                return (float)math.max(load.Ratio, math.length(load.Torque) / edge.FlexYieldTorque);
+            }
+
+            return (float)load.Ratio;
         }
     }
 }
