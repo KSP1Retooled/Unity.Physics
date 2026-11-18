@@ -101,7 +101,7 @@ namespace Unity.Physics
         /// </summary>
         const float LimitArmingMargin = 0.001f;
 
-        static bool IsNarrowConfigurableStop(ref JacobianHeader header, float minimum, float maximum)
+        internal static bool IsNarrowConfigurableStop(ref JacobianHeader header, float minimum, float maximum)
         {
             return (minimum > -JointTranslation.BuildJointsJob.NearAngle || maximum < JointTranslation.BuildJointsJob.NearAngle)
                 && (header.Flags & JacobianFlags.EnableImpulseEvents) != 0 && header.AccessImpulseEventSolverData().IsConfigurableLimit;

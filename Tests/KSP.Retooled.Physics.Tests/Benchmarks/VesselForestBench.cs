@@ -871,6 +871,10 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     $"their warm start, {boundary.HeldSupports} held rows pushed, {boundary.HeldPushes} held rows pushed out), " +
                     $"{boundary.DormantRows / (double)boundary.Solves:F1} dormant rows a solve, " +
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
+                double rowSamples = System.Math.Max(1, boundary.RowKindSamples);
+                lastTimes += $"; rows per build: {boundary.ContactRows / rowSamples:F1} contact, " +
+                    $"{boundary.AngularStopRows / rowSamples:F1} angular stops, {boundary.OtherRows / rowSamples:F1} other, " +
+                    $"{boundary.StopRetries} stop retries";
                 double tickMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
                 Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivotingStats f = boundary.Factor;
@@ -888,7 +892,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     $"{boundary.PushRounds / (double)System.Math.Max(1, boundary.PushSolves):F1} rounds each, dense {boundary.PushTicks * tickMs / steps:F3})";
             }
 
-            if (path == "locked")
+            if (path == "locked" || path == "compiled")
             {
                 lastTimes += $"; sections {(sections1 - sections0) / (double)forestSolves:F0}, locked pairs {(locked1 - locked0) / (double)forestSolves:F0} " +
                     $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / System.Math.Max(1, builds1 - builds0):F2} ms each), " +

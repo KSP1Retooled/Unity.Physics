@@ -133,7 +133,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             // If the boundary ran out of pivoting rounds, SolveForest returns false, but its impulses are still inside
             // their bounds and near the answer, so the vessel applies them. BoundaryCounters counts such solves.
-            SolveForest(ref run, problem.RightHandSide, impulses);
+            SolveVesselRows(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solved - started);
             SettleCompiledVessel(ref run, problem, impulses, linear, angular, false);
@@ -153,7 +153,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                         problem.RightHandSide[row] += driftPtr[row];
                     }
 
-                    SolveForest(ref run, problem.RightHandSide, impulses);
+                    SolveVesselRows(ref run, problem.RightHandSide, impulses);
                     SettleCompiledVessel(ref run, problem, impulses, linear, angular, false);
                 }
 
@@ -174,6 +174,15 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             BoundaryCounters.AddFinish(pushing - applying, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - pushing);
 
             return solved;
+        }
+
+        static unsafe void SolveVesselRows(ref ForestRun run, float* rhs, float* impulses)
+        {
+            SolveForest(ref run, rhs, impulses);
+            if (ReopenAngularStops(ref run, rhs))
+            {
+                SolveForest(ref run, rhs, impulses);
+            }
         }
 
         static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.Fused");
@@ -735,6 +744,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             // ranges of parts.
             RunVesselStage(ref run, VesselTasks.FillParts, partCount);
 
+            if (refill)
+            {
+                rebuild |= OpenPathsNearClosureStops(forest);
+            }
+
             if (rebuild)
             {
                 BuildVesselStructure(forest);
@@ -788,6 +802,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 RunVesselStage(ref run, substep <= 0 ? VesselTasks.FillParts : VesselTasks.FillPoses, partCount);
             }
 
+            if (substep <= 0)
+            {
+                rebuild |= OpenPathsNearClosureStops(forest);
+            }
+
             if (rebuild)
             {
                 BuildVesselStructure(forest);
@@ -799,6 +818,58 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     forest->BodySection[body] = part >= 0 ? forest->Structure.PartSection[part] : -1;
                 }
             }
+        }
+
+        static unsafe bool OpenPathsNearClosureStops(ForestIsland* forest)
+        {
+            bool changed = false;
+            for (int i = 0; i < forest->Closures.Length; i++)
+            {
+                VesselClosure closure = forest->Closures[i];
+                if (closure.UnlockRotationSquared == 0.0)
+                {
+                    continue;
+                }
+
+                int a = closure.PartA, b = closure.PartB;
+                double4 relative = DoubleMath.MultiplyQuaternions(DoubleMath.ConjugateQuaternion(forest->Parts[a].Orientation),
+                    forest->Parts[b].Orientation);
+                double4 displacement = DoubleMath.MultiplyQuaternions(relative, DoubleMath.ConjugateQuaternion(closure.Rest));
+                if (math.lengthsq(displacement.xyz) < closure.UnlockRotationSquared)
+                {
+                    continue;
+                }
+
+                // A closure inside a section has no relative motion. Keep its compliant tree path live
+                // near a stop, even if the individual tree edges carry too little load to stay released.
+                while (a != b)
+                {
+                    int part = math.max(a, b);
+                    VesselEdge edge = forest->Edges[part];
+                    if (edge.Parent < 0)
+                    {
+                        break;
+                    }
+                    if (edge.State == VesselEdgeState.Locked && math.any(edge.AngularStiffness < double.PositiveInfinity))
+                    {
+                        edge.State = VesselEdgeState.Yielding;
+                        forest->Edges[part] = edge;
+                        forest->PartLocked[part] = 0;
+                        forest->PartHeld[part] = 0;
+                        changed = true;
+                    }
+
+                    if (part == a)
+                    {
+                        a = edge.Parent;
+                    }
+                    else
+                    {
+                        b = edge.Parent;
+                    }
+                }
+            }
+            return changed;
         }
 
         /// <summary>

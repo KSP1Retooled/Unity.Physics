@@ -48,6 +48,11 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
         /// <summary>Joint rows that the solves left out of the boundary because they were dormant.</summary>
         public long DormantRows;
+        public long RowKindSamples;
+        public long ContactRows;
+        public long AngularStopRows;
+        public long OtherRows;
+        public long StopRetries;
 
         /// <summary>
         /// What the solves did with the factor of their free rows, see <see cref="BlockPrincipalPivotingStats"/>. Ticks are in
@@ -85,6 +90,20 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         public static void Reset()
         {
             Shared.Data = default;
+        }
+
+        internal static void AddRowKinds(int contacts, int stops, int others)
+        {
+            ref BoundaryCounters data = ref Shared.Data;
+            Interlocked.Increment(ref data.RowKindSamples);
+            Interlocked.Add(ref data.ContactRows, contacts);
+            Interlocked.Add(ref data.AngularStopRows, stops);
+            Interlocked.Add(ref data.OtherRows, others);
+        }
+
+        internal static void AddStopRetry()
+        {
+            Interlocked.Increment(ref Shared.Data.StopRetries);
         }
 
         internal static void AddSolve(int rows, int rounds, bool capped, bool unsettled, int warmRows)
