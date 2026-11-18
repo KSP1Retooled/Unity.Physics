@@ -175,7 +175,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             var removedAddresses = new ulong[removed];
             for (int i = 0; i < removed; i++)
             {
-                removedAddresses[i] = reader.ReadUInt64();
+                removedAddresses[i] = (ulong)reader.ReadValue<nuint>();
             }
 
             int count = reader.ReadCount(MaxRecords);

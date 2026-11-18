@@ -28,7 +28,7 @@ namespace Unity.Physics.Stepping.Recording
             writer.Write(geometry.CaptureFilters(globals, step));
 
             writer.Write(world->removedShapeCount);
-            writer.WriteBlock(world->removedShapes, checked((int)world->removedShapeCount * sizeof(ulong)));
+            writer.WriteBlock(world->removedShapes, checked((int)world->removedShapeCount * IntPtr.Size));
             WriteBodies(world, globals, writer, step, geometry);
 
             writer.Write(world->jointCount);
@@ -82,6 +82,7 @@ namespace Unity.Physics.Stepping.Recording
             {
                 rows = new RecordedStoreRow[bodyCount];
             }
+
             if (shapes.Length < shapeCount)
             {
                 shapes = new RecordedStoreShape[shapeCount];
@@ -99,6 +100,7 @@ namespace Unity.Physics.Stepping.Recording
                         bodyRows[i].MovingCompound = geometry.CaptureMovingCompound(world->bodies + i, step);
                     }
                 }
+
                 for (int i = 0; i < shapeCount; i++)
                 {
                     if (shapeRows[i].Shape.data.geometryType >= StoreConstants.GeometryConvexMesh)

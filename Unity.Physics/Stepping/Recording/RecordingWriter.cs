@@ -5,7 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 
 namespace Unity.Physics.Stepping.Recording
 {
-    /// <summary>Reuses a buffer for writing checkpoints and copies only the bytes that a frame keeps.</summary>
+    /// <summary>Writes a checkpoint into the current frame buffer or into reusable scratch storage.</summary>
     internal sealed unsafe class RecordingWriter
     {
         internal byte[] Buffer { get; private set; } = new byte[4096];
@@ -64,7 +64,8 @@ namespace Unity.Physics.Stepping.Recording
             if (Length > Buffer.Length)
             {
                 byte[] buffer = Buffer;
-                Array.Resize(ref buffer, System.Math.Max(Length, checked(buffer.Length * 2)));
+                int growth = System.Math.Max(4096, buffer.Length / 8);
+                Array.Resize(ref buffer, System.Math.Max(Length, checked(buffer.Length + growth)));
                 Buffer = buffer;
             }
 
