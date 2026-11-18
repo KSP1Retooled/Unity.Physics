@@ -71,6 +71,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
                 $"{what}: the loads {actual.Force} {actual.Torque} instead of {expected.Force} {expected.Torque}");
             Assert.That(actual.BreakingForce, Is.EqualTo(expected.BreakingForce), $"{what}: the smoothed force");
             Assert.That(actual.BreakingTorque, Is.EqualTo(expected.BreakingTorque), $"{what}: the smoothed torque");
+            Assert.That(actual.FullForce.Equals(expected.FullForce) && actual.FullTorque.Equals(expected.FullTorque), Is.True,
+                $"{what}: the full loads");
+            Assert.That(actual.SmoothedFullForce, Is.EqualTo(expected.SmoothedFullForce), $"{what}: the smoothed full force");
+            Assert.That(actual.SmoothedFullTorque, Is.EqualTo(expected.SmoothedFullTorque), $"{what}: the smoothed full torque");
             Assert.That(actual.Serial, Is.EqualTo(expected.Serial), $"{what}: the serial number");
         }
 
@@ -256,6 +260,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
                 Assert.That(record->force.Equals(before.Force) && record->torque.Equals(before.Torque), Is.True, "the record has the loads");
                 Assert.That(record->breakingForce, Is.EqualTo(before.BreakingForce), "the record has the smoothed force");
                 Assert.That(record->breakingTorque, Is.EqualTo(before.BreakingTorque), "the record has the smoothed torque");
+                Assert.That(record->fullForce.Equals(before.FullForce) && record->fullTorque.Equals(before.FullTorque), Is.True,
+                    "the record has the full loads");
+                Assert.That(record->smoothedFullForce, Is.EqualTo(before.SmoothedFullForce));
+                Assert.That(record->smoothedFullTorque, Is.EqualTo(before.SmoothedFullTorque));
             }
             finally
             {

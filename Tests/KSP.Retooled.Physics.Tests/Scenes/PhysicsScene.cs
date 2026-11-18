@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Physics.Dynamics.Joint.Loads;
 
 namespace KSP.Retooled.Physics.Tests.Scenes
 {
@@ -95,6 +97,28 @@ namespace KSP.Retooled.Physics.Tests.Scenes
         protected static void AssertVector(Vector3 expected, Vector3 actual, float tolerance, string what = "value")
         {
             Assert.That((expected - actual).magnitude, Is.LessThanOrEqualTo(tolerance), $"{what}: expected {expected:F5}, got {actual:F5}");
+        }
+
+        internal static unsafe JointLoadState FullJointLoad(Joint joint)
+        {
+            if (!BackendInfo.IsRetooled)
+            {
+                Assert.Ignore("Only the Retooled backend exposes its internal joint loads.");
+            }
+
+            var step = StepEntryPoints.Current;
+            ulong id = EntityId.ToULong(joint.GetEntityId());
+            for (uint i = 0; i < step->Store->jointCount; i++)
+            {
+                var record = step->Store->joints[i];
+                if (record->userData != null && *(ulong*)((byte*)record->userData + step->Globals->engineObjectIdOffset) == id)
+                {
+                    return *JointLoadStates.Find(record);
+                }
+            }
+
+            Assert.Fail("The joint has no load in the store.");
+            return default;
         }
     }
 }

@@ -109,6 +109,41 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out lastSections, out lastLocked);
         }
 
+        [TestCase(180.0f)]
+        [TestCase(5.0f)]
+        public void ForestLockYieldsOnSmoothedDriveForce(float angle)
+        {
+            Fresh(true);
+            Vector3 point = Vector3.up * 5.0f;
+            Rigidbody support = WeightlessBox(point, 10.0f);
+            Rigidbody body = WeightlessBox(point, 10.0f);
+            support.GetComponent<Collider>().enabled = body.GetComponent<Collider>().enabled = false;
+            support.sleepThreshold = body.sleepThreshold = 0.0f;
+            ConfigurableJoint joint = SpringJoint(body, support, point, 2000.0f);
+            joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+            joint.linearLimit = new SoftJointLimit { limit = 1.0f };
+            joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = 1e20f, maximumForce = 1e20f };
+            joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
+            joint.angularYLimit = joint.angularZLimit = new SoftJointLimit { limit = angle };
+            joint.breakForce = 100.0f;
+
+            Simulate(20);
+            Sections(out _, out long locked);
+            Assert.That(locked, Is.EqualTo(1));
+
+            for (int step = 0; step < 30; step++)
+            {
+                body.AddForce(80.0f * Vector3.right);
+                support.AddForce(80.0f * Vector3.left);
+                Simulate();
+            }
+
+            Sections(out _, out long stillLocked);
+            Assert.That(stillLocked, Is.Zero);
+            Assert.That(joint.currentForce, Is.EqualTo(Vector3.zero));
+            Assert.That(FullJointLoad(joint).SmoothedFullForce, Is.GreaterThan(70.0f));
+        }
+
         [Test]
         public void ALockedColumnCarriesTheLoadsOfTheYieldingOne()
         {

@@ -57,7 +57,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
 
             foreach (ConfigurableJoint joint in joints)
             {
-                Assert.That(joint.currentForce.magnitude, Is.EqualTo(Weight.magnitude / 3.0f).Within(5).Percent);
+                Vector3 force = FullJointLoad(joint).FullForce;
+                Assert.That(force.magnitude, Is.EqualTo(Weight.magnitude / 3.0f).Within(5).Percent);
+                Assert.That(joint.currentForce, Is.EqualTo(Vector3.zero));
             }
         }
 
@@ -75,8 +77,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             foreach (ConfigurableJoint joint in joints)
             {
                 Vector3 anchor = joint.transform.TransformPoint(joint.anchor);
-                force += joint.currentForce;
-                moment += Vector3.Cross(anchor - Node, joint.currentForce) + joint.currentTorque;
+                var load = FullJointLoad(joint);
+                force += (Vector3)load.FullForce;
+                moment += Vector3.Cross(anchor - Node, load.FullForce) + (Vector3)load.FullTorque;
             }
 
             Vector3 weightMoment = Vector3.Cross(body.worldCenterOfMass - Node, Weight);
@@ -84,7 +87,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             string detail = $"moment {moment:F2} weight {weightMoment:F2} com {body.worldCenterOfMass:F3}";
             foreach (ConfigurableJoint joint in joints)
             {
-                detail += $" | f {joint.currentForce:F2} t {joint.currentTorque:F2} at {joint.transform.TransformPoint(joint.anchor):F2}";
+                var load = FullJointLoad(joint);
+                detail += $" | f {load.FullForce:F2} t {load.FullTorque:F2} at {joint.transform.TransformPoint(joint.anchor):F2}";
             }
 
             Assert.That(moment.magnitude, Is.EqualTo(weightMoment.magnitude).Within(5).Percent, detail);
