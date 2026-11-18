@@ -927,100 +927,10 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         }
 
         /// <summary>
-        /// Assign forests and transfer each vessel's newest lock states before solving.
-        /// Copy all states before handing out forests, because slot assignment may destroy a previous owner.
-        /// Run serially after cache slot assignment.
-        /// </summary>
-        internal static unsafe void AssignVesselForests(IslandSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
-            VesselSet set)
-        {
-            if (!cache.IsCreated || !set.IsCreated)
-            {
-                return;
-            }
-
-            // For each of the island vessels, where its copied states start in the lists below, or -1 if the vessel
-            // keeps its states in the forest that will solve it.
-            var copied = new NativeArray<int>(math.max(1, islandVessels.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var locked = new NativeList<byte>(Allocator.Temp);
-            var held = new NativeList<int>(Allocator.Temp);
-            var ratio = new NativeList<float>(Allocator.Temp);
-            for (int i = 0; i < islands.Length; i++)
-            {
-                DirectIsland island = islands[i];
-                if (island.VesselCount == 0)
-                {
-                    continue;
-                }
-
-                ForestIsland* planned = island.Fused ? cache.FindFusedForest(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
-                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
-                {
-                    copied[k] = -1;
-                    VesselRecord vessel = set.Vessels[islandVessels[k]];
-                    ForestIsland* owner = cache.OwnerOf(vessel.Id);
-                    if (owner == null || owner == planned || !FindVesselStates(owner, vessel, out int start))
-                    {
-                        continue;
-                    }
-
-                    copied[k] = locked.Length;
-                    locked.AddRange(owner->PartLocked.Ptr + start, vessel.PartCount);
-                    held.AddRange(owner->PartHeld.Ptr + start, vessel.PartCount);
-                    ratio.AddRange(owner->PartRatio.Ptr + start, vessel.PartCount);
-                }
-            }
-
-            for (int i = 0; i < islands.Length; i++)
-            {
-                DirectIsland island = islands[i];
-                if (island.VesselCount == 0)
-                {
-                    continue;
-                }
-
-                ForestIsland* forest = island.Fused ? cache.FusedForestOf(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
-                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
-                {
-                    VesselRecord vessel = set.Vessels[islandVessels[k]];
-                    cache.SetOwner(vessel.Id, forest);
-                    if (forest == null || copied[k] < 0)
-                    {
-                        continue;
-                    }
-
-                    if (!forest->TakesStates)
-                    {
-                        forest->TakenIds.Clear();
-                        forest->TakenVersions.Clear();
-                        forest->TakenStarts.Clear();
-                        forest->TakenLocked.Clear();
-                        forest->TakenHeld.Clear();
-                        forest->TakenRatio.Clear();
-                        forest->TakesStates = true;
-                    }
-
-                    forest->TakenIds.Add(vessel.Id);
-                    forest->TakenVersions.Add(vessel.StructureVersion);
-                    forest->TakenStarts.Add(forest->TakenLocked.Length);
-                    forest->TakenLocked.AddRange(locked.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
-                    forest->TakenHeld.AddRange(held.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
-                    forest->TakenRatio.AddRange(ratio.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
-                }
-            }
-
-            cache.PruneOwners();
-            copied.Dispose();
-            locked.Dispose();
-            held.Dispose();
-            ratio.Dispose();
-        }
-
-        /// <summary>
         /// Finds where a vessel's parts start in a forest's lock states, if the forest's layout holds the vessel with
         /// the same structure version.
         /// </summary>
-        static unsafe bool FindVesselStates(ForestIsland* forest, in VesselRecord vessel, out int start)
+        internal static unsafe bool FindVesselStates(ForestIsland* forest, in VesselRecord vessel, out int start)
         {
             start = -1;
             if (!forest->VesselMode || forest->VesselSignature.Length == 0)

@@ -445,9 +445,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
         /// </summary>
         private static readonly string[] SubstepJobs =
         {
-            "Solver:UpdateIslandJacobiansJob", "Solver:CountIslandRowsJob", "Solver:BuildIslandRowsJob",
-            "Solver:SolveDirectIslandJob", "Solver:SolveSharedDirectIslandsJob", "Solver:IntegrateIslandBodiesJob",
-            "Solver:SolveUnfusedSubstepsJob",
+            "IslandSolveScheduler:UpdateIslandJacobiansJob", "IslandSolveScheduler:CountIslandRowsJob", "IslandSolveScheduler:BuildIslandRowsJob",
+            "IslandSolveScheduler:SolveDirectIslandJob", "IslandSolveScheduler:SolveSharedDirectIslandsJob", "IslandSolveScheduler:IntegrateIslandBodiesJob",
+            "IslandSolveScheduler:SolveUnfusedSubstepsJob",
         };
 
         /// <summary>
@@ -456,7 +456,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
         private static string SolveTail(int first, int last)
         {
             const string backendStep = "Physics.Backend.Step";
-            const string fusedJob = "Solver:SolveFusedVesselIslandsJob (Burst)";
+            const string fusedJob = "IslandSolveScheduler:SolveFusedVesselIslandsJob (Burst)";
             const string writeBackJob = "StoreBodies:WriteBackJob (Burst)";
             var chainEnds = new List<double>();
             var writeBacks = new List<double>();

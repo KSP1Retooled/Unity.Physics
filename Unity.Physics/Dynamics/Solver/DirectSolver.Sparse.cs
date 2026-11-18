@@ -29,7 +29,7 @@ namespace Unity.Physics
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have
         /// used. Leaves the impulses in the right-hand side, where the dense path leaves them too.
         /// </summary>
-        static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
+        internal static unsafe void SolveSparsely(in DispatchPairSequencer.DirectSolverSchedulerInfo directSolverSchedulerInfo,
             int islandIndex, in NativeStream.Reader jacobiansReader, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, in StepInput stepInput, int rows, in JacobianRows jacobianRows,
             in Vector eps, in Vector l, in Vector u, in Vector rhs, in NativeArray<LCP.MLCPIndexFlag> indexSetArray, bool bounded,

@@ -1,3 +1,4 @@
+using static Unity.Physics.Solver;
 using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 using Unity.Physics.Dynamics.Solver.Forest;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
@@ -16,9 +17,10 @@ using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Profiling;
 
-namespace Unity.Physics
+namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 {
-    public static partial class Solver
+    /// <summary>Schedule island solving, integration and buffer disposal using the direct and vessel solvers.</summary>
+    internal static partial class IslandSolveScheduler
     {
         /// <summary>
         /// The number of iterations used to remove the velocity added for contact penetration correction after
@@ -547,112 +549,6 @@ namespace Unity.Physics
             public void Execute()
             {
                 Buffers.Destroy();
-            }
-        }
-
-        /// <summary>
-        /// List direct-island Jacobians in iterator order, joints before contacts, and count first-substep rows.
-        /// </summary>
-        [BurstCompile]
-        unsafe struct IndexDirectIslandsJob : IJob
-        {
-            [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
-
-            public NativeStream.Reader JacobiansReader;
-
-            public DirectIslandWork Work;
-
-            public IslandSolverCache Cache;
-
-            /// <summary>The world's bodies, which tell the cache who each island's first body is.</summary>
-            [ReadOnly]
-            public NativeArray<RigidBody> Bodies;
-
-            /// <summary>The number of moving bodies in the world, which the islands' shared index of bodies covers.</summary>
-            public int MotionCount;
-
-            public void Execute()
-            {
-                int islandCount = Info.NumIslands;
-
-                // The job that found the islands also listed each island's vessels. Without that list, the islands have
-                // no vessels.
-                bool vesselsKnown = Info.IslandVesselInfos.Length == islandCount;
-                Work.IslandVessels.Clear();
-                // The cache gives its slots to the islands after MarkFusedVesselIslandsJob has found the fused islands,
-                // which keep their state in slots of their own.
-                if (Cache.IsCreated)
-                {
-                    UnsafeList<int>* firstBodies = Work.Buffers.FirstBodies;
-                    UnsafeList<ulong>* firstIdentities = Work.Buffers.FirstIdentities;
-                    firstBodies->Resize(islandCount);
-                    firstIdentities->Resize(islandCount);
-                    var bodies = (RigidBody*)Bodies.GetUnsafeReadOnlyPtr();
-                    for (int island = 0; island < islandCount; island++)
-                    {
-                        int first = Info.IslandBodies[Info.FirstIslandBodyIndices[island]];
-                        firstBodies->Ptr[island] = first;
-                        firstIdentities->Ptr[island] = ForestIsland.BodyIdentity(bodies, Bodies.Length, first);
-                    }
-
-                    Cache.ClearCompactIndex(MotionCount);
-                }
-
-                Work.Islands.ResizeUninitialized(islandCount);
-                Work.Buffers.Bounded->Resize(islandCount);
-
-                // Count rows while listing headers, then convert counts to offsets to avoid rereading cold
-                // headers.
-                UnsafeList<int>* headerRows = Work.Buffers.HeaderRows;
-                headerRows->Clear();
-                for (int island = 0; island < islandCount; island++)
-                {
-                    int numContacts = Info.IslandContactCounts[island];
-                    int firstHeader = Work.Headers.Length;
-                    bool touchesSomething = false;
-
-                    // The iterator reads joint pairs before contact pairs. Identify joint Jacobians by excluding the
-                    // Contact and Trigger types, which are produced only by contact pairs.
-                    int jointHeaders = 0;
-                    var iterator = new IslandJacobianIterator(JacobiansReader, Info, island, numContacts);
-                    while (iterator.HasJacobiansLeft())
-                    {
-                        ref JacobianHeader header = ref iterator.ReadJacobianHeader();
-                        touchesSomething |= header.Type == JacobianType.Contact && header.Enabled;
-                        jointHeaders += header.Type != JacobianType.Contact && header.Type != JacobianType.Trigger ? 1 : 0;
-                        Work.Headers.Add(new IslandHeader
-                        {
-                            Header = (JacobianHeader*)UnsafeUtility.AddressOf(ref header),
-                            Island = island,
-                        });
-                        headerRows->Add(GetConstraintRows(ref header));
-                    }
-
-                    int firstVessel = Work.IslandVessels.Length, vesselParts = 0, otherBodies = 0;
-                    if (vesselsKnown)
-                    {
-                        DispatchPairSequencer.IslandVesselInfo vessels = Info.IslandVesselInfos[island];
-                        Work.IslandVessels.AddRange((int*)Info.IslandVessels.GetUnsafeReadOnlyPtr() + vessels.FirstVessel, vessels.VesselCount);
-                        vesselParts = vessels.VesselParts;
-                        otherBodies = vessels.OtherBodies;
-                    }
-
-                    Work.Islands[island] = new DirectIsland
-                    {
-                        FirstHeader = firstHeader,
-                        JointEnd = firstHeader + jointHeaders,
-                        SolveEnd = touchesSomething ? Work.Headers.Length : firstHeader + jointHeaders,
-                        HeaderEnd = Work.Headers.Length,
-                        ContactPairs = touchesSomething ? numContacts : 0,
-                        FirstVessel = firstVessel,
-                        VesselCount = Work.IslandVessels.Length - firstVessel,
-                        VesselParts = vesselParts,
-                        OtherBodies = otherBodies,
-                    };
-                }
-
-                CountIslandRowsJob.CountRows(Work, true);
             }
         }
 
@@ -1209,341 +1105,94 @@ namespace Unity.Physics
         }
 
         /// <summary>
-        /// Mark eligible vessel islands for fused solving, assign other cache slots and list unfused bodies for
-        /// integration.
+        /// Assign forests and transfer each vessel's newest lock states before solving.
+        /// Copy all states before handing out forests, because slot assignment may destroy a previous owner.
+        /// Run serially after cache slot assignment.
         /// </summary>
-        [BurstCompile]
-        unsafe struct MarkFusedVesselIslandsJob : IJob
+        static unsafe void AssignVesselForests(IslandSolverCache cache, NativeArray<DirectIsland> islands, NativeArray<int> islandVessels,
+            VesselSet set)
         {
-            public NativeList<DirectIsland> Islands;
-
-            [ReadOnly]
-            public NativeList<int> IslandVessels;
-
-            /// <summary>The islands' bodies, in island order, and where each island's bodies start.</summary>
-            [ReadOnly]
-            public DispatchPairSequencer.DirectSolverSchedulerInfo Info;
-
-            public NativeList<int> UnfusedBodies;
-
-            public VesselSet Vessels;
-
-            public IslandSolverCache Cache;
-
-            /// <summary>
-            /// Whether the fused job is on, and the value of <see cref="SolverSwitches.FusedVesselParts"/>, when the job was scheduled.
-            /// </summary>
-            public bool Fuse;
-
-            public int MinimumParts;
-
-            /// <summary>The value of <see cref="SolverSwitches.FusedContacts"/> when the job was scheduled.</summary>
-            public bool Contacts;
-
-            /// <summary>The buffers that hold a team for each fused island and the configured team that they copy.</summary>
-            public DirectIslandBuffers Buffers;
-
-            public void Execute()
+            if (!cache.IsCreated || !set.IsCreated)
             {
-                for (int i = 0; Fuse && i < Islands.Length; i++)
+                return;
+            }
+
+            // For each of the island vessels, where its copied states start in the lists below, or -1 if the vessel
+            // keeps its states in the forest that will solve it.
+            var copied = new NativeArray<int>(math.max(1, islandVessels.Length), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var locked = new NativeList<byte>(Allocator.Temp);
+            var held = new NativeList<int>(Allocator.Temp);
+            var ratio = new NativeList<float>(Allocator.Temp);
+            for (int i = 0; i < islands.Length; i++)
+            {
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
                 {
-                    DirectIsland island = Islands[i];
-                    if (!Fusable(island, MinimumParts))
+                    continue;
+                }
+
+                ForestIsland* planned = island.Fused ? cache.FindFusedForest(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
+                {
+                    copied[k] = -1;
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    ForestIsland* owner = cache.OwnerOf(vessel.Id);
+                    if (owner == null || owner == planned || !FindVesselStates(owner, vessel, out int start))
                     {
                         continue;
                     }
 
-                    island.Fused = true;
-                    Islands[i] = island;
+                    copied[k] = locked.Length;
+                    locked.AddRange(owner->PartLocked.Ptr + start, vessel.PartCount);
+                    held.AddRange(owner->PartHeld.Ptr + start, vessel.PartCount);
+                    ratio.AddRange(owner->PartRatio.Ptr + start, vessel.PartCount);
                 }
-
-                AssignSlots();
-                ListUnfusedBodies();
-                ListFusedTeams();
-                AssignVesselForests(Cache, Islands.AsArray(), IslandVessels.AsArray(), Vessels);
             }
 
-            /// <summary>
-            /// Assign substep cache slots by first-body identity. Fused islands use their own slots.
-            /// </summary>
-            void AssignSlots()
+            for (int i = 0; i < islands.Length; i++)
             {
-                if (!Cache.IsCreated)
+                DirectIsland island = islands[i];
+                if (island.VesselCount == 0)
                 {
-                    return;
+                    continue;
                 }
 
-                UnsafeList<ulong>* identities = Buffers.FirstIdentities;
-                for (int i = 0; i < Islands.Length; i++)
+                ForestIsland* forest = island.Fused ? cache.FusedForestOf(set.Vessels[islandVessels[island.FirstVessel]].Id) : cache.ForestOf(i);
+                for (int k = island.FirstVessel; k < island.FirstVessel + island.VesselCount; k++)
                 {
-                    if (Islands[i].Fused)
-                    {
-                        identities->Ptr[i] = IslandSolverCache.NoSlot;
-                    }
-                }
-
-                Cache.Assign(View(Buffers.FirstBodies->Ptr, Islands.Length), View(identities->Ptr, Islands.Length));
-            }
-
-            /// <summary>
-            /// List unfused bodies and record their workload for the next step's scheduling decision.
-            /// </summary>
-            void ListUnfusedBodies()
-            {
-                UnfusedBodies.Clear();
-                int islandCount = Islands.Length;
-                var work = new IslandSolverCache.UnfusedWork();
-                for (int i = 0; i < islandCount; i++)
-                {
-                    DirectIsland island = Islands[i];
-                    if (island.Fused)
-                    {
-                        work.FusedParts += island.VesselParts;
-                        continue;
-                    }
-
-                    int first = Info.FirstIslandBodyIndices[i];
-                    int end = i + 1 < islandCount ? Info.FirstIslandBodyIndices[i + 1] : Info.IslandBodies.Length;
-                    UnfusedBodies.AddRange((int*)Info.IslandBodies.GetUnsafeReadOnlyPtr() + first, end - first);
-                    work.Islands++;
-                    work.Rows += island.Rows;
-                    work.TeamIslands += island.SolvesInTeam ? 1 : 0;
-                }
-
-                work.Bodies = UnfusedBodies.Length;
-                Cache.NoteUnfusedWork(work);
-            }
-
-            /// <summary>
-            /// Create a team per fused island, ordered by descending part count then island index.
-            /// </summary>
-            void ListFusedTeams()
-            {
-                UnsafeList<FusedTeam>* teams = Buffers.FusedTeams;
-                WorkTeam configured = Buffers.Teams->Ptr[Buffers.Teams->Length - 1];
-                teams->Clear();
-                for (int i = 0; i < Islands.Length; i++)
-                {
-                    if (!Islands[i].Fused)
+                    VesselRecord vessel = set.Vessels[islandVessels[k]];
+                    cache.SetOwner(vessel.Id, forest);
+                    if (forest == null || copied[k] < 0)
                     {
                         continue;
                     }
 
-                    var team = new FusedTeam { Team = configured, Island = i, Parts = Islands[i].VesselParts };
-                    int at = teams->Length;
-                    teams->Add(team);
-
-                    // The islands come in index order, so an island moves ahead only of islands with fewer parts.
-                    while (at > 0 && teams->Ptr[at - 1].Parts < team.Parts)
+                    if (!forest->TakesStates)
                     {
-                        teams->Ptr[at] = teams->Ptr[at - 1];
-                        at--;
+                        forest->TakenIds.Clear();
+                        forest->TakenVersions.Clear();
+                        forest->TakenStarts.Clear();
+                        forest->TakenLocked.Clear();
+                        forest->TakenHeld.Clear();
+                        forest->TakenRatio.Clear();
+                        forest->TakesStates = true;
                     }
 
-                    teams->Ptr[at] = team;
+                    forest->TakenIds.Add(vessel.Id);
+                    forest->TakenVersions.Add(vessel.StructureVersion);
+                    forest->TakenStarts.Add(forest->TakenLocked.Length);
+                    forest->TakenLocked.AddRange(locked.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenHeld.AddRange(held.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
+                    forest->TakenRatio.AddRange(ratio.GetUnsafeReadOnlyPtr() + copied[k], vessel.PartCount);
                 }
             }
 
-            /// <summary>
-            /// Whether the fused job can take an island of at least <paramref name="minimumParts"/> vessel parts: all
-            /// its bodies must be vessel parts.
-            /// </summary>
-            bool Fusable(in DirectIsland island, int minimumParts)
-            {
-                return island.VesselCount > 0 && island.VesselParts >= minimumParts && island.OtherBodies == 0
-                    && (Contacts || (island.JointRows == 0 && island.Rows == 0 && island.JointEnd == island.HeaderEnd));
-            }
+            cache.PruneOwners();
+            copied.Dispose();
+            locked.Dispose();
+            held.Dispose();
+            ratio.Dispose();
         }
 
-        /// <summary>
-        /// Solve marked vessel islands across all substeps with a team per island.
-        /// Idle lanes help active teams. Combine task results in fixed order for deterministic results.
-        /// </summary>
-        [BurstCompile]
-        unsafe struct SolveFusedVesselIslandsJob : IJobParallelFor
-        {
-            // The substeps' jobs change the row counts of the islands while this job runs. This job reads only the
-            // fields that say which islands are fused and which vessels they hold, and those fields do not change.
-            [ReadOnly, NativeDisableContainerSafetyRestriction]
-            public NativeArray<DirectIsland> Islands;
-
-            [ReadOnly, NativeDisableContainerSafetyRestriction]
-            public NativeArray<int> IslandVessels;
-
-            /// <summary>
-            /// The Jacobians of every island. This job updates and reads only the Jacobians of the fused islands, which
-            /// the substeps' jobs skip.
-            /// </summary>
-            [ReadOnly, NativeDisableContainerSafetyRestriction]
-            public NativeArray<IslandHeader> Headers;
-
-            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
-            public NativeArray<MotionVelocity> MotionVelocities;
-
-            [NativeDisableParallelForRestriction, NativeDisableContainerSafetyRestriction]
-            public NativeArray<MotionData> MotionDatas;
-
-            [ReadOnly]
-            public NativeArray<RigidBody> Bodies;
-
-            public StepInput StepInput;
-
-            /// <summary>A team for each fused island, the island with the most parts first.</summary>
-            [NativeDisableUnsafePtrRestriction]
-            public UnsafeList<FusedTeam>* Teams;
-
-            /// <summary>
-            /// The bodies of the islands that are not fused, which the lane that does the substeps' work of those
-            /// islands integrates.
-            /// </summary>
-            [ReadOnly, NativeDisableContainerSafetyRestriction]
-            public NativeArray<int> UnfusedBodies;
-
-            // Unfused substep inputs and optional atomic lane claim. Without the claim word, chained jobs own
-            // the work.
-            public UnfusedSubsteps Unfused;
-
-            [NativeDisableUnsafePtrRestriction]
-            public int* UnfusedClaim;
-
-            /// <summary>
-            /// Scheduled lane count. With one lane, skip team stage publication and solve islands directly.
-            /// </summary>
-            public int Lanes;
-
-            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.HelpFused");
-
-            public void Execute(int lane)
-            {
-                FusedTeam* teams = Teams->Ptr;
-                int count = Teams->Length;
-
-                // Claim unled islands. Give unfused substeps to the first lane not leading the largest island.
-                for (int t = 0; t < count; t++)
-                {
-                    if (teams[t].Team.TryLead())
-                    {
-                        DirectIsland island = Islands[teams[t].Island];
-                        System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
-                        SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
-                            (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
-                            StepInput, Lanes > 1 ? &teams[t].Team : null);
-                        teams[t].Team.Finish();
-                    }
-
-                    if (t == 0)
-                    {
-                        RunUnfusedOnce();
-                    }
-                }
-
-                if (count == 0)
-                {
-                    RunUnfusedOnce();
-                }
-
-                // Help open stages, largest island first. After the spin timeout, wait on the team with the
-                // most parts per lane.
-                using (HelpMarker.Auto())
-                {
-                    while (true)
-                    {
-                        if (count > 1 && !SweepOpenStages(teams, count))
-                        {
-                            return;
-                        }
-
-                        int best = -1;
-                        long bestParts = 0, bestLanes = 1;
-                        for (int t = 0; t < count; t++)
-                        {
-                            if (teams[t].Team.Finished)
-                            {
-                                continue;
-                            }
-
-                            // This island has more parts for each lane than the best so far when its parts times the best
-                            // island's lanes are more than the best island's parts times its lanes.
-                            long lanes = System.Threading.Volatile.Read(ref teams[t].Helpers) + 1;
-                            if (best < 0 || teams[t].Parts * bestLanes > bestParts * lanes)
-                            {
-                                best = t;
-                                bestParts = teams[t].Parts;
-                                bestLanes = lanes;
-                            }
-                        }
-
-                        if (best < 0)
-                        {
-                            return;
-                        }
-
-                        System.Threading.Interlocked.Increment(ref teams[best].Helpers);
-                        teams[best].Team.Help();
-                        System.Threading.Interlocked.Decrement(ref teams[best].Helpers);
-
-                        // A helper that stayed idle past its patience gives its thread back to the job system rather than
-                        // wait for another island.
-                        if (!teams[best].Team.Finished)
-                        {
-                            return;
-                        }
-                    }
-                }
-            }
-
-            /// <summary>
-            /// Does the substeps' work of the islands that are not fused, if the step gave that work to this job and no
-            /// other lane has taken it.
-            /// </summary>
-            void RunUnfusedOnce()
-            {
-                if (UnfusedClaim != null && System.Threading.Interlocked.CompareExchange(ref *UnfusedClaim, 1, 0) == 0)
-                {
-                    RunUnfusedSubsteps(Unfused, Headers, Islands, IslandVessels, UnfusedBodies, MotionVelocities, MotionDatas, Bodies);
-                }
-            }
-
-            /// <summary>
-            /// Help open island stages, largest first, until the spin timeout. Return false when all islands are
-            /// solved.
-            /// </summary>
-            static bool SweepOpenStages(FusedTeam* teams, int count)
-            {
-                long spinTicks = teams[0].Team.SpinTicks;
-                long idleSince = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                while (true)
-                {
-                    bool unsolved = false, worked = false;
-                    for (int t = 0; t < count; t++)
-                    {
-                        if (!teams[t].Team.Finished)
-                        {
-                            unsolved = true;
-                            worked |= teams[t].Team.TryWork();
-                        }
-                    }
-
-                    if (!unsolved)
-                    {
-                        return false;
-                    }
-
-                    long now = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    if (worked)
-                    {
-                        idleSince = now;
-                    }
-                    else if (now - idleSince > spinTicks)
-                    {
-                        return true;
-                    }
-                    else
-                    {
-                        Unity.Burst.Intrinsics.Common.Pause();
-                    }
-                }
-            }
-        }
     }
 }

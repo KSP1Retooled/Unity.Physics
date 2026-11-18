@@ -1489,7 +1489,7 @@ namespace Unity.Physics
 
         [BurstCompile]
         [NoAlias]
-        struct ParallelIterativeSolverJob : IJobParallelForDefer
+        internal struct ParallelIterativeSolverJob : IJobParallelForDefer
         {
             [NativeDisableParallelForRestriction]
             public NativeArray<MotionVelocity> MotionVelocities;
@@ -1711,7 +1711,7 @@ namespace Unity.Physics
         #region Events
 
         [BurstCompile]
-        struct ParallelExportEventsJob : IJobParallelForDefer
+        internal struct ParallelExportEventsJob : IJobParallelForDefer
         {
             public NativeStream.Reader JacobiansReader;
 

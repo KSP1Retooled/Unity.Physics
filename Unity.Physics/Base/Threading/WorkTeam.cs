@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Scheduling;
 using Unity.Physics.Dynamics.Solver.Vessels;
 using Unity.Physics.Dynamics.Solver.Forest;
 using System.Threading;
@@ -320,7 +321,7 @@ namespace Unity.Physics.Base.Threading
             }
             else if (stage.Kind == IterativePhaseKind)
             {
-                Solver.IterativePhaseTask(stage.Context, task);
+                IslandSolveScheduler.IterativePhaseTask(stage.Context, task);
             }
             else if (stage.Kind == ForestFactorKind)
             {
