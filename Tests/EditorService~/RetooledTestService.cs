@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using Unity.Burst;
 using Unity.Collections;
@@ -18,7 +19,8 @@ namespace KSP.Retooled.Physics.EditorService
     /// Read request.txt and write done.txt. Request fields are id, results, filter, category and repeatable
     /// env=NAME=VALUE.
     /// Import changed scripts before each run and reload when environment settings change.
-    /// Restore omitted settings to their startup values. quit.txt closes the editor.
+    /// Restore omitted environment settings to their startup values. quit.txt closes the editor.
+    /// Use normal Burst safety checks unless a request sets RETOOLED_TEST_SAFETY=1.
     /// </summary>
     [InitializeOnLoad]
     internal static class RetooledTestService
@@ -30,7 +32,7 @@ namespace KSP.Retooled.Physics.EditorService
 
         private static readonly string Folder = Environment.GetEnvironmentVariable("RETOOLED_TEST_SERVICE");
         private static double nextPoll;
-        private static (bool Enabled, bool Forced, NativeLeakDetectionMode Leaks)? previousSafety;
+        private static NativeLeakDetectionMode? previousLeakMode;
 
         static RetooledTestService()
         {
@@ -117,12 +119,22 @@ namespace KSP.Retooled.Physics.EditorService
             }
 
             SessionState.SetString(StageKey, "running");
-            if (current.Environment.TryGetValue("RETOOLED_TEST_SAFETY", out string safety) && safety == "1")
+            bool forceSafety = current.Environment.TryGetValue("RETOOLED_TEST_SAFETY", out string safety) && safety == "1";
+            BurstCompilerOptions options = BurstCompiler.Options;
+            try
             {
-                BurstCompilerOptions options = BurstCompiler.Options;
-                previousSafety = (options.EnableBurstSafetyChecks, options.ForceEnableBurstSafetyChecks, NativeLeakDetection.Mode);
-                options.EnableBurstSafetyChecks = true;
-                options.ForceEnableBurstSafetyChecks = true;
+                SetBurstSafety(options, forceSafety);
+            }
+            catch (Exception exception)
+            {
+                UnityEngine.Debug.LogException(exception);
+                Finish(current, "could not configure Burst safety checks\n");
+                return;
+            }
+
+            if (forceSafety)
+            {
+                previousLeakMode = NativeLeakDetection.Mode;
                 NativeLeakDetection.Mode = NativeLeakDetectionMode.EnabledWithStackTrace;
                 UnityEngine.Debug.Log($"[RetooledTestService] Burst compilation {options.EnableBurstCompilation}, forced safety {options.ForceEnableBurstSafetyChecks}, leak detection {NativeLeakDetection.Mode}");
             }
@@ -133,6 +145,31 @@ namespace KSP.Retooled.Physics.EditorService
                 categoryNames = current.Categories,
             };
             ScriptableObject.CreateInstance<TestRunnerApi>().Execute(new ExecutionSettings(filter));
+        }
+
+        private static void SetBurstSafety(BurstCompilerOptions options, bool forceSafety)
+        {
+            if (options.EnableBurstSafetyChecks && options.ForceEnableBurstSafetyChecks == forceSafety)
+            {
+                return;
+            }
+
+            // Burst's editor listener writes the settings to shared EditorPrefs. Bypass that listener so a
+            // stopped test run cannot change what another editor reads. The setters still recompile Burst code.
+            PropertyInfo optionsChanged = typeof(BurstCompilerOptions).GetProperty(
+                "OptionsChanged", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMemberException(typeof(BurstCompilerOptions).FullName, "OptionsChanged");
+            object listener = optionsChanged.GetValue(options);
+            optionsChanged.SetValue(options, null);
+            try
+            {
+                options.ForceEnableBurstSafetyChecks = forceSafety;
+                options.EnableBurstSafetyChecks = true;
+            }
+            finally
+            {
+                optionsChanged.SetValue(options, listener);
+            }
         }
 
         /// <summary>
@@ -168,12 +205,10 @@ namespace KSP.Retooled.Physics.EditorService
         /// <summary>Writes done.txt with the request's id and the summary, and makes the service ready for the next request.</summary>
         private static void Finish(Request request, string summary)
         {
-            if (previousSafety is { } safety)
+            if (previousLeakMode is { } leakMode)
             {
-                BurstCompiler.Options.ForceEnableBurstSafetyChecks = safety.Forced;
-                BurstCompiler.Options.EnableBurstSafetyChecks = safety.Enabled;
-                NativeLeakDetection.Mode = safety.Leaks;
-                previousSafety = null;
+                NativeLeakDetection.Mode = leakMode;
+                previousLeakMode = null;
             }
 
             string done = Path.Combine(Folder, "done.txt");

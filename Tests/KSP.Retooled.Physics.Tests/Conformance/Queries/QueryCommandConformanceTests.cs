@@ -106,6 +106,25 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Queries
         }
 
         [Test]
+        public void ACompletedRayBatchLetsItsColliderBeDestroyed()
+        {
+            Collider collider = Box(Vector3.forward * 5.0f, Vector3.one).GetComponent<Collider>();
+            UnityEngine.Physics.SyncTransforms();
+            BackendHost.SyncQueryWorlds();
+
+            using var commands = new NativeArray<RaycastCommand>(1, Allocator.TempJob);
+            using var hits = new NativeArray<RaycastHit>(1, Allocator.TempJob);
+            NativeArray<RaycastCommand> rays = commands;
+            rays[0] = new RaycastCommand(Vector3.zero, Vector3.forward, QueryParameters.Default, 10.0f);
+
+            RaycastCommand.ScheduleBatch(commands, hits, 1).Complete();
+
+            Assert.That(hits[0].collider, Is.SameAs(collider));
+            DestroyAll();
+            Assert.That(collider == null, Is.True);
+        }
+
+        [Test]
         public void ARayCommandCanHitEveryFaceOfAMesh()
         {
             MeshObject(TwoLayers(), Vector3.zero, false);
