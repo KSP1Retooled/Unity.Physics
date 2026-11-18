@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Physics;
 using Unity.Physics.Dynamics.Solver.Islands;
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Dynamics.Vessels.Model;
 using UnityEngine;
 using Unity.Physics.Configuration;
@@ -387,6 +388,81 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             {
                 ForestSwitches.Caps = previousCaps;
             }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ASlidingVesselDoesNotKickAPinnedClamp(bool mounted)
+        {
+            Fresh(true);
+            ForestSwitches.Enabled = false;
+            GameObject tower = Box(new Vector3(0.66f, 3.75f, 0.05f), new Vector3(0.5f, 7.5f, 0.5f));
+            tower.transform.rotation = Quaternion.Euler(0.0f, 3.0f, 0.0f);
+            Rigidbody clamp = tower.AddComponent<Rigidbody>();
+            clamp.mass = 0.1f;
+            clamp.inertiaTensor = new Vector3(6.95f, 0.1f, 6.95f);
+            clamp.sleepThreshold = 0.0f;
+            var pin = tower.AddComponent<ConfigurableJoint>();
+            pin.autoConfigureConnectedAnchor = false;
+            pin.anchor = Vector3.up * 3.75f;
+            pin.connectedAnchor = tower.transform.TransformPoint(pin.anchor);
+            pin.xMotion = pin.yMotion = pin.zMotion = ConfigurableJointMotion.Locked;
+            pin.angularXMotion = pin.angularYMotion = pin.angularZMotion = ConfigurableJointMotion.Locked;
+            Quaternion inverseStart = Quaternion.Inverse(clamp.rotation);
+
+            // A separate dynamic clamp makes the contact island unfused. Adding a mount makes the clamp a
+            // vessel too, so the same contact can run in the fused job.
+            if (mounted)
+            {
+                Rigidbody mount = Track(new GameObject("clamp mount")).AddComponent<Rigidbody>();
+                mount.position = pin.connectedAnchor;
+                mount.mass = 0.001f;
+                StackJoint(mount, clamp, pin.connectedAnchor);
+            }
+
+            List<Rigidbody> craft = StandingColumn(7, 0.0f, 7.0f);
+            foreach (Rigidbody part in craft)
+            {
+                part.mass = 129.0f / craft.Count;
+                part.linearVelocity = new Vector3(0.4f, -1.0f, 0.0f);
+                part.sleepThreshold = 0.0f;
+            }
+
+            long fusedBefore = IslandWorkCounters.FusedIslandSolves;
+            float peakSpeed = 0.0f, peakGap = 0.0f, peakAngle = 0.0f;
+            int contactSteps = 0;
+            const int steps = 48;
+            for (int step = 0; step < steps; step++)
+            {
+                // Keep the craft in contact as it slides down.
+                foreach (Rigidbody part in craft)
+                {
+                    part.AddForce(Vector3.right * 2.0f, ForceMode.Acceleration);
+                }
+
+                BoundaryCounters.Reset();
+                Simulate();
+                BoundaryCounters boundary = BoundaryCounters.Current;
+                if (boundary.Rows > 6 * boundary.Solves)
+                {
+                    contactSteps++;
+                }
+
+                peakSpeed = Mathf.Max(peakSpeed, clamp.linearVelocity.magnitude);
+                peakGap = Mathf.Max(peakGap, Vector3.Distance(tower.transform.TransformPoint(pin.anchor), pin.connectedAnchor));
+                Quaternion error = inverseStart * clamp.rotation;
+                float angle = 2.0f * Mathf.Atan2(new Vector3(error.x, error.y, error.z).magnitude, Mathf.Abs(error.w));
+                peakAngle = Mathf.Max(peakAngle, angle * Mathf.Rad2Deg);
+            }
+
+            bool fused = mounted && SolverSwitches.VesselFused && SolverSwitches.FusedContacts
+                && SolverSwitches.FusedVesselParts <= craft.Count + 2;
+            Assert.That(VesselCount(), Is.EqualTo(mounted ? 2 : 1));
+            Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? steps : 0));
+            Assert.That(contactSteps, Is.GreaterThanOrEqualTo(25));
+            Assert.That(peakSpeed, Is.LessThan(0.9f), "clamp speed in m/s");
+            Assert.That(peakGap, Is.LessThan(0.027f), "anchor gap in metres");
+            Assert.That(peakAngle, Is.LessThan(0.15f), "angle error in degrees");
         }
 
         [Test]
