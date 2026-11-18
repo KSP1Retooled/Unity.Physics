@@ -18,6 +18,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
         public static void Factor(SectionEquilibrium* entry, int count, double* diagonal, int2* couplings, double* couplingBlocks,
             int couplingCount)
         {
+            long orderStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             var adjacencyStart = new NativeArray<int>(count + 1, Allocator.Temp);
             for (int c = 0; c < couplingCount; c++)
             {
@@ -39,6 +40,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 adjacency[adjacencyStart[b] + fill[b]++] = a;
             }
 
+            // Minimum degree, then a postorder of its elimination tree, which eliminates with the same fill and puts every
+            // subtree in one run of columns, as the chunks need.
             var order = new NativeList<int>(math.max(1, count), Allocator.Temp);
             MinimumDegreeOrdering.Compute(count, adjacency, adjacencyStart, order);
             var position = new NativeArray<int>(math.max(1, count), Allocator.Temp);
@@ -49,6 +52,42 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             var rows = new NativeList<int>(math.max(1, 2 * count), Allocator.Temp);
             SymbolicCholesky.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
                 firstChild, nextSibling);
+            var postorder = new NativeList<int>(math.max(1, count), Allocator.Temp);
+            var stackNode = new NativeList<int>(Allocator.Temp);
+            var stackNext = new NativeList<int>(Allocator.Temp);
+            for (int r = 0; r < count; r++)
+            {
+                if (parentOf[r] >= 0)
+                {
+                    continue;
+                }
+
+                stackNode.Clear();
+                stackNext.Clear();
+                stackNode.Add(r);
+                stackNext.Add(firstChild[r]);
+                while (stackNode.Length > 0)
+                {
+                    int top = stackNode.Length - 1;
+                    int child = stackNext[top];
+                    if (child >= 0)
+                    {
+                        stackNext[top] = nextSibling[child];
+                        stackNode.Add(child);
+                        stackNext.Add(firstChild[child]);
+                    }
+                    else
+                    {
+                        postorder.Add(order[stackNode[top]]);
+                        stackNode.RemoveAt(top);
+                        stackNext.RemoveAt(top);
+                    }
+                }
+            }
+
+            rows.Clear();
+            SymbolicCholesky.FactorStructure(postorder, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
+                firstChild, nextSibling);
 
             entry->Count = count;
             entry->Position.Clear();
@@ -57,6 +96,9 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             entry->ColumnStart.AddRange(columnStart.GetUnsafeReadOnlyPtr(), count + 1);
             entry->Rows.Clear();
             entry->Rows.AddRange(rows.GetUnsafeReadOnlyPtr(), rows.Length);
+            entry->Chunks.Build(count, columnStart, rows, parentOf);
+            long numericStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.OrderTicks, numericStarted - orderStarted);
 
             int offDiagonal = rows.Length;
             entry->Inverse.Resize(Block6x6.Size * math.max(1, count));
@@ -115,6 +157,85 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
 
             entry->Blocks.Resize(Block6x6.Size * math.max(1, offDiagonal));
             UnsafeUtility.MemCpy(entry->Blocks.Ptr, off, (long)Block6x6.Size * offDiagonal * sizeof(double));
+            entry->Work.Resize(6 * (math.max(1, count) + entry->Chunks.SlotCount), NativeArrayOptions.ClearMemory);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.NumericTicks, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - numericStarted);
+        }
+
+        /// <summary>
+        /// Marks each part whose edge lies on the loop of some closure, in a tree of n parts numbered parents first, with
+        /// parent[0] = -1. A closure adds one at each of its parts and takes two from their lowest common ancestor; an
+        /// edge lies on a loop when its child's subtree holds a positive sum, which is when one closure has exactly one part
+        /// in that subtree. The ancestors come from jumps of powers of two, so this costs O((n + closureCount) log n).
+        /// </summary>
+        public static void MarkLoops(int n, int* parent, int2* ends, int closureCount, bool* looped)
+        {
+            int levels = 1;
+            while ((1 << levels) < n)
+            {
+                levels++;
+            }
+
+            var depth = new NativeArray<int>(n, Allocator.Temp);
+            var up = new NativeArray<int>(levels * n, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int k = 0; k < n; k++)
+            {
+                int p = parent[k];
+                depth[k] = p >= 0 ? depth[p] + 1 : 0;
+                up[k] = p >= 0 ? p : k;
+            }
+
+            for (int j = 1; j < levels; j++)
+            {
+                for (int k = 0; k < n; k++)
+                {
+                    up[j * n + k] = up[(j - 1) * n + up[(j - 1) * n + k]];
+                }
+            }
+
+            var sum = new NativeArray<int>(n, Allocator.Temp);
+            for (int c = 0; c < closureCount; c++)
+            {
+                int a = ends[c].x, b = ends[c].y;
+                if (a == b)
+                {
+                    continue;
+                }
+
+                sum[a]++;
+                sum[b]++;
+                if (depth[a] < depth[b])
+                {
+                    (a, b) = (b, a);
+                }
+
+                for (int j = levels - 1; j >= 0; j--)
+                {
+                    if (depth[a] - (1 << j) >= depth[b])
+                    {
+                        a = up[j * n + a];
+                    }
+                }
+
+                for (int j = levels - 1; j >= 0 && a != b; j--)
+                {
+                    if (up[j * n + a] != up[j * n + b])
+                    {
+                        a = up[j * n + a];
+                        b = up[j * n + b];
+                    }
+                }
+
+                int ancestor = a == b ? a : up[a];
+                sum[ancestor] -= 2;
+            }
+
+            for (int k = n - 1; k > 0; k--)
+            {
+                looped[k] = sum[k] > 0;
+                sum[parent[k]] += sum[k];
+            }
+
+            looped[0] = false;
         }
 
         static int Find(int* rows, int from, int to, int row)

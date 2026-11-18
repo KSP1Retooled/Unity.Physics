@@ -64,6 +64,22 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             {
                 ForestSolver.ForestBoundaryTask(stage.Context, task);
             }
+            else if (stage.Kind == StrutLoadsKind)
+            {
+                VesselIslandSolver.StrutLoadTask(stage.Context, task);
+            }
+            else if (stage.Kind == StrutForwardKind)
+            {
+                VesselIslandSolver.StrutForwardTask(stage.Context, task);
+            }
+            else if (stage.Kind == StrutBackKind)
+            {
+                VesselIslandSolver.StrutBackTask(stage.Context, task);
+            }
+            else if (stage.Kind == StrutLinksKind)
+            {
+                VesselIslandSolver.StrutLinkTask(stage.Context, task);
+            }
             else
             {
                 ((SparseConstraintSolver*)stage.Context)->RunTask(stage.Kind, task, (double*)stage.Vector);

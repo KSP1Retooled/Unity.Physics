@@ -45,6 +45,26 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
         /// <summary>How many pivots the factor had to clamp. It should be zero.</summary>
         public int ClampedPivots;
 
+        public EquilibriumChunkPlan Chunks;
+
+        /// <summary>For each unknown, by position, the unknowns of its children whose edges are on loops, from ChildStart[j].</summary>
+        public UnsafeList<int> ChildStart;
+
+        public UnsafeList<int> Children;
+
+        /// <summary>The solve's numbers, 6 for each unknown and then 6 for each buffer slot.</summary>
+        public UnsafeList<double> Work;
+
+        /// <summary>Makes the lists that the factor and the solve fill.</summary>
+        public void CreateSolveLists()
+        {
+            Chunks.Create();
+            ChildStart = new UnsafeList<int>(0, Allocator.Persistent);
+            Children = new UnsafeList<int>(0, Allocator.Persistent);
+            Work = new UnsafeList<double>(0, Allocator.Persistent);
+        }
+
+
         /// <summary>
         /// For the forest path, which builds its systems from rows: each unknown's position in the elimination order, the
         /// body of each unknown, each body's unknown or -1, the section's first body, and the links. A link is a pair,
@@ -68,26 +88,34 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
         /// <summary>Whether a section of the current structure uses this system, while the systems are matched.</summary>
         public bool Claimed;
 
+        /// <summary>The last match of the systems to a structure in which a section used this system.</summary>
+        public long LastUsed;
+
         public void Dispose()
         {
-            KeyParts.Dispose();
-            Node.Dispose();
-            ColumnStart.Dispose();
-            Rows.Dispose();
-            Inverse.Dispose();
-            Blocks.Dispose();
-            Links.Dispose();
-            if (Sum.IsCreated)
-            {
-                Sum.Dispose();
-            }
+            Free(ref KeyParts);
+            Free(ref Node);
+            Free(ref ColumnStart);
+            Free(ref Rows);
+            Free(ref Inverse);
+            Free(ref Blocks);
+            Free(ref Links);
+            Chunks.Dispose();
+            Free(ref ChildStart);
+            Free(ref Children);
+            Free(ref Work);
+            Free(ref Sum);
+            Free(ref Position);
+            Free(ref Bodies);
+            Free(ref BodyMap);
+            Free(ref PairLinks);
+        }
 
-            if (Position.IsCreated)
+        static void Free<T>(ref UnsafeList<T> list) where T : unmanaged
+        {
+            if (list.IsCreated)
             {
-                Position.Dispose();
-                Bodies.Dispose();
-                BodyMap.Dispose();
-                PairLinks.Dispose();
+                list.Dispose();
             }
         }
     }

@@ -46,6 +46,17 @@ namespace Unity.Physics.Configuration
 
         private struct StrutLoadsOffKey { }
 
+        private struct StrutExperimentKey { }
+
+        private static readonly SharedStatic<int> StrutExperimentShared = SharedStatic<int>.GetOrCreate<StrutExperimentKey>();
+
+        /// <summary>Use 1 to skip strut solves, or 2 to skip only the deferred solve at the end of a step.</summary>
+        internal static int StrutExperiment
+        {
+            get => StrutExperimentShared.Data;
+            set => StrutExperimentShared.Data = value;
+        }
+
         private static readonly SharedStatic<bool> StrutLoadsOff = SharedStatic<bool>.GetOrCreate<StrutLoadsOffKey>();
 
         /// <summary>

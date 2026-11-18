@@ -1324,11 +1324,14 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         static unsafe void FinishVesselSections(ref ForestRun run)
         {
             ForestIsland* forest = run.Forest;
-            PrepareEquilibrium(ref run);
-            forest->Context.DeferStrutLoads = run.DeferStrutLoads;
-            if (run.DeferStrutLoads && run.Substep <= 0)
+            using (StrutLoads.BookkeepingMarker.Auto())
             {
-                forest->Equilibrium.BeginStep();
+                PrepareEquilibrium(ref run);
+                forest->Context.DeferStrutLoads = run.DeferStrutLoads;
+                if (run.DeferStrutLoads && run.Substep <= 0)
+                {
+                    forest->Equilibrium.BeginStep();
+                }
             }
 
             if (forest->SharedSections.Length == 0)
@@ -1391,7 +1394,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 tasks.Phase = VesselTasks.SharedEdgeLoads;
                 WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
                 kernel.StoreRootLoad(s, prefixForce[end - 1]);
-                kernel.ApplyStrutLoads(s);
+                RunStrutLoads(ref run, s, run.DeferStrutLoads ? VesselEquilibrium.ApplyMode.Add : VesselEquilibrium.ApplyMode.Now);
                 sums.Dispose();
             }
         }
@@ -1412,6 +1415,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             ref VesselContext kernel = ref forest->Context;
             ref VesselEquilibrium equilibrium = ref forest->Equilibrium;
             VesselSet set = run.Vessels;
+            using Unity.Profiling.ProfilerMarker.AutoScope span = StrutLoads.BookkeepingMarker.Auto();
             int sections = math.min(forest->SectionCount, equilibrium.SectionEntry.Length);
             for (int s = 0; s < sections; s++)
             {
@@ -1421,7 +1425,15 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     continue;
                 }
 
-                equilibrium.Apply(ref kernel, s, VesselEquilibrium.ApplyMode.Finish);
+                if (kernel.SectionPartStart[s + 1] - kernel.SectionPartStart[s] > SharedSectionParts)
+                {
+                    RunStrutLoads(ref run, s, VesselEquilibrium.ApplyMode.Finish);
+                }
+                else
+                {
+                    equilibrium.Apply(ref kernel, s, VesselEquilibrium.ApplyMode.Finish);
+                }
+
                 SectionEquilibrium* entry = equilibrium.Entries.Ptr + entryIndex;
                 int start = kernel.SectionPartStart[s];
                 for (int l = 0; l < entry->Links.Length; l++)

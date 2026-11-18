@@ -39,7 +39,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 forest->ForestEquilibriumBuiltFor = forest->StructureBuilds;
             }
 
-            if (forest->ForestEquilibrium.Length == 0)
+            if (forest->ForestEquilibrium.Length == 0 || VesselSwitches.StrutExperiment == 1)
             {
                 return;
             }
@@ -55,8 +55,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
                 // What the links must give each unknown body: the need of its subtree, less the needs of the subtrees of
                 // its children on loops, moved to its centre as the subtree pass moves them.
-                var buffer = new NativeArray<double>(6 * math.max(1, count), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                double* rhs = (double*)buffer.GetUnsafePtr();
+                double* rhs = entry->Work.Ptr;
                 for (int o = 0; o < count; o++)
                 {
                     need[entry->Bodies[o]].Store(rhs + 6 * entry->Position[o]);
@@ -85,7 +84,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     DoubleMath.Store3(rhs + 6 * j + 3, math.mul(back, DoubleMath.Load3(rhs + 6 * j + 3)));
                 }
 
-                SectionEquilibriumSolve.Solve(entry, rhs);
+                SectionEquilibriumSolve.Solve(entry);
 
                 // Each row's impulse is its stiffness times its stretch: then the rows give every unknown body its need.
                 for (int l = 0; l < entry->PairLinks.Length; l++)
@@ -179,7 +178,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 int start = structure.SectionPartStart[s], end = structure.SectionPartStart[s + 1];
                 int n = end - start;
                 int* sectionParts = structure.SectionParts.Ptr + start;
-                var depth = new NativeArray<int>(n, Allocator.Temp);
                 var parentPlace = new NativeArray<int>(n, Allocator.Temp);
                 var looped = new NativeArray<bool>(n, Allocator.Temp);
                 for (int k = 0; k < n; k++)
@@ -191,7 +189,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 for (int k = 1; k < n; k++)
                 {
                     parentPlace[k] = place[forest->Edges[sectionParts[k]].Parent];
-                    depth[k] = depth[parentPlace[k]] + 1;
                 }
 
                 var closures = new NativeList<int>(Allocator.Temp);
@@ -204,21 +201,16 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     }
 
                     closures.Add(c);
-                    int a = place[partA], b = place[partB];
-                    while (a != b)
-                    {
-                        if (depth[a] >= depth[b])
-                        {
-                            looped[a] = true;
-                            a = parentPlace[a];
-                        }
-                        else
-                        {
-                            looped[b] = true;
-                            b = parentPlace[b];
-                        }
-                    }
                 }
+
+                var ends = new NativeArray<int2>(math.max(1, closures.Length), Allocator.Temp);
+                for (int i = 0; i < closures.Length; i++)
+                {
+                    ends[i] = new int2(place[forest->Closures[closures[i]].PartA], place[forest->Closures[closures[i]].PartB]);
+                }
+
+                EquilibriumFactor.MarkLoops(n, (int*)parentPlace.GetUnsafePtr(), (int2*)ends.GetUnsafePtr(), closures.Length,
+                    (bool*)looped.GetUnsafePtr());
 
                 var entry = new SectionEquilibrium
                 {
@@ -234,6 +226,8 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     PairLinks = new UnsafeList<int4>(0, Allocator.Persistent),
                     FirstBody = forest->PartBody[sectionParts[0]],
                 };
+
+                entry.CreateSolveLists();
 
                 var unknown = new NativeArray<int>(n, Allocator.Temp);
                 for (int k = 0; k < n; k++)

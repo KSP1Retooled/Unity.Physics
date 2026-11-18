@@ -43,5 +43,11 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Data
 
         /// <summary>Identifies the stage that fills the boundary block of a forest solve, by ranges of its rows.</summary>
         internal const int ForestBoundaryKind = -13;
+
+        /// <summary>Identifies each strut solve stage that a team shares across lanes.</summary>
+        internal const int StrutLoadsKind = -14;
+        internal const int StrutForwardKind = -15;
+        internal const int StrutBackKind = -16;
+        internal const int StrutLinksKind = -17;
     }
 }

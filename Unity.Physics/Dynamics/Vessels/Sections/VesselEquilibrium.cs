@@ -1,11 +1,9 @@
-using Unity.Physics.Configuration;
 using System;
-using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Numerics.Kernels;
-using Unity.Numerics.Linear.Sparse;
+using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Vessels.Model;
 
 namespace Unity.Physics.Dynamics.Vessels.Sections
@@ -28,6 +26,17 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
 
         /// <summary>The structure build that the systems were matched to, or -1 before the first.</summary>
         public int BuiltFor;
+
+        /// <summary>
+        /// How many systems that no section uses are kept, and for how many structures at most. An edge that yields
+        /// and locks again within that brings back its section's system without a new factor.
+        /// </summary>
+        public const int KeepUnused = 8;
+
+        public const int KeepMatches = 1000;
+
+        /// <summary>How many times the systems were matched to a structure.</summary>
+        public long Matches;
 
         /// <summary>How many systems were factored, and how many were kept for a new structure, for tests.</summary>
         public int Builds;
@@ -74,6 +83,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
         public void Prepare(in VesselContext context, int partCount, int closureCount, ulong* keyId, uint* keyVersion,
             int* keyIndex, double timeStep)
         {
+            System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Prepares);
             int sections = context.SectionCount;
             SectionEntry.Resize(math.max(1, sections));
             SectionClosureStart.Resize(sections + 1);
@@ -155,6 +165,11 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                     Entries.Ptr[match].Claimed = true;
                     SectionEntry[s] = match;
                     Reuses++;
+                    System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Reused);
+                    if (Entries[match].LastUsed < Matches)
+                    {
+                        System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Reactivated);
+                    }
                     continue;
                 }
 
@@ -170,8 +185,10 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                     Inverse = new UnsafeList<double>(0, Allocator.Persistent),
                     Blocks = new UnsafeList<double>(0, Allocator.Persistent),
                     Links = new UnsafeList<EquilibriumLink>(0, Allocator.Persistent),
+                    Position = new UnsafeList<int>(0, Allocator.Persistent),
                     Claimed = true,
                 };
+                created.CreateSolveLists();
                 for (int k = start; k < end; k++)
                 {
                     created.KeyParts.Add(keyIndex[context.SectionParts[k]]);
@@ -184,12 +201,42 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 fresh.Add(s);
             }
 
-            // Drop the systems that no section uses now, and renumber the others.
+            // Keep the systems that no section uses now for a while, the most recently used first: an edge that yields
+            // and locks again brings its section back with the same parts, and then its system needs no new factor.
+            // Decide what to keep before moving entries so that every comparison sees the same list.
+            Matches++;
             var renumber = new NativeArray<int>(math.max(1, Entries.Length), Allocator.Temp);
             int kept = 0;
             for (int e = 0; e < Entries.Length; e++)
             {
                 if (Entries[e].Claimed)
+                {
+                    Entries.Ptr[e].LastUsed = Matches;
+                }
+            }
+
+            for (int e = 0; e < Entries.Length; e++)
+            {
+                bool keep = Entries[e].Claimed;
+                if (!keep)
+                {
+                    // Count the unused systems that were used more recently than this one, ties going to the lower index.
+                    int newer = 0;
+                    for (int f = 0; f < Entries.Length; f++)
+                    {
+                        newer += !Entries[f].Claimed && (Entries[f].LastUsed > Entries[e].LastUsed
+                            || (Entries[f].LastUsed == Entries[e].LastUsed && f < e)) ? 1 : 0;
+                    }
+
+                    keep = newer < KeepUnused && Matches - Entries[e].LastUsed <= KeepMatches;
+                }
+
+                renumber[e] = keep ? 0 : -1;
+            }
+
+            for (int e = 0; e < Entries.Length; e++)
+            {
+                if (renumber[e] >= 0)
                 {
                     renumber[e] = kept;
                     Entries[kept++] = Entries[e];
@@ -219,8 +266,10 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                     built->Summed = 0;
                     long ticks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
                     System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Factored);
-                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredUnknowns, Entries[SectionEntry[s]].Count);
-                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredBlocks, Entries[SectionEntry[s]].Rows.Length);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredUnknowns, built->Count);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredBlocks, built->Rows.Length);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredChunks, built->Chunks.ChunkCount);
+                    System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactoredTop, built->Chunks.TopColumns.Length);
                     System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.FactorTicks, ticks);
                 }
 
@@ -264,24 +313,15 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             // An edge on the tree path between a closure's two parts lies on that closure's loop.
             var looped = new NativeArray<bool>(n, Allocator.Temp);
             int closureStart = SectionClosureStart[s], closureEnd = SectionClosureStart[s + 1];
+            var ends = new NativeArray<int2>(math.max(1, closureEnd - closureStart), Allocator.Temp);
             for (int c = closureStart; c < closureEnd; c++)
             {
                 VesselClosure* closure = context.Closures + SectionClosures[c];
-                int a = place[closure->PartA], b = place[closure->PartB];
-                while (a != b)
-                {
-                    if (depth[a] >= depth[b])
-                    {
-                        looped[a] = true;
-                        a = parentPlace[a];
-                    }
-                    else
-                    {
-                        looped[b] = true;
-                        b = parentPlace[b];
-                    }
-                }
+                ends[c - closureStart] = new int2(place[closure->PartA], place[closure->PartB]);
             }
+
+            EquilibriumFactor.MarkLoops(n, (int*)parentPlace.GetUnsafePtr(), (int2*)ends.GetUnsafePtr(), closureEnd - closureStart,
+                (bool*)looped.GetUnsafePtr());
 
             // The unknowns: the parts whose own edge is on a loop, in the order of the section's list for now.
             var unknown = new NativeArray<int>(n, Allocator.Temp);
@@ -365,80 +405,10 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                     point, axes, linearWeight, angularWeight, back, origin));
             }
 
-            // The ordering and the factor's structure, from the links between two unknowns.
-            var adjacencyStart = new NativeArray<int>(count + 1, Allocator.Temp);
-            for (int l = 0; l < entry->Links.Length; l++)
-            {
-                EquilibriumLink link = entry->Links[l];
-                if (link.A >= 0 && link.B >= 0)
-                {
-                    adjacencyStart[link.A + 1]++;
-                    adjacencyStart[link.B + 1]++;
-                }
-            }
-
-            for (int v = 0; v < count; v++)
-            {
-                adjacencyStart[v + 1] += adjacencyStart[v];
-            }
-
-            var adjacency = new NativeArray<int>(math.max(1, adjacencyStart[count]), Allocator.Temp);
-            var adjacencyFill = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            for (int l = 0; l < entry->Links.Length; l++)
-            {
-                EquilibriumLink link = entry->Links[l];
-                if (link.A >= 0 && link.B >= 0)
-                {
-                    adjacency[adjacencyStart[link.A] + adjacencyFill[link.A]++] = link.B;
-                    adjacency[adjacencyStart[link.B] + adjacencyFill[link.B]++] = link.A;
-                }
-            }
-
-            var order = new NativeList<int>(math.max(1, count), Allocator.Temp);
-            MinimumDegreeOrdering.Compute(count, adjacency, adjacencyStart, order);
-            var position = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            var columnStart = new NativeArray<int>(count + 1, Allocator.Temp);
-            var parentOf = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            var firstChild = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            var nextSibling = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            var rows = new NativeList<int>(math.max(1, 2 * count), Allocator.Temp);
-            SymbolicCholesky.FactorStructure(order, position, adjacency, adjacencyStart, columnStart, rows, parentOf,
-                firstChild, nextSibling);
-
-            entry->ColumnStart.Clear();
-            entry->ColumnStart.AddRange(columnStart.GetUnsafeReadOnlyPtr(), count + 1);
-            entry->Rows.Clear();
-            entry->Rows.AddRange(rows.GetUnsafeReadOnlyPtr(), rows.Length);
-
-            // Number everything by elimination position from here on.
-            var node = new NativeArray<int>(math.max(1, count), Allocator.Temp);
-            for (int k = 0; k < n; k++)
-            {
-                if (unknown[k] >= 0)
-                {
-                    node[position[unknown[k]]] = k;
-                }
-            }
-
-            for (int j = 0; j < count; j++)
-            {
-                entry->Node[j] = node[j];
-            }
-
-            for (int l = 0; l < entry->Links.Length; l++)
-            {
-                EquilibriumLink* link = entry->Links.Ptr + l;
-                link->A = link->A >= 0 ? position[link->A] : -1;
-                link->B = link->B >= 0 ? position[link->B] : -1;
-            }
-
             // Assemble: each link adds its block to both sides' diagonals and takes it from the block between them.
-            int offDiagonal = rows.Length;
-            entry->Inverse.Resize(Block6x6.Size * math.max(1, count));
-            entry->Blocks.Resize(Block6x6.Size * (count + offDiagonal));
-            UnsafeUtility.MemClear(entry->Blocks.Ptr, (long)entry->Blocks.Length * sizeof(double));
-            double* blocks = entry->Blocks.Ptr;
-            double* off = blocks + Block6x6.Size * count;
+            var diagonal = new NativeArray<double>(Block6x6.Size * math.max(1, count), Allocator.Temp);
+            var couplings = new NativeList<int2>(Allocator.Temp);
+            var couplingBlocks = new NativeList<double>(Allocator.Temp);
             double* block = stackalloc double[Block6x6.Size];
             for (int l = 0; l < entry->Links.Length; l++)
             {
@@ -446,59 +416,70 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 LinkBlock(link, block);
                 if (link.A >= 0)
                 {
-                    Block6x6.Add(blocks + Block6x6.Size * link.A, block);
+                    Block6x6.Add((double*)diagonal.GetUnsafePtr() + Block6x6.Size * link.A, block);
                 }
 
                 if (link.B >= 0)
                 {
-                    Block6x6.Add(blocks + Block6x6.Size * link.B, block);
+                    Block6x6.Add((double*)diagonal.GetUnsafePtr() + Block6x6.Size * link.B, block);
                 }
 
                 if (link.A >= 0 && link.B >= 0 && link.A != link.B)
                 {
-                    int lower = math.min(link.A, link.B), upper = math.max(link.A, link.B);
-                    int e = Find(entry->Rows.Ptr, columnStart[lower], columnStart[lower + 1], upper);
-                    double* coupling = off + Block6x6.Size * e;
+                    couplings.Add(new int2(link.A, link.B));
                     for (int i = 0; i < Block6x6.Size; i++)
                     {
-                        coupling[i] -= block[i];
+                        couplingBlocks.Add(-block[i]);
                     }
                 }
             }
 
-            // Eliminate the columns in order, as VesselContext.EliminateColumn does, with the targets found by search.
-            entry->ClampedPivots = 0;
-            double* scratch = stackalloc double[Block6x6.Size];
-            int* structure = entry->Rows.Ptr;
+            EquilibriumFactor.Factor(entry, count, (double*)diagonal.GetUnsafePtr(), couplings.GetUnsafePtr(), couplingBlocks.GetUnsafePtr(),
+                couplings.Length);
+
+            // Number everything by elimination position from here on.
+            for (int k = 0; k < n; k++)
+            {
+                if (unknown[k] >= 0)
+                {
+                    entry->Node[entry->Position[unknown[k]]] = k;
+                }
+            }
+
+            for (int l = 0; l < entry->Links.Length; l++)
+            {
+                EquilibriumLink* link = entry->Links.Ptr + l;
+                link->A = link->A >= 0 ? entry->Position[link->A] : -1;
+                link->B = link->B >= 0 ? entry->Position[link->B] : -1;
+            }
+
+            // Each unknown's children on loops, whose subtrees hang from it through links of the system.
+            entry->ChildStart.Clear();
+            entry->ChildStart.Resize(count + 1, NativeArrayOptions.ClearMemory);
+            for (int l = 0; l < entry->Links.Length; l++)
+            {
+                EquilibriumLink link = entry->Links[l];
+                if (link.Target >= 0 && link.A >= 0)
+                {
+                    entry->ChildStart[link.A + 1]++;
+                }
+            }
+
             for (int j = 0; j < count; j++)
             {
-                double* inverse = entry->Inverse.Ptr + Block6x6.Size * j;
-                if (!Block6x6.InvertSymmetric(inverse, blocks + Block6x6.Size * j))
-                {
-                    entry->ClampedPivots++;
-                }
-
-                int columnFirst = columnStart[j], columnCount = columnStart[j + 1] - columnFirst;
-                double* column = off + Block6x6.Size * columnFirst;
-                for (int p = columnCount - 1; p >= 0; p--)
-                {
-                    double* up = column + Block6x6.Size * p;
-                    int row = structure[columnFirst + p];
-                    Block6x6.Mul(scratch, inverse, up);
-                    Block6x6.SubtractTransposeMul(blocks + Block6x6.Size * row, up, scratch);
-                    for (int q = p + 1; q < columnCount; q++)
-                    {
-                        int e = Find(structure, columnStart[row], columnStart[row + 1], structure[columnFirst + q]);
-                        Block6x6.SubtractTransposeMul(off + Block6x6.Size * e, up, column + Block6x6.Size * q);
-                    }
-
-                    Block6x6.Copy(up, scratch);
-                }
+                entry->ChildStart[j + 1] += entry->ChildStart[j];
             }
 
-            // The diagonal blocks are not needed after the factor: keep only the inverses and the scaled column blocks.
-            UnsafeUtility.MemMove(blocks, off, (long)Block6x6.Size * offDiagonal * sizeof(double));
-            entry->Blocks.Resize(Block6x6.Size * math.max(1, offDiagonal));
+            entry->Children.Resize(math.max(1, entry->ChildStart[count]));
+            var childFill = new NativeArray<int>(math.max(1, count), Allocator.Temp);
+            for (int l = 0; l < entry->Links.Length; l++)
+            {
+                EquilibriumLink link = entry->Links[l];
+                if (link.Target >= 0 && link.A >= 0)
+                {
+                    entry->Children[entry->ChildStart[link.A] + childFill[link.A]++] = link.B;
+                }
+            }
         }
 
         static double HardLinear(double omega, VesselPart* a, VesselPart* b) => omega * omega / (1.0 / a->Mass + 1.0 / b->Mass);
@@ -553,31 +534,6 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             Block6x6.SetQuarter(block, 1, 1, link.Angular - math.mul(cross, linearCross));
         }
 
-        static int Find(int* rows, int from, int to, int row)
-        {
-            int low = from, high = to - 1;
-            while (low <= high)
-            {
-                int middle = (low + high) >> 1;
-                int value = rows[middle];
-                if (value == row)
-                {
-                    return middle;
-                }
-
-                if (value < row)
-                {
-                    low = middle + 1;
-                }
-                else
-                {
-                    high = middle - 1;
-                }
-            }
-
-            return -1;
-        }
-
         /// <summary>What <see cref="Apply"/> does with a section's loads.</summary>
         public enum ApplyMode
         {
@@ -607,22 +563,19 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
         }
 
         /// <summary>
-        /// Takes the loads of section s's looped edges and closures from its equilibrium system. The tree method must have
-        /// stored every locked edge's load first: an edge's load then is its child's whole subtree, which is also what
-        /// the bridges keep. Writes the looped edges' loads and every closure inside the section, unless the mode only
-        /// adds this substep's loads to the section's sum. The system is linear, so the solve of the mean of the substeps'
-        /// loads is the mean of their solves, and one solve in each step gives the mean loads that the step reports.
+        /// Takes the loads of section s's looped edges and closures from its equilibrium system, on the calling thread. The
+        /// tree method must have stored every locked edge's load first: an edge's load then is its child's whole subtree,
+        /// which is also what the bridges keep. Writes the looped edges' loads and every closure inside the section, unless
+        /// the mode only adds this substep's loads to the section's sum. The system is linear, so the solve of the mean of
+        /// the substeps' loads is the mean of their solves, and one solve in each step gives the mean loads that the step
+        /// reports. A team runs the same stages on ranges, see <see cref="Loads"/>.
         /// </summary>
         public void Apply(ref VesselContext context, int s, ApplyMode mode = ApplyMode.Now)
         {
-            int entryIndex = SectionEntry[s];
-            int closureStart = SectionClosureStart[s], closureEnd = SectionClosureStart[s + 1];
-            for (int c = closureStart; c < closureEnd; c++)
-            {
-                context.ClosureLoads[SectionClosures[c]] = default;
-            }
+            ClearClosures(ref context, s);
 
-            if (entryIndex < 0)
+            int entryIndex = SectionEntry[s];
+            if (entryIndex < 0 || SkipSolve(mode))
             {
                 return;
             }
@@ -630,80 +583,114 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             using Unity.Profiling.ProfilerMarker.AutoScope span = StrutLoads.SolveMarker.Auto();
             long started = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
             SectionEquilibrium* entry = Entries.Ptr + entryIndex;
-            int count = entry->Count;
-            int start = context.SectionPartStart[s];
-            int* sectionParts = context.SectionParts + start;
-            VesselPart* firstPart = context.Parts + sectionParts[0];
-            double3x3 rotation = DoubleMath.Rotation(firstPart->Orientation);
-            double3x3 back = math.transpose(rotation);
-            double3 origin = firstPart->Position;
-            var buffer = new NativeArray<double>(12 * math.max(1, count), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            double* subtree = (double*)buffer.GetUnsafePtr();
-            double* rhs = subtree + 6 * count;
             if (mode != ApplyMode.Finish)
             {
-                // Each unknown's subtree load, about the first part's centre, in its frame.
-                for (int j = 0; j < count; j++)
-                {
-                    int part = sectionParts[entry->Node[j]];
-                    VesselEdgeLoad load = context.EdgeLoads[part];
-                    double3 torque = load.Torque + math.cross(context.ChildPoint[part] - origin, load.Force);
-                    DoubleMath.Store3(subtree + 6 * j, math.mul(back, load.Force));
-                    DoubleMath.Store3(subtree + 6 * j + 3, math.mul(back, torque));
-                }
-
-                // What the links must give each unknown: its own subtree, less the subtrees of its children on loops,
-                // which hang from it through links of the system.
-                UnsafeUtility.MemCpy(rhs, subtree, 6L * count * sizeof(double));
-                for (int l = 0; l < entry->Links.Length; l++)
-                {
-                    EquilibriumLink link = entry->Links[l];
-                    if (link.Target >= 0 && link.A >= 0)
-                    {
-                        (double6.Load(rhs + 6 * link.A) - double6.Load(subtree + 6 * link.B)).Store(rhs + 6 * link.A);
-                    }
-                }
-            }
-
-            if (mode == ApplyMode.Add)
-            {
-                double* sum = entry->Sum.Ptr;
-                for (int i = 0; i < 6 * count; i++)
-                {
-                    sum[i] += rhs[i];
-                }
-
-                entry->Summed++;
-                System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started);
-                return;
-            }
-
-            if (mode == ApplyMode.Finish)
-            {
-                if (entry->Summed == 0)
-                {
-                    return;
-                }
-
-                double mean = 1.0 / entry->Summed;
-                double* sum = entry->Sum.Ptr;
-                for (int i = 0; i < 6 * count; i++)
-                {
-                    rhs[i] = mean * sum[i];
-                }
+                Loads(ref context, s, 0, entry->Count, mode == ApplyMode.Add);
             }
 
             long loaded = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            SectionEquilibriumSolve.Solve(entry, rhs);
-            long substituted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            if (mode == ApplyMode.Add)
+            {
+                entry->Summed++;
+                System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, loaded - started);
+                System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.AccumulateTicks, loaded - started);
+                return;
+            }
 
-            for (int l = 0; l < entry->Links.Length; l++)
+            if (mode == ApplyMode.Finish && entry->Summed == 0)
+            {
+                return;
+            }
+
+            bool fromSum = mode == ApplyMode.Finish;
+            for (int c = 0; c < entry->Chunks.ChunkCount; c++)
+            {
+                SectionEquilibriumSolve.ForwardChunk(entry, c, fromSum);
+            }
+
+            long topStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            SectionEquilibriumSolve.Top(entry, fromSum);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.TopTicks, Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - topStarted);
+            for (int c = 0; c < entry->Chunks.ChunkCount; c++)
+            {
+                SectionEquilibriumSolve.BackChunk(entry, c);
+            }
+
+            long substituted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            LinkLoads(ref context, s, 0, entry->Links.Length);
+            long finished = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
+            System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Solves);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SolveTicks, finished - started);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, loaded - started);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SubstituteTicks, substituted - loaded);
+            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LinkTicks, finished - substituted);
+        }
+
+        internal static bool SkipSolve(ApplyMode mode) => VesselSwitches.StrutExperiment == 1
+            || (VesselSwitches.StrutExperiment == 2 && mode == ApplyMode.Finish);
+
+        /// <summary>Sets the loads of every closure inside section s to zero, before its system writes those that it holds.</summary>
+        public void ClearClosures(ref VesselContext context, int s)
+        {
+            for (int c = SectionClosureStart[s]; c < SectionClosureStart[s + 1]; c++)
+            {
+                context.ClosureLoads[SectionClosures[c]] = default;
+            }
+        }
+
+        /// <summary>
+        /// For the unknowns at positions from .. to of section s's system: what the links must give each one, which is its
+        /// own subtree load less the subtree loads of its children on loops, about the first part's centre and in its
+        /// frame. Writes it to the solve's numbers, or adds it to the section's sum.
+        /// </summary>
+        public void Loads(ref VesselContext context, int s, int from, int to, bool add)
+        {
+            SectionEquilibrium* entry = Entries.Ptr + SectionEntry[s];
+            int* sectionParts = context.SectionParts + context.SectionPartStart[s];
+            VesselPart* firstPart = context.Parts + sectionParts[0];
+            double3x3 back = math.transpose(DoubleMath.Rotation(firstPart->Orientation));
+            double3 origin = firstPart->Position;
+            double* target = add ? entry->Sum.Ptr : entry->Work.Ptr;
+            for (int j = from; j < to; j++)
+            {
+                double6 load = Subtree(ref context, sectionParts[entry->Node[j]], back, origin);
+                for (int e = entry->ChildStart[j]; e < entry->ChildStart[j + 1]; e++)
+                {
+                    load -= Subtree(ref context, sectionParts[entry->Node[entry->Children[e]]], back, origin);
+                }
+
+                if (add)
+                {
+                    load += double6.Load(target + 6 * j);
+                }
+
+                load.Store(target + 6 * j);
+            }
+        }
+
+        static double6 Subtree(ref VesselContext context, int part, in double3x3 back, double3 origin)
+        {
+            VesselEdgeLoad load = context.EdgeLoads[part];
+            double3 force = math.mul(back, load.Force);
+            double3 torque = math.mul(back, load.Torque + math.cross(context.ChildPoint[part] - origin, load.Force));
+            return new double6(new double4(force, torque.x), new double2(torque.y, torque.z));
+        }
+
+        /// <summary>The loads of links from .. to of section s's system, from the solved motions, written where they belong.</summary>
+        public void LinkLoads(ref VesselContext context, int s, int from, int to)
+        {
+            SectionEquilibrium* entry = Entries.Ptr + SectionEntry[s];
+            int* sectionParts = context.SectionParts + context.SectionPartStart[s];
+            double3x3 rotation = DoubleMath.Rotation(context.Parts[sectionParts[0]].Orientation);
+            double* x = entry->Work.Ptr;
+            int closureStart = SectionClosureStart[s];
+            for (int l = from; l < to; l++)
             {
                 EquilibriumLink link = entry->Links[l];
-                double6 motion = link.B >= 0 ? double6.Load(rhs + 6 * link.B) : default;
+                double6 motion = link.B >= 0 ? double6.Load(x + 6 * link.B) : default;
                 if (link.A >= 0)
                 {
-                    motion -= double6.Load(rhs + 6 * link.A);
+                    motion -= double6.Load(x + 6 * link.A);
                 }
 
                 double3 shift = new double3(motion.Low.x, motion.Low.y, motion.Low.z);
@@ -720,13 +707,6 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                     context.ClosureLoads[SectionClosures[closureStart - 1 - link.Target]] = load;
                 }
             }
-
-            long finished = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            System.Threading.Interlocked.Increment(ref StrutLoads.Counts.Data.Solves);
-            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SolveTicks, finished - started);
-            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LoadTicks, loaded - started);
-            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.SubstituteTicks, substituted - loaded);
-            System.Threading.Interlocked.Add(ref StrutLoads.Counts.Data.LinkTicks, finished - substituted);
         }
     }
 }
