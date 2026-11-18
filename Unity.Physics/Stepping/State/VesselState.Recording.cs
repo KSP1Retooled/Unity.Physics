@@ -3,7 +3,6 @@ using System.IO;
 using Unity.Collections;
 using Unity.Physics.Dynamics.Vessels.Detection;
 using Unity.Physics.Stepping.Recording;
-using Unity.Physics.Store.Versions;
 
 namespace Unity.Physics.Stepping.State
 {
@@ -13,8 +12,6 @@ namespace Unity.Physics.Stepping.State
         {
             writer.Write(VesselCompiler.RecordingId);
             writer.Write(compiled);
-            writer.Write(cacheFilled);
-            writer.Write(cachedSettings != JointSettings.Version);
             writer.Write(tombstoneExpiry);
             writer.WriteList(vesselBuild.Vessels);
             writer.WriteList(vesselBuild.PartStoreBodies);
@@ -35,12 +32,6 @@ namespace Unity.Physics.Stepping.State
             writer.WriteList(vesselBuild.PartBodySerials);
             writer.WriteList(vesselBuild.PartJointSerials);
             writer.WriteList(vesselBuild.ClosureJointSerials);
-            writer.WriteList(vesselBuild.EdgeCache);
-            writer.WriteList(vesselBuild.ClosureCache);
-            writer.WriteList(vesselBuild.EdgeCacheFrames);
-            writer.WriteList(vesselBuild.ClosureCacheFrames);
-            writer.WriteList(vesselBuild.EdgeCacheStamps);
-            writer.WriteList(vesselBuild.ClosureCacheStamps);
             writer.Write(vesselBuild.PairUnits.Count());
             foreach (var pair in vesselBuild.PairUnits)
             {
@@ -53,9 +44,8 @@ namespace Unity.Physics.Stepping.State
         {
             VesselCompiler.RecordingId = reader.ReadInt64();
             compiled = reader.ReadBoolean();
-            cacheFilled = reader.ReadBoolean();
-            uint settings = JointSettings.Version;
-            cachedSettings = reader.ReadBoolean() ? unchecked(settings - 1) : settings;
+            // Fill recomputes each used edge and closure from its restored unit, joint settings and motion frames.
+            cacheFilled = false;
             tombstoneExpiry = reader.ReadInt32();
             reader.ReadList(vesselBuild.Vessels);
             reader.ReadList(vesselBuild.PartStoreBodies);
@@ -76,12 +66,6 @@ namespace Unity.Physics.Stepping.State
             reader.ReadList(vesselBuild.PartBodySerials);
             reader.ReadList(vesselBuild.PartJointSerials);
             reader.ReadList(vesselBuild.ClosureJointSerials);
-            reader.ReadList(vesselBuild.EdgeCache);
-            reader.ReadList(vesselBuild.ClosureCache);
-            reader.ReadList(vesselBuild.EdgeCacheFrames);
-            reader.ReadList(vesselBuild.ClosureCacheFrames);
-            reader.ReadList(vesselBuild.EdgeCacheStamps);
-            reader.ReadList(vesselBuild.ClosureCacheStamps);
             int pairs = reader.ReadCount(1 << 24);
             for (int i = 0; i < pairs; i++)
             {
