@@ -22,7 +22,7 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
     /// Use quasi-definite block factorization and block principal pivoting for bounds, retaining symbolic
     /// structure.
     /// </summary>
-    internal unsafe struct SparseConstraintSolver : IDisposable
+    internal unsafe partial struct SparseConstraintSolver : IDisposable
     {
         /// <summary>The columns of one row of the constraint Jacobian: linear then angular, for body A then body B.</summary>
         public const int ColumnsPerRow = 12;
@@ -380,7 +380,7 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
 
         /// <summary>
         /// Solve for row impulses, ignoring bounds when bounded is false.
-        /// Return false on pivot exhaustion, leaving impulses clamped to bounds.
+        /// Return false on pivot exhaustion, leaving the result of a projected solve.
         /// Reuse previous factors through checked iterative refinement; refactor when refinement is insufficient.
         /// </summary>
         public bool Solve(in Problem problem, float* impulses, bool bounded)
@@ -514,11 +514,9 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
                 }
             }
 
-            for (int row = 0; row < problem.RowCount; row++)
-            {
-                impulses[row] = math.clamp(impulses[row], lower[row], upper[row]);
-            }
-
+            FinishBySweeps(problem, impulses);
+            factored = false;
+            answered = false;
             return false;
         }
 
