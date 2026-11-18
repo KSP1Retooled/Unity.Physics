@@ -22,7 +22,7 @@ namespace Unity.Physics.Stepping.Recording
         internal int SolverPath;
 
         [BurstCompile]
-        internal static void Capture(WorldData* world, uint engineIdOffset, RecordedIsland* islands, RecordedBody* output)
+        internal static void Capture(WorldData* world, uint engineIdOffset, RecordedIsland* islands, byte* restoredMotion, RecordedBody* output)
         {
             for (uint i = 0; i < world->bodyCount; i++)
             {
@@ -32,6 +32,11 @@ namespace Unity.Physics.Stepping.Recording
                     body.Island = islands[i].Index;
                     body.IslandSize = islands[i].Size;
                     body.SolverPath = (int)islands[i].Path;
+                }
+
+                if (restoredMotion != null && restoredMotion[i] != 0)
+                {
+                    body.SolverPath |= (int)RecordedSolverPath.RestoredMotion;
                 }
 
                 output[i] = body;

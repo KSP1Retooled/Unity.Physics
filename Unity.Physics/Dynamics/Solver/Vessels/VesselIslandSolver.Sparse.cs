@@ -262,7 +262,10 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             // The team lives for one substep, and a kept solver for many.
             kept->Team = team;
-            kept->Solve(problem, impulsesPtr, bounded);
+            if (!kept->Solve(problem, impulsesPtr, bounded))
+            {
+                stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.ProjectedSweeps);
+            }
 
             var drift = new NativeArray<float>(rows, Allocator.Temp);
             float* driftPtr = (float*)drift.GetUnsafePtr();
@@ -275,7 +278,10 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     rhs[row] += drift[row];
                 }
 
-                kept->Solve(problem, impulsesPtr, bounded);
+                if (!kept->Solve(problem, impulsesPtr, bounded))
+                {
+                    stepInput.IslandSolverCache.RecordPath(islandIndex, RecordedSolverPath.ProjectedSweeps);
+                }
             }
 
             drift.Dispose();

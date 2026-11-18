@@ -53,6 +53,9 @@ namespace Unity.Physics.Stepping
             [NativeDisableUnsafePtrRestriction]
             public StoreStepperCounters* Counters;
 
+            [NativeDisableUnsafePtrRestriction]
+            public byte* RestoredMotion;
+
             [ReadOnly]
             public NativeArray<int> DynamicIndices;
 
@@ -62,7 +65,8 @@ namespace Unity.Physics.Stepping
 
             public void Execute(int index)
             {
-                ref BodyData body = ref Store[DynamicIndices[index]];
+                int row = DynamicIndices[index];
+                ref BodyData body = ref Store[row];
                 MotionVelocity velocity = MotionVelocities[index];
                 MotionData motion = MotionDatas[index];
                 bool sleeping = (body.flags & BodyFlags.Sleeping) != 0;
@@ -95,6 +99,10 @@ namespace Unity.Physics.Stepping
                     body.velocity->Linear = float3.zero;
                     body.velocity->Angular = float3.zero;
                     Interlocked.Increment(ref Counters->NonFiniteBodies);
+                    if (RestoredMotion != null)
+                    {
+                        RestoredMotion[row] = 1;
+                    }
                     return;
                 }
 

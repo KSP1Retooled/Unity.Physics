@@ -132,6 +132,39 @@ namespace KSP.Retooled.Physics.Tests.Tools
         }
 
         [Test]
+        public void NonFiniteMotionRestoredByWriteBackTriggersAndReplays()
+        {
+            Rigidbody body = WeightlessBox(new Vector3(2, 5, 3));
+            body.sleepThreshold = 0f;
+            Simulate();
+            uint serial = FindSerial(body.position);
+            int recoveries = StepEntryPoints.Current->Counters.NonFiniteBodies;
+            FlightRecorderSwitches.Enabled = true;
+            Simulate();
+
+            var store = StepEntryPoints.Current->Store;
+            for (uint row = 0; row < store->bodyCount; row++)
+            {
+                if (store->bodies[row].serial == serial)
+                {
+                    store->bodies[row].forces->AngularVelocityChange = new Unity.Mathematics.float3(float.NaN, 0, 0);
+                }
+            }
+
+            Simulate(3);
+            Assert.That(StepEntryPoints.Current->Counters.NonFiniteBodies, Is.EqualTo(recoveries + 1));
+            Assert.That(body.angularVelocity, Is.EqualTo(Vector3.zero));
+
+            string path = WaitForRecording(null);
+            using var summary = new StringWriter();
+            int replayedRecoveries = 0;
+            Assert.That(FlightReplay.Run(path, long.MaxValue, summary,
+                after: (_, stepper) => replayedRecoveries += stepper->Counters.NonFiniteBodies), Is.EqualTo(4));
+            Assert.That(replayedRecoveries, Is.EqualTo(1));
+            StringAssert.Contains($"write-back restored non-finite motion, body {serial},", summary.ToString());
+        }
+
+        [Test]
         public void LargeTriangleMeshesAndHeightFieldReplay()
         {
             TerrainData terrain = TerrainAndMeshes();

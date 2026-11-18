@@ -209,7 +209,7 @@ namespace Unity.Physics.Stepping
         {
             return FinishStage.ScheduleBeforeContacts(store, globals, ref world, ref Partition, ref Joints,
                 ref VesselData, ref Contacts, ref Sleep, ref Trees, ref Queries, warmStartsIndexed,
-                counters, ref simulation, deltaTime, ref pending, out snapshot, out sleep);
+                counters, RecorderRestoredMotion, ref simulation, deltaTime, ref pending, out snapshot, out sleep);
         }
 
         internal JobHandle ScheduleSleep(JobHandle published, JobHandle snapshot, JobHandle sleep)

@@ -134,7 +134,7 @@ namespace Unity.Physics.Stepping.Stages
         internal static JobHandle ScheduleBeforeContacts(WorldData* store, StoreGlobals* globals, ref PhysicsWorld world,
             ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels, ref ContactState contacts,
             ref SleepState sleepState, ref TreeState trees, ref QuerySnapshotState queries, JobHandle warmStartsIndexed,
-            NativeReference<StoreStepperCounters> counters, ref Simulation simulation, float deltaTime,
+            NativeReference<StoreStepperCounters> counters, byte* restoredMotion, ref Simulation simulation, float deltaTime,
             ref JobHandle pending, out JobHandle snapshot, out JobHandle sleep)
         {
             JobHandle solved = Track(ref pending,
@@ -147,6 +147,7 @@ namespace Unity.Physics.Stepping.Stages
             {
                 Store = store->bodies,
                 Counters = (StoreStepperCounters*)counters.GetUnsafePtr(),
+                RestoredMotion = restoredMotion,
                 DynamicIndices = partition.dynamicIndices.AsArray(),
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,

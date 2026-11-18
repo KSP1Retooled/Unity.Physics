@@ -13,6 +13,8 @@ namespace Unity.Physics.Stepping
     {
         private NativeArray<RecordedIsland> recordedIslands;
         private NativeArray<RecordedSolverPath> recordedPaths;
+        private NativeArray<byte> restoredMotion;
+        internal byte* RecorderRestoredMotion { get; private set; }
 
         internal void BeginRecorderStep()
         {
@@ -23,6 +25,7 @@ namespace Unity.Physics.Stepping
                 FreeRecorderIslands();
                 recordedIslands = new NativeArray<RecordedIsland>((int)store->bodyCount, Allocator.Persistent);
                 recordedPaths = new NativeArray<RecordedSolverPath>((int)store->bodyCount, Allocator.Persistent);
+                restoredMotion = new NativeArray<byte>((int)store->bodyCount, Allocator.Persistent);
             }
 
             var output = (RecordedIsland*)recordedIslands.GetUnsafePtr();
@@ -31,12 +34,15 @@ namespace Unity.Physics.Stepping
             var paths = (RecordedSolverPath*)recordedPaths.GetUnsafePtr();
             UnsafeUtility.MemClear(paths, (long)store->bodyCount * sizeof(RecordedSolverPath));
             SolverCaches.directSolverCache.RecorderPaths = paths;
+            RecorderRestoredMotion = (byte*)restoredMotion.GetUnsafePtr();
+            UnsafeUtility.MemClear(RecorderRestoredMotion, store->bodyCount);
         }
 
         internal void StopRecorderStep()
         {
             SolverCaches.directSolverCache.RecorderIslands = null;
             SolverCaches.directSolverCache.RecorderPaths = null;
+            RecorderRestoredMotion = null;
         }
 
         internal RecordedIsland* RecorderIslands => SolverCaches.directSolverCache.RecorderIslands;
@@ -57,6 +63,8 @@ namespace Unity.Physics.Stepping
                 recordedIslands = default;
                 recordedPaths.Dispose();
                 recordedPaths = default;
+                restoredMotion.Dispose();
+                restoredMotion = default;
             }
         }
 

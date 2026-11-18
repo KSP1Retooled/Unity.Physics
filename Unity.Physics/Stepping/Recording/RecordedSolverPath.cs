@@ -14,5 +14,7 @@ namespace Unity.Physics.Stepping.Recording
         Sparse = 32,
         PushOut = 64,
         IterativeContacts = 128,
+        RestoredMotion = 1 << 8,
+        ProjectedSweeps = 1 << 9,
     }
 }

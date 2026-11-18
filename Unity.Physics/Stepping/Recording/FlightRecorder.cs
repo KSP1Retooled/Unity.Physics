@@ -114,7 +114,7 @@ namespace Unity.Physics.Stepping.Recording
 
             fixed (RecordedBody* input = before)
             {
-                RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, null, input);
+                RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, null, null, input);
             }
 
             RecordStore.Write(stepper, step, geometry, frame);
@@ -133,7 +133,8 @@ namespace Unity.Physics.Stepping.Recording
             var bodies = new RecordedBody[world->bodyCount];
             fixed (RecordedBody* output = bodies)
             {
-                RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, stepper->RecorderIslands, output);
+                RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, stepper->RecorderIslands,
+                    stepper->RecorderRestoredMotion, output);
             }
 
             var manifolds = stepper->Manifolds;
@@ -156,7 +157,9 @@ namespace Unity.Physics.Stepping.Recording
                 if (canTrigger && triggerRow < 0)
                 {
                     RecordedBody input = before[i];
-                    reason = Check(input, bodies[i]);
+                    reason = (bodies[i].SolverPath & (int)RecordedSolverPath.RestoredMotion) != 0
+                        ? "write-back restored non-finite motion"
+                        : Check(input, bodies[i]);
                     if (reason == null && input.Serial != 0 && lastRows.TryGetValue(input.Serial, out int row))
                     {
                         RecordedBody previous = lastBodies[row];
@@ -217,7 +220,7 @@ namespace Unity.Physics.Stepping.Recording
             if ((uint)row < (uint)bodies.Length && bodies[row].Island == -1 && bodies[row].Dynamic
                 && (bodies[row].Flags & BodyFlags.Sleeping) == 0)
             {
-                bodies[row].SolverPath = (int)RecordedSolverPath.IterativeContacts;
+                bodies[row].SolverPath |= (int)RecordedSolverPath.IterativeContacts;
             }
         }
 
