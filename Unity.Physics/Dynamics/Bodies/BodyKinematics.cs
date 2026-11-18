@@ -14,13 +14,13 @@ namespace Unity.Physics.Dynamics.Bodies
         /// </summary>
         internal static float3 WorldAngularVelocity(in BodyData body)
         {
-            return math.rotate(math.mul(body.Pose()->Rotation, body.Mass()->Transform.rot), body.Velocity()->Angular);
+            return math.rotate(math.mul(body.pose->Rotation, body.mass->Transform.rot), body.velocity->Angular);
         }
 
         internal static void SetWorldAngularVelocity(in BodyData body, float3 angular)
         {
-            quaternion worldFromInertia = math.mul(body.Pose()->Rotation, body.Mass()->Transform.rot);
-            body.Velocity()->Angular = math.rotate(math.conjugate(worldFromInertia), angular);
+            quaternion worldFromInertia = math.mul(body.pose->Rotation, body.mass->Transform.rot);
+            body.velocity->Angular = math.rotate(math.conjugate(worldFromInertia), angular);
         }
 
         /// <summary>
@@ -30,7 +30,7 @@ namespace Unity.Physics.Dynamics.Bodies
         internal static void SetRotation(in BodyData body, quaternion rotation)
         {
             float3 angular = WorldAngularVelocity(body);
-            body.Pose()->Rotation = rotation;
+            body.pose->Rotation = rotation;
             SetWorldAngularVelocity(body, angular);
         }
 
@@ -41,14 +41,14 @@ namespace Unity.Physics.Dynamics.Bodies
         internal static void SetInertiaRotation(in BodyData body, quaternion rotation)
         {
             float3 angular = WorldAngularVelocity(body);
-            body.Mass()->Transform.rot = rotation;
+            body.mass->Transform.rot = rotation;
             SetWorldAngularVelocity(body, angular);
         }
 
         internal static void Wake(BodyData* hot)
         {
             hot->flags &= ~BodyFlags.Sleeping;
-            (*hot).Sleep()->WakeCounter = math.max((*hot).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
+            hot->sleep->WakeCounter = math.max(hot->sleep->WakeCounter, StoreMemory.WakeCounterReset);
         }
 
         internal static void WakeIfAsked(BodyData* hot, CommandArgs* a)
@@ -61,8 +61,8 @@ namespace Unity.Physics.Dynamics.Bodies
 
         internal static float3 VelocityAt(BodyData* hot, float3 worldPoint)
         {
-            float3 worldCenter = (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, (*hot).Mass()->Transform.pos);
-            return (*hot).Velocity()->Linear + math.cross(WorldAngularVelocity(*hot), worldPoint - worldCenter);
+            float3 worldCenter = hot->pose->Position + math.rotate(hot->pose->Rotation, hot->mass->Transform.pos);
+            return hot->velocity->Linear + math.cross(WorldAngularVelocity(*hot), worldPoint - worldCenter);
         }
 
         /// <summary>

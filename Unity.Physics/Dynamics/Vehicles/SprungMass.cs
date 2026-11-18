@@ -16,7 +16,7 @@ namespace Unity.Physics.Dynamics.Vehicles
         /// </summary>
         internal static void SprungMasses(VehicleData* vehicle, BodyData* hot, uint* ids, float3* offsets, int count)
         {
-            float inverseMass = (*hot).Mass()->InverseMass;
+            float inverseMass = hot->mass->InverseMass;
             float mass = inverseMass > 0.0f ? 1.0f / inverseMass : 0.0f;
             WheelSlot* wheels = VehicleData.WheelsOf(vehicle);
             for (int i = 0; i < count; i++)

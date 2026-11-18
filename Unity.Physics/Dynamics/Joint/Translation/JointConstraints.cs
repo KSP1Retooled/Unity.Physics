@@ -32,7 +32,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             BodyData* hot = StoreMemory.Row(body);
-            return (hot->flags & (BodyFlags.Kinematic | BodyFlags.Static)) != 0 ? 0.0f : (*hot).Mass()->InverseMass;
+            return (hot->flags & (BodyFlags.Kinematic | BodyFlags.Static)) != 0 ? 0.0f : hot->mass->InverseMass;
         }
 
         private static float InverseInertia(Body* body, float3 worldAxis)
@@ -48,8 +48,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 return 0.0f;
             }
 
-            float3 axis = math.rotate(math.conjugate(math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot)), worldAxis);
-            return math.csum(axis * axis * (*hot).Mass()->InverseInertia);
+            float3 axis = math.rotate(math.conjugate(math.mul(hot->pose->Rotation, hot->mass->Transform.rot)), worldAxis);
+            return math.csum(axis * axis * hot->mass->InverseInertia);
         }
 
         internal static float LinearMass(JointData* joint)
@@ -95,12 +95,12 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
         internal static quaternion WorldRotation0(JointData* joint)
         {
-            return joint->body0 != null ? math.mul((*StoreMemory.Row(joint->body0)).Pose()->Rotation, joint->rotation0) : joint->rotation0;
+            return joint->body0 != null ? math.mul((*StoreMemory.Row(joint->body0)).pose->Rotation, joint->rotation0) : joint->rotation0;
         }
 
         internal static quaternion WorldRotation1(JointData* joint)
         {
-            return joint->body1 != null ? math.mul((*StoreMemory.Row(joint->body1)).Pose()->Rotation, joint->rotation1) : joint->rotation1;
+            return joint->body1 != null ? math.mul((*StoreMemory.Row(joint->body1)).pose->Rotation, joint->rotation1) : joint->rotation1;
         }
 
         private static float3 WorldAnchor(Body* body, float3 local)
@@ -111,7 +111,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             BodyData* hot = StoreMemory.Row(body);
-            return (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, local);
+            return hot->pose->Position + math.rotate(hot->pose->Rotation, local);
         }
 
         /// <summary>

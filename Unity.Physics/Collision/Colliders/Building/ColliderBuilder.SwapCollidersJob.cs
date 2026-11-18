@@ -40,7 +40,7 @@ namespace Unity.Physics.Collision.Colliders.Building
                     }
 
                     BodyData* body = Bodies + Work[i].Body;
-                    Release((*body).Collider()->Value.GetUnsafePtr());
+                    Release(body->collider->Value.GetUnsafePtr());
                     SetCollider(body, FromPointer((void*)Results[i]));
                 }
             }

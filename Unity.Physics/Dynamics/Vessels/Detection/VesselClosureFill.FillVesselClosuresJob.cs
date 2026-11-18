@@ -116,8 +116,8 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 int firstPart = Vessels[UnitVessels[ClosureUnits[closure]]].FirstPart;
                 BodyData* bodyA = World->bodies + PartStoreBodies[firstPart + ClosurePartA[closure]];
                 BodyData* bodyB = World->bodies + PartStoreBodies[firstPart + ClosurePartB[closure]];
-                RigidTransform motionA = (*bodyA).Mass()->Transform;
-                RigidTransform motionB = (*bodyB).Mass()->Transform;
+                RigidTransform motionA = bodyA->mass->Transform;
+                RigidTransform motionB = bodyB->mass->Transform;
                 uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, unit, Groups, Members) : ClosureCacheStamps[closure];
                 if (!RefillAll && stamp == ClosureCacheStamps[closure] && UnitParameters.Same(ClosureCacheFrames[2 * closure], motionA)
                     && UnitParameters.Same(ClosureCacheFrames[2 * closure + 1], motionB))

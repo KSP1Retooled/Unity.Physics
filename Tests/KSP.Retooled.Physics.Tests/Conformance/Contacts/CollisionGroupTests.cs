@@ -348,7 +348,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
             TwoBoxes();
             UnityEngine.Physics.IgnoreCollision(First, Second);
             StoreGlobals* globals = NativeLibrary.RetooledPhysics_Globals();
-            IgnoreTable* current = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* current = globals->ignoreTable;
 
             // Seed bytes beyond the old table with a stale marker and pointer before shrinking the allocation.
             const int oldSize = IgnoreTable.OldSize;

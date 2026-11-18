@@ -1,13 +1,11 @@
 using System.Runtime.InteropServices;
-using Unity.Physics;
-using Unity.Physics.Store.Bodies;
 using Unity.Transforms;
 
-namespace KSP.Retooled.Physics.Entities
+namespace Unity.Physics.Store.Bodies
 {
     /// <summary>Stores a body's components while they are not on an entity.</summary>
     [StructLayout(LayoutKind.Sequential)]
-    internal unsafe struct BodyHome
+    internal struct BodyHome
     {
         public LocalTransform pose;
         public PhysicsVelocity velocity;
@@ -19,7 +17,5 @@ namespace KSP.Retooled.Physics.Entities
         public BodyForces forces;
         public BodyTarget target;
         public PhysicsCollider collider;
-
-        internal static BodyHome* Of(Body* body) => (BodyHome*)&body->home;
     }
 }

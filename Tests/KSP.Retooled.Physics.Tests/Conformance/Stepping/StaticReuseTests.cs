@@ -69,7 +69,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 Assert.That(index, Is.GreaterThanOrEqualTo(world.NumDynamicBodies), $"step {step}: row {row} is among the static bodies");
                 RigidBody rigidBody = world.Bodies[index];
                 RigidTransform expected = StoreBodies.BuildBodiesJob.WorldFromBody(ref body);
-                Assert.That((long)rigidBody.Collider.GetUnsafePtr(), Is.EqualTo((long)body.Collider()->Value.GetUnsafePtr()), $"step {step}: the collider of row {row}");
+                Assert.That((long)rigidBody.Collider.GetUnsafePtr(), Is.EqualTo((long)body.collider->Value.GetUnsafePtr()), $"step {step}: the collider of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.pos), Is.EqualTo(math.asuint(expected.pos)), $"step {step}: the position of row {row}");
                 Assert.That(math.asuint(rigidBody.WorldFromBody.rot.value), Is.EqualTo(math.asuint(expected.rot.value)), $"step {step}: the rotation of row {row}");
                 Assert.That(rigidBody.Entity.Index, Is.EqualTo(row), $"step {step}: the entity of row {row}");

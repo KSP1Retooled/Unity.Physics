@@ -42,7 +42,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 Assert.That(row->owner != null, Is.True, $"{when}: row {i} has an owner");
                 Assert.That(row->serial, Is.EqualTo(row->owner->serial), $"{when}: the serial number in row {i}");
                 Assert.That(row->serial, Is.Not.EqualTo(0u), $"{when}: row {i} has a serial number");
-                float expected = (*row).Collider()->Value.IsCreated ? (*row).Collider()->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
+                float expected = row->collider->Value.IsCreated ? row->collider->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
                 Assert.That(math.asuint(row->colliderExpansion), Is.EqualTo(math.asuint(expected)), $"{when}: the collider's expansion factor in row {i}");
             }
         }

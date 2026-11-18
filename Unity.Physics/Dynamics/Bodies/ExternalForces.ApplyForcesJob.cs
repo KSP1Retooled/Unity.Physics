@@ -47,25 +47,25 @@ namespace Unity.Physics.Dynamics.Bodies
                     return;
                 }
 
-                float3 linear = body.Velocity()->Linear;
-                linear += (body.Forces()->Force * body.Mass()->InverseMass + body.Forces()->Acceleration) * DeltaTime;
-                linear += body.Forces()->Impulse * body.Mass()->InverseMass + body.Forces()->VelocityChange;
+                float3 linear = body.velocity->Linear;
+                linear += (body.forces->Force * body.mass->InverseMass + body.forces->Acceleration) * DeltaTime;
+                linear += body.forces->Impulse * body.mass->InverseMass + body.forces->VelocityChange;
                 if ((body.flags & BodyFlags.Gravity) != 0)
                 {
                     linear += Gravity * DeltaTime;
                 }
 
-                quaternion inertiaFromWorld = math.conjugate(math.mul(body.Pose()->Rotation, body.Mass()->Transform.rot));
-                float3 torqueImpulse = body.Forces()->Torque * DeltaTime + body.Forces()->AngularImpulse;
-                float3 acceleration = body.Forces()->AngularAcceleration * DeltaTime + body.Forces()->AngularVelocityChange;
-                float3 angular = body.Velocity()->Angular + math.rotate(inertiaFromWorld, acceleration);
-                angular += math.rotate(inertiaFromWorld, torqueImpulse) * body.Mass()->InverseInertia;
+                quaternion inertiaFromWorld = math.conjugate(math.mul(body.pose->Rotation, body.mass->Transform.rot));
+                float3 torqueImpulse = body.forces->Torque * DeltaTime + body.forces->AngularImpulse;
+                float3 acceleration = body.forces->AngularAcceleration * DeltaTime + body.forces->AngularVelocityChange;
+                float3 angular = body.velocity->Angular + math.rotate(inertiaFromWorld, acceleration);
+                angular += math.rotate(inertiaFromWorld, torqueImpulse) * body.mass->InverseInertia;
 
-                linear *= math.max(1.0f - body.Damping()->Linear * DeltaTime, 0.0f);
-                angular *= math.max(1.0f - body.Damping()->Angular * DeltaTime, 0.0f);
+                linear *= math.max(1.0f - body.damping->Linear * DeltaTime, 0.0f);
+                angular *= math.max(1.0f - body.damping->Angular * DeltaTime, 0.0f);
 
-                body.Velocity()->Linear = ClampLength(linear, body.Limits()->MaxLinearVelocity);
-                body.Velocity()->Angular = ClampLength(angular, body.Limits()->MaxAngularVelocity);
+                body.velocity->Linear = ClampLength(linear, body.limits->MaxLinearVelocity);
+                body.velocity->Angular = ClampLength(angular, body.limits->MaxAngularVelocity);
                 ClearAccumulators(ref body);
             }
 
@@ -84,14 +84,14 @@ namespace Unity.Physics.Dynamics.Bodies
 
             private static void ClearAccumulators(ref BodyData body)
             {
-                body.Forces()->Force = float3.zero;
-                body.Forces()->Torque = float3.zero;
-                body.Forces()->Acceleration = float3.zero;
-                body.Forces()->AngularAcceleration = float3.zero;
-                body.Forces()->Impulse = float3.zero;
-                body.Forces()->AngularImpulse = float3.zero;
-                body.Forces()->VelocityChange = float3.zero;
-                body.Forces()->AngularVelocityChange = float3.zero;
+                body.forces->Force = float3.zero;
+                body.forces->Torque = float3.zero;
+                body.forces->Acceleration = float3.zero;
+                body.forces->AngularAcceleration = float3.zero;
+                body.forces->Impulse = float3.zero;
+                body.forces->AngularImpulse = float3.zero;
+                body.forces->VelocityChange = float3.zero;
+                body.forces->AngularVelocityChange = float3.zero;
             }
         }
     }

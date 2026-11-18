@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Store.Shapes;
 
 namespace Unity.Physics.Store.World
@@ -20,7 +21,7 @@ namespace Unity.Physics.Store.World
         /// </summary>
         public uint ignoreVersion;
 
-        public void* ignoreTable;
+        public IgnoreTable* ignoreTable;
 
         public MaterialData* defaultMaterial;
 

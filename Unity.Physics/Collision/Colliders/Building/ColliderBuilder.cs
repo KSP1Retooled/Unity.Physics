@@ -208,7 +208,7 @@ namespace Unity.Physics.Collision.Colliders.Building
         /// </summary>
         internal static void SetCollider(BodyData* body, BlobAssetReference<Collider> collider)
         {
-            (*body).Collider()->Value = collider;
+            body->collider->Value = collider;
             body->colliderExpansion = collider.IsCreated ? collider.Value.MassProperties.AngularExpansionFactor : 0.0f;
         }
 
@@ -218,7 +218,7 @@ namespace Unity.Physics.Collision.Colliders.Building
         /// </summary>
         private static void* Repose(BodyData* body)
         {
-            BlobAssetReference<Collider> built = (*body).Collider()->Value;
+            BlobAssetReference<Collider> built = body->collider->Value;
             if (!built.IsCreated || built.Value.Type != ColliderType.Compound)
             {
                 return null;

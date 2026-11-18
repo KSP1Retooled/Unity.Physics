@@ -63,7 +63,7 @@ namespace Unity.Physics.Dynamics.Sleep
                     BodyData* body = World->bodies + i;
                     if (Solved(body) && (body->flags & BodyFlags.Sleeping) == 0)
                     {
-                        islandAwake[Find(parents, i)] |= (*body).Sleep()->WakeCounter > 0.0f;
+                        islandAwake[Find(parents, i)] |= body->sleep->WakeCounter > 0.0f;
                     }
                 }
 

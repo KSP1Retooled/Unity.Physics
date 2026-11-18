@@ -27,16 +27,16 @@ namespace Unity.Physics.Dynamics.Bodies
             switch (a->mode)
             {
                 case ForceModeForce:
-                    (*hot).Forces()->Force += a->vector;
+                    hot->forces->Force += a->vector;
                     break;
                 case ForceModeImpulse:
-                    (*hot).Forces()->Impulse += a->vector;
+                    hot->forces->Impulse += a->vector;
                     break;
                 case ForceModeVelocityChange:
-                    (*hot).Forces()->VelocityChange += a->vector;
+                    hot->forces->VelocityChange += a->vector;
                     break;
                 case ForceModeAcceleration:
-                    (*hot).Forces()->Acceleration += a->vector;
+                    hot->forces->Acceleration += a->vector;
                     break;
             }
 
@@ -53,16 +53,16 @@ namespace Unity.Physics.Dynamics.Bodies
             switch (a->mode)
             {
                 case ForceModeForce:
-                    (*hot).Forces()->Torque += a->vector;
+                    hot->forces->Torque += a->vector;
                     break;
                 case ForceModeImpulse:
-                    (*hot).Forces()->AngularImpulse += a->vector;
+                    hot->forces->AngularImpulse += a->vector;
                     break;
                 case ForceModeVelocityChange:
-                    (*hot).Forces()->AngularVelocityChange += a->vector;
+                    hot->forces->AngularVelocityChange += a->vector;
                     break;
                 case ForceModeAcceleration:
-                    (*hot).Forces()->AngularAcceleration += a->vector;
+                    hot->forces->AngularAcceleration += a->vector;
                     break;
             }
 
@@ -72,7 +72,7 @@ namespace Unity.Physics.Dynamics.Bodies
         internal static float3 AccumulatedForce(BodyData* hot, float deltaTime)
         {
             float perStep = deltaTime > 0.0f ? 1.0f / deltaTime : 0.0f;
-            return (*hot).Forces()->Force + (*hot).Forces()->Acceleration * (*hot).BodyMass()->Mass + (*hot).Forces()->Impulse * perStep + (*hot).Forces()->VelocityChange * (*hot).BodyMass()->Mass * perStep;
+            return hot->forces->Force + hot->forces->Acceleration * hot->bodyMass->Mass + hot->forces->Impulse * perStep + hot->forces->VelocityChange * hot->bodyMass->Mass * perStep;
         }
 
         /// <summary>
@@ -80,17 +80,17 @@ namespace Unity.Physics.Dynamics.Bodies
         /// </summary>
         private static float3 ApplyInertia(BodyData* hot, float3 angular)
         {
-            quaternion rotation = math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot);
-            return math.rotate(rotation, math.rotate(math.conjugate(rotation), angular) * (*hot).BodyMass()->Inertia);
+            quaternion rotation = math.mul(hot->pose->Rotation, hot->mass->Transform.rot);
+            return math.rotate(rotation, math.rotate(math.conjugate(rotation), angular) * hot->bodyMass->Inertia);
         }
 
         internal static float3 AccumulatedTorque(BodyData* hot, float deltaTime)
         {
             float perStep = deltaTime > 0.0f ? 1.0f / deltaTime : 0.0f;
-            return (*hot).Forces()->Torque
-                + ApplyInertia(hot, (*hot).Forces()->AngularAcceleration)
-                + (*hot).Forces()->AngularImpulse * perStep
-                + ApplyInertia(hot, (*hot).Forces()->AngularVelocityChange) * perStep;
+            return hot->forces->Torque
+                + ApplyInertia(hot, hot->forces->AngularAcceleration)
+                + hot->forces->AngularImpulse * perStep
+                + ApplyInertia(hot, hot->forces->AngularVelocityChange) * perStep;
         }
 
         private static long managedJobRuns;

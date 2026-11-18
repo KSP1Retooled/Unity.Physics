@@ -445,7 +445,7 @@ namespace KSP.Retooled.Physics.Commands
             float3 centreOfMass = float3.zero;
             if (vehicle->body != null)
             {
-                centreOfMass = (*StoreRows.Hot(vehicle->body)).Mass()->Transform.pos;
+                centreOfMass = StoreRows.Hot(vehicle->body)->mass->Transform.pos;
             }
 
             a->position = centreOfMass + wheel->centreOffset + new float3(0.0f, wheel->jounce, 0.0f);

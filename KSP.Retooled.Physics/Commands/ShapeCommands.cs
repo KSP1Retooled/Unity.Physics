@@ -296,8 +296,8 @@ namespace KSP.Retooled.Physics.Commands
             }
 
             BodyData* hot = StoreRows.Hot(shape->body);
-            a->position = (*hot).Pose()->Position + math.rotate((*hot).Pose()->Rotation, shape->data.localPosition);
-            a->rotation = math.mul((*hot).Pose()->Rotation, shape->data.localRotation);
+            a->position = hot->pose->Position + math.rotate(hot->pose->Rotation, shape->data.localPosition);
+            a->rotation = math.mul(hot->pose->Rotation, shape->data.localRotation);
         }
 
         /// <summary>
@@ -370,8 +370,8 @@ namespace KSP.Retooled.Physics.Commands
             if (shape->body != null)
             {
                 BodyData* hot = StoreRows.Hot(shape->body);
-                position = (*hot).Pose()->Position;
-                rotation = (*hot).Pose()->Rotation;
+                position = hot->pose->Position;
+                rotation = hot->pose->Rotation;
             }
 
             ShapeMassProperties.WorldBounds(&shape->data, shape->data.localPosition, shape->data.localRotation, position, rotation, out float3 lower, out float3 upper);

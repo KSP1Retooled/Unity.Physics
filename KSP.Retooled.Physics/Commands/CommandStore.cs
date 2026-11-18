@@ -55,7 +55,7 @@ namespace KSP.Retooled.Physics.Commands
         internal static void MarkCollidersMoved(Body* body)
         {
             BodyData* hot = StoreRows.Hot(body);
-            BlobAssetReference<Collider> built = (*hot).Collider()->Value;
+            BlobAssetReference<Collider> built = hot->collider->Value;
             if (built.IsCreated && built.Value.Type == ColliderType.Compound)
             {
                 hot->flags |= BodyFlags.CollidersMoved;
@@ -93,7 +93,7 @@ namespace KSP.Retooled.Physics.Commands
             if (world->removedShapeCount == world->removedShapeCapacity)
             {
                 world->removedShapeCapacity = StoreMemory.Grown(world->removedShapeCapacity);
-                world->removedShapes = (void**)StoreMemory.Reallocate(globals, world->removedShapes, world->removedShapeCapacity * (ulong)sizeof(void*));
+                world->removedShapes = (Shape**)StoreMemory.Reallocate(globals, world->removedShapes, world->removedShapeCapacity * (ulong)sizeof(void*));
             }
 
             world->removedShapes[world->removedShapeCount++] = shape;
@@ -106,7 +106,7 @@ namespace KSP.Retooled.Physics.Commands
         /// </summary>
         private static void HideFromQueries(WorldData* world, Shape* shape)
         {
-            QueryWorld* query = (QueryWorld*)world->queryWorld;
+            QueryWorld* query = world->queryWorld;
             if (query != null && shape->querySlot != 0 && shape->querySlot <= (uint)query->ShapeCount)
             {
                 QueryShape* published = query->Shapes + (shape->querySlot - 1);

@@ -96,7 +96,7 @@ namespace Unity.Physics.Stepping
             {
                 return new RigidBody
                 {
-                    Collider = body.Collider()->Value,
+                    Collider = body.collider->Value,
                     WorldFromBody = WorldFromBody(ref body),
                     Entity = new Entity { Index = index, Version = EntityVersion(ref body, index, readSources) },
                     Scale = 1.0f,
@@ -121,7 +121,7 @@ namespace Unity.Physics.Stepping
 
             internal static RigidTransform WorldFromBody(ref BodyData body)
             {
-                RigidTransform worldFromBody = new RigidTransform(body.Pose()->Rotation, body.Pose()->Position);
+                RigidTransform worldFromBody = new RigidTransform(body.pose->Rotation, body.pose->Position);
                 ShapeData* posed = ColliderBuilder.PosedShape((BodyData*)UnsafeUtility.AddressOf(ref body));
                 if (posed != null)
                 {
@@ -133,15 +133,15 @@ namespace Unity.Physics.Stepping
 
             private void WriteMotion(int motionIndex, ref BodyData body)
             {
-                RigidTransform bodyFromMotion = body.Mass()->Transform;
-                RigidTransform worldFromMotion = math.mul(new RigidTransform(body.Pose()->Rotation, body.Pose()->Position), bodyFromMotion);
+                RigidTransform bodyFromMotion = body.mass->Transform;
+                RigidTransform worldFromMotion = math.mul(new RigidTransform(body.pose->Rotation, body.pose->Position), bodyFromMotion);
 
                 bool kinematic = (body.flags & BodyFlags.Kinematic) != 0;
                 bool sleeping = (body.flags & BodyFlags.Sleeping) != 0;
                 bool heldInPlace = kinematic || sleeping;
 
-                float3 linear = body.Velocity()->Linear;
-                float3 angular = body.Velocity()->Angular;
+                float3 linear = body.velocity->Linear;
+                float3 angular = body.velocity->Angular;
                 if (kinematic)
                 {
                     linear = float3.zero;
@@ -150,9 +150,9 @@ namespace Unity.Physics.Stepping
                     {
                         // Motion velocities describe movement of the centre of mass. Rotating around the body origin also
                         // moves the centre of mass.
-                        float3 targetCenter = body.Target()->Position + math.rotate(body.Target()->Rotation, body.Mass()->Transform.pos);
+                        float3 targetCenter = body.target->Position + math.rotate(body.target->Rotation, body.mass->Transform.pos);
                         linear = (targetCenter - worldFromMotion.pos) / DeltaTime;
-                        quaternion turn = math.normalize(math.mul(body.Target()->Rotation, math.conjugate(body.Pose()->Rotation)));
+                        quaternion turn = math.normalize(math.mul(body.target->Rotation, math.conjugate(body.pose->Rotation)));
                         angular = math.rotate(math.conjugate(worldFromMotion.rot), JointConstraints.AngleAxis(turn) / DeltaTime);
                     }
                 }
@@ -162,12 +162,12 @@ namespace Unity.Physics.Stepping
                 float colliderExpansion = body.colliderExpansion;
                 if (ReadSources)
                 {
-                    colliderExpansion = body.Collider()->Value.IsCreated ? body.Collider()->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
+                    colliderExpansion = body.collider->Value.IsCreated ? body.collider->Value.Value.MassProperties.AngularExpansionFactor : 0.0f;
                 }
 
                 // The build doesn't write the result back into the body's PhysicsMass, because no code in this package reads it
                 // there.
-                float expansion = math.length(body.Mass()->Transform.pos) + colliderExpansion;
+                float expansion = math.length(body.mass->Transform.pos) + colliderExpansion;
 
                 MotionDatas[motionIndex] = new MotionData
                 {
@@ -181,8 +181,8 @@ namespace Unity.Physics.Stepping
                 {
                     LinearVelocity = linear,
                     AngularVelocity = angular,
-                    InverseInertia = heldInPlace ? float3.zero : body.Mass()->InverseInertia,
-                    InverseMass = heldInPlace ? 0.0f : body.Mass()->InverseMass,
+                    InverseInertia = heldInPlace ? float3.zero : body.mass->InverseInertia,
+                    InverseMass = heldInPlace ? 0.0f : body.mass->InverseMass,
                     AngularExpansionFactor = expansion,
                     GravityFactor = 0.0f,
                 };

@@ -40,7 +40,7 @@ namespace Unity.Physics.Stepping.State
             for (uint i = 0; i < store->bodyCount; i++)
             {
                 BodyData* body = store->bodies + i;
-                ColliderBuilder.Release((*body).Collider()->Value.GetUnsafePtr());
+                ColliderBuilder.Release(body->collider->Value.GetUnsafePtr());
                 ColliderBuilder.SetCollider(body, default);
                 body->flags |= BodyFlags.ColliderDirty;
             }

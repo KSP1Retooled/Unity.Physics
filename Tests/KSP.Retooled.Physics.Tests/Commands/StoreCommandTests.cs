@@ -137,7 +137,7 @@ namespace KSP.Retooled.Physics.Tests.Commands
             CommandArgs args = default;
             BodyCommands.Run((uint)BodyCommand.RecomputeMassProperties, body, &args, globals);
 
-            float3 inertia = (*StoreRows.Hot(body)).BodyMass()->Inertia;
+            float3 inertia = StoreRows.Hot(body)->bodyMass->Inertia;
             Assert.That(math.all(math.isfinite(inertia)), Is.True, $"inertia {inertia}");
             Assert.That(inertia.x, Is.EqualTo(1.0f / 6.0f).Within(1e-5f), "the box alone");
 
@@ -395,16 +395,16 @@ namespace KSP.Retooled.Physics.Tests.Commands
             PhysicsCollider collider = default;
 
             BodyData body = default;
-            body.SetPosePointer(&pose);
-            body.SetVelocityPointer(&bodyVelocity);
-            body.SetMassPointer(&mass);
-            body.SetBodyMassPointer(&bodyMass);
-            body.SetDampingPointer(&damping);
-            body.SetLimitsPointer(&limits);
-            body.SetSleepPointer(&sleep);
-            body.SetForcesPointer(&forces);
-            body.SetTargetPointer(&target);
-            body.SetColliderPointer(&collider);
+            body.pose = &pose;
+            body.velocity = &bodyVelocity;
+            body.mass = &mass;
+            body.bodyMass = &bodyMass;
+            body.damping = &damping;
+            body.limits = &limits;
+            body.sleep = &sleep;
+            body.forces = &forces;
+            body.target = &target;
+            body.collider = &collider;
             body.flags = Kinematic | BodyFlags.HasKinematicTarget;
 
             using NativeArray<int> dynamicIndices = new NativeArray<int>(new[] { 0 }, Allocator.TempJob);

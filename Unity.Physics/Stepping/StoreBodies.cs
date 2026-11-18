@@ -70,8 +70,8 @@ namespace Unity.Physics.Stepping
                 {
                     if ((body.flags & BodyFlags.HasKinematicTarget) != 0)
                     {
-                        body.Pose()->Position = body.Target()->Position;
-                        BodyKinematics.SetRotation(body, body.Target()->Rotation);
+                        body.pose->Position = body.target->Position;
+                        BodyKinematics.SetRotation(body, body.target->Rotation);
                         body.flags &= ~BodyFlags.HasKinematicTarget;
                     }
 
@@ -79,9 +79,9 @@ namespace Unity.Physics.Stepping
                 }
 
                 MotionVelocity velocity = MotionVelocities[index];
-                BodyKinematics.SolvedPose(MotionDatas[index], out body.Pose()->Position, out body.Pose()->Rotation);
-                body.Velocity()->Linear = ExternalForces.ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.Limits()->MaxLinearVelocity);
-                body.Velocity()->Angular = ExternalForces.ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.Limits()->MaxAngularVelocity);
+                BodyKinematics.SolvedPose(MotionDatas[index], out body.pose->Position, out body.pose->Rotation);
+                body.velocity->Linear = ExternalForces.ApplyForcesJob.ClampLength(velocity.LinearVelocity, body.limits->MaxLinearVelocity);
+                body.velocity->Angular = ExternalForces.ApplyForcesJob.ClampLength(velocity.AngularVelocity, body.limits->MaxAngularVelocity);
             }
 
         }

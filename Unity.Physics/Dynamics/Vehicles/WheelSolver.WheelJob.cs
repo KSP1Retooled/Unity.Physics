@@ -93,7 +93,7 @@ namespace Unity.Physics.Dynamics.Vehicles
                 }
 
                 RigidTransform pose = Collision.Bodies[built].WorldFromBody;
-                float3 centreOfMass = math.transform(pose, (*body).Mass()->Transform.pos);
+                float3 centreOfMass = math.transform(pose, body->mass->Transform.pos);
                 float3 up = math.rotate(pose.rot, math.up());
                 bool pushed = built < MotionVelocities.Length && MotionVelocities[built].InverseMass > 0.0f;
 
@@ -112,7 +112,7 @@ namespace Unity.Physics.Dynamics.Vehicles
                     // motor torque.
                     if (wheel->motorTorque != 0.0f)
                     {
-                        (*body).Sleep()->WakeCounter = math.max((*body).Sleep()->WakeCounter, StoreMemory.WakeCounterReset);
+                        body->sleep->WakeCounter = math.max(body->sleep->WakeCounter, StoreMemory.WakeCounterReset);
                     }
                 }
             }

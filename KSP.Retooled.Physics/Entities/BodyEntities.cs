@@ -7,7 +7,6 @@ using Unity.Physics;
 using Unity.Transforms;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.World;
-using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Entities
 {
@@ -129,21 +128,21 @@ namespace KSP.Retooled.Physics.Entities
 
         private static void Place(BodyData* hot)
         {
-            BodyHome* home = BodyHome.Of(hot->owner);
+            BodyHome* home = &hot->owner->home;
             ref EntityManager manager = ref Current.Data.Manager;
             EntityOf(hot) = manager.CreateEntity(Current.Data.Archetype);
             manager.SetComponentData(EntityOf(hot), new BodyOwner { Body = hot->owner });
             Resolve(hot);
-            *(*hot).Pose() = home->pose;
-            *(*hot).Velocity() = home->velocity;
-            *(*hot).Mass() = home->mass;
-            *(*hot).BodyMass() = home->bodyMass;
-            *(*hot).Damping() = home->damping;
-            *(*hot).Limits() = home->limits;
-            *(*hot).Sleep() = home->sleep;
-            *(*hot).Forces() = home->forces;
-            *(*hot).Target() = home->target;
-            *(*hot).Collider() = home->collider;
+            *hot->pose = home->pose;
+            *hot->velocity = home->velocity;
+            *hot->mass = home->mass;
+            *hot->bodyMass = home->bodyMass;
+            *hot->damping = home->damping;
+            *hot->limits = home->limits;
+            *hot->sleep = home->sleep;
+            *hot->forces = home->forces;
+            *hot->target = home->target;
+            *hot->collider = home->collider;
         }
 
         /// <summary>Copies a body's state back to its body record and destroys its entity, if it has one.</summary>
@@ -158,17 +157,17 @@ namespace KSP.Retooled.Physics.Entities
 
             Refresh(hot);
             bool clean = Clean();
-            BodyHome* home = BodyHome.Of(hot->owner);
-            home->pose = *(*hot).Pose();
-            home->velocity = *(*hot).Velocity();
-            home->mass = *(*hot).Mass();
-            home->bodyMass = *(*hot).BodyMass();
-            home->damping = *(*hot).Damping();
-            home->limits = *(*hot).Limits();
-            home->sleep = *(*hot).Sleep();
-            home->forces = *(*hot).Forces();
-            home->target = *(*hot).Target();
-            home->collider = *(*hot).Collider();
+            BodyHome* home = &hot->owner->home;
+            home->pose = *hot->pose;
+            home->velocity = *hot->velocity;
+            home->mass = *hot->mass;
+            home->bodyMass = *hot->bodyMass;
+            home->damping = *hot->damping;
+            home->limits = *hot->limits;
+            home->sleep = *hot->sleep;
+            home->forces = *hot->forces;
+            home->target = *hot->target;
+            home->collider = *hot->collider;
 
             ref EntityManager manager = ref Current.Data.Manager;
             EntityStorageInfo slot = manager.GetStorageInfo(EntityOf(hot));
@@ -214,16 +213,16 @@ namespace KSP.Retooled.Physics.Entities
             ComponentTypeHandle<BodyOwner> owners = manager.GetComponentTypeHandle<BodyOwner>(true);
             Body* body = slot.Chunk.GetNativeArray(ref owners)[slot.IndexInChunk].Body;
             BodyData* hot = body->world->bodies + body->index;
-            (*hot).SetPosePointer((*vacated).Pose());
-            (*hot).SetVelocityPointer((*vacated).Velocity());
-            (*hot).SetMassPointer((*vacated).Mass());
-            (*hot).SetBodyMassPointer((*vacated).BodyMass());
-            (*hot).SetDampingPointer((*vacated).Damping());
-            (*hot).SetLimitsPointer((*vacated).Limits());
-            (*hot).SetSleepPointer((*vacated).Sleep());
-            (*hot).SetForcesPointer((*vacated).Forces());
-            (*hot).SetTargetPointer((*vacated).Target());
-            (*hot).SetColliderPointer((*vacated).Collider());
+            hot->pose = vacated->pose;
+            hot->velocity = vacated->velocity;
+            hot->mass = vacated->mass;
+            hot->bodyMass = vacated->bodyMass;
+            hot->damping = vacated->damping;
+            hot->limits = vacated->limits;
+            hot->sleep = vacated->sleep;
+            hot->forces = vacated->forces;
+            hot->target = vacated->target;
+            hot->collider = vacated->collider;
             hot->orderVersion = Version();
         }
 
@@ -310,16 +309,16 @@ namespace KSP.Retooled.Physics.Entities
         {
             EntityManager manager = Current.Data.Manager;
             Entity entity = EntityOf(hot);
-            (*hot).SetPosePointer(Pointer(manager.GetComponentDataRW<LocalTransform>(entity)));
-            (*hot).SetVelocityPointer(Pointer(manager.GetComponentDataRW<PhysicsVelocity>(entity)));
-            (*hot).SetMassPointer(Pointer(manager.GetComponentDataRW<PhysicsMass>(entity)));
-            (*hot).SetBodyMassPointer(Pointer(manager.GetComponentDataRW<BodyMass>(entity)));
-            (*hot).SetDampingPointer(Pointer(manager.GetComponentDataRW<PhysicsDamping>(entity)));
-            (*hot).SetLimitsPointer(Pointer(manager.GetComponentDataRW<BodyLimits>(entity)));
-            (*hot).SetSleepPointer(Pointer(manager.GetComponentDataRW<BodySleep>(entity)));
-            (*hot).SetForcesPointer(Pointer(manager.GetComponentDataRW<BodyForces>(entity)));
-            (*hot).SetTargetPointer(Pointer(manager.GetComponentDataRW<BodyTarget>(entity)));
-            (*hot).SetColliderPointer(Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity)));
+            hot->pose = Pointer(manager.GetComponentDataRW<LocalTransform>(entity));
+            hot->velocity = Pointer(manager.GetComponentDataRW<PhysicsVelocity>(entity));
+            hot->mass = Pointer(manager.GetComponentDataRW<PhysicsMass>(entity));
+            hot->bodyMass = Pointer(manager.GetComponentDataRW<BodyMass>(entity));
+            hot->damping = Pointer(manager.GetComponentDataRW<PhysicsDamping>(entity));
+            hot->limits = Pointer(manager.GetComponentDataRW<BodyLimits>(entity));
+            hot->sleep = Pointer(manager.GetComponentDataRW<BodySleep>(entity));
+            hot->forces = Pointer(manager.GetComponentDataRW<BodyForces>(entity));
+            hot->target = Pointer(manager.GetComponentDataRW<BodyTarget>(entity));
+            hot->collider = Pointer(manager.GetComponentDataRW<PhysicsCollider>(entity));
 
             // Publish the version after the pointers so that workers cannot observe partially refreshed state.
             hot->orderVersion = Version();

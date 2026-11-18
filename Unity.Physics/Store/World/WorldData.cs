@@ -1,9 +1,12 @@
 using System;
 using System.Runtime.InteropServices;
 using Unity.Mathematics;
+using Unity.Physics.Collision.Queries.Snapshot;
+using Unity.Physics.Collision.World.Trees;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Reports;
+using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.Vehicles;
 
 namespace Unity.Physics.Store.World
@@ -31,19 +34,19 @@ namespace Unity.Physics.Store.World
         public uint contactShapeCount;
         public uint contactShapeCapacity;
 
-        public ContactPoint* contactPoints;
+        public Reports.ContactPoint* contactPoints;
         public uint contactPointCount;
         public uint contactPointCapacity;
 
-        public TriggerEvent* triggers;
+        public Reports.TriggerEvent* triggers;
         public uint triggerCount;
         public uint triggerCapacity;
 
-        public void** removedShapes;
+        public Shape** removedShapes;
         public uint removedShapeCount;
         public uint removedShapeCapacity;
 
-        public void** deadColliders;
+        public Collider** deadColliders;
         public uint deadColliderCount;
         public uint deadColliderCapacity;
 
@@ -54,7 +57,7 @@ namespace Unity.Physics.Store.World
         public uint queryDirty;
 
         public IntPtr owner;
-        public void* queryWorld;
+        public QueryWorld* queryWorld;
 
         public VehicleData** vehicles;
         public uint vehicleCount;
@@ -67,6 +70,6 @@ namespace Unity.Physics.Store.World
         private readonly uint reserved0;
 
         /// <summary>The refit that a query helps to finish while <see cref="treeReady"/> is 0.</summary>
-        public void* refit;
+        public SharedDynamicTreeRefit* refit;
     }
 }

@@ -1,3 +1,4 @@
+using PhysicsCollider = Unity.Physics.Collider;
 using KSP.Retooled.Physics.Diagnostics;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
@@ -177,29 +178,29 @@ namespace KSP.Retooled.Physics.Commands
             *hot = default;
             hot->owner = body;
             StoreRows.PointAtHome(hot, body);
-            (*hot).Pose()->Rotation = a->rotation;
-            (*hot).Pose()->Position = a->position;
-            (*hot).Pose()->Scale = 1.0f;
+            hot->pose->Rotation = a->rotation;
+            hot->pose->Position = a->position;
+            hot->pose->Scale = 1.0f;
             hot->flags = (BodyFlags)a->flags | BodyFlags.ColliderDirty;
             if (a->enabled != 0)
             {
                 hot->flags |= BodyFlags.Static;
             }
 
-            (*hot).BodyMass()->Mass = a->scalar;
-            (*hot).Mass()->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
-            (*hot).BodyMass()->Inertia = new float3(1.0f);
-            (*hot).Mass()->InverseInertia = new float3(1.0f);
-            (*hot).Mass()->Transform.rot = quaternion.identity;
-            (*hot).Damping()->Linear = a->scalar2;
-            (*hot).Damping()->Angular = a->scalar3;
-            (*hot).Limits()->MaxLinearVelocity = DefaultMaxLinearVelocity;
-            (*hot).Limits()->MaxAngularVelocity = DefaultMaxAngularVelocity;
-            (*hot).Limits()->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
-            (*hot).Sleep()->WakeCounter = StoreMemory.WakeCounterReset;
-            (*hot).Sleep()->Threshold = DefaultSleepThreshold;
-            (*hot).Target()->Rotation = a->rotation;
-            (*hot).Target()->Position = a->position;
+            hot->bodyMass->Mass = a->scalar;
+            hot->mass->InverseMass = a->scalar > 0.0f ? 1.0f / a->scalar : 0.0f;
+            hot->bodyMass->Inertia = new float3(1.0f);
+            hot->mass->InverseInertia = new float3(1.0f);
+            hot->mass->Transform.rot = quaternion.identity;
+            hot->damping->Linear = a->scalar2;
+            hot->damping->Angular = a->scalar3;
+            hot->limits->MaxLinearVelocity = DefaultMaxLinearVelocity;
+            hot->limits->MaxAngularVelocity = DefaultMaxAngularVelocity;
+            hot->limits->MaxDepenetrationVelocity = DefaultMaxDepenetrationVelocity;
+            hot->sleep->WakeCounter = StoreMemory.WakeCounterReset;
+            hot->sleep->Threshold = DefaultSleepThreshold;
+            hot->target->Rotation = a->rotation;
+            hot->target->Position = a->position;
             BodyEntities.Adopt(hot);
 
             // Every new body moves the topology version, so the new value is a number that no other body or joint
@@ -233,15 +234,15 @@ namespace KSP.Retooled.Physics.Commands
 
             BodyData* hot = world->bodies + body->index;
             BodyEntities.Release(hot);
-            if ((*hot).Collider()->Value.IsCreated)
+            if (hot->collider->Value.IsCreated)
             {
                 if (world->deadColliderCount == world->deadColliderCapacity)
                 {
                     world->deadColliderCapacity = StoreMemory.Grown(world->deadColliderCapacity);
-                    world->deadColliders = (void**)StoreMemory.Reallocate(globals, world->deadColliders, world->deadColliderCapacity * (ulong)sizeof(void*));
+                    world->deadColliders = (PhysicsCollider**)StoreMemory.Reallocate(globals, world->deadColliders, world->deadColliderCapacity * (ulong)sizeof(void*));
                 }
 
-                world->deadColliders[world->deadColliderCount++] = (*hot).Collider()->Value.GetUnsafePtr();
+                world->deadColliders[world->deadColliderCount++] = (PhysicsCollider*)hot->collider->Value.GetUnsafePtr();
             }
 
             // Replace the destroyed body with the last body in the array. The sequence of static bodies changes only if

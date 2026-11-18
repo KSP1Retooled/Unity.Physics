@@ -23,15 +23,15 @@ namespace Unity.Physics.Dynamics.Bodies
 
         internal static void SetInertia(BodyData* hot, float3 inertia)
         {
-            (*hot).BodyMass()->Inertia = inertia;
-            (*hot).Mass()->InverseInertia = new float3(InverseOrZero(inertia.x), InverseOrZero(inertia.y), InverseOrZero(inertia.z));
+            hot->bodyMass->Inertia = inertia;
+            hot->mass->InverseInertia = new float3(InverseOrZero(inertia.x), InverseOrZero(inertia.y), InverseOrZero(inertia.z));
         }
 
         internal static void WorldInertiaTensor(BodyData* hot, float* matrix)
         {
-            quaternion rotation = math.mul((*hot).Pose()->Rotation, (*hot).Mass()->Transform.rot);
+            quaternion rotation = math.mul(hot->pose->Rotation, hot->mass->Transform.rot);
             float3x3 axes = new float3x3(rotation);
-            float3 moments = (*hot).BodyMass()->Inertia;
+            float3 moments = hot->bodyMass->Inertia;
             for (int row = 0; row < 3; row++)
             {
                 for (int column = 0; column < 3; column++)
@@ -187,14 +187,14 @@ namespace Unity.Physics.Dynamics.Bodies
 
             if (totalVolume <= 0.0f)
             {
-                (*hot).Mass()->Transform.pos = overrideCenter ? a->vector : float3.zero;
+                hot->mass->Transform.pos = overrideCenter ? a->vector : float3.zero;
                 SetInertia(hot, overrideInertia ? a->vector2 : new float3(1.0f));
                 BodyKinematics.SetInertiaRotation(*hot, overrideInertia ? a->rotation : quaternion.identity);
                 return;
             }
 
             float3 center = overrideCenter ? a->vector : weightedCenter / totalVolume;
-            (*hot).Mass()->Transform.pos = center;
+            hot->mass->Transform.pos = center;
             if (overrideInertia)
             {
                 SetInertia(hot, a->vector2);
@@ -214,7 +214,7 @@ namespace Unity.Physics.Dynamics.Bodies
                 ShapeData* shape = body->shapes[i];
                 if (TakesMass(shape, out float volume, out float3 localCenter, out float3x3 inertiaPerUnitMass))
                 {
-                    AddToTensor(tensor, shape, (*hot).BodyMass()->Mass * (double)volume / totalVolume, ShapeCenterInBody(shape, localCenter) - center, inertiaPerUnitMass);
+                    AddToTensor(tensor, shape, hot->bodyMass->Mass * (double)volume / totalVolume, ShapeCenterInBody(shape, localCenter) - center, inertiaPerUnitMass);
                 }
             }
 
@@ -281,7 +281,7 @@ namespace Unity.Physics.Dynamics.Bodies
                 for (uint i = 0; i < body->shapeCount; i++)
                 {
                     ShapeData* shape = body->shapes[i];
-                    ShapeMassProperties.WorldBounds(shape, shape->localPosition, shape->localRotation, (*hot).Pose()->Position, (*hot).Pose()->Rotation, out float3 shapeLower, out float3 shapeUpper);
+                    ShapeMassProperties.WorldBounds(shape, shape->localPosition, shape->localRotation, hot->pose->Position, hot->pose->Rotation, out float3 shapeLower, out float3 shapeUpper);
                     lower = math.min(lower, shapeLower);
                     upper = math.max(upper, shapeUpper);
                 }

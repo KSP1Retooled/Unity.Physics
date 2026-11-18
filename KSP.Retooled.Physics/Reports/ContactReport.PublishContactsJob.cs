@@ -13,8 +13,8 @@ using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using static Unity.Physics.Dynamics.Contacts.ManifoldRecords;
-using StoreContactPoint = Unity.Physics.Store.Reports.ContactPoint;
 using TriggerEvent = Unity.Physics.Store.Reports.TriggerEvent;
+using StoreContactPoint = Unity.Physics.Store.Reports.ContactPoint;
 
 namespace KSP.Retooled.Physics.Reports
 {
@@ -328,7 +328,7 @@ namespace KSP.Retooled.Physics.Reports
 
                     BodyData* a = World->bodies + rowFirst;
                     BodyData* b = World->bodies + rowSecond;
-                    ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, (*a).Velocity()->Linear, BodyKinematics.WorldAngularVelocity(*a), (*b).Velocity()->Linear, BodyKinematics.WorldAngularVelocity(*b));
+                    ContactBodyPair* pair = AddBodyPair(rowFirst, rowSecond, a->velocity->Linear, BodyKinematics.WorldAngularVelocity(*a), b->velocity->Linear, BodyKinematics.WorldAngularVelocity(*b));
                     World->contactShapes[World->contactShapeCount++] = new ContactShapePair
                     {
                         thisCollider = EngineId(first->userData),

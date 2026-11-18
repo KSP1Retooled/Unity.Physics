@@ -190,9 +190,9 @@ namespace Unity.Physics.Dynamics.Contacts
                     FirstPoint = firstPoint,
                     Normal = normal,
                     BuiltNormal = header.Normal,
-                    LinearVelocityA = first.Velocity()->Linear,
+                    LinearVelocityA = first.velocity->Linear,
                     AngularVelocityA = BodyKinematics.WorldAngularVelocity(first),
-                    LinearVelocityB = second.Velocity()->Linear,
+                    LinearVelocityB = second.velocity->Linear,
                     AngularVelocityB = BodyKinematics.WorldAngularVelocity(second),
                     Trigger = trigger,
                 });
@@ -241,9 +241,9 @@ namespace Unity.Physics.Dynamics.Contacts
                     V1 = math.transform(leaf.TransformFromChild, vertices[1]),
                     V2 = math.transform(leaf.TransformFromChild, vertices[2]),
                     V3 = quad ? math.transform(leaf.TransformFromChild, vertices[3]) : float3.zero,
-                    Linear = moving.Velocity()->Linear,
+                    Linear = moving.velocity->Linear,
                     Angular = BodyKinematics.WorldAngularVelocity(moving),
-                    CentreOfMass = moving.Pose()->Position + math.rotate(moving.Pose()->Rotation, moving.Mass()->Transform.pos),
+                    CentreOfMass = moving.pose->Position + math.rotate(moving.pose->Rotation, moving.mass->Transform.pos),
                 };
             }
 
@@ -385,7 +385,7 @@ namespace Unity.Physics.Dynamics.Contacts
 
             private static float3 PointVelocity(ref BodyData body, float3 linear, float3 angular, float3 position)
             {
-                float3 center = (float3)body.Pose()->Position + math.rotate(body.Pose()->Rotation, body.Mass()->Transform.pos);
+                float3 center = (float3)body.pose->Position + math.rotate(body.pose->Rotation, body.mass->Transform.pos);
                 return linear + math.cross(angular, position - center);
             }
 
@@ -415,7 +415,7 @@ namespace Unity.Physics.Dynamics.Contacts
                 }
 
                 ref BodyData row = ref Store[other.Entity.Index];
-                ShapeMassProperties.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.Pose()->Position, row.Pose()->Rotation, out float3 lower, out float3 upper);
+                ShapeMassProperties.WorldBounds(otherShape, otherShape->localPosition, otherShape->localRotation, row.pose->Position, row.pose->Rotation, out float3 lower, out float3 upper);
                 float3 centre = math.transform(math.inverse(field.WorldFromBody), (lower + upper) * 0.5f);
                 return QueryCollectors.IsBehind((Collider*)field.Collider.GetUnsafePtr(), key, centre);
             }

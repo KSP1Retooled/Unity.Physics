@@ -6,9 +6,6 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.World;
-using KSP.Retooled.Physics.Entities;
-using Unity.Collections.LowLevel.Unsafe;
-using Unity.Physics.Store.Bodies;
 
 namespace KSP.Retooled.Physics.Tests.Host
 {
@@ -42,13 +39,6 @@ namespace KSP.Retooled.Physics.Tests.Host
             }
 
             Assert.That(body.position.y, Is.EqualTo(2.0f));
-        }
-
-        [Test]
-        public unsafe void FirstSizeMismatchBodyHomeBlockMatchesBodyHome()
-        {
-            Assert.That(sizeof(BodyHomeBlock), Is.EqualTo(sizeof(BodyHome)));
-            Assert.That(UnsafeUtility.AlignOf<BodyHomeBlock>(), Is.EqualTo(UnsafeUtility.AlignOf<BodyHome>()));
         }
 
         [Test]

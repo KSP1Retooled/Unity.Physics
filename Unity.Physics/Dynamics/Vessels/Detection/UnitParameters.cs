@@ -120,14 +120,14 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         /// </summary>
         public static double3 InMotionFrame(BodyData* body, float3 point)
         {
-            RigidTransform bodyFromMotion = (*body).Mass()->Transform;
+            RigidTransform bodyFromMotion = body->mass->Transform;
             return math.rotate(math.conjugate(bodyFromMotion.rot), point - bodyFromMotion.pos);
         }
 
         /// <summary>Converts a rotation from the body's local frame to its motion frame.</summary>
         public static quaternion InMotionFrame(BodyData* body, quaternion rotation)
         {
-            return math.mul(math.conjugate((*body).Mass()->Transform.rot), rotation);
+            return math.mul(math.conjugate(body->mass->Transform.rot), rotation);
         }
 
         /// <summary>
@@ -136,7 +136,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         /// </summary>
         public static double4 Rest(BodyData* bodyA, quaternion frameA, BodyData* bodyB, quaternion frameB)
         {
-            quaternion rest = math.mul(math.mul(InMotionFrame(bodyA, frameA), math.conjugate(frameB)), (*bodyB).Mass()->Transform.rot);
+            quaternion rest = math.mul(math.mul(InMotionFrame(bodyA, frameA), math.conjugate(frameB)), bodyB->mass->Transform.rot);
             return math.normalize(rest).value;
         }
 

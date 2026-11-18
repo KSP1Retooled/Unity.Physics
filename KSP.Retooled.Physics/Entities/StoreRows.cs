@@ -1,5 +1,4 @@
 using Unity.Physics.Store.Bodies;
-using Unity.Physics.Stepping;
 
 namespace KSP.Retooled.Physics.Entities
 {
@@ -23,17 +22,17 @@ namespace KSP.Retooled.Physics.Entities
         /// </summary>
         internal static void PointAtHome(BodyData* hot, Body* body)
         {
-            BodyHome* home = BodyHome.Of(body);
-            (*hot).SetPosePointer(&home->pose);
-            (*hot).SetVelocityPointer(&home->velocity);
-            (*hot).SetMassPointer(&home->mass);
-            (*hot).SetBodyMassPointer(&home->bodyMass);
-            (*hot).SetDampingPointer(&home->damping);
-            (*hot).SetLimitsPointer(&home->limits);
-            (*hot).SetSleepPointer(&home->sleep);
-            (*hot).SetForcesPointer(&home->forces);
-            (*hot).SetTargetPointer(&home->target);
-            (*hot).SetColliderPointer(&home->collider);
+            BodyHome* home = &body->home;
+            hot->pose = &home->pose;
+            hot->velocity = &home->velocity;
+            hot->mass = &home->mass;
+            hot->bodyMass = &home->bodyMass;
+            hot->damping = &home->damping;
+            hot->limits = &home->limits;
+            hot->sleep = &home->sleep;
+            hot->forces = &home->forces;
+            hot->target = &home->target;
+            hot->collider = &home->collider;
         }
     }
 }

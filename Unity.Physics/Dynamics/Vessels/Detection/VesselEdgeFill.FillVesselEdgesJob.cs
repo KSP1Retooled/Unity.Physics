@@ -127,8 +127,8 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 JointTranslation.BuildJointsJob.PrepareVesselGroup(World, Units[unit], Groups, Members);
                 BodyData* child = World->bodies + storeBody;
                 BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
-                RigidTransform childMotion = (*child).Mass()->Transform;
-                RigidTransform parentMotion = (*parent).Mass()->Transform;
+                RigidTransform childMotion = child->mass->Transform;
+                RigidTransform parentMotion = parent->mass->Transform;
                 uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, Units[unit], Groups, Members) : EdgeCacheStamps[part];
                 if (!RefillAll && stamp == EdgeCacheStamps[part] && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
                     && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))

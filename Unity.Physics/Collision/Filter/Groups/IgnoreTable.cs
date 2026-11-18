@@ -64,7 +64,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         /// <summary>Returns the collision groups, or null if there are none yet.</summary>
         internal static GroupTable* GroupsOf(StoreGlobals* globals)
         {
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             return table != null && table->layoutMark == CurrentLayout ? table->Groups : null;
         }
 
@@ -79,7 +79,7 @@ namespace Unity.Physics.Collision.Filter.Groups
 
         internal static bool Contains(StoreGlobals* globals, uint first, uint second)
         {
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             if (table == null || first == 0 || second == 0)
             {
                 return false;
@@ -101,7 +101,7 @@ namespace Unity.Physics.Collision.Filter.Groups
             {
                 if (globals->ignoreTable != null)
                 {
-                    ((IgnoreTable*)globals->ignoreTable)->Remove(first, second);
+                    globals->ignoreTable->Remove(first, second);
                 }
 
                 return;
@@ -122,7 +122,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         /// </summary>
         internal static ulong Bytes(StoreGlobals* globals)
         {
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             if (table == null)
             {
                 return 0;
@@ -135,7 +135,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         /// <summary>Returns the number of ignored pairs.</summary>
         internal static ulong PairCount(StoreGlobals* globals)
         {
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             ulong count = 0;
             for (uint i = 0; table != null && i < table->slotCount; i++)
             {
@@ -153,7 +153,7 @@ namespace Unity.Physics.Collision.Filter.Groups
             using Unity.Profiling.ProfilerMarker.AutoScope span = ForgetIgnoredCollisions.Auto();
 
             globals->ignoreVersion++;
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             if (table == null || id == 0)
             {
                 return;
@@ -174,7 +174,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         internal static void Reslot(StoreGlobals* globals)
         {
             Upgrade(globals);
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             if (table != null && table->slotCount != 0)
             {
                 table->Rehash(globals);
@@ -204,7 +204,7 @@ namespace Unity.Physics.Collision.Filter.Groups
                 globals->ignoreTable = table;
             }
 
-            return (IgnoreTable*)globals->ignoreTable;
+            return globals->ignoreTable;
         }
 
         /// <summary>
@@ -215,7 +215,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         /// </summary>
         internal static void Upgrade(StoreGlobals* globals)
         {
-            IgnoreTable* table = (IgnoreTable*)globals->ignoreTable;
+            IgnoreTable* table = globals->ignoreTable;
             if (table == null || table->layoutMark == CurrentLayout)
             {
                 return;

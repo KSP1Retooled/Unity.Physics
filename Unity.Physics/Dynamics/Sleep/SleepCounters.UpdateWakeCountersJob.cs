@@ -44,7 +44,7 @@ namespace Unity.Physics.Dynamics.Sleep
                 if (FallAsleep.SleepJob.Solved(body) && (body->flags & BodyFlags.Sleeping) == 0)
                 {
                     UpdateWakeCounter(body, TouchesStill[i] ? Contacts[i] : 0);
-                    if (!((*body).Sleep()->WakeCounter > 0.0f))
+                    if (!(body->sleep->WakeCounter > 0.0f))
                     {
                         *RunOut = 1;
                     }
@@ -59,34 +59,34 @@ namespace Unity.Physics.Dynamics.Sleep
             /// </summary>
             private void UpdateWakeCounter(BodyData* body, int contacts)
             {
-                float counter = (*body).Sleep()->WakeCounter;
+                float counter = body->sleep->WakeCounter;
                 if (counter < StoreMemory.WakeCounterReset * 0.5f || counter < DeltaTime)
                 {
-                    (*body).Sleep()->LinearSum += (*body).Velocity()->Linear;
-                    (*body).Sleep()->AngularSum += (*body).Velocity()->Angular;
+                    body->sleep->LinearSum += body->velocity->Linear;
+                    body->sleep->AngularSum += body->velocity->Angular;
 
                     float cluster = 1.0f + math.min(contacts, MaximumCountedContacts);
-                    float threshold = cluster * (*body).Sleep()->Threshold;
+                    float threshold = cluster * body->sleep->Threshold;
                     float energy = NormalizedEnergy(body);
                     if (energy >= threshold)
                     {
                         float factor = threshold == 0.0f ? 2.0f : math.min(energy / threshold, 2.0f);
-                        (*body).Sleep()->WakeCounter = factor * 0.5f * StoreMemory.WakeCounterReset + DeltaTime * (cluster - 1.0f);
-                        (*body).Sleep()->LinearSum = float3.zero;
-                        (*body).Sleep()->AngularSum = float3.zero;
+                        body->sleep->WakeCounter = factor * 0.5f * StoreMemory.WakeCounterReset + DeltaTime * (cluster - 1.0f);
+                        body->sleep->LinearSum = float3.zero;
+                        body->sleep->AngularSum = float3.zero;
                         return;
                     }
                 }
 
-                (*body).Sleep()->WakeCounter = math.max(counter - DeltaTime, 0.0f);
+                body->sleep->WakeCounter = math.max(counter - DeltaTime, 0.0f);
             }
 
             private static float NormalizedEnergy(BodyData* body)
             {
-                float3 angular = (*body).Sleep()->AngularSum;
-                float inverseMass = (*body).Mass()->InverseMass != 0.0f ? (*body).Mass()->InverseMass : 1.0f;
-                float rotational = math.dot(angular * angular, (*body).BodyMass()->Inertia) * inverseMass;
-                return 0.5f * (rotational + math.lengthsq((*body).Sleep()->LinearSum));
+                float3 angular = body->sleep->AngularSum;
+                float inverseMass = body->mass->InverseMass != 0.0f ? body->mass->InverseMass : 1.0f;
+                float rotational = math.dot(angular * angular, body->bodyMass->Inertia) * inverseMass;
+                return 0.5f * (rotational + math.lengthsq(body->sleep->LinearSum));
             }
         }
     }

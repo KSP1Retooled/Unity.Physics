@@ -33,7 +33,7 @@ namespace Unity.Physics.Dynamics.Vehicles
                 if (vehicle != null && vehicle->body != null)
                 {
                     BodyData* hot = world->bodies + vehicle->body->index;
-                    vehicle->startLinear = (*hot).Velocity()->Linear;
+                    vehicle->startLinear = hot->velocity->Linear;
                     vehicle->startAngular = BodyKinematics.WorldAngularVelocity(*hot);
                 }
             }

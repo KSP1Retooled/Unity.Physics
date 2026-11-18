@@ -135,8 +135,8 @@ namespace Unity.Physics.Dynamics.Sleep
                     const BodyFlags held = BodyFlags.Kinematic | BodyFlags.Sleeping;
                     if ((body->flags & held) == 0)
                     {
-                        Motions[i].InverseMass = (*body).Mass()->InverseMass;
-                        Motions[i].InverseInertia = (*body).Mass()->InverseInertia;
+                        Motions[i].InverseMass = body->mass->InverseMass;
+                        Motions[i].InverseInertia = body->mass->InverseInertia;
                     }
                 }
             }

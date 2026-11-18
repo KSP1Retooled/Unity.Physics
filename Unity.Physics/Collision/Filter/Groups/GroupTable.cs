@@ -71,7 +71,7 @@ namespace Unity.Physics.Collision.Filter.Groups
                 return false;
             }
 
-            return ((IgnoreTable*)globals->ignoreTable)->Groups->IgnoresRecords(recordA, recordB);
+            return globals->ignoreTable->Groups->IgnoresRecords(recordA, recordB);
         }
 
         /// <summary>
@@ -86,7 +86,7 @@ namespace Unity.Physics.Collision.Filter.Groups
                 return false;
             }
 
-            return ((IgnoreTable*)globals->ignoreTable)->Groups->IgnoresRecords(wheelRecord, shapeRecord);
+            return globals->ignoreTable->Groups->IgnoresRecords(wheelRecord, shapeRecord);
         }
 
         /// <summary>

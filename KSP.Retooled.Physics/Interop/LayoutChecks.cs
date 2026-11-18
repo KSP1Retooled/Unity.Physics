@@ -1,7 +1,6 @@
 using KSP.Retooled.Physics.Commands;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Transforms;
-using KSP.Retooled.Physics.Entities;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Queries;
@@ -17,14 +16,6 @@ namespace KSP.Retooled.Physics.Interop
         /// </summary>
         internal static string FirstSizeMismatch()
         {
-            int homeAlignment = UnsafeUtility.AlignOf<BodyHome>();
-            int blockAlignment = UnsafeUtility.AlignOf<BodyHomeBlock>();
-            if (sizeof(BodyHome) != sizeof(BodyHomeBlock) || homeAlignment != blockAlignment)
-            {
-                return $"BodyHome is {sizeof(BodyHome)} bytes with alignment {homeAlignment}. "
-                    + $"BodyHomeBlock is {sizeof(BodyHomeBlock)} bytes with alignment {blockAlignment}.";
-            }
-
             int[] sizes =
             {
                 UnsafeUtility.GetFieldOffset(typeof(BodyData).GetField(nameof(BodyData.velocity))),

@@ -7,8 +7,7 @@
         "Unity.Collections",
         "Unity.Entities",
         "Unity.Mathematics",
-        "Unity.Physics",
-        "Unity.Physics.Store"
+        "Unity.Physics"
     ],
     "includePlatforms": [
         "Editor"

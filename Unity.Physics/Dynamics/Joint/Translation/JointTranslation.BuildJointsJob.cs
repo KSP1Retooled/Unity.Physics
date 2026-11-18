@@ -398,7 +398,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             /// </summary>
             private static float MovingInverseMass(Body* body)
             {
-                return HeldInPlace(body) ? 0.0f : (*StoreMemory.Row(body)).Mass()->InverseMass;
+                return HeldInPlace(body) ? 0.0f : (*StoreMemory.Row(body)).mass->InverseMass;
             }
 
             /// <summary>
@@ -407,7 +407,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             /// </summary>
             private static float MovingInverseInertia(Body* body)
             {
-                return HeldInPlace(body) ? 0.0f : math.csum((*StoreMemory.Row(body)).Mass()->InverseInertia) / 3.0f;
+                return HeldInPlace(body) ? 0.0f : math.csum((*StoreMemory.Row(body)).mass->InverseInertia) / 3.0f;
             }
 
             private void Append(JointData* joint)

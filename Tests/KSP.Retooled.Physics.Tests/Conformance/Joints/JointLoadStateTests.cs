@@ -51,7 +51,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             {
                 JointData* record = store->joints[i];
                 Body* body = record->body0 != null ? record->body0 : record->body1;
-                if (body != null && math.distance(store->bodies[body->index].Pose()->Position, position) < 0.5f)
+                if (body != null && math.distance(store->bodies[body->index].pose->Position, position) < 0.5f)
                 {
                     index = i;
                     return record;

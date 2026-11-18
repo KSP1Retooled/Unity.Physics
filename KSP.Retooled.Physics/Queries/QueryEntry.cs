@@ -671,7 +671,7 @@ namespace KSP.Retooled.Physics.Queries
         private static RigidTransform WorldPose(ShapeData* shape, Body* owner)
         {
             BodyData* body = StoreRows.Hot(owner);
-            return math.mul(new RigidTransform((*body).Pose()->Rotation, (*body).Pose()->Position), new RigidTransform(shape->localRotation, shape->localPosition));
+            return math.mul(new RigidTransform(body->pose->Rotation, body->pose->Position), new RigidTransform(shape->localRotation, shape->localPosition));
         }
 
         /// <summary>
@@ -693,7 +693,7 @@ namespace KSP.Retooled.Physics.Queries
             }
 
             BodyData* body = StoreRows.Hot(shape->body);
-            Collider* root = (Collider*)(*body).Collider()->Value.GetUnsafePtr();
+            Collider* root = (Collider*)body->collider->Value.GetUnsafePtr();
             if (root == null)
             {
                 return null;

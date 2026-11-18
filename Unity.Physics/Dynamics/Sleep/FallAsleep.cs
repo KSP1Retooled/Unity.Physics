@@ -33,11 +33,11 @@ namespace Unity.Physics.Dynamics.Sleep
                 {
                     BodyData* body = World->bodies + Falling[i];
                     body->flags |= BodyFlags.Sleeping;
-                    (*body).Sleep()->WakeCounter = 0.0f;
-                    (*body).Velocity()->Linear = float3.zero;
-                    (*body).Velocity()->Angular = float3.zero;
-                    (*body).Sleep()->LinearSum = float3.zero;
-                    (*body).Sleep()->AngularSum = float3.zero;
+                    body->sleep->WakeCounter = 0.0f;
+                    body->velocity->Linear = float3.zero;
+                    body->velocity->Angular = float3.zero;
+                    body->sleep->LinearSum = float3.zero;
+                    body->sleep->AngularSum = float3.zero;
                 }
             }
         }
