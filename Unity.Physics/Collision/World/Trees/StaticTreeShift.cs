@@ -18,7 +18,7 @@ namespace Unity.Physics.Collision.World.Trees
         }
 
         /// <summary>
-        /// Persistent tree shift data owned by StepState. Only serialized build jobs access these containers.
+        /// Persistent tree shift data owned by StoreStepper. Only serialized build jobs access these containers.
         /// </summary>
         internal struct ShiftState
         {

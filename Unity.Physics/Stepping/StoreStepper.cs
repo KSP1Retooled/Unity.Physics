@@ -34,7 +34,7 @@ namespace Unity.Physics.Stepping
     /// <summary>
     /// Unmanaged simulation state for one store world, used by the Burst step entry points.
     /// </summary>
-    internal unsafe struct StepState
+    internal unsafe partial struct StoreStepper
     {
         private static readonly ProfilerMarker BuildJointsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Joints");
         private static readonly ProfilerMarker BuildPartitionMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.Partition");
@@ -242,7 +242,7 @@ namespace Unity.Physics.Stepping
         {
         }
 
-        private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, TreeReuseModeKey>();
+        private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, TreeReuseModeKey>();
 
         /// <summary>
         /// Reads RETOOLED_TREE_REUSE from the environment: 0 turns off the reuse of the dynamic tree, and "always" makes
@@ -254,7 +254,7 @@ namespace Unity.Physics.Stepping
             TreeReuseMode.Data = reuse == "0" ? 1 : reuse == "always" ? 2 : 0;
             if (reuse == "0" || reuse == "always")
             {
-                UnityEngine.Debug.Log($"[StepState] RETOOLED_TREE_REUSE={reuse}: {(reuse == "0" ? "every build builds the dynamic tree from scratch" : "every build refits the dynamic tree when the dynamic bodies are the same")}");
+                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_TREE_REUSE={reuse}: {(reuse == "0" ? "every build builds the dynamic tree from scratch" : "every build refits the dynamic tree when the dynamic bodies are the same")}");
             }
         }
 
@@ -272,7 +272,7 @@ namespace Unity.Physics.Stepping
         {
         }
 
-        private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, StaticReuseOffKey>();
+        private static readonly Unity.Burst.SharedStatic<int> StaticReuseOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, StaticReuseOffKey>();
 
         /// <summary>Reads RETOOLED_STATIC_REUSE from the environment: 0 turns off the reuse of the static rows.</summary>
         internal static void ReadStaticReuseSwitch()
@@ -281,7 +281,7 @@ namespace Unity.Physics.Stepping
             StaticReuseEnabled = reuse != "0";
             if (reuse == "0")
             {
-                UnityEngine.Debug.Log("[StepState] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
+                UnityEngine.Debug.Log("[StoreStepper] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
             }
         }
 
@@ -310,7 +310,7 @@ namespace Unity.Physics.Stepping
         {
         }
 
-        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, BoundsCacheOffKey>();
+        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, BoundsCacheOffKey>();
 
         /// <summary>
         /// Read bounds cache switches: RETOOLED_BOUNDS_CACHE=0 disables caching;
@@ -327,7 +327,7 @@ namespace Unity.Physics.Stepping
             DynamicBoundsCache.ShapesEnabled = shapes != "0";
             if (cache == "0" || check == "1" || shapes == "0")
             {
-                UnityEngine.Debug.Log($"[StepState] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
+                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
             }
         }
         private NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair> knownBodyPairs;
@@ -346,7 +346,7 @@ namespace Unity.Physics.Stepping
         private bool builtWhole;
         private bool motionsMatchStore;
 
-        internal StepState(WorldData* store, StoreGlobals* globals, QueryWorld* query)
+        internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
             tombstoneExpiry = -1;
@@ -1167,7 +1167,7 @@ namespace Unity.Physics.Stepping
             if (store->queryDirty == StoreMemory.QueryTreePending)
             {
                 store->queryDirty = StoreMemory.QueryStale;
-                UnityEngine.Debug.LogError("[StepState] the refit of the dynamic tree after the step failed; the next query on the main thread builds the world again");
+                UnityEngine.Debug.LogError("[StoreStepper] the refit of the dynamic tree after the step failed; the next query on the main thread builds the world again");
             }
         }
 
@@ -1207,81 +1207,10 @@ namespace Unity.Physics.Stepping
         internal readonly bool RefitInputsComplete => !refitPending || refitInputs.IsCompleted;
 
         /// <summary>
-        /// For tests: whether the next step throws right after it schedules the refit of the dynamic tree, while the
-        /// solve's jobs still run. Only code that runs in Mono throws; Burst leaves the throw out.
-        /// </summary>
-        internal static bool ThrowAfterRefitScheduledForTests
-        {
-            get => s_ThrowAfterRefitScheduled.Data != 0;
-            set => s_ThrowAfterRefitScheduled.Data = value ? 1 : 0;
-        }
-
-        /// <summary>For tests: the number of throws that <see cref="ThrowAfterRefitScheduledForTests"/> made.</summary>
-        internal static int ThrowsAfterRefitScheduled => s_ThrowsAfterRefitScheduled;
-
-        private static int s_ThrowsAfterRefitScheduled;
-
-        [Unity.Burst.BurstDiscard]
-        private static void ThrowAfterRefitScheduled()
-        {
-            s_ThrowAfterRefitScheduled.Data = 0;
-            s_ThrowsAfterRefitScheduled++;
-            throw new InvalidOperationException("a throw that a test injected into the step after the refit was scheduled");
-        }
-
-        private sealed class ThrowAfterRefitScheduledKey
-        {
-        }
-
-        /// <summary>
-        /// For tests: whether the next step throws before it applies the forces, which is also before it refreshes
-        /// the pointers of the store's rows. Only code that runs in Mono throws; Burst leaves the throw out.
-        /// </summary>
-        internal static bool ThrowBeforeApplyForcesForTests
-        {
-            get => s_ThrowBeforeApplyForces.Data != 0;
-            set => s_ThrowBeforeApplyForces.Data = value ? 1 : 0;
-        }
-
-        /// <summary>For tests: the number of throws that <see cref="ThrowBeforeApplyForcesForTests"/> made.</summary>
-        internal static int ThrowsBeforeApplyForces => s_ThrowsBeforeApplyForces;
-
-        private static int s_ThrowsBeforeApplyForces;
-
-        [Unity.Burst.BurstDiscard]
-        private static void ThrowBeforeApplyForces()
-        {
-            s_ThrowBeforeApplyForces.Data = 0;
-            s_ThrowsBeforeApplyForces++;
-            throw new InvalidOperationException("a throw that a test injected into the step before it applies the forces");
-        }
-
-        private sealed class ThrowBeforeApplyForcesKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> s_ThrowBeforeApplyForces = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, ThrowBeforeApplyForcesKey>();
-
-        private static readonly Unity.Burst.SharedStatic<int> s_ThrowAfterRefitScheduled = Unity.Burst.SharedStatic<int>.GetOrCreate<StepState, ThrowAfterRefitScheduledKey>();
-
-        /// <summary>
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
         /// has finished.
         /// </summary>
         internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
-
-        /// <summary>
-        /// Set treeReady after a failed step unless a pending refit owns completion, preventing queries from
-        /// waiting forever.
-        /// </summary>
-        internal void ReleaseTreeAfterThrow()
-        {
-            if (!refitPending)
-            {
-                System.Threading.Interlocked.Exchange(ref store->treeReady, 1);
-                AddressWait.WakeAll(&store->treeReady);
-            }
-        }
 
         /// <summary>
         /// Logs the check's mismatches of the bounds cache when there are new ones, and the counts every 1,000 steps.

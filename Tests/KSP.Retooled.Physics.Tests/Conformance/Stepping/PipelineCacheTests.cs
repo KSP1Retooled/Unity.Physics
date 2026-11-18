@@ -264,7 +264,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            StepState.BoundsCacheEnabled = boundsCache;
+            StoreStepper.BoundsCacheEnabled = boundsCache;
             ForestDiagnostics.ForgetIslands();
             GameObject ground = Ground();
             List<Rigidbody> bodies = Column(0.3f, false);
@@ -326,7 +326,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void TheBoundsCacheChangesNoPoseAndNoHit()
         {
             // RETOOLED_BOUNDS_CACHE=0 turns the cache off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = StepState.BoundsCacheEnabled;
+            bool wasEnabled = StoreStepper.BoundsCacheEnabled;
             try
             {
                 // As above: the first scene of this shape can land a few ulps from every later one.
@@ -341,7 +341,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StepState.BoundsCacheEnabled = wasEnabled;
+                StoreStepper.BoundsCacheEnabled = wasEnabled;
             }
         }
 
@@ -352,11 +352,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public unsafe void ABoxWhoseColliderComesBackOnAnotherLayerIsFoundOnThatLayer()
         {
             const int layer = 29;
-            bool wasEnabled = StepState.BoundsCacheEnabled;
+            bool wasEnabled = StoreStepper.BoundsCacheEnabled;
             bool wasChecked = Unity.Physics.DynamicBoundsCache.CheckEnabled;
             try
             {
-                StepState.BoundsCacheEnabled = true;
+                StoreStepper.BoundsCacheEnabled = true;
                 Unity.Physics.DynamicBoundsCache.CheckEnabled = true;
                 Rigidbody body = WeightlessBox(new Vector3(0.0f, 1.0f, 0.0f));
                 BoxCollider box = body.GetComponent<BoxCollider>();
@@ -385,7 +385,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StepState.BoundsCacheEnabled = wasEnabled;
+                StoreStepper.BoundsCacheEnabled = wasEnabled;
                 Unity.Physics.DynamicBoundsCache.CheckEnabled = wasChecked;
             }
         }

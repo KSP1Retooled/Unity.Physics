@@ -94,11 +94,11 @@ namespace KSP.Retooled.Physics.Tests.Host
         {
             SharedDynamicTreeRefit.JobsLeaveTheWork = true;
             List<Rigidbody> bodies = FallingBoxes(Count);
-            int throws = StepState.ThrowsAfterRefitScheduled;
+            int throws = StoreStepper.ThrowsAfterRefitScheduled;
             LogAssert.ignoreFailingMessages = true;
             try
             {
-                StepState.ThrowAfterRefitScheduledForTests = true;
+                StoreStepper.ThrowAfterRefitScheduledForTests = true;
                 try
                 {
                     Simulate(1);
@@ -110,10 +110,10 @@ namespace KSP.Retooled.Physics.Tests.Host
             }
             finally
             {
-                StepState.ThrowAfterRefitScheduledForTests = false;
+                StoreStepper.ThrowAfterRefitScheduledForTests = false;
             }
 
-            Assume.That(StepState.ThrowsAfterRefitScheduled, Is.GreaterThan(throws), "the step ran in Mono and threw");
+            Assume.That(StoreStepper.ThrowsAfterRefitScheduled, Is.GreaterThan(throws), "the step ran in Mono and threw");
             Assert.That(StepEntryPoints.Current->RefitPending, Is.True, "the refit is pending");
             Assert.That(StepEntryPoints.Current->RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
             using (NativeArray<RaycastCommand> rays = RaysOnto(bodies))

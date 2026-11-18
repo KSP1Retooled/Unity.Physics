@@ -6,7 +6,7 @@ namespace KSP.Retooled.Physics.Reports
 {
     internal static unsafe partial class ContactReport
     {
-        internal static void Publish(StepState* state, JobHandle contactsJoined)
+        internal static void Publish(StoreStepper* state, JobHandle contactsJoined)
         {
             using (BackendMarkers.StepPublishContacts.Auto())
             {

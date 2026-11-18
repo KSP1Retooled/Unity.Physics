@@ -144,11 +144,11 @@ namespace KSP.Retooled.Physics.Tests.Host
 
             Manager.AddComponentData(entity, new Moved { Value = 1 });
             Manager.SetComponentData(entity, LocalTransform.FromPosition(new float3(470.0f, 1.0f, 2.0f)));
-            int throws = StepState.ThrowsBeforeApplyForces;
+            int throws = StoreStepper.ThrowsBeforeApplyForces;
             UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true;
             try
             {
-                StepState.ThrowBeforeApplyForcesForTests = true;
+                StoreStepper.ThrowBeforeApplyForcesForTests = true;
                 try
                 {
                     Simulate();
@@ -160,11 +160,11 @@ namespace KSP.Retooled.Physics.Tests.Host
             }
             finally
             {
-                StepState.ThrowBeforeApplyForcesForTests = false;
+                StoreStepper.ThrowBeforeApplyForcesForTests = false;
                 UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
             }
 
-            Assume.That(StepState.ThrowsBeforeApplyForces, Is.GreaterThan(throws), "the step ran in Mono and threw");
+            Assume.That(StoreStepper.ThrowsBeforeApplyForces, Is.GreaterThan(throws), "the step ran in Mono and threw");
             Assert.That(body.transform.position, Is.EqualTo(new Vector3(470.0f, 1.0f, 2.0f)));
         }
 

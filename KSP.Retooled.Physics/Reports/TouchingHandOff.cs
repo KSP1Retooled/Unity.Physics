@@ -12,7 +12,7 @@ namespace KSP.Retooled.Physics.Reports
     /// Preserve touching pairs across managed detach and domain reloads so that Unity's trigger cache stays
     /// consistent.
     /// Temporarily store pairs in the native trigger event array with unknown event types and zero IDs.
-    /// The next StepState restores them before stepping. Main thread only.
+    /// The next StoreStepper restores them before stepping. Main thread only.
     /// </summary>
     internal static unsafe class TouchingHandOff
     {

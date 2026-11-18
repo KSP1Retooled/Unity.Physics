@@ -11,7 +11,7 @@ using Unity.Physics.Stepping;
 namespace KSP.Retooled.Physics.Stepping
 {
     /// <summary>
-    /// Burst entry points for StepState. Current selects the scene being stepped by the shared physics system
+    /// Burst entry points for StoreStepper. Current selects the scene being stepped by the shared physics system
     /// group.
     /// </summary>
     [BurstCompile]
@@ -21,9 +21,9 @@ namespace KSP.Retooled.Physics.Stepping
 
         private static readonly SharedStatic<nint> CurrentState = SharedStatic<nint>.GetOrCreate<CurrentKey>();
 
-        internal static StepState* Current
+        internal static StoreStepper* Current
         {
-            get => (StepState*)CurrentState.Data;
+            get => (StoreStepper*)CurrentState.Data;
             set => CurrentState.Data = (nint)value;
         }
 
@@ -31,7 +31,7 @@ namespace KSP.Retooled.Physics.Stepping
         internal static void ApplyForces(float deltaTime)
         {
             NoteRunInMono();
-            StepState* state = Current;
+            StoreStepper* state = Current;
             state->BeginForces();
             BodyEntities.PrepareForJobs(state->Store);
             state->ApplyForces(deltaTime);
@@ -88,7 +88,7 @@ namespace KSP.Retooled.Physics.Stepping
         }
 
         [BurstCompile]
-        internal static void BuildForQueries(StepState* state)
+        internal static void BuildForQueries(StoreStepper* state)
         {
             NoteRunInMono();
             if (state->BeginQueryBuild())
@@ -98,7 +98,7 @@ namespace KSP.Retooled.Physics.Stepping
             }
         }
 
-        private static void FinishStep(StepState* state, Simulation simulation, float deltaTime)
+        private static void FinishStep(StoreStepper* state, Simulation simulation, float deltaTime)
         {
             state->FinishBeforeContacts(simulation, deltaTime, out JobHandle contactsJoined, out JobHandle snapshot, out JobHandle sleep);
             ContactReport.Publish(state, contactsJoined);

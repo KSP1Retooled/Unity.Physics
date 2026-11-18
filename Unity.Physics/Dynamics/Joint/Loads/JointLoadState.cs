@@ -14,7 +14,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
 {
     /// <summary>
     /// Current joint loads and smoothed magnitudes, stored densely alongside the world's joint list.
-    /// Copy loads back to native records when StepState is disposed. Commands update cached break limits and
+    /// Copy loads back to native records when StoreStepper is disposed. Commands update cached break limits and
     /// inactivity.
     /// </summary>
     internal struct JointLoadState

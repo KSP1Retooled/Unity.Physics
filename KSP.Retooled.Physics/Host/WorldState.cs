@@ -19,7 +19,7 @@ namespace KSP.Retooled.Physics.Host
     /// </summary>
     internal sealed unsafe class WorldState : IDisposable
     {
-        private readonly StepState* state;
+        private readonly StoreStepper* state;
         private readonly QueryWorld* query;
         private readonly WorldData* store;
 
@@ -28,12 +28,12 @@ namespace KSP.Retooled.Physics.Host
             this.store = store;
             ForestSwitches.Initialize();
             VesselSwitches.Initialize();
-            StepState.ReadBoundsCacheSwitches();
-            StepState.ReadTreeReuseSwitch();
-            StepState.ReadStaticReuseSwitch();
+            StoreStepper.ReadBoundsCacheSwitches();
+            StoreStepper.ReadTreeReuseSwitch();
+            StoreStepper.ReadStaticReuseSwitch();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
-            state = (StepState*)UnsafeUtility.MallocTracked(sizeof(StepState), UnsafeUtility.AlignOf<StepState>(), Allocator.Persistent, 0);
-            *state = new StepState(store, NativeLibrary.RetooledPhysics_Globals(), query);
+            state = (StoreStepper*)UnsafeUtility.MallocTracked(sizeof(StoreStepper), UnsafeUtility.AlignOf<StoreStepper>(), Allocator.Persistent, 0);
+            *state = new StoreStepper(store, NativeLibrary.RetooledPhysics_Globals(), query);
             TouchingHandOff.Restore(store, state->Touching);
         }
 

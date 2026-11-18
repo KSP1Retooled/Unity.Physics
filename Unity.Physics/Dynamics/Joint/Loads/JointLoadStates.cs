@@ -103,7 +103,7 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         }
 
         /// <summary>
-        /// Return the joint's load slot, or null when its world has no StepState.
+        /// Return the joint's load slot, or null when its world has no StoreStepper.
         /// </summary>
         internal static JointLoadState* Find(JointData* joint)
         {
