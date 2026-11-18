@@ -65,6 +65,7 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal QuerySnapshotState Queries;
         internal SleepState Sleep;
         internal ContactState Contacts;
         internal VesselState VesselData;
@@ -83,17 +84,6 @@ namespace Unity.Physics.Stepping
         internal JobHandle preparedInputs;
 
         private SolverIslandCache solverIslandCache;
-        private NativeList<QueryBody> queryBodies;
-        private NativeList<QueryShape> queryShapes;
-        private NativeList<int> queryFirstShapes;
-
-        // Reuse query snapshots while versions and body row order match.
-        // Mark a scheduled snapshot incomplete until it finishes so that exceptions force a fresh copy.
-        private bool snapshotTaken;
-        private uint snapshotVersion;
-        private NativeList<int> snapshotDynamic;
-        private NativeList<int> snapshotStatic;
-        private long keptSnapshots;
         private NativeList<ColliderBuilder.Work> colliderWork;
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
@@ -105,9 +95,6 @@ namespace Unity.Physics.Stepping
         private JobHandle warmStartsIndexed;
         private uint builtMaterialVersion;
 
-        // False from the start of a build until the query world is published. If a build fails, the next build rebuilds
-        // the whole world.
-        private bool builtWhole;
         internal StoreStepper(WorldData* store, StoreGlobals* globals, QueryWorld* query)
         {
             this = default;
@@ -124,11 +111,7 @@ namespace Unity.Physics.Stepping
             directSolverCache = IslandSolverCache.Create();
             VesselData.Initialize();
             solverIslandCache = SolverIslandCache.Create();
-            queryBodies = new NativeList<QueryBody>(Allocator.Persistent);
-            queryShapes = new NativeList<QueryShape>(Allocator.Persistent);
-            queryFirstShapes = new NativeList<int>(Allocator.Persistent);
-            snapshotDynamic = new NativeList<int>(Allocator.Persistent);
-            snapshotStatic = new NativeList<int>(Allocator.Persistent);
+            Queries.Initialize();
             Contacts.Initialize();
             Sleep.Initialize();
             Contacts.InitializeImpulseMemory();
@@ -171,11 +154,7 @@ namespace Unity.Physics.Stepping
             directSolverCache.Dispose();
             VesselData.Dispose();
             solverIslandCache.Dispose();
-            queryBodies.Dispose();
-            queryShapes.Dispose();
-            queryFirstShapes.Dispose();
-            snapshotDynamic.Dispose();
-            snapshotStatic.Dispose();
+            Queries.Dispose();
             Contacts.Dispose();
             Sleep.Dispose();
             Contacts.DisposeImpulseMemory();
@@ -644,7 +623,7 @@ namespace Unity.Physics.Stepping
                     ThrowAfterRefitScheduled();
                 }
 
-                snapshot = ScheduleQuerySnapshot(motionsSolved);
+                snapshot = Queries.ScheduleQuerySnapshot(store, globals, ref world, ref Partition, motionsSolved);
                 JobHandle.ScheduleBatchedJobs();
 
                 using (StepWaitForSolveMarker.Auto())
@@ -742,12 +721,12 @@ namespace Unity.Physics.Stepping
             using (StepPublishQueryWorldMarker.Auto())
             {
                 snapshot.Complete();
-                FinishQuerySnapshot();
+                Queries.FinishQuerySnapshot();
                 // A refit that failed has set the ready word too, and leaves the world stale.
                 bool treeReady = store->treeReady != 0;
                 store->queryDirty = !Partition.motionsMatchStore || (treeReady && Trees.sharedRefit->Failed) ? StoreMemory.QueryStale
                     : !treeReady ? StoreMemory.QueryTreePending : 0u;
-                PublishQueryWorld();
+                Queries.PublishQueryWorld(store, query, ref world);
             }
 
             // FallAsleep.FallAsleepJob sets the Sleeping flag. The snapshot reads only the Static flag, so it doesn't need to finish
@@ -765,7 +744,7 @@ namespace Unity.Physics.Stepping
             FinishPendingRefit();
 
             // The world that the last step published is current now that its refit has finished.
-            if (store->queryDirty == StoreMemory.QueryTreePending && builtWhole)
+            if (store->queryDirty == StoreMemory.QueryTreePending && Queries.builtWhole)
             {
                 return false;
             }
@@ -779,10 +758,10 @@ namespace Unity.Physics.Stepping
         {
             // The last build is still valid except for the poses of static bodies. The query snapshot contains no data
             // that depends on a pose.
-            if (store->queryDirty == StoreMemory.QueryStaticsMoved && builtWhole && globals->materialVersion == builtMaterialVersion)
+            if (store->queryDirty == StoreMemory.QueryStaticsMoved && Queries.builtWhole && globals->materialVersion == builtMaterialVersion)
             {
                 PoseStatics();
-                PublishQueryWorld();
+                Queries.PublishQueryWorld(store, query, ref world);
                 return;
             }
 
@@ -791,14 +770,14 @@ namespace Unity.Physics.Stepping
             forcesApplied.Complete();
             JobHandle colliders = RefreshColliders(default);
             JobHandle broadphase = Build(0.0f, colliders, out _);
-            ScheduleQuerySnapshot(broadphase).Complete();
+            Queries.ScheduleQuerySnapshot(store, globals, ref world, ref Partition, broadphase).Complete();
             broadphase.Complete();
             if (Trees.boundsCacheBuilt)
             {
                 Trees.boundsCache.MarkCurrent();
             }
-            FinishQuerySnapshot();
-            PublishQueryWorld();
+            Queries.FinishQuerySnapshot();
+            Queries.PublishQueryWorld(store, query, ref world);
         }
 
         /// <summary>
@@ -818,7 +797,7 @@ namespace Unity.Physics.Stepping
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
         /// has finished.
         /// </summary>
-        internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
+        internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && Queries.builtWhole && store->queryWorld != null;
 
         /// <summary>
         /// Update built statics and their tree from store poses, recording the version to avoid redundant work.
@@ -836,69 +815,6 @@ namespace Unity.Physics.Stepping
             }.Schedule(Partition.staticIndices.Length, ParallelBatchSize, default);
 
             world.CollisionWorld.ScheduleUpdateStaticTree(ref world, Trees.BuildStaticTree(StaticBodies.staticsChanged), Trees.ScheduleShiftStaticTree(store, ref world, StaticBodies.staticsChanged, colliderWork, posed), true).Complete();
-        }
-
-        /// <summary>
-        /// Copy query data from the store, or return dependency unchanged if the snapshot is still current.
-        /// Do not retain pointers into movable store memory. Call FinishQuerySnapshot after completion.
-        /// </summary>
-        private JobHandle ScheduleQuerySnapshot(JobHandle dependency)
-        {
-            uint version = QuerySnapshotVersion.Version;
-            if (snapshotTaken && version == snapshotVersion && BodyPartition.SameRows(snapshotDynamic, Partition.dynamicIndices) && BodyPartition.SameRows(snapshotStatic, Partition.staticIndices))
-            {
-                keptSnapshots++;
-                return dependency;
-            }
-
-            snapshotTaken = false;
-            snapshotVersion = version;
-            snapshotDynamic.CopyFrom(Partition.dynamicIndices.AsArray());
-            snapshotStatic.CopyFrom(Partition.staticIndices.AsArray());
-            queryBodies.ResizeUninitialized(world.NumBodies);
-            queryFirstShapes.ResizeUninitialized(world.NumBodies);
-            JobHandle found = new QuerySnapshot.FindFirstShapesJob
-            {
-                Store = store->bodies,
-                DynamicIndices = Partition.dynamicIndices.AsArray(),
-                StaticIndices = Partition.staticIndices.AsArray(),
-                FirstShapes = queryFirstShapes.AsArray(),
-                QueryShapes = queryShapes,
-            }.Schedule(dependency);
-
-            return new QuerySnapshot.SnapshotQueryDataJob
-            {
-                Store = store->bodies,
-                DynamicIndices = Partition.dynamicIndices.AsArray(),
-                StaticIndices = Partition.staticIndices.AsArray(),
-                FirstShapes = queryFirstShapes.AsArray(),
-                QueryBodies = queryBodies.AsArray(),
-                QueryShapes = queryShapes.AsDeferredJobArray(),
-                EngineObjectIdOffset = globals->engineObjectIdOffset,
-            }.Schedule(world.NumBodies, ParallelBatchSize, found);
-        }
-
-        /// <summary>Records that the snapshot scheduled by <see cref="ScheduleQuerySnapshot"/> has completed.</summary>
-        private void FinishQuerySnapshot()
-        {
-            snapshotTaken = true;
-        }
-
-        /// <summary>The number of steps and query builds that kept the last query snapshot. Used by tests.</summary>
-        internal readonly long KeptSnapshots => keptSnapshots;
-
-        /// <summary>
-        /// Publish the built world and completed snapshot for queries.
-        /// Colliders remain valid until the next build acquires the exclusive query lock.
-        /// </summary>
-        private void PublishQueryWorld()
-        {
-            query->Collision = world.CollisionWorld;
-            query->Bodies = queryBodies.GetUnsafeReadOnlyPtr();
-            query->Shapes = queryShapes.GetUnsafePtr();
-            query->ShapeCount = queryShapes.Length;
-            store->queryWorld = query;
-            builtWhole = true;
         }
 
         /// <summary>
@@ -953,10 +869,10 @@ namespace Unity.Physics.Stepping
 
                 // Indices in the static tree are relative to the static bodies. Queries and pair finding add the number
                 // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
-                StaticBodies.staticsChanged = !builtWhole || store->staticsVersion != StaticBodies.builtStaticsVersion;
+                StaticBodies.staticsChanged = !Queries.builtWhole || store->staticsVersion != StaticBodies.builtStaticsVersion;
                 StaticBodies.builtStaticsVersion = store->staticsVersion;
-                Trees.treeMatchesHeld = builtWhole;
-                builtWhole = false;
+                Trees.treeMatchesHeld = Queries.builtWhole;
+                Queries.builtWhole = false;
             }
 
             // Compare cached bounds only when body storage and dynamic count are retained and the cache remains

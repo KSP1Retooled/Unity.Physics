@@ -10,7 +10,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Queries
     /// </summary>
     public unsafe class QuerySnapshotTests : PhysicsScene
     {
-        private static long Kept => BackendInfo.IsRetooled ? StepEntryPoints.Current->KeptSnapshots : 0;
+        private static long Kept => BackendInfo.IsRetooled ? StepEntryPoints.Current->Queries.KeptSnapshots : 0;
 
         private static Collider HitDown(Vector3 from)
         {
