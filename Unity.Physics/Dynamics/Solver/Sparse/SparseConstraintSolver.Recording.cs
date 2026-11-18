@@ -1,4 +1,5 @@
 using System.IO;
+using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Physics.Stepping.Recording;
 
@@ -6,82 +7,99 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
 {
     internal unsafe partial struct SparseConstraintSolver
     {
-        /// <summary>The cached factor, symbolic ordering, bounds, and previous solution can affect the next answer.</summary>
         internal readonly void WriteRecording(RecordingWriter writer)
         {
             writer.Write(analyzedBodies);
+            if (analyzedBodies < 0)
+            {
+                return;
+            }
+
             writer.Write(analyzedBounded);
-            writer.Write(factored);
-            writer.Write(answered);
-            writer.WriteList(nodes);
-            writer.WriteList(order);
-            writer.WriteList(neighbours);
-            writer.WriteList(taskStarts);
-            writer.WriteList(taskPositions);
-            writer.WriteList(topPositions);
-            writer.WriteList(boundaryPositions);
-            writer.WriteList(topUpdateStarts);
-            writer.WriteList(topUpdates);
-            writer.WriteList(topRowStarts);
-            writer.WriteList(topRows);
-            writer.WriteList(nodeReady);
-            writer.WriteList(bodyRowStarts);
-            writer.WriteList(bodyRows);
-            writer.WriteList(stageWorst);
+            writer.WriteList(analyzedBlocks);
             writer.WriteList(rowNode);
-            writer.WriteList(rowInNode);
-            writer.WriteList(rowUnknown);
-            writer.WriteList(factor);
-            writer.WriteList(right);
-            writer.WriteList(solution);
-            writer.WriteList(correction);
-            writer.WriteList(inverseDiagonal);
-            writer.WriteList(bodySpeedScale);
-            writer.WriteList(state);
             writer.WriteList(lower);
             writer.WriteList(upper);
-            writer.WriteList(coupled);
-            writer.WriteList(analyzedBlocks);
+
+            // The next solve can refine an earlier factor and answer even when matrix values changed.
+            writer.Write(factored);
+            if (factored)
+            {
+                writer.WriteList(factor);
+                writer.WriteList(inverseDiagonal);
+                writer.WriteList(state);
+                writer.Write(answered);
+                if (answered)
+                {
+                    writer.WriteList(solution);
+                }
+            }
         }
 
         internal void ReadRecording(BinaryReader reader)
         {
-            analyzedBodies = reader.ReadInt32();
-            analyzedBounded = reader.ReadBoolean();
-            factored = reader.ReadBoolean();
-            answered = reader.ReadBoolean();
-            reader.ReadList(ref nodes);
-            reader.ReadList(ref order);
-            reader.ReadList(ref neighbours);
-            reader.ReadList(ref taskStarts);
-            reader.ReadList(ref taskPositions);
-            reader.ReadList(ref topPositions);
-            reader.ReadList(ref boundaryPositions);
-            reader.ReadList(ref topUpdateStarts);
-            reader.ReadList(ref topUpdates);
-            reader.ReadList(ref topRowStarts);
-            reader.ReadList(ref topRows);
-            reader.ReadList(ref nodeReady);
-            reader.ReadList(ref bodyRowStarts);
-            reader.ReadList(ref bodyRows);
-            reader.ReadList(ref stageWorst);
-            reader.ReadList(ref rowNode);
-            reader.ReadList(ref rowInNode);
-            reader.ReadList(ref rowUnknown);
-            reader.ReadList(ref factor);
-            reader.ReadList(ref right);
-            reader.ReadList(ref solution);
-            reader.ReadList(ref correction);
-            reader.ReadList(ref inverseDiagonal);
-            reader.ReadList(ref bodySpeedScale);
-            reader.ReadList(ref state);
+            int bodies = reader.ReadInt32();
+            if (bodies < 0)
+            {
+                return;
+            }
+
+            bool bounded = reader.ReadBoolean();
+            var blocks = new UnsafeList<ConstraintBlock>(0, Allocator.Temp);
+            var recordedNodes = new UnsafeList<int>(0, Allocator.Temp);
+            try
+            {
+                reader.ReadList(ref blocks);
+                reader.ReadList(ref recordedNodes);
+                RestoreAnalysis(bodies, bounded, blocks, recordedNodes);
+            }
+            finally
+            {
+                recordedNodes.Dispose();
+                blocks.Dispose();
+            }
+
             reader.ReadList(ref lower);
             reader.ReadList(ref upper);
-            reader.ReadList(ref coupled);
-            reader.ReadList(ref analyzedBlocks);
+            factored = reader.ReadBoolean();
+            if (factored)
+            {
+                reader.ReadList(ref factor);
+                reader.ReadList(ref inverseDiagonal);
+                reader.ReadList(ref state);
+                answered = reader.ReadBoolean();
+                if (answered)
+                {
+                    reader.ReadList(ref solution);
+                }
+            }
+        }
 
-            readyStamp = 0;
-            UnsafeUtility.MemClear(nodeReady.Ptr, (long)nodeReady.Length * sizeof(int));
+        private void RestoreAnalysis(int bodies, bool bounded, UnsafeList<ConstraintBlock> blocks, UnsafeList<int> recordedNodes)
+        {
+            // Symbolic analysis only uses the body pairs, the row ranges and which rows were fixed.
+            // Give those rows equal bounds so Analyze builds the same node and factor layout.
+            int rows = recordedNodes.Length;
+            using var fixedLower = new NativeArray<float>(rows, Allocator.Temp);
+            using var fixedUpper = new NativeArray<float>(rows, Allocator.Temp);
+            var upperBounds = (float*)fixedUpper.GetUnsafePtr();
+            coupled.Clear();
+            coupled.Resize(rows, NativeArrayOptions.ClearMemory);
+            for (int row = 0; row < rows; row++)
+            {
+                upperBounds[row] = recordedNodes[row] == NoNode ? 0f : 1f;
+            }
+
+            var problem = new Problem
+            {
+                BodyCount = bodies,
+                RowCount = rows,
+                BlockCount = blocks.Length,
+                Blocks = blocks.Ptr,
+                Lower = (float*)fixedLower.GetUnsafeReadOnlyPtr(),
+                Upper = upperBounds,
+            };
+            Analyze(problem, bounded);
         }
     }
 }
