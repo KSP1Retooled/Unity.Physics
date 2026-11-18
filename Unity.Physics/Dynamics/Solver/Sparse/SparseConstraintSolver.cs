@@ -1576,10 +1576,19 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
             Volatile.Write(ref nodeReady.Ptr[index], readyStamp);
         }
 
+        /// <summary>Runs the numeric tasks that the sparse solver publishes to its team.</summary>
+        internal struct TaskDispatch : ITeamDispatch
+        {
+            public void Run(in WorkTeam.Stage stage, int task)
+            {
+                ((SparseConstraintSolver*)stage.Context)->RunTask(stage.Kind, task, (double*)stage.Vector);
+            }
+        }
+
         /// <summary>Runs the tasks of a stage, using the team if one is available.</summary>
         void RunTasks(int kind, int tasks, double* x)
         {
-            WorkTeam.RunAll(Team, UnsafeUtility.AddressOf(ref this), kind, tasks, x);
+            WorkTeam.RunAll<TaskDispatch>(Team, UnsafeUtility.AddressOf(ref this), kind, tasks, x);
         }
 
         /// <summary>

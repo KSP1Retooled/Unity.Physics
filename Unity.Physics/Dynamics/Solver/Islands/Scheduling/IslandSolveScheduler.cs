@@ -142,7 +142,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             {
                 if (!Team->TryLead())
                 {
-                    Team->Help();
+                    Team->Help<IslandTaskDispatch>();
                     return;
                 }
 
@@ -155,7 +155,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                     for (int phase = 0; phase < DispatchPairSequencer.NumIslandPhases; phase++)
                     {
                         job.PhaseIndex = phase;
-                        Team->Lead(&job, WorkTeam.IterativePhaseKind, phases[phase].NumWorkItems, null);
+                        Team->Lead<IslandTaskDispatch>(&job, IslandTaskKind.IterativePhaseKind, phases[phase].NumWorkItems, null);
                     }
                 }
 
@@ -858,7 +858,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 {
                     using (HelpMarker.Auto())
                     {
-                        Team->Help();
+                        Team->Help<IslandTaskDispatch>();
                     }
 
                     return;

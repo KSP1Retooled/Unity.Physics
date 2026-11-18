@@ -38,7 +38,7 @@ namespace Unity.Physics
                 CompactBodies = (int*)setup.CompactBodies.GetUnsafePtr(),
             };
 
-            WorkTeam.RunAll(team, &summarizing, WorkTeam.SummarizeJacobiansKind, taskCount, null);
+            WorkTeam.RunAll<DirectTaskDispatch>(team, &summarizing, IslandTaskKind.SummarizeJacobiansKind, taskCount, null);
 
             for (int h = 0; h < headerCount; h++)
             {
@@ -69,7 +69,7 @@ namespace Unity.Physics
             summarizing.Blocks = setup.Blocks.GetUnsafePtr();
             summarizing.HeaderPointers = setup.Headers.GetUnsafePtr();
             summarizing.Couplings = setup.Couplings.GetUnsafePtr();
-            WorkTeam.RunAll(team, &summarizing, WorkTeam.FillBlocksKind, taskCount, null);
+            WorkTeam.RunAll<DirectTaskDispatch>(team, &summarizing, IslandTaskKind.FillBlocksKind, taskCount, null);
 
             summaries.Dispose();
             taskBlocks.Dispose();

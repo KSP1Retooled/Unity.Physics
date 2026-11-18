@@ -1,11 +1,6 @@
-using Unity.Physics.Dynamics.Solver.Islands.Scheduling;
-using Unity.Physics.Dynamics.Solver.Vessels;
-using Unity.Physics.Dynamics.Solver.Forest;
 using System.Threading;
 using Unity.Burst.Intrinsics;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.Physics.Dynamics.Solver.Sparse;
-using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
 
@@ -39,51 +34,11 @@ namespace Unity.Physics.Base.Threading
         static readonly ProfilerMarker LeadStageMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Team.LeadStage");
         static readonly ProfilerMarker LeadAloneMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Team.LeadAlone");
 
-        /// <summary>Identifies the direct solver stages that run around the sparse solver stages.</summary>
-        public const int PredictDriftKind = -1;
-        public const int ApplyImpulsesKind = -2;
-        public const int SetupBodiesKind = -3;
-        public const int SummarizeJacobiansKind = -4;
-        public const int FillBlocksKind = -5;
-
-        /// <summary>
-        /// Identifies one phase of an iteration for pairs solved iteratively. The context points to that phase's job.
-        /// </summary>
-        public const int IterativePhaseKind = -6;
-
-        /// <summary>
-        /// Identifies the stages for factorization, forward substitution and backward substitution, each processed in
-        /// chunks of a vessel forest.
-        /// </summary>
-        public const int ForestFactorKind = -7;
-        public const int ForestForwardKind = -8;
-        public const int ForestSubstituteKind = -9;
-
-        /// <summary>
-        /// Identifies a stage that assigns rows to forest sections or computes body impulses and loads on locked
-        /// pairs for those sections.
-        /// </summary>
-        public const int ForestSectionsKind = -10;
-
-        /// <summary>
-        /// Identifies the stage that classifies a direct island's rows for the forest, processing a range of blocks per
-        /// task.
-        /// </summary>
-        public const int ForestClassifyKind = -11;
-
-        /// <summary>
-        /// Identifies a stage that processes a range of sections, links or parts per task while solving a vessel
-        /// island.
-        /// </summary>
-        public const int ForestVesselKind = -12;
-
-        /// <summary>Identifies the stage that fills the boundary block of a forest solve, by ranges of its rows.</summary>
-        public const int ForestBoundaryKind = -13;
-
-        struct Stage
+        /// <summary>Describes the tasks in a stage that a dispatcher can run.</summary>
+        internal struct Stage
         {
             public void* Context;
-            public double* Vector;
+            public void* Vector;
             public int Kind;
             public int TaskCount;
         }
@@ -147,9 +102,9 @@ namespace Unity.Physics.Base.Threading
 
         /// <summary>
         /// Run a stage's tasks with available helpers and wait for completion.
-        /// context points to the solver or the direct stage's working data.
+        /// The dispatcher interprets the pointers.
         /// </summary>
-        public void Lead(void* context, int kind, int taskCount, double* vector)
+        public void Lead<TDispatch>(void* context, int kind, int taskCount, void* vector) where TDispatch : struct, ITeamDispatch
         {
             if (taskCount == 0)
             {
@@ -162,7 +117,7 @@ namespace Unity.Physics.Base.Threading
             {
                 using (LeadAloneMarker.Auto())
                 {
-                    Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
+                    default(TDispatch).Run(new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = 1 }, 0);
                 }
 
                 return;
@@ -194,7 +149,7 @@ namespace Unity.Physics.Base.Threading
                 AddressWait.WakeOne((int*)UnsafeUtility.AddressOf(ref signal));
             }
 
-            Work(generation, stage, true);
+            Work<TDispatch>(generation, stage, true);
 
             // Poll using reads that do not lock the cache line. A locked read would take ownership of that line from
             // lanes that are still finishing tasks.
@@ -208,7 +163,7 @@ namespace Unity.Physics.Base.Threading
         /// Help published stages until the leader finishes or the idle timeout expires.
         /// Spin briefly, then use address waiting when available.
         /// </summary>
-        public void Help()
+        public void Help<TDispatch>() where TDispatch : struct, ITeamDispatch
         {
             long seen = 0;
             int spins = 0;
@@ -220,7 +175,7 @@ namespace Unity.Physics.Base.Threading
                 {
                     seen = generation;
                     spins = 0;
-                    Work(generation, (generation & 1) == 0 ? even : odd, false);
+                    Work<TDispatch>(generation, (generation & 1) == 0 ? even : odd, false);
                     idleSince = ProfilerUnsafeUtility.Timestamp;
                     continue;
                 }
@@ -247,7 +202,7 @@ namespace Unity.Physics.Base.Threading
         /// <summary>
         /// Claim available tasks from the current stage without waiting. Return whether an open stage was found.
         /// </summary>
-        public bool TryWork()
+        public bool TryWork<TDispatch>() where TDispatch : struct, ITeamDispatch
         {
             long current = Interlocked.Read(ref next);
             long generation = current >> 32;
@@ -264,7 +219,7 @@ namespace Unity.Physics.Base.Threading
                 return false;
             }
 
-            Work(generation, stage, false);
+            Work<TDispatch>(generation, stage, false);
             return true;
         }
 
@@ -297,83 +252,23 @@ namespace Unity.Physics.Base.Threading
             }
         }
 
-        static void Run(in Stage stage, int task)
-        {
-            if (stage.Kind == PredictDriftKind)
-            {
-                Solver.PredictDriftTask(stage.Context, task);
-            }
-            else if (stage.Kind == ApplyImpulsesKind)
-            {
-                Solver.ApplyImpulsesTask(stage.Context, task);
-            }
-            else if (stage.Kind == SetupBodiesKind)
-            {
-                Solver.SetupBodiesTask(stage.Context, task);
-            }
-            else if (stage.Kind == SummarizeJacobiansKind)
-            {
-                Solver.SummarizeJacobiansTask(stage.Context, task);
-            }
-            else if (stage.Kind == FillBlocksKind)
-            {
-                Solver.FillBlocksTask(stage.Context, task);
-            }
-            else if (stage.Kind == IterativePhaseKind)
-            {
-                IslandSolveScheduler.IterativePhaseTask(stage.Context, task);
-            }
-            else if (stage.Kind == ForestFactorKind)
-            {
-                ForestSolver.ForestFactorTask(stage.Context, task);
-            }
-            else if (stage.Kind == ForestForwardKind)
-            {
-                ((VesselContext*)stage.Context)->ForwardChunk(task);
-            }
-            else if (stage.Kind == ForestSubstituteKind)
-            {
-                ((VesselContext*)stage.Context)->SubstituteChunk(task);
-            }
-            else if (stage.Kind == ForestSectionsKind)
-            {
-                ForestSolver.ForestSectionTask(stage.Context, task);
-            }
-            else if (stage.Kind == ForestClassifyKind)
-            {
-                ForestSolver.ForestClassifyTask(stage.Context, task);
-            }
-            else if (stage.Kind == ForestVesselKind)
-            {
-                VesselIslandSolver.ForestVesselTask(stage.Context, task);
-            }
-            else if (stage.Kind == ForestBoundaryKind)
-            {
-                ForestSolver.ForestBoundaryTask(stage.Context, task);
-            }
-            else
-            {
-                ((SparseConstraintSolver*)stage.Context)->RunTask(stage.Kind, task, stage.Vector);
-            }
-        }
-
         /// <summary>Runs a stage's tasks on the team, or sequentially on this thread if no team is supplied.</summary>
-        public static void RunAll(WorkTeam* team, void* context, int kind, int taskCount, double* vector)
+        public static void RunAll<TDispatch>(WorkTeam* team, void* context, int kind, int taskCount, void* vector) where TDispatch : struct, ITeamDispatch
         {
             if (team != null)
             {
-                team->Lead(context, kind, taskCount, vector);
+                team->Lead<TDispatch>(context, kind, taskCount, vector);
                 return;
             }
 
             var stage = new Stage { Context = context, Vector = vector, Kind = kind, TaskCount = taskCount };
             for (int task = 0; task < taskCount; task++)
             {
-                Run(stage, task);
+                default(TDispatch).Run(stage, task);
             }
         }
 
-        void Work(long generation, Stage stage, bool leading)
+        void Work<TDispatch>(long generation, Stage stage, bool leading) where TDispatch : struct, ITeamDispatch
         {
             while (true)
             {
@@ -399,7 +294,7 @@ namespace Unity.Physics.Base.Threading
                     Interlocked.Add(ref counters.ArrivalTicks, ProfilerUnsafeUtility.Timestamp - publishedAt);
                 }
 
-                Run(stage, (int)task);
+                default(TDispatch).Run(stage, (int)task);
                 Interlocked.Increment(ref done);
             }
         }

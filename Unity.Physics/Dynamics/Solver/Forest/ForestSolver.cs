@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using System.Threading;
 using Unity.Burst;
@@ -273,7 +274,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 BodyContact = (byte*)bodyContact.GetUnsafePtr(),
                 TaskRows = (int2*)taskRows.GetUnsafePtr(),
             };
-            WorkTeam.RunAll(team, &classify, WorkTeam.ForestClassifyKind, classifyTasks, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(team, &classify, IslandTaskKind.ForestClassifyKind, classifyTasks, null);
             int forestRows = 0, boundaryRows = 0;
             for (int t = 0; t < classifyTasks; t++)
             {
@@ -577,7 +578,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 context.ExtraRhs = null;
 
                 VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
-                WorkTeam.RunAll(team, contextPtr, WorkTeam.ForestFactorKind, context.ChunkCount, null);
+                WorkTeam.RunAll<ForestTaskDispatch>(team, contextPtr, IslandTaskKind.ForestFactorKind, context.ChunkCount, null);
                 var scratch = new NativeArray<double>(Block6x6.Size * math.max(1, context.MaxStructure), Allocator.Temp,
                     NativeArrayOptions.UninitializedMemory);
                 context.SolveTop((double*)scratch.GetUnsafePtr());
@@ -698,7 +699,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     Epsilon = problem.Epsilon,
                     Boundary = (int*)boundary.GetUnsafePtr(),
                 };
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestBoundaryKind,
+                WorkTeam.RunAll<ForestTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestBoundaryKind,
                     (nb + BoundaryRowsPerTask - 1) / BoundaryRowsPerTask, null);
 
                 y.Dispose();
@@ -1302,7 +1303,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 Problem = problem,
                 Phase = SectionTasks.PrepareRows,
             };
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestSectionsKind,
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestSectionsKind,
                 (problem.BlockCount + BlocksPerSectionTask - 1) / BlocksPerSectionTask, null);
         }
 
@@ -1945,7 +1946,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 PushOut = pushOut,
                 Phase = SectionTasks.SettleBodies,
             };
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestSectionsKind, partTasks, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestSectionsKind, partTasks, null);
             if (pushOut)
             {
                 return;
@@ -1982,7 +1983,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
             run.SubtreeTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - subtreeStarted;
             tasks.Phase = SectionTasks.SplitLoads;
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestSectionsKind, partTasks, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestSectionsKind, partTasks, null);
             ForestStrutLoads.Recover(ref run, problem, impulses);
         }
 
@@ -2283,9 +2284,9 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
             long bytes = 6L * context.SectionCount * sizeof(double);
             UnsafeUtility.MemCpy(context.Rhs, x, bytes);
-            WorkTeam.RunAll(run.Team, contextPtr, WorkTeam.ForestForwardKind, context.ChunkCount, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, contextPtr, IslandTaskKind.ForestForwardKind, context.ChunkCount, null);
             context.SubstituteTop();
-            WorkTeam.RunAll(run.Team, contextPtr, WorkTeam.ForestSubstituteKind, context.ChunkCount, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, contextPtr, IslandTaskKind.ForestSubstituteKind, context.ChunkCount, null);
             UnsafeUtility.MemCpy(x, context.Solution, bytes);
         }
 

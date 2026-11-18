@@ -145,7 +145,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                         }
 
                         System.Threading.Interlocked.Increment(ref teams[best].Helpers);
-                        teams[best].Team.Help();
+                        teams[best].Team.Help<IslandTaskDispatch>();
                         System.Threading.Interlocked.Decrement(ref teams[best].Helpers);
 
                         // A helper that stayed idle past its patience gives its thread back to the job system rather than
@@ -186,7 +186,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                         if (!teams[t].Team.Finished)
                         {
                             unsolved = true;
-                            worked |= teams[t].Team.TryWork();
+                            worked |= teams[t].Team.TryWork<IslandTaskDispatch>();
                         }
                     }
 

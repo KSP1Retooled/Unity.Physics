@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -39,7 +40,7 @@ namespace Unity.Physics
             };
 
             int headerTasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
-            WorkTeam.RunAll(team, &application, WorkTeam.ApplyImpulsesKind, application.BodyTasks + headerTasks, null);
+            WorkTeam.RunAll<DirectTaskDispatch>(team, &application, IslandTaskKind.ApplyImpulsesKind, application.BodyTasks + headerTasks, null);
         }
 
         const int BodiesPerApplyTask = 64;

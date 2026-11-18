@@ -1,3 +1,4 @@
+using static Unity.Physics.Dynamics.Solver.Islands.Data.IslandTaskKind;
 using static Unity.Physics.Dynamics.Solver.Forest.ForestSolver;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
@@ -146,7 +147,7 @@ namespace Unity.Physics
                 Bodies = (SparseConstraintSolver.Body*)bodies.GetUnsafePtr(),
             };
 
-            WorkTeam.RunAll(team, &bodySetup, WorkTeam.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
+            WorkTeam.RunAll<DirectTaskDispatch>(team, &bodySetup, IslandTaskKind.SetupBodiesKind, (bodies.Length + BodiesPerSetupTask - 1) / BodiesPerSetupTask, null);
 
             NativeList<SparseConstraintSolver.ConstraintBlock> blocks = setup.Blocks;
             NativeList<BoundCoupling> couplings = setup.Couplings;
@@ -373,6 +374,33 @@ namespace Unity.Physics
             setup.ReleaseCompactBodies(sharedIndex != null);
             setup.WorldBodies.Dispose();
             impulses.Dispose();
+        }
+
+        /// <summary>Runs the tasks that build, correct and apply the direct solver rows.</summary>
+        unsafe struct DirectTaskDispatch : ITeamDispatch
+        {
+
+            public void Run(in WorkTeam.Stage stage, int task)
+            {
+                switch (stage.Kind)
+                {
+                    case PredictDriftKind:
+                        PredictDriftTask(stage.Context, task);
+                        break;
+                    case ApplyImpulsesKind:
+                        ApplyImpulsesTask(stage.Context, task);
+                        break;
+                    case SetupBodiesKind:
+                        SetupBodiesTask(stage.Context, task);
+                        break;
+                    case SummarizeJacobiansKind:
+                        SummarizeJacobiansTask(stage.Context, task);
+                        break;
+                    case FillBlocksKind:
+                        FillBlocksTask(stage.Context, task);
+                        break;
+                }
+            }
         }
     }
 }

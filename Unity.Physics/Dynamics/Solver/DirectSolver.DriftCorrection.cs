@@ -1,3 +1,4 @@
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -160,7 +161,7 @@ namespace Unity.Physics
             };
 
             int tasks = (problem.BlockCount + DriftBlocksPerTask - 1) / DriftBlocksPerTask;
-            WorkTeam.RunAll(team, &prediction, WorkTeam.PredictDriftKind, tasks, null);
+            WorkTeam.RunAll<DirectTaskDispatch>(team, &prediction, IslandTaskKind.PredictDriftKind, tasks, null);
             for (int compact = 0; compact < problem.BodyCount; compact++)
             {
                 motions[worldBodies[compact]] = saved[compact];

@@ -239,7 +239,7 @@ namespace Unity.Physics.Tests.Dynamics.Solver.Sparse
             {
                 if (!Team->TryLead())
                 {
-                    Team->Help();
+                    Team->Help<SparseConstraintSolver.TaskDispatch>();
                     return;
                 }
 

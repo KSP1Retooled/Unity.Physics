@@ -349,7 +349,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 {
                     tasks.Phase = VesselTasks.UpdateJacobians;
                     tasks.Count = headerCount;
-                    WorkTeam.RunAll(team, &tasks, WorkTeam.ForestVesselKind, (headerCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    WorkTeam.RunAll<VesselTaskDispatch>(team, &tasks, IslandTaskKind.ForestVesselKind, (headerCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                 }
 
                 int rows = 0;
@@ -393,7 +393,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     tasks.Count = solveCount;
                     tasks.Rows = buffers;
                     tasks.Regularization = RowRegularization.Of(substepInput);
-                    WorkTeam.RunAll(team, &tasks, WorkTeam.ForestVesselKind, (solveCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+                    WorkTeam.RunAll<VesselTaskDispatch>(team, &tasks, IslandTaskKind.ForestVesselKind, (solveCount + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                     GatherSparseBlocks(ref setup, islandHeaders, (int*)headerRows.GetUnsafeReadOnlyPtr(), solveCount, rows, motionVelocities, team);
 
                     // The solve that pushes bodies out of deep contacts needs the island's bodies in a list.
@@ -474,7 +474,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                         new JacobianRows(buffers.Jacobian, rows), buffers.Recovery, island.ContactPairs > 0, team, true,
                         (float*)impulses.GetUnsafePtr(), linear, angular);
                     bodyTasks.Phase = VesselTasks.IntegrateBodiesAndWriteLoads;
-                    WorkTeam.RunAll(team, &bodyTasks, WorkTeam.ForestVesselKind,
+                    WorkTeam.RunAll<VesselTaskDispatch>(team, &bodyTasks, IslandTaskKind.ForestVesselKind,
                         (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                     impulses.Dispose();
                     posesFilled = false;
@@ -495,7 +495,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     // can skip that stage.
                     bodyTasks.Phase = VesselTasks.MoveBodiesAndWriteLoads;
                     bodyTasks.FillNext = substep < stepInput.NumSubsteps - 1;
-                    WorkTeam.RunAll(team, &bodyTasks, WorkTeam.ForestVesselKind,
+                    WorkTeam.RunAll<VesselTaskDispatch>(team, &bodyTasks, IslandTaskKind.ForestVesselKind,
                         (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                     posesFilled = bodyTasks.FillNext;
                     stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime,
@@ -716,7 +716,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     VesselParts = vesselPartCount,
                     Substep = substep,
                 };
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind,
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind,
                     (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                 rebuild |= tasks.Rebuild != 0;
 
@@ -781,7 +781,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     VesselParts = partCount,
                     Substep = substep,
                 };
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind,
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind,
                     (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                 rebuild = tasks.Rebuild != 0;
             }
@@ -1298,7 +1298,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     MassSums = (VesselContext.MassSums*)mass.GetUnsafePtr(),
                     InertiaSums = (VesselContext.InertiaSums*)inertia.GetUnsafePtr(),
                 };
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, chunks, null);
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
 
                 // Add the ranges' sums in order, so that the result does not depend on which lane summed which range.
                 VesselContext.MassSums totalMass = mass[0];
@@ -1309,7 +1309,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
                 tasks.Phase = VesselTasks.SharedInertia;
                 tasks.Center = totalMass.Moment / totalMass.Mass;
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, chunks, null);
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
                 VesselContext.InertiaSums totalInertia = inertia[0];
                 for (int c = 1; c < chunks; c++)
                 {
@@ -1364,7 +1364,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     ChunkForce = chunkForce,
                     ChunkTorque = chunkTorque,
                 };
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, chunks, null);
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
 
                 // The live rows' forces on this section's parts. There are few of these, so the leader adds them.
                 for (int e = kernel.IncidentStart[s]; e < kernel.IncidentStart[s + 1]; e++)
@@ -1392,9 +1392,9 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 }
 
                 tasks.Phase = VesselTasks.SharedPrefix;
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, chunks, null);
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
                 tasks.Phase = VesselTasks.SharedEdgeLoads;
-                WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, chunks, null);
+                WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, chunks, null);
                 kernel.StoreRootLoad(s, prefixForce[end - 1]);
                 kernel.ApplyStrutLoads(s);
                 sums.Dispose();
@@ -1661,12 +1661,12 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             ComputeVesselSections(ref run);
 
             VesselContext* contextPtr = (VesselContext*)UnsafeUtility.AddressOf(ref context);
-            WorkTeam.RunAll(run.Team, contextPtr, WorkTeam.ForestFactorKind, context.ChunkCount, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, contextPtr, IslandTaskKind.ForestFactorKind, context.ChunkCount, null);
             var scratch = new NativeArray<double>(Block6x6.Size * math.max(1, context.MaxStructure), Allocator.Temp,
                 NativeArrayOptions.UninitializedMemory);
             context.SolveTop((double*)scratch.GetUnsafePtr());
             scratch.Dispose();
-            WorkTeam.RunAll(run.Team, contextPtr, WorkTeam.ForestSubstituteKind, context.ChunkCount, null);
+            WorkTeam.RunAll<ForestTaskDispatch>(run.Team, contextPtr, IslandTaskKind.ForestSubstituteKind, context.ChunkCount, null);
             run.FactorTicks = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - factorStarted;
 
             run.Velocity = new NativeArray<double>(6 * sections, Allocator.Temp);
@@ -1791,7 +1791,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 Angular = angular,
                 PushOut = pushOut,
             };
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind,
+            WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind,
                 (tasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
         }
 
@@ -1889,7 +1889,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 Phase = phase,
                 Count = count,
             };
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+            WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
         }
 
         /// <summary>
@@ -2060,7 +2060,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 Substep = substep,
                 Substeps = substeps,
             };
-            WorkTeam.RunAll(run.Team, &tasks, WorkTeam.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
+            WorkTeam.RunAll<VesselTaskDispatch>(run.Team, &tasks, IslandTaskKind.ForestVesselKind, (count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
         }
 
         /// <summary>
