@@ -109,6 +109,42 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out lastSections, out lastLocked);
         }
 
+        [TestCase(180.0f)]
+        [TestCase(5.0f)]
+        [TestCase(10.0f)]
+        public void ForestLockYieldsOnSmoothedDriveForce(float angle)
+        {
+            Fresh(true);
+            Vector3 point = Vector3.up * 5.0f;
+            Rigidbody support = WeightlessBox(point, 10.0f);
+            Rigidbody body = WeightlessBox(point, 10.0f);
+            support.GetComponent<Collider>().enabled = body.GetComponent<Collider>().enabled = false;
+            support.sleepThreshold = body.sleepThreshold = 0.0f;
+            ConfigurableJoint joint = SpringJoint(body, support, point, 2000.0f);
+            joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+            joint.linearLimit = new SoftJointLimit { limit = 1.0f };
+            joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = 1e20f, maximumForce = 1e20f };
+            joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
+            joint.angularYLimit = joint.angularZLimit = new SoftJointLimit { limit = angle };
+            joint.breakForce = 100.0f;
+
+            Simulate(20);
+            Sections(out _, out long locked);
+            Assert.That(locked, Is.EqualTo(1));
+
+            for (int step = 0; step < 30; step++)
+            {
+                body.AddForce(80.0f * Vector3.right);
+                support.AddForce(80.0f * Vector3.left);
+                Simulate();
+            }
+
+            Sections(out _, out long stillLocked);
+            Assert.That(stillLocked, Is.Zero);
+            Assert.That(joint.currentForce, Is.EqualTo(Vector3.zero));
+            Assert.That(FullJointLoad(joint).SmoothedFullForce, Is.GreaterThan(70.0f));
+        }
+
         [Test]
         public void ALockedColumnCarriesTheLoadsOfTheYieldingOne()
         {
@@ -177,11 +213,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void APairLocksYieldsAndLocksAgainUnderARampedLoad()
         {
-            const int steps = 240;
-            // The backend turns a drive's spring into a frequency at its own estimate of the joint's mass, so the rows hold
-            // at about 17,600 N m/rad here; the forest reads its deflection from the rows.
+            const int rampSteps = 600;
+            const int steps = rampSteps + 120;
+            // Let the drive settle at zero torque so the pair has time to relock after the ramp.
             const float spring = 2000.0f;
-            const float peak = 50.0f;
+            const float peak = 18.0f;
             var turn = new float[2][];
             var lockedAt = new bool[steps];
             var estimate = new float[steps];
@@ -195,7 +231,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Fresh(pass == 1);
                 Rigidbody a = WeightlessBox(new Vector3(-0.5f, 5.0f, 0.0f), 2.0f);
                 Rigidbody b = WeightlessBox(new Vector3(0.5f, 5.0f, 0.0f), 2.0f);
-                SpringJoint(b, a, new Vector3(0.0f, 5.0f, 0.0f), spring);
+                ConfigurableJoint joint = SpringJoint(b, a, new Vector3(0.0f, 5.0f, 0.0f), spring);
+                JointDrive drive = joint.angularYZDrive;
+                drive.positionDamper = 40.0f;
+                joint.angularYZDrive = drive;
 
                 // Locked, the torques cancel inside the section and nothing moves, so the bodies would fall asleep.
                 a.sleepThreshold = 0.0f;
@@ -203,7 +242,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 turn[pass] = new float[steps];
                 for (int i = 0; i < steps; i++)
                 {
-                    float torque = peak * Mathf.Sin(Mathf.PI * i / steps);
+                    float torque = i < rampSteps ? peak * Mathf.Sin(Mathf.PI * i / rampSteps) : 0.0f;
                     b.AddTorque(new Vector3(0.0f, torque, 0.0f));
                     a.AddTorque(new Vector3(0.0f, -torque, 0.0f));
                     Simulate();

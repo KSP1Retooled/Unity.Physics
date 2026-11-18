@@ -18,5 +18,10 @@ namespace Unity.Physics.Dynamics.Joint.Loads
     {
         public float3 Force;
         public float3 Torque;
+        public float3 LimitForce;
+        public float3 LimitTorque;
+
+        // Vessel loads and merged rows include drive torque in their total. Other angular events come from locks and stops.
+        public bool IncludesAngularDrive;
     }
 }

@@ -155,7 +155,8 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                         leader = i;
                         leaders.Add(bodies, leader);
                     }
-                    else if (!JointTranslation.BuildJointsJob.SameFrames(World->joints[leader], joint))
+                    else if (!JointTranslation.BuildJointsJob.SameFrames(World->joints[leader], joint)
+                        || !JointTranslation.BuildJointsJob.SameAngularLimits(World->joints[leader], joint))
                     {
                         continue;
                     }

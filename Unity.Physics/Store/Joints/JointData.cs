@@ -38,7 +38,7 @@ namespace Unity.Physics.Store.Joints
         // them over a few steps.
         public float breakingForce;
 
-        // The force and torque applied by the joint's constraints during the last step. Both are in world space,
+        // The force and torque applied by locks and limits during the last step. Both are in world space,
         // with force in newtons and torque in newton metres.
         public float3 force;
         public float breakingTorque;
@@ -61,6 +61,11 @@ namespace Unity.Physics.Store.Joints
         // A number that no other joint received. The store reuses the memory of a destroyed joint for the next
         // joint that is made, so the address alone doesn't tell two joints apart.
         public uint serial;
+
+        public float3 fullForce;
+        public float3 fullTorque;
+        public float smoothedFullForce;
+        public float smoothedFullTorque;
 
         // There are JointAxisCount consecutive axes. AxisOf accesses them by adding an offset to the address of the
         // first axis.

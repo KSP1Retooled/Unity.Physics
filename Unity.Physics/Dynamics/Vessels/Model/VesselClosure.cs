@@ -21,9 +21,12 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         /// <summary>The rest orientation of part B relative to part A, calculated as conj(A) * B.</summary>
         public double4 Rest;
 
+        /// <summary>Open the compliant tree path before this closure's angular stop can engage.</summary>
+        public double UnlockRotationSquared;
+
         public double LinearStiffness;
-        public double AngularStiffness;
+        public double3 AngularStiffness;
         public double LinearDamping;
-        public double AngularDamping;
+        public double3 AngularDamping;
     }
 }

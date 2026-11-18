@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Numerics.Linear;
 using Unity.Numerics.Linear.Dense.Primitives;
+using Unity.Physics.Dynamics.Joint.Translation;
 using static Unity.Physics.Math;
 
 namespace Unity.Physics
@@ -48,7 +49,7 @@ namespace Unity.Physics
                     : 0.0f;
 
                 gamma_phi_0 = SetLimitRow(currentAngle, minAngle, maxAngle, rate, jointRegularizationData,
-                    stepInput.Timestep, startRow, in l, in u, ref indexSetArray, ref isLCP);
+                    stepInput.Timestep, startRow, in l, in u, ref indexSetArray, ref isLCP, motion.ConfigurableAngularStop);
             }
 
             // Assemble right hand side (rhs):
@@ -69,6 +70,7 @@ namespace Unity.Physics
         struct LimitMotion
         {
             public bool Predictive;
+            public bool ConfigurableAngularStop;
             public int BodyIndexA;
             public int BodyIndexB;
             public bool BodyAIsDynamic;
@@ -78,11 +80,12 @@ namespace Unity.Physics
         }
 
         static LimitMotion PredictiveLimit(int bodyIndexA, int bodyIndexB, bool bodyAIsDynamic, bool bodyBIsDynamic,
-            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas)
+            NativeArray<MotionVelocity> motionVelocities, NativeArray<MotionData> motionDatas, bool configurableAngularStop = false)
         {
             return new LimitMotion
             {
                 Predictive = true,
+                ConfigurableAngularStop = configurableAngularStop,
                 BodyIndexA = bodyIndexA,
                 BodyIndexB = bodyIndexB,
                 BodyAIsDynamic = bodyAIsDynamic,
@@ -98,6 +101,12 @@ namespace Unity.Physics
         /// </summary>
         const float LimitArmingMargin = 0.001f;
 
+        internal static bool IsNarrowConfigurableStop(ref JacobianHeader header, float minimum, float maximum)
+        {
+            return (minimum > -JointTranslation.BuildJointsJob.NearAngle || maximum < JointTranslation.BuildJointsJob.NearAngle)
+                && (header.Flags & JacobianFlags.EnableImpulseEvents) != 0 && header.AccessImpulseEventSolverData().IsConfigurableLimit;
+        }
+
         /// <summary>
         /// Select the active limit bound and return its gamma*phi/dt correction.
         /// Arm hard limits before crossing to stop at the boundary; activate soft-limit springs only after
@@ -105,19 +114,24 @@ namespace Unity.Physics
         /// </summary>
         static float SetLimitRow(float distance, float minimum, float maximum, float rate,
             in JacobianHeader.DirectSolverRegularizationData regularization, float timestep, int row,
-            in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP)
+            in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP, bool configurableAngularStop = false)
         {
             float reach = regularization.Hard ? distance + rate * timestep : distance;
             float margin = regularization.Hard ? LimitArmingMargin : 0.0f;
 
             isLCP = true;
             float error;
-            if (reach > maximum - margin)
+            // Keep the nearer side of a narrow hard angular stop available to the coupled solve.
+            // Its impulse remains zero until the other rows would take the joint past the stop.
+            bool upper = reach >= 0.5f * (minimum + maximum);
+            bool close = upper ? distance >= 0.5f * maximum : distance <= 0.5f * minimum;
+            bool arm = regularization.Hard && configurableAngularStop && close;
+            if (reach > maximum - margin || (arm && upper))
             {
                 error = distance - maximum;
                 u[row] = 0;
             }
-            else if (reach < minimum + margin)
+            else if (reach < minimum + margin || arm)
             {
                 error = distance - minimum;
                 l[row] = 0;

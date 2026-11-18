@@ -486,7 +486,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
         private static readonly string[] TailSamples =
         {
             "Physics.Step.WaitForSolve", "Physics.Contacts.", "WriteBackJob", "VesselLoadsJob",
-            "SleepContactsJob", "ClearGroupLoadsJob", "SeedJointLoadsJob", "RotateJointImpulsesJob", "SumJointImpulsesJob",
+            "SleepContactsJob", "ClearJointLoadsJob", "RotateJointImpulsesJob", "SumJointImpulsesJob",
             "ShareGroupLoadsJob", "SettleJointLoadsJob", "BreakJointsJob", "ForgetRemovedShapesJob", "UpdateWakeCountersJob",
             "FallAsleep:SleepJob", "ReadImpulsesJob", "RememberImpulsesJob", "PublishContactsJob", "FallAsleepJob",
             "FindFirstShapesJob", "SnapshotQueryDataJob", "MergeContactBucketsJob", "SizeMergedContactsJob", "CopyContactBucketsJob",

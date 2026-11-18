@@ -260,7 +260,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 : double.TryParse(output.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out load) ? load : -1.0;
         }
 
-        private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked)
+        private static ConfigurableJoint Joint(Rigidbody host, Rigidbody target, Vector3 anchor, float spring, bool locked, float? flexLimit = null)
         {
             ConfigurableJoint joint = host.gameObject.AddComponent<ConfigurableJoint>();
             joint.connectedBody = target;
@@ -283,6 +283,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = 1e20f, maximumForce = 1e20f };
             joint.rotationDriveMode = RotationDriveMode.XYAndZ;
             joint.angularYZDrive = new JointDrive { positionSpring = spring, positionDamper = 0.02f * spring, maximumForce = 1e20f };
+            if (flexLimit is float angle)
+            {
+                joint.angularXMotion = ConfigurableJointMotion.Limited;
+                joint.lowAngularXLimit = new SoftJointLimit { limit = -angle };
+                joint.highAngularXLimit = joint.angularYLimit = joint.angularZLimit = new SoftJointLimit { limit = angle };
+                joint.angularXDrive = joint.angularYZDrive;
+            }
+
             return joint;
         }
 
@@ -304,12 +312,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 lowest = Mathf.Min(lowest, graph.Position[i].y - 0.5f * side);
             }
 
+            float? flexLimit = float.TryParse(Environment.GetEnvironmentVariable("RETOOLED_BENCH_FLEX_LIMIT"),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out float angle) ? angle : null;
             for (int i = 0; i < graph.Parent.Length && joints; i++)
             {
                 int parent = graph.Parent[i];
                 if (parent >= 0)
                 {
-                    Joint(bodies[i], bodies[parent], graph.Joint[i], graph.Swing[i] > 0.0f ? graph.Swing[i] : 1e5f, false);
+                    Joint(bodies[i], bodies[parent], graph.Joint[i], graph.Swing[i] > 0.0f ? graph.Swing[i] : 1e5f, false, flexLimit);
                 }
             }
 
@@ -861,6 +871,10 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     $"their warm start, {boundary.HeldSupports} held rows pushed, {boundary.HeldPushes} held rows pushed out), " +
                     $"{boundary.DormantRows / (double)boundary.Solves:F1} dormant rows a solve, " +
                     $"{boundary.WarmRows / (double)boundary.Solves:F0} rows warm a solve";
+                double rowSamples = System.Math.Max(1, boundary.RowKindSamples);
+                lastTimes += $"; rows per build: {boundary.ContactRows / rowSamples:F1} contact, " +
+                    $"{boundary.AngularStopRows / rowSamples:F1} angular stops, {boundary.OtherRows / rowSamples:F1} other, " +
+                    $"{boundary.StopRetries} stop retries";
                 double tickMs = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Numerator
                     / (double)Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.TimestampToNanosecondsConversionRatio.Denominator * 1e-6;
                 Unity.Numerics.Linear.Solvers.Lowlevel.BlockPrincipalPivotingStats f = boundary.Factor;
@@ -878,7 +892,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     $"{boundary.PushRounds / (double)System.Math.Max(1, boundary.PushSolves):F1} rounds each, dense {boundary.PushTicks * tickMs / steps:F3})";
             }
 
-            if (path == "locked")
+            if (path == "locked" || path == "compiled")
             {
                 lastTimes += $"; sections {(sections1 - sections0) / (double)forestSolves:F0}, locked pairs {(locked1 - locked0) / (double)forestSolves:F0} " +
                     $"per solve, structure rebuilds {builds1 - builds0} ({(rebuild1 - rebuild0) / System.Math.Max(1, builds1 - builds0):F2} ms each), " +

@@ -364,8 +364,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
 
                 // The locked edge as a yielding one: hard linear rows, and its twist and swing springs, hard when infinite.
                 double3 linearStiffness = hardLinear, linearDamping = hardLinear * dampingPerStiffness;
-                double3 angularStiffness = new double3(edge->TwistStiffness, edge->SwingStiffness, edge->SwingStiffness);
-                double3 angularDamping = new double3(edge->TwistDamping, edge->SwingDamping, edge->SwingDamping);
+                double3 angularStiffness = edge->AngularStiffness;
+                double3 angularDamping = edge->AngularDamping;
                 Harden(ref angularStiffness, ref angularDamping, hardAngular, dampingPerStiffness);
                 double3x3 childRotation = DoubleMath.Rotation(child->Orientation);
                 double3x3 parentRotation = DoubleMath.Rotation(parent->Orientation);

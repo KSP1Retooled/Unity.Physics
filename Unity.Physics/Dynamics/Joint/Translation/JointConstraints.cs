@@ -57,6 +57,29 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             return 1.0f / math.max(InverseMass(joint->body0) + InverseMass(joint->body1), 1e-9f);
         }
 
+        internal static float LinearDriveMass(JointData* joint, int axis)
+        {
+            float3 local = float3.zero;
+            local[axis] = 1.0f;
+            float3 direction = math.rotate(WorldRotation0(joint), local);
+            float3 point = WorldAnchor(joint->body1, joint->position1);
+            float inverseMass = InverseMass(joint->body0) + InverseMass(joint->body1)
+                + InverseInertia(joint->body0, math.cross(point - CenterOfMass(joint->body0), direction))
+                + InverseInertia(joint->body1, math.cross(point - CenterOfMass(joint->body1), direction));
+            return 1.0f / math.max(inverseMass, 1e-9f);
+        }
+
+        private static float3 CenterOfMass(Body* body)
+        {
+            if (body == null)
+            {
+                return float3.zero;
+            }
+
+            BodyData* hot = StoreMemory.Row(body);
+            return hot->pose->Position + math.rotate(hot->pose->Rotation, hot->mass->Transform.pos);
+        }
+
         /// <summary>The effective inertia of the two bodies for rotation about one joint axis.</summary>
         internal static float AngularMass(JointData* joint, int axis)
         {
@@ -88,7 +111,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
             JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
             JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
-            bool sameDrive = twist->driveSpring == swing->driveSpring && twist->driveDamper == swing->driveDamper;
+            bool sameDrive = twist->driveSpring == swing->driveSpring && twist->driveDamper == swing->driveDamper
+                && twist->driveUsesAcceleration == swing->driveUsesAcceleration;
             bool noForceLimit = twist->driveMaxForce >= UnlimitedForce && swing->driveMaxForce >= UnlimitedForce;
             return sameDrive && noForceLimit && twist->driveSpring > 0.0f ? twist : null;
         }

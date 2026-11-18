@@ -33,12 +33,16 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         /// <summary>The child's rest orientation relative to its parent, calculated as conj(parent) * child.</summary>
         public double4 Rest;
 
-        /// <summary>The angular spring rates in kN m/rad and damping coefficients in kN m s/rad.</summary>
-        public double TwistStiffness;
+        /// <summary>Spring rate about each joint axis, in kN m/rad.</summary>
+        public double3 AngularStiffness;
 
-        public double SwingStiffness;
-        public double TwistDamping;
-        public double SwingDamping;
+        /// <summary>Damping about each joint axis, in kN m s/rad.</summary>
+        public double3 AngularDamping;
+
+        public double TwistStiffness { get => AngularStiffness.x; set => AngularStiffness.x = value; }
+        public double SwingStiffness { get => AngularStiffness.y; set => AngularStiffness.yz = new double2(value); }
+        public double TwistDamping { get => AngularDamping.x; set => AngularDamping.x = value; }
+        public double SwingDamping { get => AngularDamping.y; set => AngularDamping.yz = new double2(value); }
 
         /// <summary>The target twist angle in radians for the spring on a free axis.</summary>
         public double DriveTarget;
@@ -47,6 +51,12 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         public double BreakForce;
 
         public double BreakTorque;
+
+        /// <summary>The torque at which a compliant axis at a narrow angular stop has used all its travel.</summary>
+        public double FlexYieldTorque;
+
+        /// <summary>The squared sine of half the angle at which the edge should stay unlocked.</summary>
+        public double UnlockRotationSquared;
 
         /// <summary>The fraction of the edge's break strength above which a locked edge starts to yield.</summary>
         public double YieldFraction;

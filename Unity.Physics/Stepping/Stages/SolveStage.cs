@@ -67,16 +67,8 @@ namespace Unity.Physics.Stepping.Stages
             }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, vessels.vesselsFilled));
         }
 
-        /// <summary>
-        /// Schedule vessel joint load extraction after solving. Read solved motion poses without waiting for
-        /// write-back.
-        /// </summary>
-        internal static JobHandle ScheduleVesselLoads(WorldData* store, ref PhysicsWorld world,
-            ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels, float deltaTime,
-            JobHandle dependency)
+        internal static void ResizeJointLoads(WorldData* store, ref JointBuildState jointState)
         {
-            const int vesselLoadsPerBatch = 32;
-
             // The jobs write the joint loads through arrays that the safety system doesn't track, so the list must not
             // change size after this point in the step.
             jointState.jointLoads.ResizeUninitialized((int)store->jointCount);
@@ -85,7 +77,14 @@ namespace Unity.Physics.Stepping.Stages
             {
                 throw new InvalidOperationException("the joints' load states and the store's joints differ in number");
             }
+        }
 
+        /// <summary>Combine recovered vessel loads with impulses from the vessels' angular stops.</summary>
+        internal static JobHandle ScheduleVesselLoads(WorldData* store, ref PhysicsWorld world,
+            ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels, float deltaTime,
+            JobHandle dependency)
+        {
+            const int vesselLoadsPerBatch = 32;
             if (!vessels.vesselSet.IsCreated)
             {
                 return default;
@@ -109,6 +108,7 @@ namespace Unity.Physics.Stepping.Stages
                 EdgeLoads = vessels.vesselBuild.EdgeLoads.AsDeferredJobArray(),
                 ClosureLoads = vessels.vesselBuild.ClosureLoads.AsDeferredJobArray(),
                 JointLoads = jointState.jointLoads.AsArray(),
+                GroupLoads = jointState.groupLoads.AsDeferredJobArray(),
                 Overloaded = jointState.jointsOverloaded.AsArray(),
             }.Schedule(vessels.vesselBuild.PartUnits.Length + vessels.vesselBuild.ClosureUnits.Length, vesselLoadsPerBatch, dependency);
         }

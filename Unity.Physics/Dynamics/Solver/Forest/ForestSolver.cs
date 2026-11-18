@@ -5,6 +5,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Numerics.Kernels;
 using Unity.Physics.Base.Threading;
@@ -13,6 +14,7 @@ using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
 using Unity.Physics.Dynamics.Vessels.Structure;
 using Unity.Profiling;
+using static Unity.Physics.Solver;
 
 namespace Unity.Physics.Dynamics.Solver.Forest
 {
@@ -92,6 +94,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             // Vessel boundary caps and stable row keys for state reuse between solves.
             public BoundaryCaps Caps;
             public NativeArray<ulong> BoundaryKey;
+            public NativeArray<ulong> BoundaryBlockKeys;
 
             /// <summary>For a vessel island: the substep that the run solves, for the boundary's counters.</summary>
             public int Substep;
@@ -159,6 +162,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             /// <summary>How long the factor, the boundary block and any structure rebuild took, in profiler timestamp units.</summary>
             public long FactorTicks;
             public long BoundaryTicks;
+            public int DormantAngularStops;
             public long StructureTicks;
 
             /// <summary>Whether the structure was rebuilt for this solve, and how many pairs changed lock state.</summary>
@@ -186,12 +190,10 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     ForestBlocks.Dispose();
                 }
 
-                Boundary.Dispose();
-                BoundaryOf.Dispose();
-                W.Dispose();
-                if (BoundaryKey.IsCreated)
+                DisposeBoundary();
+                if (BoundaryBlockKeys.IsCreated)
                 {
-                    BoundaryKey.Dispose();
+                    BoundaryBlockKeys.Dispose();
                 }
                 Velocity.Dispose();
                 Work.Dispose();
@@ -222,6 +224,17 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     SettleAngular.Dispose();
                     SettleTurn.Dispose();
                     Need.Dispose();
+                }
+            }
+
+            public void DisposeBoundary()
+            {
+                Boundary.Dispose();
+                BoundaryOf.Dispose();
+                W.Dispose();
+                if (BoundaryKey.IsCreated)
+                {
+                    BoundaryKey.Dispose();
                 }
             }
         }
@@ -595,7 +608,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         /// Build W = J_b*A^-1*J_b^T + E_b from boundary-row elimination-tree paths.
         /// Each entry sums contributions from sections shared by the two paths.
         /// </summary>
-        internal static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows)
+        internal static unsafe void BuildBoundary(ref ForestRun run, int boundaryRows, bool chooseRows = true)
         {
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
             ForestIsland* forest = run.Forest;
@@ -607,7 +620,12 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             NativeArray<int> rowBlock = run.RowBlock;
             NativeArray<int2> blockSections = run.BlockSections;
             long chooseStarted = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            if (run.VesselMode && run.Bounded)
+            if (run.VesselMode && run.Bounded && !run.BoundaryBlockKeys.IsCreated)
+            {
+                run.BoundaryBlockKeys = BoundaryBlockIdentities(ref run);
+            }
+
+            if (chooseRows && run.VesselMode && run.Bounded)
             {
                 CapBoundary(ref run);
                 if (!run.Caps.KeepDormantRows)
@@ -619,6 +637,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             var boundary = new NativeArray<int>(math.max(1, boundaryRows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var boundaryOf = new NativeArray<int>(rows, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             int nb = 0;
+            int contactRows = 0, angularStopRows = 0;
             for (int row = 0; row < rows; row++)
             {
                 boundaryOf[row] = -1;
@@ -626,6 +645,12 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 {
                     boundaryOf[row] = nb;
                     boundary[nb++] = row;
+                    if (run.VesselMode)
+                    {
+                        JacobianHeader* header = run.Headers[rowBlock[row]];
+                        contactRows += header->Type == JacobianType.Contact ? 1 : 0;
+                        angularStopRows += IsAngularStop(header) ? 1 : 0;
+                    }
                 }
             }
 
@@ -724,6 +749,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             run.BoundaryTicks = ended - boundaryStarted;
             if (run.VesselMode)
             {
+                BoundaryCounters.AddRowKinds(contactRows, angularStopRows, nb - contactRows - angularStopRows);
                 BoundaryCounters.AddBuild(boundaryStarted - chooseStarted + ended - filled, pathsWalked - boundaryStarted,
                     filled - pathsWalked);
             }
@@ -1013,6 +1039,8 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
             double* velocity = (double*)run.BaseVelocity.GetUnsafeReadOnlyPtr();
             double margin = BoundaryCaps.DormantMargin / (double)run.Timestep;
+            ref UnsafeList<ulong> previous = ref run.Forest->BoundaryMemory.States;
+            bool havePrevious = !run.Caps.ColdStart && previous.IsCreated && previous.Length > 0;
             int dormant = 0;
             for (int b = 0; b < problem.BlockCount; b++)
             {
@@ -1045,14 +1073,97 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     double slack = speed - problem.RightHandSide[row];
                     if ((pushes && slack > margin) || (pulls && -slack > margin))
                     {
+                        bool narrowStop = IsNarrowAngularStop(ref *header);
+                        if (narrowStop && havePrevious)
+                        {
+                            // In a pile of resting contacts, the same stops often close on each substep.
+                            // Keep stops that previously carried an impulse in the first solve.
+                            int entry = BoundaryMemory.Find(previous, BoundaryRowKey(ref run, row));
+                            if (entry >= 0 && (previous[entry] & BoundaryMemory.StateMask) == (ulong)LCP.MLCPIndexFlag.Free)
+                            {
+                                continue;
+                            }
+                        }
+
                         run.RowClass[row] = DormantRowClass;
                         dormant++;
+                        run.DormantAngularStops += narrowStop ? 1 : 0;
                     }
                 }
             }
 
             coupled.Dispose();
             BoundaryCounters.AddDormant(dormant);
+        }
+
+        private static unsafe bool IsAngularStop(JacobianHeader* header)
+        {
+            return header->IsAngular && (header->Flags & JacobianFlags.EnableImpulseEvents) != 0
+                && header->AccessImpulseEventSolverData().IsConfigurableLimit;
+        }
+
+        private static bool IsNarrowAngularStop(ref JacobianHeader header)
+        {
+            if (header.Type == JacobianType.AngularLimit1D)
+            {
+                ref var twist = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
+                return IsNarrowConfigurableStop(ref header, twist.MinAngle, twist.MaxAngle);
+            }
+
+            if (header.Type == JacobianType.AngularLimit2D)
+            {
+                ref var swing = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
+                return IsNarrowConfigurableStop(ref header, swing.MinAngle > 0.0f ? swing.MinAngle : -float.MaxValue, swing.MaxAngle);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// A contact impulse can close a stop that was slack in the solution before contacts. Restore those stops
+        /// together if any of them would pass its bound after the boundary solve.
+        /// </summary>
+        internal static unsafe bool ReopenAngularStops(ref ForestRun run, float* rhs)
+        {
+            if (run.DormantAngularStops == 0)
+            {
+                return false;
+            }
+
+            ref SparseConstraintSolver.Problem problem = ref run.Problem;
+            double* velocity = (double*)run.Velocity.GetUnsafeReadOnlyPtr();
+            bool violated = false;
+            for (int row = 0; row < problem.RowCount && !violated; row++)
+            {
+                if (run.RowClass[row] != DormantRowClass || !IsNarrowAngularStop(ref *run.Headers[run.RowBlock[row]]))
+                {
+                    continue;
+                }
+
+                double speed = JacobianRowBlocks.Dot(velocity, run.BlockSections[run.RowBlock[row]],
+                    run.Jacobian + SparseConstraintSolver.ColumnsPerRow * (long)row);
+                double violation = problem.Lower[row] == 0.0f ? rhs[row] - speed : speed - rhs[row];
+                violated = violation > 1e-7;
+            }
+
+            if (!violated)
+            {
+                return false;
+            }
+
+            for (int row = 0; row < problem.RowCount; row++)
+            {
+                if (run.RowClass[row] == DormantRowClass && IsNarrowAngularStop(ref *run.Headers[run.RowBlock[row]]))
+                {
+                    run.RowClass[row] = BoundaryRowClass;
+                }
+            }
+
+            run.DormantAngularStops = 0;
+            run.DisposeBoundary();
+            BuildBoundary(ref run, problem.RowCount, false);
+            BoundaryCounters.AddStopRetry();
+            return true;
         }
 
         /// <summary>Whether a block joins two parts of the same vessel.</summary>
@@ -1076,10 +1187,9 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         /// Leave the low eight bits free for BoundaryMemory state and age. Count blocks even when capped or
         /// dormant.
         /// </summary>
-        static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
+        static unsafe NativeArray<ulong> BoundaryBlockIdentities(ref ForestRun run)
         {
             ref SparseConstraintSolver.Problem problem = ref run.Problem;
-            var keys = new NativeArray<ulong>(math.max(1, nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var blockKeys = new NativeArray<ulong>(math.max(1, problem.BlockCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var seen = new NativeHashMap<ulong, int>(16, Allocator.Temp);
             var vesselIds = new NativeHashMap<int, ulong>(math.max(1, run.IslandVesselCount), Allocator.Temp);
@@ -1124,24 +1234,28 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 blockKeys[b] = Mix(identity + (ulong)occurrence * 0x9E3779B97F4A7C15UL);
             }
 
-            for (int i = 0; i < nb; i++)
-            {
-                int row = boundary[i];
-                int b = run.RowBlock[row];
-                SparseConstraintSolver.ConstraintBlock block = problem.Blocks[b];
-                JacobianHeader* header = run.Headers != null ? run.Headers[b] : null;
-                ulong place = (ulong)(row - block.FirstRow);
-                if (header != null && header->Type == JacobianType.Contact)
-                {
-                    place = ContactRowPlace(ref *header, row - block.FirstRow);
-                }
-
-                keys[i] = Mix(blockKeys[b] + place) & ~(ulong)BoundaryMemory.ValueMask;
-            }
-
-            blockKeys.Dispose();
             seen.Dispose();
             vesselIds.Dispose();
+            return blockKeys;
+        }
+
+        static unsafe ulong BoundaryRowKey(ref ForestRun run, int row)
+        {
+            int block = run.RowBlock[row];
+            int place = row - run.Problem.Blocks[block].FirstRow;
+            JacobianHeader* header = run.Headers != null ? run.Headers[block] : null;
+            ulong key = header != null && header->Type == JacobianType.Contact ? ContactRowPlace(ref *header, place) : (ulong)place;
+            return Mix(run.BoundaryBlockKeys[block] + key) & ~(ulong)BoundaryMemory.ValueMask;
+        }
+
+        static unsafe NativeArray<ulong> BoundaryKeys(ref ForestRun run, int* boundary, int nb)
+        {
+            var keys = new NativeArray<ulong>(math.max(1, nb), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            for (int i = 0; i < nb; i++)
+            {
+                keys[i] = BoundaryRowKey(ref run, boundary[i]);
+            }
+
             return keys;
         }
 

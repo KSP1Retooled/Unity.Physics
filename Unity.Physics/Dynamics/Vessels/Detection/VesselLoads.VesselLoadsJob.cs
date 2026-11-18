@@ -25,7 +25,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         /// Convert vessel loads to joint loads, distribute group loads and settle break flags.
         /// Loads act on the leading joint's body0. Read solved motion poses so that this job can run alongside
         /// write-back.
-        /// Impulse-event jobs skip active vessel joints.
+        /// The impulse stream contributes the loads of the limits that ran as boundary rows.
         /// </summary>
         [BurstCompile]
         internal unsafe struct VesselLoadsJob : IJobParallelFor
@@ -89,6 +89,9 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
             [NativeDisableContainerSafetyRestriction]
             public NativeArray<JointLoad> JointLoads;
 
+            [ReadOnly]
+            public NativeArray<JointLoad> GroupLoads;
+
             // As with the loads, the jobs for the other joints write the flags of their own joints at the same time.
             [NativeDisableParallelForRestriction]
             [NativeDisableContainerSafetyRestriction]
@@ -132,11 +135,14 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 }
 
                 // Active vessel bodies remain awake until later sleep jobs, so no per-joint wake check is needed.
-                var jointLoad = new JointLoad { Force = sign * (float3)load.Force, Torque = sign * (float3)load.Torque };
                 JointUnit jointUnit = Units[unit];
+                JointLoad jointLoad = jointUnit.Group < 0 ? JointLoads[jointUnit.Joint] : GroupLoads[jointUnit.Group];
+                jointLoad.Force += sign * (float3)load.Force;
+                jointLoad.Torque += sign * (float3)load.Torque;
+                jointLoad.IncludesAngularDrive = true;
                 if (jointUnit.Group < 0)
                 {
-                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(States + jointUnit.Joint, jointLoad, DeltaTime);
+                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(World->joints[jointUnit.Joint], States + jointUnit.Joint, jointLoad, DeltaTime);
                     Overloaded[jointUnit.Joint] = overloaded ? (byte)1 : (byte)0;
                     return;
                 }
@@ -152,7 +158,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 for (int i = 0; i < group.MemberCount; i++)
                 {
                     int joint = Members[group.FirstMember + i].Joint;
-                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(States + joint, JointLoads[joint], DeltaTime);
+                    bool overloaded = JointLoadJobs.SettleJointLoadsJob.SettleAwake(World->joints[joint], States + joint, JointLoads[joint], DeltaTime);
                     Overloaded[joint] = overloaded ? (byte)1 : (byte)0;
                 }
             }

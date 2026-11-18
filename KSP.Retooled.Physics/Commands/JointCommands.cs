@@ -111,7 +111,7 @@ namespace KSP.Retooled.Physics.Commands
                 before = *joint;
             }
 
-            // Reuse groups and forest roles when mergeability, bodies, frames and flags are unchanged.
+            // Reuse groups and forest roles when the joints still have compatible settings.
             bool wasMergeable = JointTranslation.BuildJointsJob.Mergeable(joint);
             Body* body0 = joint->body0, body1 = joint->body1;
             quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
@@ -120,7 +120,9 @@ namespace KSP.Retooled.Physics.Commands
             bool mergeable = JointTranslation.BuildJointsJob.Mergeable(joint);
             bool moved = joint->body0 != body0 || joint->body1 != body1 || joint->flags != flags
                 || !math.all(joint->rotation0.value == rotation0.value) || !math.all(joint->rotation1.value == rotation1.value);
-            if (mergeable != wasMergeable || (mergeable && moved))
+            bool canChangeLimit = command == JointCommand.Set6DofAxisLock || command == JointCommand.Set6DofLimit || command == JointCommand.Set6DofSpringLimit;
+            bool limitsChanged = mergeable && wasMergeable && canChangeLimit && !JointTranslation.BuildJointsJob.SameAngularLimits(&before, joint);
+            if (mergeable != wasMergeable || (mergeable && (moved || limitsChanged)))
             {
                 JointTopology.Changed();
             }

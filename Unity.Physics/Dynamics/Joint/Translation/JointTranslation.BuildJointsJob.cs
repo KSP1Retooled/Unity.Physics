@@ -107,12 +107,28 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 written = 0;
                 JointUnit unit = Units[index];
 
-                // The vessel solver handles the joints of active vessels, and DropIgnoredPairsJob stops their bodies from
-                // colliding, so build nothing for them. FillVesselEdgesJob and FillVesselClosuresJob prepare their groups.
+                // The vessel solver handles the springs and locks. Use boundary rows for angular stops when they
+                // are within reach. FillVesselEdgesJob and FillVesselClosuresJob prepare the groups.
                 if (Vessels && UnitVessels[index] >= 0 && VesselActive[UnitVessels[index]] != 0)
                 {
+                    role = JointForestRole.None;
+                    forestLock = JointForestLock.None;
+                    JointData* joint = World->joints[unit.Joint];
+                    if (AngularLimitWithinReach(joint))
+                    {
+                        Entity entity = unit.Group < 0
+                            ? new Entity { Index = unit.Joint, Version = 1 }
+                            : new Entity { Index = unit.Group, Version = JointGroup.EntityVersion };
+                        // These angular rows use only the two rotations. The anchors have no effect.
+                        if (Begin(joint, joint->position0, joint->position1, entity))
+                        {
+                            AddAngularLimits(joint);
+                            Flush();
+                        }
+                    }
+
                     Output.EndForEachIndex();
-                    Written[index] = 0;
+                    Written[index] = written;
                     return;
                 }
 
@@ -178,8 +194,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 }
 
                 float fraction = math.max(
-                    state->BreakForce > 0.0f ? state->BreakingForce / state->BreakForce : 0.0f,
-                    state->BreakTorque > 0.0f ? state->BreakingTorque / state->BreakTorque : 0.0f);
+                    state->BreakForce > 0.0f ? state->SmoothedFullForce / state->BreakForce : 0.0f,
+                    state->BreakTorque > 0.0f ? state->SmoothedFullTorque / state->BreakTorque : 0.0f);
                 return (fraction < LockFraction ? JointForestLock.Lockable : JointForestLock.None)
                     | (fraction < YieldFraction ? JointForestLock.Holdable : JointForestLock.None);
             }
@@ -197,7 +213,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
             /// <summary>
             /// Return whether joints between the same bodies can be merged.
-            /// Require held anchors, compatible angular constraints and no conflicting targets or nearby limits.
+            /// Require held anchors, compatible angular constraints and rest targets for the angular drives.
             /// </summary>
             internal static bool Mergeable(JointData* joint)
             {
@@ -226,21 +242,23 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 }
 
                 bool atRest = joint->targetRotation.value.Equals(quaternion.identity.value) && math.all(joint->targetAngularVelocity == float3.zero);
-                if (!atRest || HasNearAngularLimit(joint))
+                if (!atRest)
                 {
                     return false;
                 }
 
-                if (JointConstraints.WholeRotationDrive(joint) != null)
+                JointAxis* wholeRotation = JointConstraints.WholeRotationDrive(joint);
+                if (wholeRotation != null)
                 {
-                    return true;
+                    return wholeRotation->driveUsesAcceleration == 0;
                 }
 
                 for (int i = 0; i < 3; i++)
                 {
                     JointAxis* drive = AngularDrive(joint, i);
                     bool locked = JointData.AxisOf(joint, StoreConstants.AxisAngularX + i)->dofLock == StoreConstants.DofLocked;
-                    if (!locked && HasAxisDrive(drive) && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce))
+                    if (!locked && HasAxisDrive(drive)
+                        && (drive->driveSpring <= 0.0f || drive->driveMaxForce < JointConstraints.UnlimitedForce || drive->driveUsesAcceleration != 0))
                     {
                         return false;
                     }
@@ -258,23 +276,55 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             /// <summary>
-            /// Return whether an angular limit lies within UnreachedAngle of the rest orientation.
+            /// Distance from rest to the nearest narrow angular stop on each axis.
             /// </summary>
-            private static bool HasNearAngularLimit(JointData* joint)
+            internal static float3 NearAngularLimits(JointData* joint)
             {
                 JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
                 JointAxis* swing = JointData.AxisOf(joint, StoreConstants.AxisAngularYZ);
-                bool nearTwist = twist->dofLock == StoreConstants.DofLimited && (twist->min > -UnreachedAngle || twist->max < UnreachedAngle);
-                bool nearY = JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLimited && swing->min < UnreachedAngle;
-                bool nearZ = JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLimited && swing->max < UnreachedAngle;
-                return nearTwist || nearY || nearZ;
+                float3 angle = new float3(math.min(-twist->min, twist->max), swing->min, swing->max);
+                bool3 limited = new bool3(twist->dofLock == StoreConstants.DofLimited,
+                    JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLimited,
+                    JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLimited);
+                return math.select(float.PositiveInfinity, math.max(angle, 0.0f), limited & (angle < NearAngle));
             }
 
-            /// <summary>
-            /// The angular distance from rest, in radians, that a merged group is assumed not to reach while resisting
-            /// rotation.
-            /// </summary>
-            private const float UnreachedAngle = 0.5f;
+            internal const float NearAngle = 0.5f;
+
+            internal static bool SameAngularLimits(JointData* first, JointData* second)
+            {
+                if (math.cmin(NearAngularLimits(first)) >= NearAngle && math.cmin(NearAngularLimits(second)) >= NearAngle)
+                {
+                    return true;
+                }
+
+                JointAxis* a = JointData.AxisOf(first, StoreConstants.AxisAngularX);
+                JointAxis* b = JointData.AxisOf(second, StoreConstants.AxisAngularX);
+                JointAxis* swingA = JointData.AxisOf(first, StoreConstants.AxisAngularYZ);
+                JointAxis* swingB = JointData.AxisOf(second, StoreConstants.AxisAngularYZ);
+                return a[0].dofLock == b[0].dofLock && a[1].dofLock == b[1].dofLock && a[2].dofLock == b[2].dofLock
+                    && SameLimit(a, b) && SameLimit(swingA, swingB);
+            }
+
+            private static bool SameLimit(JointAxis* a, JointAxis* b)
+            {
+                return a->min == b->min && a->max == b->max && a->limitSpring == b->limitSpring && a->limitDamping == b->limitDamping;
+            }
+
+            private bool AngularLimitWithinReach(JointData* joint)
+            {
+                float limit = math.cmin(NearAngularLimits(joint));
+                if (limit >= NearAngle)
+                {
+                    return false;
+                }
+
+                // Use the whole relative rotation and speed to bound the angular travel toward any one stop.
+                // Leave room for contacts to change the velocity after this job.
+                quaternion relative = math.mul(math.conjugate(JointConstraints.WorldRotation0(joint)), JointConstraints.WorldRotation1(joint));
+                float reach = 0.5f * (limit - math.length(JointConstraints.RelativeAngularVelocity(joint)) * DeltaTime);
+                return reach <= 0.0f || math.lengthsq(relative.value.xyz) >= math.square(math.sin(0.5f * reach));
+            }
 
             internal static bool HasAxisDrive(JointAxis* drive)
             {
@@ -305,6 +355,11 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                         angular.DirectStiffnessScale = group.Stiffness[axis];
                         Add(angular);
                     }
+                }
+
+                if (AngularLimitWithinReach(leader))
+                {
+                    AddAngularLimits(leader);
                 }
 
                 Flush();
@@ -568,8 +623,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             /// <summary>
-            /// Treat an unlimited linear drive with zero targets as a lock so that its force contributes to joint
-            /// breaking.
+            /// Solve an unlimited linear drive with zero targets as a hard row.
             /// </summary>
             private static bool HeldByDrive(JointData* joint, int index)
             {
@@ -601,7 +655,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
                     Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
                     bool signed = limited.x ^ limited.y ^ limited.z && !math.all(limited);
-                    Add(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
+                    AddLimit(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
                 }
             }
 
@@ -635,11 +689,16 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     AddLockedAngles(locked, Constraint.DefaultSpringFrequency, Constraint.DefaultDampingRatio, ReportEveryImpulse);
                 }
 
+                AddAngularLimits(joint);
+            }
+
+            private void AddAngularLimits(JointData* joint)
+            {
                 JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
                 if (twist->dofLock == StoreConstants.DofLimited && (twist->min > -math.PI || twist->max < math.PI))
                 {
                     Softness(twist->limitSpring, twist->limitDamping, JointConstraints.AngularMass(joint, 0), false, out float frequency, out float damping);
-                    Add(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
+                    AddLimit(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
                 }
 
                 // The shared swing limit stores the angle about y in min and the angle about z in max.
@@ -651,7 +710,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     Softness(swing->limitSpring, swing->limitDamping, JointConstraints.AngularMass(joint, 1), false, out float frequency, out float damping);
                     if (limitedY && limitedZ && swing->min == swing->max)
                     {
-                        Add(Constraint.Cone(0, new FloatRange(0.0f, swing->min), ReportEveryImpulse, frequency, damping));
+                        AddLimit(Constraint.Cone(0, new FloatRange(0.0f, swing->min), ReportEveryImpulse, frequency, damping));
                     }
                     else
                     {
@@ -659,15 +718,21 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                         // angles, forming a box from the angles that Unity supplied.
                         if (limitedY)
                         {
-                            Add(Constraint.Twist(1, new FloatRange(-swing->min, swing->min), ReportEveryImpulse, frequency, damping));
+                            AddLimit(Constraint.Twist(1, new FloatRange(-swing->min, swing->min), ReportEveryImpulse, frequency, damping));
                         }
 
                         if (limitedZ)
                         {
-                            Add(Constraint.Twist(2, new FloatRange(-swing->max, swing->max), ReportEveryImpulse, frequency, damping));
+                            AddLimit(Constraint.Twist(2, new FloatRange(-swing->max, swing->max), ReportEveryImpulse, frequency, damping));
                         }
                     }
                 }
+            }
+
+            private void AddLimit(Constraint constraint)
+            {
+                constraint.IsConfigurableLimit = true;
+                Add(constraint);
             }
 
             /// <summary>
@@ -687,7 +752,6 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
             private void AddLinearDrives(JointData* joint)
             {
-                float mass = JointConstraints.LinearMass(joint);
                 float3 current = JointConstraints.RelativePosition(joint);
                 for (int i = 0; i < 3; i++)
                 {
@@ -703,8 +767,8 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     float velocityOffset = axis->driveDamper / spring * joint->targetLinearVelocity[i];
                     float target = (axis->driveSpring > 0.0f ? joint->targetPosition[i] : current[i]) + velocityOffset;
 
-                    Softness(spring, axis->driveDamper, mass, axis->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis), frequency, damping)));
+                    float mass = JointConstraints.LinearDriveMass(joint, i);
+                    Add(WithDrive(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis))), axis, spring, mass));
                 }
             }
 
@@ -737,9 +801,11 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 quaternion target = math.mul(joint->targetRotation, quaternion.AxisAngle(math.normalizesafe(velocityOffset, new float3(1.0f, 0.0f, 0.0f)), math.length(velocityOffset)));
 
                 pending.AFromJoint = new MTransform(math.mul(joint->rotation1, math.conjugate(target)), joint->position1);
-                float mass = JointConstraints.AngularMass(joint, 1);
-                Softness(spring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                AddLockedAngles(new bool3(true), frequency, damping, Constraint.DefaultMaxImpulse);
+                for (int i = 0; i < 3; i++)
+                {
+                    Constraint row = Constraint.Twist(i, new FloatRange(0.0f, 0.0f), Constraint.DefaultMaxImpulse);
+                    Add(WithDrive(row, drive, spring, JointConstraints.AngularMass(joint, i)));
+                }
                 Flush();
 
                 pending.AFromJoint = new MTransform(joint->rotation1, joint->position1);
@@ -757,14 +823,23 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 {
                     float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                     float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
-                    Softness(drive->driveSpring, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive), frequency, damping)));
+                    Add(WithDrive(OnAxis(index, Constraint.MotorTwist(angles[index] + offset, MaxImpulse(drive))), drive, drive->driveSpring, mass));
                 }
                 else if (drive->driveDamper > 0.0f)
                 {
-                    Softness(drive->driveDamper * PureDamperSpringRatio, drive->driveDamper, mass, drive->driveUsesAcceleration != 0, out float frequency, out float damping);
-                    Add(OnAxis(index, Constraint.AngularVelocityMotor(JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive), frequency, damping)));
+                    Constraint motor = OnAxis(index, Constraint.AngularVelocityMotor(JointConstraints.TargetAngularVelocity(joint)[index], MaxImpulse(drive)));
+                    Add(WithDrive(motor, drive, drive->driveDamper * PureDamperSpringRatio, mass));
                 }
+            }
+
+            /// <summary>Give the direct solver the drive's spring and damping in force units.</summary>
+            private static Constraint WithDrive(Constraint constraint, JointAxis* drive, float spring, float mass)
+            {
+                bool acceleration = drive->driveUsesAcceleration != 0;
+                Softness(spring, drive->driveDamper, mass, acceleration, out constraint.SpringFrequency, out constraint.DampingRatio);
+                constraint.HasDriveCoefficients = true;
+                constraint.DriveCoefficients = new float2(spring, drive->driveDamper) * (acceleration ? mass : 1.0f);
+                return constraint;
             }
 
             /// <summary>

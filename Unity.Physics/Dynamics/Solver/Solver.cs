@@ -879,6 +879,8 @@ namespace Unity.Physics
                         bool same = regularized && kind == regularizedKind
                             && math.asuint(constraint.SpringFrequency) == math.asuint(regularizedFrom.SpringFrequency)
                             && math.asuint(constraint.DampingRatio) == math.asuint(regularizedFrom.DampingRatio)
+                            && constraint.HasDriveCoefficients == regularizedFrom.HasDriveCoefficients
+                            && math.all(math.asuint(constraint.DriveCoefficients) == math.asuint(regularizedFrom.DriveCoefficients))
                             && math.asuint(constraint.DirectStiffnessScale) == math.asuint(regularizedFrom.DirectStiffnessScale);
                         if (!same)
                         {
@@ -956,6 +958,7 @@ namespace Unity.Physics
                         impulseEventData.AccumulatedImpulse = float3.zero;
                         impulseEventData.JointEntity = joint.Entity;
                         impulseEventData.MaxImpulse = math.abs(constraint.MaxImpulse);
+                        impulseEventData.IsConfigurableLimit = constraint.IsConfigurableLimit;
                     }
                 }
             }
@@ -1248,6 +1251,7 @@ namespace Unity.Physics
                                 impulseEventsWriter.Write(new ImpulseEventData
                                 {
                                     Type = linear ? ConstraintType.Linear : ConstraintType.Angular,
+                                    IsConfigurableLimit = impulseEventData.IsConfigurableLimit,
                                     Impulse = impulse,
                                     JointEntity = impulseEventData.JointEntity,
                                     BodyIndices = header.BodyPair

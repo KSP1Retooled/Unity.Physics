@@ -295,8 +295,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 }
                 else
                 {
-                    angularStiffness = new double3(edge->TwistStiffness, edge->SwingStiffness, edge->SwingStiffness);
-                    angularDamping = new double3(edge->TwistDamping, edge->SwingDamping, edge->SwingDamping);
+                    angularStiffness = edge->AngularStiffness;
+                    angularDamping = edge->AngularDamping;
                 }
             }
             else
@@ -334,6 +334,16 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double3 rotation = (error.w < 0.0 ? -2.0 : 2.0) * error.xyz;
             double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
             double3 angularError = math.mul(math.transpose(axes), math.mul(parentRotation, rotation));
+            if (!math.all(hardAngularAxes))
+            {
+                // A finite spring acts on the angle. The quaternion vector is only a small-angle approximation.
+                double sine = math.length(error.xyz);
+                if (sine > 1e-8)
+                {
+                    double angleScale = math.atan2(sine, math.abs(error.w)) / sine;
+                    angularError = math.select(angularError * angleScale, angularError, hardAngularAxes);
+                }
+            }
 
             // Reconstructing two anchors and integrating a locked section in float can separate the anchors
             // by several float spacings. When the section splits, hard rows can turn that disagreement into

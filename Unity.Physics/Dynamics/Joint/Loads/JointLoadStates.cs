@@ -77,6 +77,10 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                         joint->torque = state.Torque;
                         joint->breakingForce = state.BreakingForce;
                         joint->breakingTorque = state.BreakingTorque;
+                        joint->fullForce = state.FullForce;
+                        joint->fullTorque = state.FullTorque;
+                        joint->smoothedFullForce = state.SmoothedFullForce;
+                        joint->smoothedFullTorque = state.SmoothedFullTorque;
                     }
                 }
 

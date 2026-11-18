@@ -144,9 +144,11 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 quaternion childFrame = childIsBody0 ? parameters.Rotation0 : parameters.Rotation1;
                 quaternion parentFrame = childIsBody0 ? parameters.Rotation1 : parameters.Rotation0;
 
-                // Use the softer swing axis because the edge uses one spring for both swing axes. Use the damping from that
-                // same axis.
-                int swing = parameters.Stiffness.y <= parameters.Stiffness.z ? 1 : 2;
+                var angles = JointTranslation.BuildJointsJob.NearAngularLimits(World->joints[Units[unit].Joint]);
+                bool3 narrow = angles < float.PositiveInfinity & parameters.Stiffness < double.PositiveInfinity;
+                double flexTorque = math.cmin(math.select(double.PositiveInfinity, math.max(1e-12, (double3)angles * parameters.Stiffness), narrow));
+                float nearest = math.cmin(angles);
+                double unlockRotation = nearest < float.PositiveInfinity ? math.sin(0.375 * math.max(0.001, nearest)) : 0.0;
                 var edge = new VesselEdge
                 {
                     Parent = PartParents[part],
@@ -156,12 +158,12 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     ChildAnchor = UnitParameters.InMotionFrame(child, childAnchor),
                     Frame = UnitParameters.Frame(parent, parentFrame),
                     Rest = UnitParameters.Rest(parent, parentFrame, child, childFrame),
-                    TwistStiffness = parameters.Stiffness.x,
-                    SwingStiffness = parameters.Stiffness[swing],
-                    TwistDamping = parameters.Damping.x,
-                    SwingDamping = parameters.Damping[swing],
+                    AngularStiffness = parameters.Stiffness,
+                    AngularDamping = parameters.Damping,
                     BreakForce = parameters.BreakForce,
                     BreakTorque = parameters.BreakTorque,
+                    FlexYieldTorque = flexTorque,
+                    UnlockRotationSquared = unlockRotation * unlockRotation,
                 };
                 Edges[part] = edge;
                 EdgeCache[part] = edge;

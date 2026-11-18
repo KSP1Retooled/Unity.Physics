@@ -280,7 +280,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             List<Rigidbody> parts = VesselsOf(bodies)[0];
             CollectionAssert.AreEquivalent(new[] { bodies[0], bodies[3] }, new[] { parts[closure.PartA], parts[closure.PartB] });
             Assert.That(closure.LinearStiffness, Is.EqualTo(double.PositiveInfinity));
-            Assert.That(closure.AngularStiffness, Is.EqualTo(double.PositiveInfinity));
+            Assert.That(closure.AngularStiffness, Is.EqualTo(new double3(double.PositiveInfinity)));
         }
 
         [Test]
@@ -539,7 +539,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(gone.ClosureCount, Is.EqualTo(1), "the closure of the strut stays as a tombstone");
             VesselClosure tombstone = State->VesselSet.Closures[gone.FirstClosure];
             Assert.That(tombstone.LinearStiffness, Is.Zero, "a tombstone has no stiffness");
-            Assert.That(tombstone.AngularStiffness, Is.Zero);
+            Assert.That(tombstone.AngularStiffness, Is.EqualTo(double3.zero));
 
             Strut(bodies[0], bodies[3]);
             Simulate();

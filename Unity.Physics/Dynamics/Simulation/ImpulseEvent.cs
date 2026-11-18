@@ -124,6 +124,7 @@ namespace Unity.Physics
         public float3 Impulse;
         public BodyIndexPair BodyIndices;
         public ConstraintType Type;
+        public bool IsConfigurableLimit;
         public Entity JointEntity;
 
         internal ImpulseEvent CreateImpulseEvent()
@@ -140,5 +141,6 @@ namespace Unity.Physics
         public float3 AccumulatedImpulse;
         public float3 MaxImpulse;
         public Entity JointEntity;
+        public bool IsConfigurableLimit;
     }
 }

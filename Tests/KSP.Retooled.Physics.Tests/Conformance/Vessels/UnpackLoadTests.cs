@@ -1,12 +1,17 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using KSP.Retooled.Physics.Commands;
+using KSP.Retooled.Physics.Interop;
 using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Tests.Benchmarks;
 using NUnit.Framework;
 using Unity.Mathematics;
 using Unity.Physics.Configuration;
+using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
+using Unity.Physics.Store.Joints;
+using Unity.Physics.Store.World;
 using UnityEngine;
 using Object = UnityEngine.Object;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
@@ -21,6 +26,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         private bool previousFused;
         private int previousMinimumParts;
         private int previousFusedParts;
+        private bool previousForest;
+        private bool previousLocking;
         private Mesh padMesh;
 
         [SetUp]
@@ -36,6 +43,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             previousFused = SolverSwitches.VesselFused;
             previousMinimumParts = VesselSwitches.MinimumParts;
             previousFusedParts = SolverSwitches.FusedVesselParts;
+            previousForest = ForestSwitches.Enabled;
+            previousLocking = ForestSwitches.Locking;
             VesselSwitches.MinimumParts = 2;
             SolverSwitches.FusedVesselParts = 1;
             UnityEngine.Physics.gravity = Vector3.zero;
@@ -48,12 +57,399 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             SolverSwitches.VesselFused = previousFused;
             VesselSwitches.MinimumParts = previousMinimumParts;
             SolverSwitches.FusedVesselParts = previousFusedParts;
+            ForestSwitches.Enabled = previousForest;
+            ForestSwitches.Locking = previousLocking;
             if (padMesh != null)
             {
                 DestroyAll();
                 Object.DestroyImmediate(padMesh);
                 padMesh = null;
             }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public unsafe void StockAttachmentReportsZeroUnderWeightPullAndCouple(bool vessels, bool fused)
+        {
+            SelectSolver(vessels, fused);
+            Rigidbody support = Part("support", Vector3.up * 5.0f, 10.0f, Vector3.one * 2.0f);
+            Rigidbody body = Part("hanging part", Vector3.up * 4.0f, 10.0f, Vector3.one * 2.0f);
+            Pin(support);
+            body.isKinematic = false;
+            ConfigurableJoint joint = Joint(body, support, support.position, Vector3.right, Vector3.up);
+            ConfigureAttachment(joint, 20000.0f);
+            joint.breakForce = 50.0f;
+            joint.breakTorque = 50.0f;
+
+            for (int step = 0; step < 120; step++)
+            {
+                body.AddForce(10.0f * Gravity * Vector3.up);
+                if (step >= 30 && step < 80)
+                {
+                    body.AddForce(20000.0f * Vector3.right);
+                }
+                else if (step >= 80)
+                {
+                    body.AddTorque(1000.0f * Vector3.forward);
+                }
+
+                Simulate();
+                Assert.That(joint != null, Is.True, $"step {step}");
+                Assert.That(joint.currentForce, Is.EqualTo(Vector3.zero), $"step {step}");
+                Assert.That(joint.currentTorque, Is.EqualTo(Vector3.zero), $"step {step}");
+            }
+
+            AssertSolver(vessels);
+        }
+
+        [TestCase(false, false, 0)]
+        [TestCase(true, false, 0)]
+        [TestCase(true, true, 0)]
+        [TestCase(true, true, 1)]
+        [TestCase(true, true, 2)]
+        public unsafe void LockedAttachmentReportsAndBreaksOnItsReaction(bool vessels, bool fused, int axis)
+        {
+            SelectSolver(vessels, fused);
+            Rigidbody support = Part("support", Vector3.up * 5.0f, 10.0f, Vector3.one * 2.0f);
+            Rigidbody body = Part("part", support.position, 10.0f, Vector3.one * 2.0f);
+            Pin(support);
+            body.isKinematic = false;
+            ConfigurableJoint joint = LockedJoint(body, support, support.position, Vector3.right, Vector3.up);
+            Vector3 force = axis == 0 ? 10.0f * Gravity * Vector3.up : Vector3.zero;
+            Vector3 torque = axis == 1 ? 1000.0f * Vector3.forward : axis == 2 ? 1000.0f * Vector3.right : Vector3.zero;
+            for (int step = 0; step < 34; step++)
+            {
+                if (step == 28)
+                {
+                    joint.breakForce = axis == 0 ? 50.0f : float.PositiveInfinity;
+                    joint.breakTorque = axis == 0 ? float.PositiveInfinity : 50.0f;
+                }
+
+                body.AddForce(force);
+                body.AddTorque(torque);
+                Simulate();
+                if (step == 27)
+                {
+                    AssertSolver(vessels);
+                    AssertVector(-force, joint.currentForce, 0.5f, "locked force");
+                    AssertVector(-torque, joint.currentTorque, 2.0f, "locked torque");
+                }
+            }
+
+            Assert.That(joint == null, Is.True);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void LinearStopReportsTheReactionBeyondTheDrive(bool vessels, bool fused)
+        {
+            SelectSolver(vessels, fused);
+            Rigidbody support = Part("support", Vector3.up * 5.0f, 10.0f, Vector3.one * 2.0f);
+            Rigidbody body = Part("part", support.position, 10.0f, Vector3.one * 2.0f);
+            body.isKinematic = false;
+            ConfigurableJoint joint = LockedJoint(body, support, support.position, Vector3.right, Vector3.up);
+            joint.yMotion = ConfigurableJointMotion.Limited;
+            joint.linearLimit = new SoftJointLimit { limit = 0.05f };
+            joint.yDrive = new JointDrive { positionSpring = 100.0f, maximumForce = DriveForce };
+            joint.breakForce = 5000.0f;
+            const float load = 2098.1f;
+
+            for (int step = 0; step < 80; step++)
+            {
+                body.AddForce(load * Vector3.down);
+                Simulate();
+            }
+
+            Assert.That(support.position.y - body.position.y, Is.EqualTo(0.05f).Within(0.002f));
+            AssertVector((load - 5.0f) * Vector3.up, joint.currentForce, 5.0f, "linear limit reaction");
+            joint.breakForce = 200.0f;
+            body.AddForce(load * Vector3.down);
+            Simulate();
+            Assert.That(joint == null, Is.True);
+        }
+
+        [TestCase(0, 1, 1.0f, false, false)]
+        [TestCase(1, 1, 1.0f, false, false)]
+        [TestCase(2, 1, 1.0f, false, false)]
+        [TestCase(3, 1, 1.0f, false, false)]
+        [TestCase(0, 3, 1.0f, false, false)]
+        [TestCase(3, 3, 1.0f, false, false)]
+        [TestCase(1, 1, 1.0f, true, false)]
+        [TestCase(3, 1, 1.0f, true, false)]
+        [TestCase(2, 1, 1.0f, false, true)]
+        [TestCase(3, 1, 1.0f, false, true)]
+        [TestCase(0, 1, 5.0f, false, false)]
+        [TestCase(1, 1, 5.0f, false, false)]
+        [TestCase(2, 1, 5.0f, false, false)]
+        [TestCase(3, 1, 5.0f, false, false)]
+        [TestCase(0, 3, 5.0f, false, false)]
+        [TestCase(2, 3, 5.0f, false, false)]
+        [TestCase(3, 3, 5.0f, false, false)]
+        [TestCase(2, 1, 5.0f, false, true)]
+        [TestCase(3, 1, 5.0f, false, true)]
+        [TestCase(0, 1, 10.0f, false, false)]
+        [TestCase(1, 1, 10.0f, false, false)]
+        [TestCase(2, 1, 10.0f, false, false)]
+        [TestCase(3, 1, 10.0f, false, false)]
+        [TestCase(0, 3, 10.0f, false, false)]
+        [TestCase(2, 3, 10.0f, false, false)]
+        [TestCase(3, 3, 10.0f, false, false)]
+        [TestCase(2, 1, 10.0f, false, true)]
+        [TestCase(3, 1, 10.0f, false, true)]
+        [TestCase(0, 1, 10.0f, true, false)]
+        [TestCase(2, 1, 10.0f, true, false)]
+        [TestCase(3, 1, 10.0f, true, false)]
+        public unsafe void AngularStopReportsTheReactionBeyondTheDrive(int solver, int count, float angle, bool twist, bool closure)
+        {
+            bool vessels = solver >= 2;
+            SelectSolver(vessels, solver == 3);
+            ForestSwitches.Enabled = solver == 1;
+            Rigidbody support = Part("support", Vector3.up * 5.0f, 10.0f, Vector3.one * 20.0f);
+            Rigidbody body = Part("part", support.position, 10.0f, Vector3.one * 20.0f);
+            support.isKinematic = body.isKinematic = false;
+            support.maxAngularVelocity = body.maxAngularVelocity = 100.0f;
+            support.angularDamping = body.angularDamping = 0.0f;
+            var joints = new ConfigurableJoint[count];
+            float spring = twist && angle == 10.0f ? 10.0f : 2000.0f;
+            if (closure)
+            {
+                ConfigurableJoint tree = Joint(body, support, support.position, Vector3.right, Vector3.up);
+                ConfigureAttachment(tree, spring);
+                tree.breakTorque = 200.0f;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                joints[i] = Joint(body, support, support.position, Vector3.right, Vector3.up);
+                ConfigureAttachment(joints[i], spring, angle);
+            }
+
+            if (angle == 1.0f && !twist)
+            {
+                Simulate();
+                // Unity's ConfigurableJoint setter clamps small swing angles before sending the joint command.
+                // Send the original angle through that command to exercise the backend below Unity's clamp.
+                float supplied = JointData.AxisOf(JointRecord(joints[0]), StoreConstants.AxisAngularYZ)->max * Mathf.Rad2Deg;
+                TestContext.Out.WriteLine($"Unity supplied a {supplied:G6} degree swing stop.");
+                foreach (ConfigurableJoint joint in joints)
+                {
+                    var args = new CommandArgs
+                    {
+                        value = StoreConstants.AxisAngularYZ,
+                        scalar = angle * Mathf.Deg2Rad,
+                        scalar2 = angle * Mathf.Deg2Rad,
+                    };
+                    JointCommands.Run((uint)JointCommand.Set6DofLimit, JointRecord(joint), &args, StepEntryPoints.Current->Globals);
+                }
+            }
+
+            Vector3 axis = twist ? Vector3.right : Vector3.forward;
+            float limitTorque = (count + (closure ? 1 : 0)) * spring * angle * Mathf.Deg2Rad;
+            float highTorque = count == 3 && angle == 10.0f ? 1600.0f : 1000.0f;
+            ConfigurableJoint loader = null;
+            if (count == 3 && angle == 10.0f)
+            {
+                // A saturated velocity drive supplies the same torque in every solver substep. AddTorque
+                // supplies its whole impulse at the start of the outer step, then the stiff triplet springs pull back.
+                loader = LoadMotor(body, support, axis, 0.0f, false);
+            }
+
+            const int averageSteps = 8;
+            var reaction = new Vector3[count];
+            for (int step = 0; step < 120; step++)
+            {
+                float torque = step < 40 ? limitTorque * 0.1f : highTorque;
+                if (loader == null)
+                {
+                    body.AddTorque(torque * axis);
+                    support.AddTorque(-torque * axis);
+                }
+                else if (step == 0 || step == 40)
+                {
+                    loader.angularYZDrive = new JointDrive { positionDamper = 1000.0f, maximumForce = torque };
+                }
+                Simulate();
+                if (step >= 120 - averageSteps)
+                {
+                    if (closure)
+                    {
+                        var set = StepEntryPoints.Current->VesselSet;
+                        Assert.That(set.EdgeLocked[set.Vessels[0].FirstPart + 1], Is.False, "the closure stop must keep the tree path live");
+                    }
+                    for (int i = 0; i < count; i++)
+                    {
+                        reaction[i] += joints[i].currentTorque / averageSteps;
+                    }
+                }
+
+                if (step == 39)
+                {
+                    AssertSolver(vessels);
+                    if (vessels)
+                    {
+                        Assert.That(StepEntryPoints.Current->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(closure ? 1 : 0));
+                    }
+                    else if (count == 3)
+                    {
+                        int groupBlocks = 0;
+                        foreach (var built in StepEntryPoints.Current->World.Joints)
+                        {
+                            groupBlocks += built.Entity.Version == JointGroup.EntityVersion ? 1 : 0;
+                        }
+                        Assert.That(groupBlocks, Is.EqualTo(2), "the triplet shares four rows");
+                    }
+
+                    foreach (ConfigurableJoint joint in joints)
+                    {
+                        Assert.That(joint.currentTorque, Is.EqualTo(Vector3.zero));
+                    }
+                }
+            }
+
+            float flex = Quaternion.Angle(support.rotation, body.rotation);
+            Assert.That(flex, Is.EqualTo(angle).Within(angle == 1.0f ? 0.06f : 0.2f));
+            TestContext.Out.WriteLine($"Settled angle {flex:G6} degrees, mean reaction {reaction[0].magnitude:G6} N m per joint.");
+            for (int i = 0; i < count; i++)
+            {
+                AssertVector(-(highTorque - limitTorque) / count * axis, reaction[i], twist ? 1.0f : 8.0f, "mean angular limit reaction");
+                joints[i].breakTorque = 50.0f;
+            }
+
+            if (loader == null)
+            {
+                body.AddTorque(highTorque * axis);
+                support.AddTorque(-highTorque * axis);
+            }
+            Simulate();
+            Assert.That(joints.All(joint => joint == null), Is.True);
+        }
+
+        [Test]
+        public unsafe void ConfiguredDriveStiffnessHoldsBetweenTwoMovingBodies([Values(0, 1, 2, 3)] int solver,
+            [Values] bool unequal, [Values(10.0f, 180.0f)] float limit, [Values(0, 1, 2, 3, 4, 5, 6)] int drive)
+        {
+            bool vessels = solver >= 2;
+            SelectSolver(vessels, solver == 3);
+            ForestSwitches.Enabled = solver == 1;
+            Vector3 point = Vector3.up * 5.0f;
+            Rigidbody support = Part("support", point, unequal ? 40.0f : 10.0f, Vector3.one * (unequal ? 80.0f : 20.0f));
+            Rigidbody body = Part("part", point, 10.0f, Vector3.one * 20.0f);
+            support.isKinematic = body.isKinematic = false;
+            support.angularDamping = body.angularDamping = 0.0f;
+            support.linearDamping = body.linearDamping = 0.0f;
+
+            const float spring = 2000.0f;
+            bool linear = drive == 3 || drive == 6;
+            bool closure = drive == 4;
+            bool acceleration = drive >= 5;
+            int members = drive == 2 ? 3 : closure ? 2 : 1;
+            float deflection = linear ? 0.02f : 2.0f * Mathf.Deg2Rad;
+            float reduced = linear ? 1.0f / (1.0f / body.mass + 1.0f / support.mass)
+                : 1.0f / (1.0f / body.inertiaTensor.z + 1.0f / support.inertiaTensor.z);
+            float load = members * spring * deflection * (acceleration ? reduced : 1.0f);
+            for (int i = 0; i < members; i++)
+            {
+                ConfigurableJoint joint = Joint(body, support, point, Vector3.right, Vector3.up);
+                float memberLimit = closure && i == 1 ? (limit == 10.0f ? 180.0f : 10.0f) : limit;
+                ConfigureAttachment(joint, spring, memberLimit);
+                var settings = new JointDrive
+                {
+                    positionSpring = spring,
+                    positionDamper = 100.0f,
+                    maximumForce = DriveForce,
+                    useAcceleration = acceleration,
+                };
+                joint.angularXDrive = joint.angularYZDrive = settings;
+                if (drive == 1 || closure)
+                {
+                    settings.positionSpring *= 0.5f;
+                    joint.angularXDrive = settings;
+                }
+                if (linear)
+                {
+                    joint.xDrive = settings;
+                }
+
+                joint.breakTorque = load * 0.2f / members;
+            }
+
+            float settled = 0.0f;
+            if (acceleration)
+            {
+                // Keep the input constant over the substeps, even for a drive with a high natural frequency.
+                LoadMotor(body, support, linear ? Vector3.right : Vector3.forward, load, linear);
+            }
+            const int steps = 240;
+            const int samples = 20;
+            for (int step = 0; step < steps; step++)
+            {
+                if (!acceleration && linear)
+                {
+                    body.AddForce(load * Vector3.right);
+                    support.AddForce(load * Vector3.left);
+                }
+                else if (!acceleration)
+                {
+                    body.AddTorque(load * Vector3.forward);
+                    support.AddTorque(-load * Vector3.forward);
+                }
+                Simulate();
+                if (step >= steps - samples)
+                {
+                    settled += (linear ? body.position.x - support.position.x
+                        : Quaternion.Angle(support.rotation, body.rotation) * Mathf.Deg2Rad) / samples;
+                }
+            }
+
+            AssertSolver(vessels && !linear && !acceleration);
+            if (vessels && closure)
+            {
+                Assert.That(StepEntryPoints.Current->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(1));
+            }
+            float scale = acceleration ? reduced : 1.0f;
+            TestContext.Out.WriteLine($"Expected {deflection:G6}, settled {settled:G6}, inferred drive spring {load / (members * settled * scale):G6}.");
+            Assert.That(settled, Is.EqualTo(deflection).Within(deflection * 0.015f));
+        }
+
+        private static ConfigurableJoint LoadMotor(Rigidbody body, Rigidbody support, Vector3 axis, float load, bool linear)
+        {
+            ConfigurableJoint motor = Joint(body, support, support.position, Vector3.right, Vector3.up);
+            motor.xMotion = motor.yMotion = motor.zMotion = ConfigurableJointMotion.Free;
+            motor.angularXMotion = motor.angularYMotion = motor.angularZMotion = ConfigurableJointMotion.Free;
+            var drive = new JointDrive { positionDamper = 1000.0f, maximumForce = load };
+            if (linear)
+            {
+                motor.targetVelocity = -100.0f * axis;
+                motor.xDrive = drive;
+            }
+            else
+            {
+                motor.targetAngularVelocity = 100.0f * axis;
+                motor.angularYZDrive = drive;
+            }
+            return motor;
+        }
+
+        private static void SelectSolver(bool vessels, bool fused)
+        {
+            VesselSwitches.Enabled = vessels;
+            SolverSwitches.VesselFused = fused;
+            ForestSwitches.Enabled = false;
+            ForestSwitches.Locking = false;
+        }
+
+        private static void Pin(Rigidbody support)
+        {
+            support.isKinematic = false;
+            FixedJoint pin = support.gameObject.AddComponent<FixedJoint>();
+            pin.breakForce = pin.breakTorque = float.PositiveInfinity;
+        }
+
+        private static unsafe void AssertSolver(bool vessels)
+        {
+            Assert.That(StepEntryPoints.Current->VesselSet.VesselCount, Is.EqualTo(vessels ? 1 : 0));
         }
 
         [TestCase(true)]
@@ -93,7 +489,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? 1 : 0));
                 Assert.That(state->Store->jointBreakCount, Is.Zero, $"step {step}");
                 float halfWeight = -tank.mass * acceleration * 0.5f;
-                AssertVector(halfWeight * Vector3.up, primary.currentForce, 0.3f, $"attachment force at step {step}");
+                AssertVector(halfWeight * Vector3.up, FullJointLoad(primary).FullForce, 0.3f, $"attachment force at step {step}");
+                Assert.That(primary.currentForce, Is.EqualTo(Vector3.zero));
                 AssertVector(halfWeight * Vector3.down, strut.currentForce, 0.3f, $"strut force at step {step}");
                 Assert.That(primary.currentTorque.magnitude, Is.LessThan(0.3f));
                 Assert.That(strut.currentTorque.magnitude, Is.LessThan(0.3f));
@@ -103,6 +500,61 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     primary.breakForce = primary.breakTorque = 2200.0f;
                 }
             }
+        }
+
+        [TestCase(false, false, 180.0f)]
+        [TestCase(true, false, 180.0f)]
+        [TestCase(true, true, 180.0f)]
+        [TestCase(false, false, 5.0f)]
+        [TestCase(true, false, 5.0f)]
+        [TestCase(true, true, 5.0f)]
+        [TestCase(false, false, 10.0f)]
+        [TestCase(true, false, 10.0f)]
+        [TestCase(true, true, 10.0f)]
+        public void PegasusKeepsItsBracedAdaptersAtOneG(bool vessels, bool fused, float angle)
+        {
+            SelectSolver(vessels, fused);
+            PegasusPad();
+            VesselForestBench.Graph graph = VesselForestBench.Load("pegasus");
+            var joints = new List<ConfigurableJoint>();
+            Rigidbody[] bodies = BuildPegasus(graph, joints, angle);
+            int attachmentCount = joints.Count;
+            AddStruts(graph, bodies, joints, false);
+            AddStruts(graph, bodies, joints, true);
+            var attachments = joints.Take(attachmentCount).ToArray();
+            var links = attachments.Select(joint => (joint.gameObject.name, joint.connectedBody.name)).ToArray();
+            int[] adapters = { 239, 292, 348, 401 };
+            Simulate(3);
+
+            SetKinematic(bodies, false);
+            foreach (ConfigurableJoint joint in attachments)
+            {
+                joint.breakForce = joint.breakTorque = 2200.0f;
+            }
+
+            var broken = new HashSet<int>();
+            for (int step = 1; step <= 40; step++)
+            {
+                Accelerate(bodies, Gravity * Mathf.Min(1.0f, step / 16.0f));
+                Simulate();
+                for (int i = 0; i < attachments.Length; i++)
+                {
+                    if (attachments[i] == null && broken.Add(i))
+                    {
+                        TestContext.Out.WriteLine($"Step {step}: attachment {links[i].Item1} to {links[i].Item2} broke.");
+                    }
+                }
+            }
+
+            TestContext.Out.WriteLine($"{broken.Count} of {attachments.Length} attachments broke.");
+            foreach (int adapter in adapters)
+            {
+                ConfigurableJoint[] members = attachments.Where((_, i) => links[i].Item1 == $"part {adapter}").ToArray();
+                Assert.That(members, Has.Length.GreaterThan(0));
+                Assert.That(members.All(joint => joint != null), Is.True, $"part {adapter}");
+            }
+
+            Assert.That(bodies[0].position.y, Is.GreaterThan(PegasusOrigin.y));
         }
 
         [TestCase(true, true, false)]
@@ -251,7 +703,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return pad;
         }
 
-        private Rigidbody[] BuildPegasus(VesselForestBench.Graph graph, List<ConfigurableJoint> joints)
+        private Rigidbody[] BuildPegasus(VesselForestBench.Graph graph, List<ConfigurableJoint> joints, float angle = 180.0f)
         {
             int count = graph.Parent.Length;
             var bodies = new Rigidbody[count];
@@ -291,7 +743,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 {
                     Vector3 offset = jointCount == 3 ? Quaternion.AngleAxis(120.0f * j, axis) * across : Vector3.zero;
                     ConfigurableJoint joint = Joint(body, bodies[parent], point + offset, axis, across);
-                    ConfigureAttachment(joint, graph.Swing[i]);
+                    ConfigureAttachment(joint, graph.Swing[i], angle);
                     joints.Add(joint);
                 }
             }
@@ -356,14 +808,15 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return joint;
         }
 
-        private static void ConfigureAttachment(ConfigurableJoint joint, float spring)
+        private static void ConfigureAttachment(ConfigurableJoint joint, float spring, float angle = 180.0f)
         {
             joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
             joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
             joint.linearLimit = new SoftJointLimit { limit = 1.0f };
             joint.linearLimitSpring = new SoftJointLimitSpring();
-            var angularLimit = new SoftJointLimit { limit = 180.0f };
-            joint.lowAngularXLimit = joint.highAngularXLimit = joint.angularYLimit = joint.angularZLimit = angularLimit;
+            var angularLimit = new SoftJointLimit { limit = angle };
+            joint.lowAngularXLimit = new SoftJointLimit { limit = -angle };
+            joint.highAngularXLimit = joint.angularYLimit = joint.angularZLimit = angularLimit;
             joint.angularXLimitSpring = joint.angularYZLimitSpring = new SoftJointLimitSpring();
             joint.xDrive = joint.yDrive = joint.zDrive = new JointDrive { positionSpring = DriveForce, maximumForce = DriveForce };
             joint.rotationDriveMode = RotationDriveMode.XYAndZ;

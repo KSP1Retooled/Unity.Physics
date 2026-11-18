@@ -27,40 +27,6 @@ namespace Unity.Physics.Dynamics.Joint.Loads
         }
 
         /// <summary>
-        /// Initialize joint loads to zero, preserving previous loads for unsolved resting bodies.
-        /// If Listed is true, process only Joints.
-        /// </summary>
-        [BurstCompile]
-        internal unsafe struct SeedJointLoadsJob : IJobParallelFor, IJobParallelForDefer
-        {
-            [NativeDisableUnsafePtrRestriction]
-            public WorldData* World;
-
-            /// <summary>The load state of each joint, at the joint's index in the world's list. See <see cref="JointLoadStates"/>.</summary>
-            [NativeDisableUnsafePtrRestriction]
-            public JointLoadState* States;
-
-            [NativeDisableParallelForRestriction]
-            public NativeArray<JointLoad> Loads;
-
-            [ReadOnly]
-            public NativeArray<int> Joints;
-
-            public bool Listed;
-
-            public void Execute(int item)
-            {
-                int index = Listed ? Joints[item] : item;
-                bool asleep = JointLoads.IsAsleep(World->joints[index]);
-                Loads[index] = new JointLoad
-                {
-                    Force = asleep ? States[index].Force : float3.zero,
-                    Torque = asleep ? States[index].Torque : float3.zero,
-                };
-            }
-        }
-
-        /// <summary>
         /// Convert impulse events to world-space forces and torques in place, one stream bucket per work item.
         /// </summary>
         [BurstCompile]
@@ -120,10 +86,18 @@ namespace Unity.Physics.Dynamics.Joint.Loads
                         if (impulse.Type == ConstraintType.Linear)
                         {
                             load.Force -= impulse.Impulse;
+                            if (impulse.IsConfigurableLimit)
+                            {
+                                load.LimitForce -= impulse.Impulse;
+                            }
                         }
                         else
                         {
                             load.Torque -= impulse.Impulse;
+                            if (impulse.IsConfigurableLimit)
+                            {
+                                load.LimitTorque -= impulse.Impulse;
+                            }
                         }
 
                         loads[impulse.JointEntity.Index] = load;

@@ -20,7 +20,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
     internal static partial class VesselClosureFill
     {
         /// <summary>
-        /// Fill closures from leading body0 to body1, with rigid linear rows and the softest angular stiffness/damping.
+        /// Fill closures from leading body0 to body1, with rigid linear rows and per-axis angular drives.
         /// </summary>
         [BurstCompile]
         internal unsafe struct FillVesselClosuresJob : IJobParallelFor
@@ -127,12 +127,8 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 }
 
                 UnitParameters parameters = UnitParameters.Of(World, unit, Groups, Members);
-                int softest = 0;
-                for (int axis = 1; axis < 3; axis++)
-                {
-                    softest = parameters.Stiffness[axis] < parameters.Stiffness[softest] ? axis : softest;
-                }
-
+                float nearest = math.cmin(JointTranslation.BuildJointsJob.NearAngularLimits(World->joints[unit.Joint]));
+                double unlockRotation = nearest < float.PositiveInfinity ? math.sin(0.375 * math.max(0.001, nearest)) : 0.0;
                 var filled = new VesselClosure
                 {
                     PartA = ClosurePartA[closure],
@@ -141,9 +137,10 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     AnchorB = UnitParameters.InMotionFrame(bodyB, parameters.Anchor1),
                     Frame = UnitParameters.Frame(bodyA, parameters.Rotation0),
                     Rest = UnitParameters.Rest(bodyA, parameters.Rotation0, bodyB, parameters.Rotation1),
+                    UnlockRotationSquared = unlockRotation * unlockRotation,
                     LinearStiffness = double.PositiveInfinity,
-                    AngularStiffness = parameters.Stiffness[softest],
-                    AngularDamping = parameters.Damping[softest],
+                    AngularStiffness = parameters.Stiffness,
+                    AngularDamping = parameters.Damping,
                 };
                 Closures[closure] = filled;
                 ClosureCache[closure] = filled;

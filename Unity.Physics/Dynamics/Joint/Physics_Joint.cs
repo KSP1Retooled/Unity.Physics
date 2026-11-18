@@ -91,6 +91,16 @@ namespace Unity.Physics
         [FieldOffset(44)]
         public float DirectStiffnessScale;
 
+        // Marks a limit on a configurable joint so the backend can report its impulse on a driven axis.
+        [FieldOffset(48)]
+        internal bool IsConfigurableLimit;
+
+        [FieldOffset(49)]
+        internal bool HasDriveCoefficients;
+        // The spring and damper in force units. Keep the frequency and damping ratio for the iterative solver.
+        [FieldOffset(52)]
+        internal float2 DriveCoefficients;
+
         /// <summary>   Number of affected degrees of freedom.  1, 2, or 3. </summary>
         public int Dimension
         {
@@ -600,7 +610,10 @@ namespace Unity.Physics
                 && DampingRatio.Equals(other.DampingRatio)
                 && MaxImpulse.Equals(other.MaxImpulse)
                 && Target.Equals(other.Target)
-                && DirectStiffnessScale.Equals(other.DirectStiffnessScale);
+                && DirectStiffnessScale.Equals(other.DirectStiffnessScale)
+                && IsConfigurableLimit == other.IsConfigurableLimit
+                && HasDriveCoefficients == other.HasDriveCoefficients
+                && DriveCoefficients.Equals(other.DriveCoefficients);
         }
 
         /// <summary>   Tests if this object is considered equal to another. </summary>

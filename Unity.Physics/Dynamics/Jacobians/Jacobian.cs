@@ -710,9 +710,14 @@ namespace Unity.Physics
             in Constraint constraint, in MotionVelocity velocityA, in MotionVelocity velocityB,
             in Solver.DirectSolverSettings directSolverSettings, in float timeStep)
         {
-            var constrainedMass = header.IsAngular ? GetConstrainedBodyInertia(velocityA, velocityB) : GetConstrainedBodyMass(velocityA, velocityB);
-            var stiffnessCoefficient = CalculateSpringConstantFromSpringFrequency(constraint.SpringFrequency, constrainedMass);
-            var dampingCoefficient = CalculateDampingCoefficient(stiffnessCoefficient, constraint.DampingRatio, constrainedMass);
+            float stiffnessCoefficient = constraint.DriveCoefficients.x;
+            float dampingCoefficient = constraint.DriveCoefficients.y;
+            if (!constraint.HasDriveCoefficients)
+            {
+                float constrainedMass = header.IsAngular ? GetConstrainedBodyInertia(velocityA, velocityB) : GetConstrainedBodyMass(velocityA, velocityB);
+                stiffnessCoefficient = CalculateSpringConstantFromSpringFrequency(constraint.SpringFrequency, constrainedMass);
+                dampingCoefficient = CalculateDampingCoefficient(stiffnessCoefficient, constraint.DampingRatio, constrainedMass);
+            }
 
             float epsilon;
             float gamma = 1.0f; // Note: without any regularization, gamma is 1 in the formulation.
