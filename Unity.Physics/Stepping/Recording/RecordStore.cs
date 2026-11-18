@@ -1,5 +1,4 @@
 using System;
-using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Store.Bodies;
@@ -26,7 +25,7 @@ namespace Unity.Physics.Stepping.Recording
             writer.Write(stepper->RecorderBuiltMaterialVersion);
             writer.Write(globals->ignoreVersion);
             WriteMaterial(writer, globals->defaultMaterial);
-            IgnoreTable.WriteRecording(writer, globals);
+            writer.Write(geometry.CaptureFilters(globals, step));
 
             writer.Write(world->removedShapeCount);
             writer.WriteBlock(world->removedShapes, checked((int)world->removedShapeCount * sizeof(ulong)));

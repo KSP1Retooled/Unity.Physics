@@ -55,7 +55,11 @@ namespace KSP.Retooled.Physics.Tests.Tools
             uint builtMaterial = reader.ReadUInt32();
             globals->ignoreVersion = reader.ReadUInt32();
             globals->defaultMaterial = ReadMaterial(reader);
-            IgnoreTable.ReadRecording(reader, globals);
+            byte[] filters = payloads[reader.ReadInt32()];
+            using (var filterReader = new BinaryReader(new MemoryStream(filters, sizeof(int), filters.Length - sizeof(int), writable: false)))
+            {
+                IgnoreTable.ReadRecording(filterReader, globals);
+            }
 
             ReadBodies(reader, payloads);
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Shapes;
 using StoreMesh = Unity.Physics.Store.Shapes.Mesh;
@@ -22,6 +23,29 @@ namespace Unity.Physics.Stepping.Recording
         private uint jointSettings;
         private byte[] build;
         private byte[] shapes;
+        private byte[] filters;
+        private uint filterVersion;
+
+        internal int CaptureFilters(StoreGlobals* globals, RecordedStep step)
+        {
+            if (filters != null && filterVersion == globals->ignoreVersion)
+            {
+                step.Geometry.Add(filters);
+                fixed (byte* payload = filters)
+                {
+                    return *(int*)payload;
+                }
+            }
+
+            buildBuffer.Clear();
+            IgnoreTable.WriteRecording(buildBuffer, globals);
+            fixed (byte* source = buildBuffer.Buffer)
+            {
+                int id = Share(ref filters, source, buildBuffer.Length, step);
+                filterVersion = globals->ignoreVersion;
+                return id;
+            }
+        }
 
         internal int ShareShapes(RecordedStoreShape* rows, int count, RecordedStep step)
         {
