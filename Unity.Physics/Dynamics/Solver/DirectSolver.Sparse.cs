@@ -10,7 +10,6 @@ using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Forest;
-using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Profiling;
@@ -215,36 +214,36 @@ namespace Unity.Physics
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
                 if (started)
                 {
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestStartTime, lap - solveStarted);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFactorTime, run.FactorTicks);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBoundaryTime, run.BoundaryTicks);
-                    stepInput.IslandSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestStartTime, lap - solveStarted);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFactorTime, run.FactorTicks);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestBoundaryTime, run.BoundaryTicks);
+                    stepInput.IslandSolverCache.ForestCounters.CountSections(forest->SectionCount, forest->LockedPairs, run.Rebuilt,
                         run.LockChanges, run.StructureTicks);
-                    stepInput.IslandSolverCache.AddCount(IslandSolverCache.ForestContactLockChanges, run.ContactLockChanges);
+                    stepInput.IslandSolverCache.ForestCounters.AddCount(ForestCounters.ForestContactLockChanges, run.ContactLockChanges);
                 }
 
-                stepInput.IslandSolverCache.CountForest(started ? IslandSolverCache.ForestSolves : IslandSolverCache.ForestFallbacks);
+                stepInput.IslandSolverCache.ForestCounters.CountForest(started ? ForestCounters.ForestSolves : ForestCounters.ForestFallbacks);
                 if (!started && forest != null)
                 {
-                    stepInput.IslandSolverCache.NoteMax(IslandSolverCache.ForestFallbackBoundaryMax, fallbackBoundaryRows);
+                    stepInput.IslandSolverCache.ForestCounters.NoteMax(ForestCounters.ForestFallbackBoundaryMax, fallbackBoundaryRows);
                 }
                 if (forest != null && forest->Builds != builds)
                 {
-                    stepInput.IslandSolverCache.CountForest(IslandSolverCache.ForestBuilds);
+                    stepInput.IslandSolverCache.ForestCounters.CountForest(ForestCounters.ForestBuilds);
                 }
 
                 if (started)
                 {
                     SolveForest(ref run, problem.RightHandSide, impulsesPtr);
                     long solvedAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSolveTime, solvedAt - lap);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solvedAt - lap);
                     var bodyLinear = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var bodyAngular = new NativeArray<float3>(bodies.Length, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
                     var linearPtr = (float3*)bodyLinear.GetUnsafePtr();
                     var angularPtr = (float3*)bodyAngular.GetUnsafePtr();
                     SettleForest(ref run, problem, impulsesPtr, linearPtr, angularPtr, false);
                     long settledAt = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime, settledAt - solvedAt);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSettleTime, settledAt - solvedAt);
                     if (holdsPositions)
                     {
                         var forestDrift = new NativeArray<float>(rows, Allocator.Temp);
@@ -252,7 +251,7 @@ namespace Unity.Physics
                         bool drifts = AimAtPredictedDrift(problem, null, linearPtr, angularPtr, islandBodies, headers,
                             impulsesPtr, motionVelocities, motionDatas, stepInput.Timestep, jacobianRows, forestDriftPtr, team, true,
                             run.BlockInSection.IsCreated ? (byte*)run.BlockInSection.GetUnsafeReadOnlyPtr() : null);
-                        stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestDriftTime,
+                        stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestDriftTime,
                             Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - settledAt);
                         if (drifts)
                         {
@@ -282,18 +281,18 @@ namespace Unity.Physics
 
                     float deflection = RecordDeflections(ref run, (JacobianHeader**)headers.GetUnsafeReadOnlyPtr(), impulsesPtr,
                         stepInput.CurrentSubstep, forestSettings.DeflectionSmoothingSteps);
-                    stepInput.IslandSolverCache.NoteDeflection(deflection);
+                    stepInput.IslandSolverCache.ForestCounters.NoteDeflection(deflection);
 
-                    stepInput.IslandSolverCache.NoteResidual(run.Residual);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestClassifyTime, run.ClassifyTicks);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestDecideTime, run.DecideTicks);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSumsTime, run.SumsTicks);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBodyImpulseTime, run.BodyImpulseTicks);
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSubtreeTime, run.SubtreeTicks);
+                    stepInput.IslandSolverCache.ForestCounters.NoteResidual(run.Residual);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestClassifyTime, run.ClassifyTicks);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestDecideTime, run.DecideTicks);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSumsTime, run.SumsTicks);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestBodyImpulseTime, run.BodyImpulseTicks);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSubtreeTime, run.SubtreeTicks);
                     run.Dispose();
                     bodyLinear.Dispose();
                     bodyAngular.Dispose();
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFinishTime,
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFinishTime,
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solvedAt);
                     SparseProblemObserver.Report(&problem, impulsesPtr, bounded);
                     for (int row = 0; row < rows; row++)
@@ -352,7 +351,7 @@ namespace Unity.Physics
             }
 
             kept->Team = null;
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.SparseTime,
+            stepInput.IslandSolverCache.SparseCounters.AddTime(
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solveStarted);
 
             if (kept == &temporary)

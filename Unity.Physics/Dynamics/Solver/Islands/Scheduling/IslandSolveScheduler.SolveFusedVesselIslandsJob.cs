@@ -1,21 +1,11 @@
-using static Unity.Physics.Solver;
-using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
-using Unity.Physics.Dynamics.Solver.Forest;
-using Unity.Physics.Dynamics.Solver.Islands.Data;
-using Unity.Physics.Configuration;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using Unity.Jobs.LowLevel.Unsafe;
-using Unity.Mathematics;
-using Unity.Numerics.Linear;
-using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Physics.Base.Threading;
-using Unity.Physics.Dynamics.Solver.Islands;
-using Unity.Physics.Dynamics.Solver.Sparse;
-using Unity.Physics.Dynamics.Vessels.Model;
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Profiling;
+using static Unity.Physics.Solver;
+using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
 
 namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 {
@@ -90,7 +80,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                     if (teams[t].Team.TryLead())
                     {
                         DirectIsland island = Islands[teams[t].Island];
-                        System.Threading.Interlocked.Increment(ref FusedIslandSolveCount.Data);
+                        IslandWorkCounters.CountFusedSolve();
                         SolveFusedVesselIsland(island, (IslandHeader*)Headers.GetUnsafeReadOnlyPtr() + island.FirstHeader,
                             (int*)IslandVessels.GetUnsafeReadOnlyPtr() + island.FirstVessel, MotionVelocities, MotionDatas, Bodies,
                             StepInput, Lanes > 1 ? &teams[t].Team : null);

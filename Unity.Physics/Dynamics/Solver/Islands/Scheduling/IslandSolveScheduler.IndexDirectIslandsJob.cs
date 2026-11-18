@@ -1,21 +1,10 @@
-using static Unity.Physics.Solver;
-using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
-using Unity.Physics.Dynamics.Solver.Forest;
-using Unity.Physics.Dynamics.Solver.Islands.Data;
-using Unity.Physics.Configuration;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using Unity.Jobs.LowLevel.Unsafe;
-using Unity.Mathematics;
-using Unity.Numerics.Linear;
-using Unity.Numerics.Linear.Dense.Primitives;
-using Unity.Physics.Base.Threading;
-using Unity.Physics.Dynamics.Solver.Islands;
-using Unity.Physics.Dynamics.Solver.Sparse;
-using Unity.Physics.Dynamics.Vessels.Model;
-using Unity.Profiling;
+using Unity.Physics.Dynamics.Solver.Forest;
+using Unity.Physics.Dynamics.Solver.Islands.Data;
+using static Unity.Physics.Solver;
 
 namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 {

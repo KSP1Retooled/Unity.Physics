@@ -353,16 +353,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         }
 
         /// <summary>
-        /// The number of island solves, each one for a whole step, that the fused vessel job has done since the
-        /// program started. Tests read it to check that an island went to the fused job.
-        /// </summary>
-        internal static long FusedIslandSolves => FusedIslandSolveCount.Data;
-
-        struct FusedIslandSolveKey { }
-
-        static readonly SharedStatic<long> FusedIslandSolveCount = SharedStatic<long>.GetOrCreate<FusedIslandSolveKey>();
-
-        /// <summary>
         /// Contiguous row ranges for direct islands. Store pointers to list headers because jobs may resize their
         /// data.
         /// </summary>
@@ -964,7 +954,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 return;
             }
 
-            System.Threading.Interlocked.Increment(ref UnfusedFoldedStepCount.Data);
+            IslandWorkCounters.CountUnfusedFoldedStep();
 
             StepInput input = unfused.StepInput;
             for (int substep = 0; substep < input.NumSubsteps; substep++)
@@ -1022,15 +1012,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 }
             }
         }
-
-        /// <summary>
-        /// Number of steps using serial unfused substeps, for tests of scheduling choices.
-        /// </summary>
-        internal static long UnfusedFoldedSteps => UnfusedFoldedStepCount.Data;
-
-        struct UnfusedFoldedStepKey { }
-
-        static readonly SharedStatic<long> UnfusedFoldedStepCount = SharedStatic<long>.GetOrCreate<UnfusedFoldedStepKey>();
 
         static readonly ProfilerMarker UnfusedSubstepsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.UnfusedSubsteps");
 
@@ -1096,7 +1077,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 return folding == SolverSwitches.SubstepFolding.Fold;
             }
 
-            if (!cache.IsCreated || !cache.LastUnfusedWork(out IslandSolverCache.UnfusedWork work))
+            if (!cache.IsCreated || !cache.LastUnfusedWork(out IslandWorkCounters work))
             {
                 return false;
             }

@@ -10,7 +10,6 @@ using Unity.Numerics.Linear.Dense.Primitives;
 using Unity.Numerics.Linear.Solvers.Lowlevel;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Dynamics.Solver.Forest;
-using Unity.Physics.Dynamics.Solver.Islands;
 using Unity.Physics.Dynamics.Solver.Sparse;
 using Unity.Physics.Dynamics.Vessels.Model;
 using Unity.Physics.Dynamics.Vessels.Sections;
@@ -93,11 +92,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             PrepareVesselParts(ref run, stepInput.CurrentSubstep);
             StartVesselRun(ref run);
             long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestStartTime, lap - started);
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFactorTime, run.FactorTicks);
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBoundaryTime, run.BoundaryTicks);
-            stepInput.IslandSolverCache.CountForest(IslandSolverCache.ForestSolves);
-            stepInput.IslandSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestStartTime, lap - started);
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFactorTime, run.FactorTicks);
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestBoundaryTime, run.BoundaryTicks);
+            stepInput.IslandSolverCache.ForestCounters.CountForest(ForestCounters.ForestSolves);
+            stepInput.IslandSolverCache.ForestCounters.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
 
             var bodyLinear = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var bodyAngular = new NativeArray<float3>(math.max(1, problem.BodyCount), Allocator.Temp, NativeArrayOptions.UninitializedMemory);
@@ -108,7 +107,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 angular);
             WriteVesselLoads(ref run, stepInput.CurrentSubstep, stepInput.NumSubsteps);
             FinishStrutLoads(ref run);
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFinishTime,
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFinishTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
             bodyLinear.Dispose();
             bodyAngular.Dispose();
@@ -136,9 +135,9 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             // their bounds and near the answer, so the vessel applies them. BoundaryCounters counts such solves.
             SolveForest(ref run, problem.RightHandSide, impulses);
             long solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSolveTime, solved - started);
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solved - started);
             SettleCompiledVessel(ref run, problem, impulses, linear, angular, false);
-            stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime,
+            stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSettleTime,
                 Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
 
             // Correct boundary positional drift only; vessel rows already include pose errors each substep.
@@ -443,11 +442,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 PrepareVesselParts(ref run, substep, posesFilled);
                 StartVesselRun(ref run);
                 long lap = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestStartTime, lap - started);
-                stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFactorTime, run.FactorTicks);
-                stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestBoundaryTime, run.BoundaryTicks);
-                stepInput.IslandSolverCache.CountForest(IslandSolverCache.ForestSolves);
-                stepInput.IslandSolverCache.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
+                stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestStartTime, lap - started);
+                stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFactorTime, run.FactorTicks);
+                stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestBoundaryTime, run.BoundaryTicks);
+                stepInput.IslandSolverCache.ForestCounters.CountForest(ForestCounters.ForestSolves);
+                stepInput.IslandSolverCache.ForestCounters.CountSections(forest->SectionCount, forest->LockedPairs, forest->StructureBuilds != builds, 0, 0);
 
                 // The lanes move or integrate the bodies and write the loads in one stage: its items are the parts and
                 // then the closures, as in WriteVesselLoads.
@@ -484,7 +483,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     // With no boundary rows, the sections' velocities are the ones from the vessels' own rows.
                     UnsafeUtility.MemCpy(run.Velocity.GetUnsafePtr(), run.BaseVelocity.GetUnsafeReadOnlyPtr(), run.Velocity.Length * (long)sizeof(double));
                     solved = Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp;
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSolveTime, solved - lap);
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSolveTime, solved - lap);
 
                     ref VesselContext context = ref forest->Context;
                     UnsafeUtility.MemCpy(context.Solution, run.Velocity.GetUnsafeReadOnlyPtr(), 6L * forest->SectionCount * sizeof(double));
@@ -498,7 +497,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     WorkTeam.RunAll<VesselTaskDispatch>(team, &bodyTasks, IslandTaskKind.ForestVesselKind,
                         (bodyTasks.Count + VesselItemsPerTask - 1) / VesselItemsPerTask, null);
                     posesFilled = bodyTasks.FillNext;
-                    stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestSettleTime,
+                    stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestSettleTime,
                         Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 }
 
@@ -508,7 +507,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     Integrator.IntegrateMotion(kinematic[k], motionDatas, motionVelocities, stepInput.Timestep);
                 }
 
-                stepInput.IslandSolverCache.AddTime(IslandSolverCache.ForestFinishTime,
+                stepInput.IslandSolverCache.ForestCounters.AddTime(ForestCounters.ForestFinishTime,
                     Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - solved);
                 run.Dispose();
                 setup.Blocks.Dispose();

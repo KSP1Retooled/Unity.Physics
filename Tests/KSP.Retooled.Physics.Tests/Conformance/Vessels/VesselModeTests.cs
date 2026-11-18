@@ -1,4 +1,4 @@
-using Unity.Physics.Dynamics.Solver.Islands.Scheduling;
+using Unity.Physics.Dynamics.Solver.Islands.Data;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using KSP.Retooled.Physics.Diagnostics;
 using KSP.Retooled.Physics.Stepping;
@@ -505,9 +505,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     }
 
                     Begin(vessels);
-                    long before = IslandSolveScheduler.FusedIslandSolves;
+                    long before = IslandWorkCounters.FusedIslandSolves;
                     vessels.Step(80);
-                    long fused = IslandSolveScheduler.FusedIslandSolves - before;
+                    long fused = IslandWorkCounters.FusedIslandSolves - before;
                     Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.GreaterThanOrEqualTo(80), "the column goes to the fused job only in the second pass");
                     positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
                     loads[pass] = (float)math.length(vessels.Load(3).Force);
@@ -557,7 +557,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     top.isKinematic = true;
                     Vector3 start = top.position;
                     Begin(vessels);
-                    long before = IslandSolveScheduler.FusedIslandSolves;
+                    long before = IslandWorkCounters.FusedIslandSolves;
                     for (int i = 1; i <= steps; i++)
                     {
                         top.MovePosition(start + new Vector3(0.02f * i, 0.005f * i, 0.0f));
@@ -565,7 +565,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                         vessels.Step();
                     }
 
-                    long fused = IslandSolveScheduler.FusedIslandSolves - before;
+                    long fused = IslandWorkCounters.FusedIslandSolves - before;
                     Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.GreaterThanOrEqualTo(steps), "the column goes to the fused job only in the second pass");
                     positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
                     rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
@@ -629,10 +629,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     }
 
                     Begin(vessels);
-                    long before = IslandSolveScheduler.FusedIslandSolves;
+                    long before = IslandWorkCounters.FusedIslandSolves;
                     const int steps = 60;
                     vessels.Step(steps);
-                    Assert.That(IslandSolveScheduler.FusedIslandSolves - before, Is.EqualTo(heights.Length * steps),
+                    Assert.That(IslandWorkCounters.FusedIslandSolves - before, Is.EqualTo(heights.Length * steps),
                         "every column is a fused island in every step");
                     positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
                     rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
@@ -688,9 +688,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     }
 
                     Begin(vessels);
-                    long before = IslandSolveScheduler.FusedIslandSolves;
+                    long before = IslandWorkCounters.FusedIslandSolves;
                     vessels.Step(5);
-                    long fused = IslandSolveScheduler.FusedIslandSolves - before;
+                    long fused = IslandWorkCounters.FusedIslandSolves - before;
                     Assert.That(fused, Is.EqualTo(5 * columns), $"fused island solves with {columns} columns");
                 }
             }
@@ -737,9 +737,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     }
 
                     Begin(vessels);
-                    long before = IslandSolveScheduler.FusedIslandSolves;
+                    long before = IslandWorkCounters.FusedIslandSolves;
                     vessels.Step(steps);
-                    long fused = IslandSolveScheduler.FusedIslandSolves - before;
+                    long fused = IslandWorkCounters.FusedIslandSolves - before;
                     Assert.That(fused, pass == 0 ? Is.EqualTo(0) : Is.EqualTo(columns * steps),
                         $"in pass {pass}, the columns go to the fused job only in the second pass, and then every column in every step");
                     positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
@@ -808,10 +808,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Begin(vessels);
                 vessels.Step(3);
                 ForestDiagnostics.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
-                long before = IslandSolveScheduler.FusedIslandSolves;
+                long before = IslandWorkCounters.FusedIslandSolves;
                 vessels.Step(5);
                 ForestDiagnostics.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
-                Assert.That(IslandSolveScheduler.FusedIslandSolves - before, Is.EqualTo(columns * 5), "every vessel is a fused island in every step");
+                Assert.That(IslandWorkCounters.FusedIslandSolves - before, Is.EqualTo(columns * 5), "every vessel is a fused island in every step");
                 Assert.That(builds1 - builds0, Is.EqualTo(0), "no fused island builds its structure again");
             }
             finally
@@ -848,12 +848,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Begin(vessels);
                 vessels.Step(3);
                 ForestDiagnostics.GetSectionCounts(out _, out _, out long builds0, out _, out _, out _, out _, out _);
-                long fusedBefore = IslandSolveScheduler.FusedIslandSolves;
-                long foldedBefore = IslandSolveScheduler.UnfusedFoldedSteps;
+                long fusedBefore = IslandWorkCounters.FusedIslandSolves;
+                long foldedBefore = IslandWorkCounters.UnfusedFoldedSteps;
                 vessels.Step(5);
                 ForestDiagnostics.GetSectionCounts(out _, out _, out long builds1, out _, out _, out _, out _, out _);
-                Assert.That(IslandSolveScheduler.FusedIslandSolves - fusedBefore, Is.EqualTo(0), "the substeps solve every vessel");
-                Assert.That(IslandSolveScheduler.UnfusedFoldedSteps - foldedBefore, Is.EqualTo(folded ? 5 : 0),
+                Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(0), "the substeps solve every vessel");
+                Assert.That(IslandWorkCounters.UnfusedFoldedSteps - foldedBefore, Is.EqualTo(folded ? 5 : 0),
                     "one thread does the substeps' work in every step only when the test asks for it");
                 Assert.That(builds1 - builds0, Is.EqualTo(0), "no island builds its structure again");
             }
@@ -930,9 +930,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     bodies.Add(swung);
 
                     Begin(vessels);
-                    long before = IslandSolveScheduler.UnfusedFoldedSteps;
+                    long before = IslandWorkCounters.UnfusedFoldedSteps;
                     vessels.Step(steps);
-                    folded[pass] = IslandSolveScheduler.UnfusedFoldedSteps - before;
+                    folded[pass] = IslandWorkCounters.UnfusedFoldedSteps - before;
                     positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
                     rotations[pass] = bodies.ConvertAll(b => b.rotation).ToArray();
                     loads[pass] = new double3[partCount];
