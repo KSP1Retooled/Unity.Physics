@@ -13,6 +13,12 @@ namespace Unity.Physics.Stepping.Recording
 
         internal void Clear() => Length = 0;
 
+        internal void BeginFrame(byte[] buffer, int sizeHint)
+        {
+            Buffer = buffer ?? new byte[sizeHint];
+            Length = 0;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void Write<T>(T value) where T : unmanaged
         {
@@ -49,13 +55,6 @@ namespace Unity.Physics.Stepping.Recording
         {
             Write(list.Length);
             WriteBlock(list.GetUnsafeReadOnlyPtr(), checked(list.Length * sizeof(T)));
-        }
-
-        internal byte[] ToArray()
-        {
-            var result = new byte[Length];
-            System.Buffer.BlockCopy(Buffer, 0, result, 0, Length);
-            return result;
         }
 
         private int Reserve(int bytes)

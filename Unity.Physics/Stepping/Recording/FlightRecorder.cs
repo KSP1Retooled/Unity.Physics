@@ -30,8 +30,11 @@ namespace Unity.Physics.Stepping.Recording
         private long triggerNumber;
         private int postSteps;
         private RecordingWriter frame = new RecordingWriter();
+        private RecordedStep reusable;
+        private int lastInputLength = 4096;
         private RecordedBody[] before = Array.Empty<RecordedBody>();
         private RecordedBody[] lastBodies = Array.Empty<RecordedBody>();
+        private int lastBodyCount;
         private readonly Dictionary<uint, int> lastRows = new Dictionary<uint, int>();
 
         internal static FlightRecorder Start(FlightRecorder previous)
@@ -55,6 +58,7 @@ namespace Unity.Physics.Stepping.Recording
                 recorder.window.Clear();
                 recorder.geometry = null;
                 recorder.frame = null;
+                recorder.reusable = null;
                 recorder.before = Array.Empty<RecordedBody>();
                 recorder.lastBodies = Array.Empty<RecordedBody>();
                 recorder.lastRows.Clear();
@@ -106,7 +110,14 @@ namespace Unity.Physics.Stepping.Recording
         internal RecordedStep Begin(StoreStepper* stepper, float deltaTime)
         {
             WorldData* world = stepper->Store;
-            var step = new RecordedStep { Number = ++stepNumber, DeltaTime = deltaTime, ContactStep = stepper->RecorderContactStep };
+            RecordedStep step = reusable ?? new RecordedStep();
+            reusable = null;
+            step.Number = ++stepNumber;
+            step.DeltaTime = deltaTime;
+            step.ContactStep = stepper->RecorderContactStep;
+            step.Geometry.Clear();
+            step.Trigger = null;
+            frame.BeginFrame(step.Input, lastInputLength);
             if (before.Length < world->bodyCount)
             {
                 Array.Resize(ref before, checked((int)world->bodyCount));
@@ -118,6 +129,7 @@ namespace Unity.Physics.Stepping.Recording
             }
 
             RecordStore.Write(stepper, step, geometry, frame);
+            lastInputLength = step.InputLength;
             geometry.Finish(step.Number);
             return step;
         }
@@ -130,7 +142,12 @@ namespace Unity.Physics.Stepping.Recording
                 return;
             }
 
-            var bodies = new RecordedBody[world->bodyCount];
+            int bodyCount = checked((int)world->bodyCount);
+            RecordedBody[] bodies = step.Bodies;
+            if (bodies == null || bodies.Length < bodyCount)
+            {
+                bodies = new RecordedBody[bodyCount];
+            }
             fixed (RecordedBody* output = bodies)
             {
                 RecordedBody.Capture(world, stepper->Globals->engineObjectIdOffset, stepper->RecorderIslands,
@@ -143,8 +160,8 @@ namespace Unity.Physics.Stepping.Recording
                 var contact = manifolds[i];
                 if (!contact.Trigger)
                 {
-                    NoteIterative(bodies, contact.RowA);
-                    NoteIterative(bodies, contact.RowB);
+                    NoteIterative(bodies, bodyCount, contact.RowA);
+                    NoteIterative(bodies, bodyCount, contact.RowB);
                 }
             }
 
@@ -152,40 +169,35 @@ namespace Unity.Physics.Stepping.Recording
             string reason = null;
             RecordedBody triggerBefore = default;
             bool canTrigger = triggerNumber == 0 && HasFileSlot;
-            for (int i = 0; i < bodies.Length; i++)
+            lastRows.Clear();
+            for (int i = 0; canTrigger && i < bodyCount; i++)
             {
-                if (canTrigger && triggerRow < 0)
+                RecordedBody input = before[i];
+                reason = (bodies[i].SolverPath & (int)RecordedSolverPath.RestoredMotion) != 0
+                    ? "write-back restored non-finite motion"
+                    : Check(input, bodies[i]);
+                if (reason == null && input.Serial != 0 && TryPrevious(i, input.Serial, out RecordedBody previous))
                 {
-                    RecordedBody input = before[i];
-                    reason = (bodies[i].SolverPath & (int)RecordedSolverPath.RestoredMotion) != 0
-                        ? "write-back restored non-finite motion"
-                        : Check(input, bodies[i]);
-                    if (reason == null && input.Serial != 0 && lastRows.TryGetValue(input.Serial, out int row))
-                    {
-                        RecordedBody previous = lastBodies[row];
-                        reason = Check(previous, input);
-                        if (reason != null)
-                        {
-                            input = previous;
-                        }
-                    }
-
+                    reason = Check(previous, input);
                     if (reason != null)
                     {
-                        triggerRow = i;
-                        triggerBefore = input;
+                        input = previous;
                     }
+                }
+
+                if (reason != null)
+                {
+                    triggerRow = i;
+                    triggerBefore = input;
+                    break;
                 }
             }
 
             step.Bodies = bodies;
+            step.BodyCount = bodyCount;
             window.Enqueue(step);
             lastBodies = bodies;
-            lastRows.Clear();
-            for (int i = 0; i < bodies.Length; i++)
-            {
-                lastRows[bodies[i].Serial] = i;
-            }
+            lastBodyCount = bodyCount;
 
             latest = this;
             int windowSize = math.clamp(FlightRecorderSwitches.WindowSteps, 1, 10_000);
@@ -193,7 +205,11 @@ namespace Unity.Physics.Stepping.Recording
             {
                 while (window.Count > windowSize)
                 {
-                    window.Dequeue();
+                    RecordedStep removed = window.Dequeue();
+                    if (!removed.QueuedForSave)
+                    {
+                        reusable = removed;
+                    }
                 }
 
                 if (triggerRow >= 0)
@@ -215,9 +231,35 @@ namespace Unity.Physics.Stepping.Recording
             }
         }
 
-        private static void NoteIterative(RecordedBody[] bodies, int row)
+        private bool TryPrevious(int row, uint serial, out RecordedBody previous)
         {
-            if ((uint)row < (uint)bodies.Length && bodies[row].Island == -1 && bodies[row].Dynamic
+            if (row < lastBodyCount && lastBodies[row].Serial == serial)
+            {
+                previous = lastBodies[row];
+                return true;
+            }
+
+            if (lastRows.Count == 0)
+            {
+                for (int i = 0; i < lastBodyCount; i++)
+                {
+                    lastRows[lastBodies[i].Serial] = i;
+                }
+            }
+
+            if (lastRows.TryGetValue(serial, out row))
+            {
+                previous = lastBodies[row];
+                return true;
+            }
+
+            previous = default;
+            return false;
+        }
+
+        private static void NoteIterative(RecordedBody[] bodies, int count, int row)
+        {
+            if ((uint)row < (uint)count && bodies[row].Island == -1 && bodies[row].Dynamic
                 && (bodies[row].Flags & BodyFlags.Sleeping) == 0)
             {
                 bodies[row].SolverPath |= (int)RecordedSolverPath.IterativeContacts;
@@ -322,6 +364,11 @@ namespace Unity.Physics.Stepping.Recording
                 string path = Path.GetFullPath(Path.Combine(folder, $"physics-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.rfr"));
                 string unity = Application.unityVersion;
                 RecordedStep[] steps = window.ToArray();
+                // The writer owns these buffers even after their steps leave the window.
+                foreach (RecordedStep step in steps)
+                {
+                    step.QueuedForSave = true;
+                }
                 queued++;
                 Volatile.Write(ref lastSave, $"queued {path}");
                 writerTask = writerTask.ContinueWith(_ => WriteFile(path, reason, unity, steps), TaskScheduler.Default);
@@ -372,12 +419,12 @@ namespace Unity.Physics.Stepping.Recording
                     {
                         writer.Write(step.Number);
                         writer.Write(step.DeltaTime);
-                        writer.Write(step.Input.Length);
-                        writer.Write(step.Input);
-                        writer.Write(step.Bodies.Length);
+                        writer.Write(step.InputLength);
+                        writer.Write(step.Input, 0, step.InputLength);
+                        writer.Write(step.BodyCount);
                         fixed (RecordedBody* bodies = step.Bodies)
                         {
-                            writer.Write(new ReadOnlySpan<byte>(bodies, step.Bodies.Length * sizeof(RecordedBody)));
+                            writer.Write(new ReadOnlySpan<byte>(bodies, step.BodyCount * sizeof(RecordedBody)));
                         }
                     }
                 }

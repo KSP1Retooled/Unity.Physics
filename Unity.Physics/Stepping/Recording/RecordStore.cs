@@ -16,7 +16,6 @@ namespace Unity.Physics.Stepping.Recording
         {
             WorldData* world = stepper->Store;
             StoreGlobals* globals = stepper->Globals;
-            writer.Clear();
             writer.WriteValue(RecordedPhysicsSettings.Read());
             writer.WriteValue(world->gravity);
             writer.Write(world->bounceThreshold);
@@ -93,7 +92,8 @@ namespace Unity.Physics.Stepping.Recording
 
             stepper->WriteContactCheckpoint(writer);
             writer.Write(geometry.CaptureBuild(stepper, step));
-            step.Input = writer.ToArray();
+            step.Input = writer.Buffer;
+            step.InputLength = writer.Length;
         }
 
         private static void WriteBody(RecordingWriter writer, BodyData* row, StoreGlobals* globals, RecordedStep step,
