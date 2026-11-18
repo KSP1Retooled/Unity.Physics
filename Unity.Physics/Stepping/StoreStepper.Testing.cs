@@ -69,7 +69,7 @@ namespace Unity.Physics.Stepping
         /// </summary>
         internal void ReleaseTreeAfterThrow()
         {
-            if (!refitPending)
+            if (!Trees.refitPending)
             {
                 System.Threading.Interlocked.Exchange(ref store->treeReady, 1);
                 AddressWait.WakeAll(&store->treeReady);

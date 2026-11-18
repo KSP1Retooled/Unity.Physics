@@ -29,8 +29,8 @@ namespace KSP.Retooled.Physics.Host
             this.store = store;
             ForestSwitches.Initialize();
             VesselSwitches.Initialize();
-            StoreStepper.ReadBoundsCacheSwitches();
-            StoreStepper.ReadTreeReuseSwitch();
+            TreeState.ReadBoundsCacheSwitches();
+            TreeState.ReadTreeReuseSwitch();
             StaticRows.ReadStaticReuseSwitch();
             query = (QueryWorld*)UnsafeUtility.MallocTracked(sizeof(QueryWorld), UnsafeUtility.AlignOf<QueryWorld>(), Allocator.Persistent, 0);
             state = (StoreStepper*)UnsafeUtility.MallocTracked(sizeof(StoreStepper), UnsafeUtility.AlignOf<StoreStepper>(), Allocator.Persistent, 0);

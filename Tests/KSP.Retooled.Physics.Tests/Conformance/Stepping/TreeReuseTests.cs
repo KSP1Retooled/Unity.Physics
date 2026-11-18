@@ -1,3 +1,4 @@
+using Unity.Physics.Stepping.State;
 using KSP.Retooled.Physics.Tests.Tools;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using KSP.Retooled.Physics.Diagnostics;
@@ -47,7 +48,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         {
             TearDownScene();
             SetUpScene();
-            StoreStepper.TreeReuseEnabled = reuse;
+            TreeState.TreeReuseEnabled = reuse;
             ForestDiagnostics.ForgetIslands();
             var run = new Run();
             GameObject ground = Ground();
@@ -72,9 +73,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             Simulate();
             JointLoadTrace.ContactHash.Hash = 14695981039346656037UL;
             JointLoadTrace.ContactHash.Messages = 0;
-            long builds = StepEntryPoints.Current->TreeBuildCount;
-            long refits = StepEntryPoints.Current->TreeRefitCount;
-            long filterRefits = StepEntryPoints.Current->TreeFilterRefitCount;
+            long builds = StepEntryPoints.Current->Trees.TreeBuildCount;
+            long refits = StepEntryPoints.Current->Trees.TreeRefitCount;
+            long filterRefits = StepEntryPoints.Current->Trees.TreeFilterRefitCount;
             for (int step = 0; step < Steps; step++)
             {
                 switch (step)
@@ -115,7 +116,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 }
 
                 Simulate();
-                long built = StepEntryPoints.Current->TreeBuildCount;
+                long built = StepEntryPoints.Current->Trees.TreeBuildCount;
                 run.Built.Add(built != builds);
                 builds = built;
 
@@ -138,8 +139,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 run.Steps.Add($"step {step}: contacts {JointLoadTrace.ContactHash.Hash:x16} in {JointLoadTrace.ContactHash.Messages} messages; {string.Join(", ", found)}");
             }
 
-            run.Refits = StepEntryPoints.Current->TreeRefitCount - refits;
-            run.FilterRefits = StepEntryPoints.Current->TreeFilterRefitCount - filterRefits;
+            run.Refits = StepEntryPoints.Current->Trees.TreeRefitCount - refits;
+            run.FilterRefits = StepEntryPoints.Current->Trees.TreeFilterRefitCount - filterRefits;
             foreach (Rigidbody body in bodies)
             {
                 if (body != null)
@@ -156,8 +157,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         public void ARefittedTreeGivesTheResultsOfATreeBuiltFromScratch()
         {
             // RETOOLED_TREE_REUSE=0 turns the reuse off for a whole run, so give the later tests the switch as it was.
-            bool wasEnabled = StoreStepper.TreeReuseEnabled;
-            bool wasAlways = StoreStepper.TreeAlwaysRefitted;
+            bool wasEnabled = TreeState.TreeReuseEnabled;
+            bool wasAlways = TreeState.TreeAlwaysRefitted;
             bool ignored = UnityEngine.Physics.GetIgnoreLayerCollision(FallingLayer, 0);
             UnityEngine.Physics.IgnoreLayerCollision(FallingLayer, 0, true);
             try
@@ -196,10 +197,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StoreStepper.TreeReuseEnabled = wasEnabled;
+                TreeState.TreeReuseEnabled = wasEnabled;
                 if (wasAlways)
                 {
-                    StoreStepper.TreeAlwaysRefitted = true;
+                    TreeState.TreeAlwaysRefitted = true;
                 }
 
                 UnityEngine.Physics.IgnoreLayerCollision(FallingLayer, 0, ignored);
@@ -213,8 +214,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         [Test]
         public void AClosestHitAtEqualDistancesDoesNotDependOnTheTree()
         {
-            bool wasEnabled = StoreStepper.TreeReuseEnabled;
-            bool wasAlways = StoreStepper.TreeAlwaysRefitted;
+            bool wasEnabled = TreeState.TreeReuseEnabled;
+            bool wasAlways = TreeState.TreeAlwaysRefitted;
             try
             {
                 string built = TieScene(refitted: false);
@@ -225,10 +226,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
             finally
             {
-                StoreStepper.TreeReuseEnabled = wasEnabled;
+                TreeState.TreeReuseEnabled = wasEnabled;
                 if (wasAlways)
                 {
-                    StoreStepper.TreeAlwaysRefitted = true;
+                    TreeState.TreeAlwaysRefitted = true;
                 }
             }
         }
@@ -256,10 +257,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             // The first step makes the world's state, which reads the switches from the environment, so the test sets
             // them after that step. The first step builds the tree from scratch either way.
             Simulate();
-            StoreStepper.TreeReuseEnabled = refitted;
+            TreeState.TreeReuseEnabled = refitted;
             if (refitted)
             {
-                StoreStepper.TreeAlwaysRefitted = true;
+                TreeState.TreeAlwaysRefitted = true;
             }
 
             first.position = new Vector3(0.25f, 0.0f, 0.0f);
@@ -268,9 +269,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             second.transform.position = second.position;
             Simulate(2);
 
-            long builds = StepEntryPoints.Current->TreeBuildCount;
+            long builds = StepEntryPoints.Current->Trees.TreeBuildCount;
             Simulate();
-            Assert.That(StepEntryPoints.Current->TreeBuildCount != builds, Is.EqualTo(!refitted), refitted ? "the step refits the tree" : "the step builds the tree");
+            Assert.That(StepEntryPoints.Current->Trees.TreeBuildCount != builds, Is.EqualTo(!refitted), refitted ? "the step refits the tree" : "the step builds the tree");
 
             var found = new List<string>();
             var origin = new Vector3(0.0f, 5.0f, 0.0f);

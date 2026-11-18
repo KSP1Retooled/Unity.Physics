@@ -311,7 +311,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             }
 
             // The counts go to the log, not to the trace, so that the trace of a commit without them can be compared.
-            Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepEntryPoints.Current->TreeBuildCount} times and refitted {StepEntryPoints.Current->TreeRefitCount} times");
+            Debug.Log($"[JointLoadTrace] {tag}: the dynamic tree was built {StepEntryPoints.Current->Trees.TreeBuildCount} times and refitted {StepEntryPoints.Current->Trees.TreeRefitCount} times");
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"JointLoadTrace-{tag}.txt"), trace.ToString());
         }
 

@@ -43,7 +43,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker BuildScheduleBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBodies");
         private static readonly ProfilerMarker BuildScheduleBroadphaseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ScheduleBroadphase");
         private static readonly ProfilerMarker RefreshCollidersMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.RefreshColliders");
-        private static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
         private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
         private static readonly ProfilerMarker StepPublishQueryWorldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.PublishQueryWorld");
         private static readonly ProfilerMarker StepReadImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ReadImpulses");
@@ -51,7 +50,6 @@ namespace Unity.Physics.Stepping
         private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
         private static readonly ProfilerMarker StepSleepMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Sleep");
         private static readonly ProfilerMarker StepWaitForSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForSolve");
-        private static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForTree");
         private static readonly ProfilerMarker StepWriteBackMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WriteBack");
 
         private const int ParallelBatchSize = 64;
@@ -67,15 +65,9 @@ namespace Unity.Physics.Stepping
         private readonly QueryWorld* query;
 
         private PhysicsWorld world;
+        internal TreeState Trees;
         internal StaticRows StaticBodies;
         internal BodyPartition Partition;
-
-        // Static tree jobs read these flags. keepStatics is constant after initialization;
-        // StaticTreeShift.ShiftStaticTreeJob sets rebuildStatics before tree jobs run.
-        private NativeReference<int> rebuildStatics;
-        private NativeReference<int> keepStatics;
-        private StaticTreeShift.ShiftState treeShift;
-        private bool treeMatchesHeld;
 
         private NativeList<JointGroup> jointGroups;
         private NativeList<JointGroupMember> jointGroupMembers;
@@ -162,135 +154,6 @@ namespace Unity.Physics.Stepping
         private NativeList<long> colliderResults;
         private NativeReference<uint> wholeColliderBuilds;
 
-        // The number of collider refreshes that gave any body a new collider, and the bounds of the dynamic bodies'
-        // colliders that the refit at the end of a step leaves for the build at the start of the next.
-        private NativeReference<uint> colliderChanges;
-        private DynamicBoundsCache boundsCache;
-
-        // Whether the last build of the dynamic tree used the bounds cache. Only then does the cache hold the current
-        // colliders after the build.
-        private bool boundsCacheBuilt;
-
-        // Pending refit to solved poses. FinishPendingRefit protects the built world and bounds cache;
-        // queries may help the refit through the native store pointer.
-        private SharedDynamicTreeRefit* sharedRefit;
-        private JobHandle refit;
-        private bool refitPending;
-
-        // The jobs that write the motions that the pending refit reads.
-        private JobHandle refitInputs;
-
-        // Dynamic store rows used for the current tree. Refit while row order, count and quality remain
-        // suitable.
-        private NativeList<int> treeRows;
-
-        // What the jobs of the last refit left: whether a filter changed, and the tree's quality.
-        private DynamicTreeRefitResults* treeRefitResults;
-
-        // Whether the last build refitted the tree, the refits since the tree was last built, and the quality that the
-        // first of those refits measured, or 0 before it has been read.
-        private bool treeRefitted;
-        private int treeRefits;
-        private float treeBaseQuality;
-
-        // Counts for tests.
-        private long treeBuildCount;
-        private long treeRefitCount;
-        private long treeFilterRefitCount;
-
-        /// <summary>
-        /// Maximum consecutive refits before rebuilding the dynamic tree.
-        /// </summary>
-        internal const int MaxTreeRefits = 500;
-
-        /// <summary>
-        /// Maximum tree quality growth relative to the first refit after rebuilding, before another rebuild is
-        /// required.
-        /// </summary>
-        internal const float MaxTreeQualityGrowth = 1.5f;
-
-        /// <summary>
-        /// Enable dynamic tree reuse. RETOOLED_TREE_REUSE=0 disables it.
-        /// Stored in SharedStatic for Burst; the always-refit mode also bypasses count and quality limits.
-        /// </summary>
-        internal static bool TreeReuseEnabled
-        {
-            get => TreeReuseMode.Data != 1;
-            set => TreeReuseMode.Data = value ? 0 : 1;
-        }
-
-        /// <summary>
-        /// Whether every build refits the dynamic tree when the dynamic bodies are the same, however bad the tree has
-        /// become. RETOOLED_TREE_REUSE=always turns it on, to check that a tree of any shape gives the same results.
-        /// </summary>
-        internal static bool TreeAlwaysRefitted
-        {
-            get => TreeReuseMode.Data == 2;
-            set => TreeReuseMode.Data = value ? 2 : 0;
-        }
-
-        private sealed class TreeReuseModeKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> TreeReuseMode = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, TreeReuseModeKey>();
-
-        /// <summary>
-        /// Reads RETOOLED_TREE_REUSE from the environment: 0 turns off the reuse of the dynamic tree, and "always" makes
-        /// every build refit the tree when it can (<see cref="TreeAlwaysRefitted"/>).
-        /// </summary>
-        internal static void ReadTreeReuseSwitch()
-        {
-            string reuse = Environment.GetEnvironmentVariable("RETOOLED_TREE_REUSE");
-            TreeReuseMode.Data = reuse == "0" ? 1 : reuse == "always" ? 2 : 0;
-            if (reuse == "0" || reuse == "always")
-            {
-                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_TREE_REUSE={reuse}: {(reuse == "0" ? "every build builds the dynamic tree from scratch" : "every build refits the dynamic tree when the dynamic bodies are the same")}");
-            }
-        }
-
-        /// <summary>The builds of the dynamic tree from scratch since this state was made. Used by tests.</summary>
-        internal readonly long TreeBuildCount => treeBuildCount;
-
-        /// <summary>The builds that refitted the dynamic tree instead of building it. Used by tests.</summary>
-        internal readonly long TreeRefitCount => treeRefitCount;
-
-        /// <summary>The refits that built the nodes' filters again because a body's filter had changed. Used by tests.</summary>
-        internal readonly long TreeFilterRefitCount => treeFilterRefitCount;
-
-        /// <summary>
-        /// Reuse bounds cached by the previous refit. Tests can disable this for comparison.
-        /// </summary>
-        internal static bool BoundsCacheEnabled
-        {
-            get => BoundsCacheOff.Data == 0;
-            set => BoundsCacheOff.Data = value ? 0 : 1;
-        }
-
-        private sealed class BoundsCacheOffKey
-        {
-        }
-
-        private static readonly Unity.Burst.SharedStatic<int> BoundsCacheOff = Unity.Burst.SharedStatic<int>.GetOrCreate<StoreStepper, BoundsCacheOffKey>();
-
-        /// <summary>
-        /// Read bounds cache switches: RETOOLED_BOUNDS_CACHE=0 disables caching;
-        /// RETOOLED_BOUNDS_CHECK=1 validates cached bounds; RETOOLED_SHAPE_BOUNDS=0 disables cached collider
-        /// geometry.
-        /// </summary>
-        internal static void ReadBoundsCacheSwitches()
-        {
-            string cache = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CACHE");
-            BoundsCacheEnabled = cache != "0";
-            string check = Environment.GetEnvironmentVariable("RETOOLED_BOUNDS_CHECK");
-            DynamicBoundsCache.CheckEnabled = check == "1";
-            string shapes = Environment.GetEnvironmentVariable("RETOOLED_SHAPE_BOUNDS");
-            DynamicBoundsCache.ShapesEnabled = shapes != "0";
-            if (cache == "0" || check == "1" || shapes == "0")
-            {
-                UnityEngine.Debug.Log($"[StoreStepper] RETOOLED_BOUNDS_CACHE={cache}, RETOOLED_BOUNDS_CHECK={check}, RETOOLED_SHAPE_BOUNDS={shapes}: bounds cache {(BoundsCacheEnabled ? "on" : "off")}, check {(DynamicBoundsCache.CheckEnabled ? "on" : "off")}, shape bounds {(DynamicBoundsCache.ShapesEnabled ? "on" : "off")}");
-            }
-        }
         private NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair> knownBodyPairs;
         private NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         private JobHandle collidersBuilt;
@@ -312,9 +175,7 @@ namespace Unity.Physics.Stepping
             this.globals = globals;
             this.query = query;
             world = new PhysicsWorld(0, 0, 0);
-            rebuildStatics = new NativeReference<int>(1, Allocator.Persistent);
-            keepStatics = new NativeReference<int>(0, Allocator.Persistent);
-            treeShift = StaticTreeShift.ShiftState.Create();
+            Trees.InitializeStaticTree();
             Partition.InitializeRows();
             StaticBodies.Initialize();
             Partition.Initialize();
@@ -354,15 +215,7 @@ namespace Unity.Physics.Stepping
             colliderWork = new NativeList<ColliderBuilder.Work>(Allocator.Persistent);
             colliderResults = new NativeList<long>(Allocator.Persistent);
             wholeColliderBuilds = new NativeReference<uint>(0, Allocator.Persistent);
-            colliderChanges = new NativeReference<uint>(0, Allocator.Persistent);
-            boundsCache = new DynamicBoundsCache(colliderChanges.GetUnsafePtr(), Allocator.Persistent);
-            sharedRefit = (SharedDynamicTreeRefit*)UnsafeUtility.MallocTracked(sizeof(SharedDynamicTreeRefit), UnsafeUtility.AlignOf<SharedDynamicTreeRefit>(), Allocator.Persistent, 0);
-            UnsafeUtility.MemClear(sharedRefit, sizeof(SharedDynamicTreeRefit));
-            store->refit = sharedRefit;
-            store->treeReady = 1;
-            treeRows = new NativeList<int>(Allocator.Persistent);
-            treeRefitResults = (DynamicTreeRefitResults*)UnsafeUtility.MallocTracked(sizeof(DynamicTreeRefitResults), UnsafeUtility.AlignOf<DynamicTreeRefitResults>(), Allocator.Persistent, 0);
-            UnsafeUtility.MemClear(treeRefitResults, sizeof(DynamicTreeRefitResults));
+            Trees.Initialize(store);
             knownBodyPairs = new NativeHashMap<ulong, KnownBodyPairs.KnownBodyPair>(1024, Allocator.Persistent);
             learnedBodyPairs = new NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue>(Allocator.Persistent);
         }
@@ -373,9 +226,7 @@ namespace Unity.Physics.Stepping
             FinishPendingRefit();
             store->queryWorld = null;
             store->refit = null;
-            sharedRefit->Dispose();
-            UnsafeUtility.FreeTracked(sharedRefit, Allocator.Persistent);
-            sharedRefit = null;
+            Trees.DisposeRefit();
 
             forcesApplied.Complete();
             collidersBuilt.Complete();
@@ -393,9 +244,7 @@ namespace Unity.Physics.Stepping
 
             store->queryDirty = 1;
             world.Dispose();
-            rebuildStatics.Dispose();
-            keepStatics.Dispose();
-            treeShift.Dispose();
+            Trees.DisposeStaticTree();
             Partition.DisposeRows();
             StaticBodies.Dispose();
             Partition.Dispose();
@@ -440,11 +289,7 @@ namespace Unity.Physics.Stepping
             colliderWork.Dispose();
             colliderResults.Dispose();
             wholeColliderBuilds.Dispose();
-            boundsCache.Dispose();
-            colliderChanges.Dispose();
-            treeRows.Dispose();
-            UnsafeUtility.FreeTracked(treeRefitResults, Allocator.Persistent);
-            treeRefitResults = null;
+            Trees.Dispose();
             knownBodyPairs.Dispose();
             learnedBodyPairs.Dispose();
         }
@@ -459,8 +304,6 @@ namespace Unity.Physics.Stepping
         internal readonly NativeList<int> BuiltIndices => Partition.builtIndices;
 
         internal readonly int StaticsChanged => StaticBodies.staticsChanged ? 1 : 0;
-
-        private readonly NativeReference<int>.ReadOnly BuildStaticTree => (StaticBodies.staticsChanged ? rebuildStatics : keepStatics).AsReadOnly();
 
         /// <summary>The settings that the simulation systems use to build their input for a step.</summary>
         internal readonly PhysicsStep Settings
@@ -903,10 +746,10 @@ namespace Unity.Physics.Stepping
             // Clear treeReady until completion; later world access must finish the refit, and queries can help
             // it.
             // Snapshot copying reads only Static flags, which these concurrent jobs do not change.
-            refit = SharedDynamicTreeRefit.Schedule(sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
-                boundsCacheBuilt ? boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
-            refitPending = true;
-            refitInputs = motionsSolved;
+            Trees.refit = SharedDynamicTreeRefit.Schedule(Trees.sharedRefit, ref world, deltaTime, float3.zero, motionsSolved,
+                Trees.boundsCacheBuilt ? Trees.boundsCache : default, &store->treeReady, JobsUtility.JobWorkerCount + 1);
+            Trees.refitPending = true;
+            Trees.refitInputs = motionsSolved;
 
             // If the step throws, wait for solved motions before returning: queries helping the pending refit
             // read them.
@@ -938,14 +781,14 @@ namespace Unity.Physics.Stepping
 
             // The build of this step has completed, so every entry of the bounds cache that a body could take holds
             // the body's current collider: the build wrote it, and the refit writes it again now.
-            if (boundsCacheBuilt)
+            if (Trees.boundsCacheBuilt)
             {
-                boundsCache.MarkCurrent();
+                Trees.boundsCache.MarkCurrent();
             }
 
             if (DynamicBoundsCache.CheckEnabled)
             {
-                LogBoundsCheck();
+                TreeState.LogBoundsCheck();
             }
 
             // FallAsleep.SleepContactsJob must read the manifolds before the contact report sorts them, so schedule it now.
@@ -1019,7 +862,7 @@ namespace Unity.Physics.Stepping
                 FinishQuerySnapshot();
                 // A refit that failed has set the ready word too, and leaves the world stale.
                 bool treeReady = store->treeReady != 0;
-                store->queryDirty = !Partition.motionsMatchStore || (treeReady && sharedRefit->Failed) ? StoreMemory.QueryStale
+                store->queryDirty = !Partition.motionsMatchStore || (treeReady && Trees.sharedRefit->Failed) ? StoreMemory.QueryStale
                     : !treeReady ? StoreMemory.QueryTreePending : 0u;
                 PublishQueryWorld();
             }
@@ -1067,9 +910,9 @@ namespace Unity.Physics.Stepping
             JobHandle broadphase = Build(0.0f, colliders, out _);
             ScheduleQuerySnapshot(broadphase).Complete();
             broadphase.Complete();
-            if (boundsCacheBuilt)
+            if (Trees.boundsCacheBuilt)
             {
-                boundsCache.MarkCurrent();
+                Trees.boundsCache.MarkCurrent();
             }
             FinishQuerySnapshot();
             PublishQueryWorld();
@@ -1080,87 +923,13 @@ namespace Unity.Physics.Stepping
         /// or bounds cache.
         /// Call outside jobs; query jobs use HelpPendingRefit instead.
         /// </summary>
-        internal void FinishPendingRefit()
-        {
-            if (!refitPending)
-            {
-                return;
-            }
-
-            using (StepWaitForTreeMarker.Auto())
-            {
-                // A job whose refit threw is complete too: the thread that threw marked the refit failed, and the
-                // other threads stopped waiting for its piece.
-                refit.Complete();
-
-                // The jobs have done all of the work unless a test told them to leave it.
-                WaitForRefit();
-            }
-
-            refit = default;
-            refitPending = false;
-            NoteFailedRefit();
-        }
-
-        /// <summary>
-        /// Invalidate the published world after a refit fails. The next main-thread query rebuilds it;
-        /// workers may continue querying pre-step poses until then.
-        /// </summary>
-        private void NoteFailedRefit()
-        {
-            if (!sharedRefit->Failed)
-            {
-                return;
-            }
-
-            // The refit may have stopped between moving a body and writing the body's bounds, so no entry of the
-            // bounds cache can be trusted. The next build computes every body's bounds again.
-            if (boundsCache.IsCreated)
-            {
-                boundsCache.Resize(0);
-            }
-
-            if (store->queryDirty == StoreMemory.QueryTreePending)
-            {
-                store->queryDirty = StoreMemory.QueryStale;
-                UnityEngine.Debug.LogError("[StoreStepper] the refit of the dynamic tree after the step failed; the next query on the main thread builds the world again");
-            }
-        }
+        internal void FinishPendingRefit() => Trees.FinishPendingRefit(store);
 
         /// <summary>
         /// Finish pending refit work without completing a job handle, for callers already inside a job.
         /// FinishPendingRefit later completes the now-empty scheduled jobs.
         /// </summary>
-        internal void HelpPendingRefit()
-        {
-            if (refitPending)
-            {
-                WaitForRefit();
-            }
-        }
-
-        /// <summary>
-        /// Does the refit's remaining work on this thread, and then waits for the threads that run its last pieces, if
-        /// any.
-        /// </summary>
-        private void WaitForRefit()
-        {
-            sharedRefit->Help();
-            int* ready = &store->treeReady;
-            while (System.Threading.Interlocked.CompareExchange(ref *ready, 0, -1) == 0)
-            {
-                AddressWait.Wait(ready, 0);
-                Unity.Burst.Intrinsics.Common.Pause();
-            }
-        }
-
-        /// <summary>Whether a refit that the last step left running may still be running. Used by tests.</summary>
-        internal readonly bool RefitPending => refitPending;
-
-        /// <summary>
-        /// Whether solved motions are ready for pending refit helpers. Used by tests.
-        /// </summary>
-        internal readonly bool RefitInputsComplete => !refitPending || refitInputs.IsCompleted;
+        internal void HelpPendingRefit() => Trees.HelpPendingRefit(store);
 
         /// <summary>
         /// Whether the published query world waits only for the last step's refit, so that it is current once the refit
@@ -1169,33 +938,13 @@ namespace Unity.Physics.Stepping
         internal readonly bool OnlyRefitPending => store->queryDirty == StoreMemory.QueryTreePending && builtWhole && store->queryWorld != null;
 
         /// <summary>
-        /// Logs the check's mismatches of the bounds cache when there are new ones, and the counts every 1,000 steps.
-        /// </summary>
-        private static void LogBoundsCheck()
-        {
-            DynamicBoundsCache.CheckCounts* counts = DynamicBoundsCache.Counts;
-            if (++counts->Steps % 1000 == 0)
-            {
-                // Burst compiles this method into the step, and it can't join strings, so each message is one string.
-                UnityEngine.Debug.Log($"[BoundsCheck] {counts->Steps} steps: {counts->Mismatches} mismatches in {counts->Hits} bodies that took their bounds from the cache");
-                UnityEngine.Debug.Log($"[BoundsCheck] {counts->ShapeMismatches} mismatches in {counts->ShapeHits} bodies that computed their bounds from the shape that the cache held");
-            }
-
-            if (counts->Mismatches != counts->LoggedMismatches)
-            {
-                counts->LoggedMismatches = counts->Mismatches;
-                UnityEngine.Debug.LogError($"[BoundsCheck] {counts->Mismatches} mismatches, among the {counts->Hits} bodies that took their bounds from the cache and the bodies that computed them from its shapes; last at index {counts->LastIndex}, entity {counts->LastEntity}, computed min {counts->LastComputedMin}, cached min {counts->LastCachedMin}");
-            }
-        }
-
-        /// <summary>
         /// Update built statics and their tree from store poses, recording the version to avoid redundant work.
         /// </summary>
         private void PoseStatics()
         {
             StaticBodies.builtStaticsVersion = store->staticsVersion;
             StaticBodies.staticsChanged = true;
-            treeMatchesHeld = true;
+            Trees.treeMatchesHeld = true;
             JobHandle posed = new StoreBodies.PoseStaticsJob
             {
                 Store = store->bodies,
@@ -1203,96 +952,7 @@ namespace Unity.Physics.Stepping
                 StaticBodies = world.StaticBodies,
             }.Schedule(Partition.staticIndices.Length, ParallelBatchSize, default);
 
-            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, BuildStaticTree, ScheduleShiftStaticTree(posed), true).Complete();
-        }
-
-        /// <summary>
-        /// Schedules the broadphase trees. Only building the static tree depends on the decision to rebuild it.
-        /// Building the dynamic tree can run in parallel with that decision.
-        /// </summary>
-        private JobHandle ScheduleTrees(float deltaTime, JobHandle built)
-        {
-            int threads = JobsUtility.JobWorkerCount + 1;
-            Broadphase broadphase = world.CollisionWorld.Broadphase;
-            JobHandle statics = broadphase.ScheduleStaticTreeBuildJobs(ref world, threads, BuildStaticTree, ScheduleShiftStaticTree(built));
-            boundsCacheBuilt = BoundsCacheEnabled;
-            DynamicBoundsCache cache = boundsCacheBuilt ? boundsCache : default;
-            JobHandle dynamics;
-            if (RefitsDynamicTree())
-            {
-                dynamics = broadphase.ScheduleDynamicTreeRefitBuildJobs(ref world, deltaTime, float3.zero, built, cache, treeRefitResults);
-                treeRefitted = true;
-                treeRefits++;
-                treeRefitCount++;
-            }
-            else
-            {
-                dynamics = broadphase.ScheduleDynamicTreeBuildJobs(ref world, deltaTime, float3.zero, threads, built, cache);
-                treeRows.CopyFrom(Partition.dynamicIndices.AsArray());
-                treeRefitted = false;
-                treeRefits = 0;
-                treeBaseQuality = 0.0f;
-                treeBuildCount++;
-            }
-
-            return JobHandle.CombineDependencies(statics, dynamics);
-        }
-
-        /// <summary>
-        /// Reuse the dynamic tree while the build completed, dynamic body rows and order match, and count and
-        /// quality limits permit.
-        /// Refitting preserves collision/query results, though traversal and multi-hit ordering can change.
-        /// </summary>
-        private bool RefitsDynamicTree()
-        {
-            if (treeRefitted && treeMatchesHeld)
-            {
-                // The prior refit has completed. Use the first refit after a build as the quality baseline.
-                if (treeRefitResults->FiltersChanged != 0)
-                {
-                    treeFilterRefitCount++;
-                }
-
-                float quality = treeRefitResults->Quality;
-                if (treeBaseQuality == 0.0f)
-                {
-                    treeBaseQuality = quality;
-                }
-                else if (quality > treeBaseQuality * MaxTreeQualityGrowth && !TreeAlwaysRefitted)
-                {
-                    return false;
-                }
-            }
-
-            return TreeReuseEnabled && treeMatchesHeld && Partition.dynamicIndices.Length > 0
-                && (treeRefits < MaxTreeRefits || TreeAlwaysRefitted) && BodyPartition.SameRows(treeRows, Partition.dynamicIndices);
-        }
-
-        /// <summary>
-        /// After the static bodies are built, decides whether to rebuild or shift the static tree. If no static body
-        /// changed, leaves the tree unchanged.
-        /// </summary>
-        private JobHandle ScheduleShiftStaticTree(JobHandle built)
-        {
-            if (!StaticBodies.staticsChanged)
-            {
-                return built;
-            }
-
-            using var span = ShiftStaticTreeMarker.Auto();
-            Broadphase.Tree tree = world.CollisionWorld.Broadphase.StaticTree;
-            return new StaticTreeShift.ShiftStaticTreeJob
-            {
-                StaticBodies = world.StaticBodies,
-                Nodes = tree.Nodes.GetUnsafeList(),
-                MeshSubAabbs = tree.MeshSubAabbs.GetUnsafeList(),
-                State = treeShift,
-                Store = store->bodies,
-                Refreshed = colliderWork,
-                TreeMatchesHeld = treeMatchesHeld,
-                Margin = world.CollisionWorld.CollisionTolerance * 0.5f,
-                Rebuild = rebuildStatics,
-            }.Schedule(built);
+            world.CollisionWorld.ScheduleUpdateStaticTree(ref world, Trees.BuildStaticTree(StaticBodies.staticsChanged), Trees.ScheduleShiftStaticTree(store, ref world, StaticBodies.staticsChanged, colliderWork, posed), true).Complete();
         }
 
         /// <summary>
@@ -1381,7 +1041,7 @@ namespace Unity.Physics.Stepping
             }
 
             collidersBuilt = ColliderBuilder.ScheduleRefresh(store, all, colliderWork, colliderResults,
-                wholeColliderBuilds, colliderChanges, dependency);
+                wholeColliderBuilds, Trees.colliderChanges, dependency);
             builtMaterialVersion = materialVersion;
             return collidersBuilt;
         }
@@ -1412,14 +1072,14 @@ namespace Unity.Physics.Stepping
                 // of dynamic bodies, so only changes to static bodies require rebuilding this tree.
                 StaticBodies.staticsChanged = !builtWhole || store->staticsVersion != StaticBodies.builtStaticsVersion;
                 StaticBodies.builtStaticsVersion = store->staticsVersion;
-                treeMatchesHeld = builtWhole;
+                Trees.treeMatchesHeld = builtWhole;
                 builtWhole = false;
             }
 
             // Compare cached bounds only when body storage and dynamic count are retained and the cache remains
             // valid.
             void* bodiesBefore = NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.Bodies);
-            bool compareBodies = boundsCacheBuilt && BoundsCacheEnabled && world.NumDynamicBodies == Partition.dynamicIndices.Length;
+            bool compareBodies = Trees.CanCompareBounds(ref world, ref Partition);
             int dynamicBefore = world.NumDynamicBodies;
             bool keepStaticRows = StaticBodies.KeepsStaticRows(world.NumStaticBodies, Partition.staticIndices);
 
@@ -1435,7 +1095,7 @@ namespace Unity.Physics.Stepping
             compareBodies &= sameMemory;
             keepStaticRows = StaticBodies.RetainOrRemember(ref world, ref Partition, dynamicBefore, keepStaticRows, sameMemory);
 
-            DynamicBoundsCache.View boundsView = BoundsCacheEnabled ? boundsCache.Resize(Partition.dynamicIndices.Length) : default;
+            DynamicBoundsCache.View boundsView = TreeState.BoundsCacheEnabled ? Trees.boundsCache.Resize(Partition.dynamicIndices.Length) : default;
 
             // Schedule bodies and trees first: pair creation and island finding depend on them.
             // Joint compilation and vessel work can proceed alongside them.
@@ -1458,7 +1118,7 @@ namespace Unity.Physics.Stepping
 
                 JobHandle bodiesBuilt = bodiesJob.Schedule(bodiesJob.Count, ParallelBatchSize, dependency);
                 JobHandle.ScheduleBatchedJobs();
-                broadphase = ScheduleTrees(deltaTime, bodiesBuilt);
+                broadphase = Trees.ScheduleTrees(store, ref world, StaticBodies.staticsChanged, ref Partition, colliderWork, deltaTime, bodiesBuilt);
                 JobHandle.ScheduleBatchedJobs();
             }
 

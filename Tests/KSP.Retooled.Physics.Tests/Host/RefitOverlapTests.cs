@@ -114,8 +114,8 @@ namespace KSP.Retooled.Physics.Tests.Host
             }
 
             Assume.That(StoreStepper.ThrowsAfterRefitScheduled, Is.GreaterThan(throws), "the step ran in Mono and threw");
-            Assert.That(StepEntryPoints.Current->RefitPending, Is.True, "the refit is pending");
-            Assert.That(StepEntryPoints.Current->RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
+            Assert.That(StepEntryPoints.Current->Trees.RefitPending, Is.True, "the refit is pending");
+            Assert.That(StepEntryPoints.Current->Trees.RefitInputsComplete, Is.True, "the solved motions are written before a query can help");
             using (NativeArray<RaycastCommand> rays = RaysOnto(bodies))
             using (var hits = new NativeArray<RaycastHit>(Count, Allocator.TempJob))
             {
