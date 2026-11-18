@@ -338,6 +338,58 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         /// <summary>
+        /// Pulls the radial parts of a floating craft apart until a ring yields, then lets the craft settle.
+        /// The section that forms again must use the factor that it kept before the pull.
+        /// </summary>
+        [Test]
+        public void ASectionThatLocksAgainKeepsItsFactor([Values] bool fused)
+        {
+            SolverSwitches.VesselFused = fused;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
+            Fresh(true);
+            VesselSwitches.StrutLoadsEnabled = true;
+            Craft craft = BuildCraft(1000.0f, float.PositiveInfinity, ground: false);
+            foreach (Rigidbody body in craft.Bodies)
+            {
+                body.useGravity = false;
+                body.sleepThreshold = 0.0f;
+            }
+
+            long factorsAtStart = StrutLoads.Counts.Data.Factored;
+            Simulate(30);
+            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out long sectionsBefore, out long lockedBefore);
+            Assert.That(sectionsBefore, Is.EqualTo(1), "the craft starts as one locked section");
+            Assert.That(lockedBefore, Is.EqualTo(craft.Bodies.Count - 1));
+            StrutLoadsCounters before = StrutLoads.Counts.Data;
+            Assert.That(before.Factored - factorsAtStart, Is.GreaterThan(0), "the section has a factor before the pull");
+
+            long locked = lockedBefore;
+            for (int i = 1; i <= 200 && locked == lockedBefore; i++)
+            {
+                Vector3 pull = 20.0f * i * Vector3.right;
+                craft.Bodies[3].AddForce(pull);
+                craft.Bodies[4].AddForce(-pull);
+                Simulate();
+                ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out locked);
+            }
+
+            StrutLoadsCounters yielded = StrutLoads.Counts.Data;
+            Assert.That(locked, Is.LessThan(lockedBefore), "the pull makes a ring yield");
+            LargestLoad(craft, out int broken, out _);
+            Assert.That(broken, Is.Zero, "the pull breaks no joint");
+
+            Simulate(100);
+            StrutLoadsCounters after = StrutLoads.Counts.Data;
+            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out long sectionsAfter, out long lockedAfter);
+            LargestLoad(craft, out broken, out _);
+            Assert.That(broken, Is.Zero, "all joints survive the recovery");
+            Assert.That(lockedAfter, Is.EqualTo(lockedBefore), "the ring locks again");
+            Assert.That(sectionsAfter, Is.EqualTo(sectionsBefore));
+            Assert.That(after.Reactivated - yielded.Reactivated, Is.GreaterThan(0), "a section uses a factor from before the split");
+            Assert.That(after.Factored - yielded.Factored, Is.Zero, "the section that comes back needs no new factor");
+        }
+
+        /// <summary>
         /// The craft stands on the ground with joints too weak to hold it, so that most of them break in the same few steps
         /// after the edges lock, as in the bursts of breaks that the game showed. Every body keeps a finite pose and velocity.
         /// </summary>
