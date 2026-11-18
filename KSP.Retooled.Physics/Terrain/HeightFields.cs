@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Commands;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -15,9 +15,12 @@ namespace KSP.Retooled.Physics.Terrain
     /// </summary>
     internal static unsafe class HeightFields
     {
+        private static readonly ProfilerMarker CreateHeightFieldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CreateHeightField");
+        private static readonly ProfilerMarker UpdateHeightFieldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.UpdateHeightField");
+
         internal static HeightField* Create(CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateHeightField.Auto();
+            using ProfilerMarker.AutoScope span = CreateHeightFieldMarker.Auto();
 
             // The descriptor's height count is often zero, so calculate the number of samples from the resolution.
             uint resolution = a->value;
@@ -46,7 +49,7 @@ namespace KSP.Retooled.Physics.Terrain
         /// </summary>
         internal static void Update(CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.UpdateHeightField.Auto();
+            using ProfilerMarker.AutoScope span = UpdateHeightFieldMarker.Auto();
 
             HeightField* field = (HeightField*)a->pointer3;
             if (field == null || a->pointer == null || a->value != field->resolution)

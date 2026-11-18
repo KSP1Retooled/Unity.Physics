@@ -1,4 +1,3 @@
-using KSP.Retooled.Physics.Diagnostics;
 using KSP.Retooled.Physics.Commands;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
@@ -6,6 +5,7 @@ using KSP.Retooled.Physics.Queries;
 using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Interop;
 using System;
+using Unity.Profiling;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -30,7 +30,7 @@ namespace KSP.Retooled.Physics
     /// While detached, simulation and queries are disabled, and commands that require the core return zero.
     /// Callbacks must catch exceptions before returning across the native boundary.
     /// </summary>
-    public static unsafe class BackendHost
+    public static unsafe partial class BackendHost
     {
         private const string Tag = "[RetooledPhysics] ";
 
@@ -475,7 +475,7 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(ManagedCallbacks.SimulateCallback))]
         private static void OnSimulate(WorldData* world, float deltaTime)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Step.Auto();
+            using ProfilerMarker.AutoScope span = StepMarker.Auto();
 
             WorldState state = null;
             try
@@ -496,7 +496,7 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(ManagedCallbacks.BuildQueryWorldCallback))]
         private static int OnBuildQueryWorld(WorldData* world)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BuildQueryWorld.Auto();
+            using ProfilerMarker.AutoScope span = BuildQueryWorldMarker.Auto();
 
             try
             {
@@ -513,7 +513,7 @@ namespace KSP.Retooled.Physics
         [MonoPInvokeCallback(typeof(ManagedCallbacks.DestroyWorldCallback))]
         private static void OnDestroyWorld(WorldData* world)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyWorld.Auto();
+            using ProfilerMarker.AutoScope span = DestroyWorldMarker.Auto();
 
             try
             {

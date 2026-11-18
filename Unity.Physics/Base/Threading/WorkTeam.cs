@@ -29,12 +29,12 @@ namespace Unity.Physics.Base.Threading
         /// <summary>The number of spin pauses between a helper's clock reads.</summary>
         const int SpinsPerClockRead = 64;
 
-        static readonly ProfilerMarker ParkMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.Park");
+        static readonly ProfilerMarker ParkMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Team.Park");
 
         // The leader's part of a stage that it publishes to the helpers, and a stage of one task, which the leader runs
         // alone while the helpers stay parked.
-        static readonly ProfilerMarker LeadStageMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.LeadStage");
-        static readonly ProfilerMarker LeadAloneMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.LeadAlone");
+        static readonly ProfilerMarker LeadStageMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Team.LeadStage");
+        static readonly ProfilerMarker LeadAloneMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Team.LeadAlone");
 
         /// <summary>Identifies the direct solver stages that run around the sparse solver stages.</summary>
         public const int PredictDriftKind = -1;

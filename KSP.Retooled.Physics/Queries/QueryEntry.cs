@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Interop;
@@ -31,6 +31,8 @@ namespace KSP.Retooled.Physics.Queries
     [BurstCompile]
     internal static unsafe class QueryEntry
     {
+        private static readonly ProfilerMarker QueryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.Query");
+
         // PhysX counts touching shapes as overlapping. Unity Physics only reports distances below the specified limit,
         // so use a small positive limit to include touching shapes.
         private const float TouchDistance = 1e-4f;
@@ -42,7 +44,7 @@ namespace KSP.Retooled.Physics.Queries
         [MonoPInvokeCallback(typeof(QueryFunction))]
         internal static int Run(uint kind, QueryWorld* world, QueryInput* input, QueryOutput* output)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.Query.Auto();
+            using ProfilerMarker.AutoScope span = QueryMarker.Auto();
 
             int result = 0;
             bool ranInMono = false;

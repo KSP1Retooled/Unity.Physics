@@ -19,17 +19,17 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
-        static readonly ProfilerMarker ForestFactorMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Factor");
-        static readonly ProfilerMarker ForestBoundaryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Boundary");
-        static readonly ProfilerMarker ForestSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Solve");
+        static readonly ProfilerMarker ForestFactorMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Factor");
+        static readonly ProfilerMarker ForestBoundaryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Boundary");
+        static readonly ProfilerMarker ForestSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Solve");
 
         // The serial parts of SolveForest, which the leader runs alone.
-        static readonly ProfilerMarker ForestHeldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.HeldRows");
-        static readonly ProfilerMarker ForestBoundaryInputMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.BoundaryInput");
-        static readonly ProfilerMarker ForestDenseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Dense");
-        static readonly ProfilerMarker ForestSpreadMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Spread");
-        static readonly ProfilerMarker ForestRowImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.RowImpulses");
-        static readonly ProfilerMarker ForestStructureMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Forest.Structure");
+        static readonly ProfilerMarker ForestHeldMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.HeldRows");
+        static readonly ProfilerMarker ForestBoundaryInputMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.BoundaryInput");
+        static readonly ProfilerMarker ForestDenseMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Dense");
+        static readonly ProfilerMarker ForestSpreadMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Spread");
+        static readonly ProfilerMarker ForestRowImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.RowImpulses");
+        static readonly ProfilerMarker ForestStructureMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Forest.Structure");
 
         const byte ForestRowClass = 0;
         const byte BoundaryRowClass = 1;

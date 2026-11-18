@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Interop;
@@ -25,6 +25,10 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class BodyCommands
     {
+        private static readonly ProfilerMarker BodyCommandMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.Body");
+        private static readonly ProfilerMarker AttachShapeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.AttachShape");
+        private static readonly ProfilerMarker DetachShapeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.DetachShape");
+
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
@@ -36,7 +40,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.BodyCommand.Auto();
+            using ProfilerMarker.AutoScope span = BodyCommandMarker.Auto();
             Dispatch(command, handle, args, globals);
         }
 
@@ -142,7 +146,7 @@ namespace KSP.Retooled.Physics.Commands
                 case BodyCommand.DetachShape:
                     if (a->pointer != null)
                     {
-                        using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DetachShape.Auto();
+                        using ProfilerMarker.AutoScope span = DetachShapeMarker.Auto();
                         CommandStore.RemoveShape(body, (Shape*)a->pointer, globals);
                     }
 
@@ -398,7 +402,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static void AttachShape(Body* body, CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AttachShape.Auto();
+            using ProfilerMarker.AutoScope span = AttachShapeMarker.Auto();
 
             // A shape has one owner. If its entry remained with the old owner, that entry would point to freed memory
             // after the shape was destroyed.

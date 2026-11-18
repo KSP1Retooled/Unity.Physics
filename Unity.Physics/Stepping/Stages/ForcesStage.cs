@@ -14,7 +14,7 @@ namespace Unity.Physics.Stepping.Stages
     /// </summary>
     internal static unsafe class ForcesStage
     {
-        private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.ApplyForces");
+        private static readonly ProfilerMarker StepApplyForcesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Step.ApplyForces");
 
         private const int ParallelBatchSize = 64;
 

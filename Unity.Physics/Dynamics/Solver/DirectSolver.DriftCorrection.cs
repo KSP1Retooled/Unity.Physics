@@ -179,7 +179,7 @@ namespace Unity.Physics
             return false;
         }
 
-        static readonly ProfilerMarker PredictDriftMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.PredictDrift");
+        static readonly ProfilerMarker PredictDriftMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.PredictDrift");
 
         /// <summary>How many Jacobians one task of a drift prediction takes, which is a few microseconds of work.</summary>
         const int DriftBlocksPerTask = 16;

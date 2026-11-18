@@ -18,7 +18,7 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
-        static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Solve");
+        static readonly ProfilerMarker VesselSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.Solve");
 
         /// <summary>
         /// Minimum steps between lock state changes. Yield immediately at break strength or when locking is
@@ -176,7 +176,7 @@ namespace Unity.Physics
             return solved;
         }
 
-        static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.Fused");
+        static readonly ProfilerMarker VesselFusedMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.Fused");
 
         /// <summary>Whether a body of the world is kinematic: it has a motion, and no mass or inertia.</summary>
         static unsafe bool IsKinematicBody(int body, MotionVelocity* motions, int motionCount)

@@ -1108,7 +1108,7 @@ namespace Unity.Physics
             [NativeDisableUnsafePtrRestriction]
             public WorkTeam* Team;
 
-            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.HelpSolve");
+            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.HelpSolve");
 
             public void Execute(int lane)
             {
@@ -1134,7 +1134,7 @@ namespace Unity.Physics
             }
         }
 
-        static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.DirectSolve");
+        static readonly ProfilerMarker DirectSolveMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.DirectSolve");
 
         static unsafe void SolveDirectIsland(in DispatchPairSequencer.DirectSolverSchedulerInfo info, in NativeStream.Reader jacobiansReader,
             in NativeArray<IslandHeader> headers, in NativeArray<DirectIsland> islands, in DirectIslandBuffers work,
@@ -1295,7 +1295,7 @@ namespace Unity.Physics
 
         static readonly SharedStatic<long> UnfusedFoldedStepCount = SharedStatic<long>.GetOrCreate<UnfusedFoldedStepKey>();
 
-        static readonly ProfilerMarker UnfusedSubstepsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Island.UnfusedSubsteps");
+        static readonly ProfilerMarker UnfusedSubstepsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.UnfusedSubsteps");
 
         /// <summary>
         /// Run unfused substeps on one thread when fused solving is disabled and folding is selected.
@@ -1571,7 +1571,7 @@ namespace Unity.Physics
             /// </summary>
             public int Lanes;
 
-            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Vessel.HelpFused");
+            static readonly ProfilerMarker HelpMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Vessel.HelpFused");
 
             public void Execute(int lane)
             {

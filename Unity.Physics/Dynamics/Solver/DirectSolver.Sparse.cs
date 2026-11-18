@@ -16,11 +16,11 @@ namespace Unity.Physics
 {
     public static partial class Solver
     {
-        static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Solve");
-        static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Sparse.Setup");
-        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.BuildRows");
-        static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.ApplyImpulses");
-        static readonly ProfilerMarker PushOutMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Direct.PushOut");
+        static readonly ProfilerMarker SolveSparselyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Solve");
+        static readonly ProfilerMarker SparseSetupMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Sparse.Setup");
+        static readonly ProfilerMarker BuildRowsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.BuildRows");
+        static readonly ProfilerMarker ApplyImpulsesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.ApplyImpulses");
+        static readonly ProfilerMarker PushOutMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Direct.PushOut");
 
         /// <summary>
         /// The joints of an island, solved by <see cref="SparseConstraintSolver"/> from the rows the dense path would have

@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Host;
 using System;
 using System.Runtime.InteropServices;
@@ -14,6 +14,9 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class MeshCook
     {
+        private static readonly ProfilerMarker CookMeshMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CookMesh");
+        private static readonly ProfilerMarker ValidateMeshMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.ValidateMesh");
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal delegate void CookFunction(CookInput* input, CookOutput* output);
 
@@ -28,7 +31,7 @@ namespace KSP.Retooled.Physics.Commands
         [MonoPInvokeCallback(typeof(CookFunction))]
         internal static void Cook(CookInput* input, CookOutput* output)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CookMesh.Auto();
+            using ProfilerMarker.AutoScope span = CookMeshMarker.Auto();
 
             bool ranInMono = false;
             CookInMono(input, output, ref ranInMono);
@@ -65,7 +68,7 @@ namespace KSP.Retooled.Physics.Commands
         [MonoPInvokeCallback(typeof(ValidateFunction))]
         internal static int Validate(byte* stream, long size, int convex)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ValidateMesh.Auto();
+            using ProfilerMarker.AutoScope span = ValidateMeshMarker.Auto();
 
             return MeshCooker.Validate(stream, size, convex);
         }

@@ -1,5 +1,5 @@
+using Unity.Profiling;
 using PhysicsCollider = Unity.Physics.Collider;
-using KSP.Retooled.Physics.Diagnostics;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Interop;
@@ -24,6 +24,12 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class WorldCommands
     {
+        private static readonly ProfilerMarker WorldCommandMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.World");
+        private static readonly ProfilerMarker CreateBodyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CreateBody");
+        private static readonly ProfilerMarker DestroyBodyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.DestroyBody");
+        private static readonly ProfilerMarker CountBodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CountBodies");
+        private static readonly ProfilerMarker ShapesByLayerMaskMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.ShapesByLayerMask");
+
         // The default value of Rigidbody.maxLinearVelocity. Unity sends the body's other limits after creating it.
         private const float DefaultMaxLinearVelocity = 1e16f;
         private const float DefaultMaxAngularVelocity = 7.0f;
@@ -54,7 +60,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.WorldCommand.Auto();
+            using ProfilerMarker.AutoScope span = WorldCommandMarker.Auto();
             Dispatch(command, handle, args, globals);
         }
 
@@ -131,7 +137,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static void CountBodies(WorldData* world, BodyCounts* counts)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CountBodies.Auto();
+            using ProfilerMarker.AutoScope span = CountBodiesMarker.Auto();
 
             for (uint i = 0; i < world->bodyCount; i++)
             {
@@ -161,7 +167,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static Body* CreateBody(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateBody.Auto();
+            using ProfilerMarker.AutoScope span = CreateBodyMarker.Auto();
 
             if (world->bodyCount == world->bodyCapacity)
             {
@@ -226,7 +232,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyBody.Auto();
+            using ProfilerMarker.AutoScope span = DestroyBodyMarker.Auto();
 
             CommandStore.DetachAllShapes(body, globals);
             JointCommands.ForgetBody(world, body);
@@ -288,7 +294,7 @@ namespace KSP.Retooled.Physics.Commands
         /// <summary>Builds a list that the plugin passes to Unity's callback and then frees.</summary>
         private static void CollectShapesByLayerMask(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ShapesByLayerMask.Auto();
+            using ProfilerMarker.AutoScope span = ShapesByLayerMaskMarker.Auto();
 
             uint capacity = 0;
             for (uint i = 0; i < world->bodyCount; i++)

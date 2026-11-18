@@ -22,7 +22,7 @@ namespace Unity.Physics.Collision.Colliders.Building
     [BurstCompile]
     internal static unsafe partial class ColliderBuilder
     {
-        private static readonly ProfilerMarker BuildMeshCollider = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BuildMeshCollider");
+        private static readonly ProfilerMarker BuildMeshCollider = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Colliders.BuildMesh");
 
         // PhysX permits a degenerate extent, but Unity Physics requires a positive extent.
         private const float MinimumExtent = 1e-4f;

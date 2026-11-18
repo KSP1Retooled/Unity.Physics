@@ -18,7 +18,7 @@ namespace Unity.Physics.Stepping.Stages
     /// </summary>
     internal static unsafe class SolveStage
     {
-        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
+        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Step.ScheduleSolve");
 
         /// <summary>The settings that the simulation systems use to build their input for a step.</summary>
         internal static PhysicsStep Settings

@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Interop;
@@ -26,6 +26,8 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class VehicleCommands
     {
+        private static readonly ProfilerMarker VehicleCommandMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.Vehicle");
+
         // The value returned by GetFirstDisabledWheelFromVehicle when every slot is in use. Unity interprets it as -1.
         private const uint NoIndex = uint.MaxValue;
 
@@ -41,7 +43,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.VehicleCommand.Auto();
+            using ProfilerMarker.AutoScope span = VehicleCommandMarker.Auto();
             Dispatch(command, handle, args, globals);
         }
 

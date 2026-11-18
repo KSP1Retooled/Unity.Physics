@@ -61,8 +61,8 @@ namespace Unity.Physics.Stepping.State
         private long treeBuildCount;
         private long treeRefitCount;
         private long treeFilterRefitCount;
-        private static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Build.ShiftStaticTree");
-        private static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.WaitForTree");
+        private static readonly ProfilerMarker ShiftStaticTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Build.ShiftStaticTree");
+        private static readonly ProfilerMarker StepWaitForTreeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Step.WaitForTree");
 
         /// <summary>
         /// Maximum consecutive refits before rebuilding the dynamic tree.

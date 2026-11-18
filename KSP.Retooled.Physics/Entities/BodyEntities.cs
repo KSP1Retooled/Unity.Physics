@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Interop;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
@@ -19,6 +19,10 @@ namespace KSP.Retooled.Physics.Entities
     /// </summary>
     internal static unsafe class BodyEntities
     {
+        private static readonly ProfilerMarker AdoptBodyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.AdoptBody");
+        private static readonly ProfilerMarker ReleaseBodyMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.ReleaseBody");
+        private static readonly ProfilerMarker HandOverRowMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.HandOverRow");
+
         private struct Binding
         {
             public EntityManager Manager;
@@ -114,7 +118,7 @@ namespace KSP.Retooled.Physics.Entities
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.AdoptBody.Auto();
+            using ProfilerMarker.AutoScope span = AdoptBodyMarker.Auto();
 
             // Creating an entity preserves existing pointers, but does not refresh pointers that were already
             // stale.
@@ -153,7 +157,7 @@ namespace KSP.Retooled.Physics.Entities
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ReleaseBody.Auto();
+            using ProfilerMarker.AutoScope span = ReleaseBodyMarker.Auto();
 
             Refresh(hot);
             bool clean = Clean();
@@ -207,7 +211,7 @@ namespace KSP.Retooled.Physics.Entities
         /// </summary>
         private static void HandOver(EntityStorageInfo slot, BodyData* vacated)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.HandOverRow.Auto();
+            using ProfilerMarker.AutoScope span = HandOverRowMarker.Auto();
 
             ref EntityManager manager = ref Current.Data.Manager;
             ComponentTypeHandle<BodyOwner> owners = manager.GetComponentTypeHandle<BodyOwner>(true);

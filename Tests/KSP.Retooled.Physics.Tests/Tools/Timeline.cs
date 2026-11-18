@@ -426,7 +426,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 double span = Median(pair.Value.Last) - Median(pair.Value.First);
                 // Keep the short jobs that find and index the islands, so that their cost shows even when it is small.
                 bool islandStage = pair.Key.Contains("Island") || pair.Key.Contains("DispatchPair");
-                if (cpu < 0.02 && span < 0.05 && !islandStage)
+                bool stepStage = pair.Key.StartsWith("M Physics.Step.", StringComparison.Ordinal)
+                    || pair.Key.StartsWith("M Rigid Bodies KSP.Retooled.Physics.Stepping.", StringComparison.Ordinal);
+                if (cpu < 0.02 && span < 0.05 && !islandStage && !stepStage)
                 {
                     continue;
                 }
@@ -453,8 +455,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
         /// </summary>
         private static string SolveTail(int first, int last)
         {
+            const string backendStep = "Physics.Backend.Step";
             const string fusedJob = "Solver:SolveFusedVesselIslandsJob (Burst)";
-            const string writeBackJob = "StoreBodies.WriteBackJob (Burst)";
+            const string writeBackJob = "StoreBodies:WriteBackJob (Burst)";
             var chainEnds = new List<double>();
             var writeBacks = new List<double>();
             var writeBackEnds = new List<double>();
@@ -476,7 +479,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
                     for (int i = 0; i < view.sampleCount; i++)
                     {
                         string name = view.GetSampleName(i);
-                        bool stepMarker = thread == 0 && name != null && name.StartsWith("Retooled.Physics.Step");
+                        bool stepMarker = thread == 0 && (name == backendStep || name?.StartsWith("Physics.Step.", StringComparison.Ordinal) == true);
                         if (name == null || !(name.EndsWith("(Burst)") || name.EndsWith("(Cleanup)") || stepMarker))
                         {
                             continue;
@@ -488,8 +491,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
 
                 ulong fusedEnd = samples.Where(s => s.name == fusedJob).Select(s => s.end).DefaultIfEmpty(0UL).Max();
+                ulong stepEnd = samples.Where(s => s.name == backendStep).Select(s => s.end).DefaultIfEmpty(0UL).Max();
                 ulong writeBack = samples.Where(s => s.name == writeBackJob).Select(s => s.start).DefaultIfEmpty(0UL).Min();
-                if (fusedEnd == 0 || writeBack == 0 || writeBack < fusedEnd - 5_000_000)
+                if (fusedEnd == 0 || writeBack == 0 || stepEnd == 0 || writeBack + 5_000_000 < fusedEnd)
                 {
                     continue;
                 }
@@ -499,7 +503,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 chainEnds.Add(((long)chainEnd - (long)fusedEnd) / 1e6);
                 writeBacks.Add(((long)writeBack - (long)fusedEnd) / 1e6);
                 writeBackEnds.Add(((long)samples.Where(s => s.name == writeBackJob).Max(s => s.end) - (long)fusedEnd) / 1e6);
-                ulong stepEnd = samples.Where(s => s.name == "Retooled.Physics.Step").Select(s => s.end).DefaultIfEmpty(0UL).Max();
                 stepEnds.Add(((long)stepEnd - (long)fusedEnd) / 1e6);
                 substepJobCounts.Add(chain.Count(s => s.name.EndsWith("(Burst)")));
                 if (listed < 3)
@@ -519,8 +522,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
             }
 
             return $"# solve tail over {writeBacks.Count} frames, medians in ms from the end of the fused job: last substep job ends " +
-                $"{Median(chainEnds):F3}, StoreBodies.WriteBackJob starts {Median(writeBacks):F3} and ends {Median(writeBackEnds):F3}, the step " +
-                $"(Retooled.Physics.Step) ends {Median(stepEnds):F3}; substep jobs that start within 5 ms before the " +
+                $"{Median(chainEnds):F3}, {writeBackJob} starts {Median(writeBacks):F3} and ends {Median(writeBackEnds):F3}, the step " +
+                $"({backendStep}) ends {Median(stepEnds):F3}; substep jobs that start within 5 ms before the " +
                 $"fused job ends or after it: {Median(substepJobCounts):F0}\n" + listing;
         }
 
@@ -530,7 +533,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
         /// </summary>
         private static string WhileParked(int first, int last)
         {
-            const string park = "Retooled.Physics.Island.Park";
+            const string park = "Physics.Team.Park";
             var total = new Dictionary<string, double>();
             double parkedWindow = 0.0;
             int frames = 0;

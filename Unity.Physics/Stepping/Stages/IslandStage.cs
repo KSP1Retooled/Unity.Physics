@@ -13,7 +13,7 @@ namespace Unity.Physics.Stepping.Stages
     /// </summary>
     internal static unsafe class IslandStage
     {
-        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Step.Schedule");
+        private static readonly ProfilerMarker StepScheduleMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Step.ScheduleIslands");
 
         private const int ParallelBatchSize = 64;
 

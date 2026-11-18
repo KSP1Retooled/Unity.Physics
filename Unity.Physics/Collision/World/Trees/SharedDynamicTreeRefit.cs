@@ -218,10 +218,10 @@ namespace Unity.Physics.Collision.World.Trees
             }
         }
 
-        static readonly ProfilerMarker BodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Bodies");
-        static readonly ProfilerMarker NodesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Subtrees");
-        static readonly ProfilerMarker TopMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Top");
-        static readonly ProfilerMarker WaitMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.Refit.Wait");
+        static readonly ProfilerMarker BodiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Refit.Bodies");
+        static readonly ProfilerMarker NodesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Refit.Subtrees");
+        static readonly ProfilerMarker TopMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Refit.Top");
+        static readonly ProfilerMarker WaitMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Refit.Wait");
 
         /// <summary>
         /// Inject an exception in the first body batch for Mono tests. Burst omits it; ThrowsForTests counts

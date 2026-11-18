@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Terrain;
@@ -28,6 +28,11 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class ShapeCommands
     {
+        private static readonly ProfilerMarker ShapeCommandMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.Shape");
+        private static readonly ProfilerMarker CreateShapeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CreateShape");
+        private static readonly ProfilerMarker DestroyShapeMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.DestroyShape");
+        private static readonly ProfilerMarker SetGeometryMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.SetGeometry");
+
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
@@ -39,7 +44,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ShapeCommand.Auto();
+            using ProfilerMarker.AutoScope span = ShapeCommandMarker.Auto();
             Dispatch(command, handle, args, globals);
         }
 
@@ -222,7 +227,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static void StoreGeometry(Shape* shape, CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.SetGeometry.Auto();
+            using ProfilerMarker.AutoScope span = SetGeometryMarker.Auto();
 
             void* previousMesh = ShapeMassProperties.IsMeshGeometry(shape->data.geometryType) ? shape->data.mesh : null;
             if (shape->data.geometryType == StoreConstants.GeometryHeightField)
@@ -247,7 +252,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static Shape* Create(CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateShape.Auto();
+            using ProfilerMarker.AutoScope span = CreateShapeMarker.Auto();
 
             Shape* shape = StoreMemory.Allocate<Shape>(globals);
             shape->data.owner = shape;
@@ -262,7 +267,7 @@ namespace KSP.Retooled.Physics.Commands
 
         private static void Destroy(Shape* shape, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyShape.Auto();
+            using ProfilerMarker.AutoScope span = DestroyShapeMarker.Auto();
 
             GroupTable.RemoveShape(globals, shape);
             if (shape->body != null)

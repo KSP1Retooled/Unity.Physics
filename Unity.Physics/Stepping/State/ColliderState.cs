@@ -18,7 +18,7 @@ namespace Unity.Physics.Stepping.State
         internal NativeReference<uint> wholeColliderBuilds;
         internal JobHandle collidersBuilt;
         internal uint builtMaterialVersion;
-        internal static readonly ProfilerMarker RefreshCollidersMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.RefreshColliders");
+        internal static readonly ProfilerMarker RefreshCollidersMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Colliders.Refresh");
 
         internal void Initialize()
         {

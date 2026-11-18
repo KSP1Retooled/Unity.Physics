@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using KSP.Retooled.Physics.Entities;
 using KSP.Retooled.Physics.Host;
 using KSP.Retooled.Physics.Interop;
@@ -26,6 +26,11 @@ namespace KSP.Retooled.Physics.Commands
     [BurstCompile]
     internal static unsafe class JointCommands
     {
+        private static readonly ProfilerMarker JointCommandMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.Joint");
+        private static readonly ProfilerMarker CreateJointMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.CreateJoint");
+        private static readonly ProfilerMarker DestroyJointMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.DestroyJoint");
+        private static readonly ProfilerMarker ForgetBodyJointsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Commands.ForgetBodyJoints");
+
         [BurstCompile(DisableSafetyChecks = true)]
         [MonoPInvokeCallback(typeof(ManagedCallbacks.CommandFunction))]
         internal static void Run(uint command, void* handle, CommandArgs* args, StoreGlobals* globals)
@@ -37,7 +42,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.JointCommand.Auto();
+            using ProfilerMarker.AutoScope span = JointCommandMarker.Auto();
             Dispatch(command, handle, args);
         }
 
@@ -344,7 +349,7 @@ namespace KSP.Retooled.Physics.Commands
 
         internal static JointData* Create(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.CreateJoint.Auto();
+            using ProfilerMarker.AutoScope span = CreateJointMarker.Auto();
 
             if (world->jointCount == world->jointCapacity)
             {
@@ -389,7 +394,7 @@ namespace KSP.Retooled.Physics.Commands
                 return;
             }
 
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.DestroyJoint.Auto();
+            using ProfilerMarker.AutoScope span = DestroyJointMarker.Auto();
 
             JointTopology.Changed();
             CountEnd(joint->body0, -1);
@@ -410,7 +415,7 @@ namespace KSP.Retooled.Physics.Commands
         /// </summary>
         internal static void ForgetBody(WorldData* world, Body* body)
         {
-            using Unity.Profiling.ProfilerMarker.AutoScope span = BackendMarkers.ForgetBodyJoints.Auto();
+            using ProfilerMarker.AutoScope span = ForgetBodyJointsMarker.Auto();
 
             BodyData* hot = world->bodies + body->index;
             if (hot->jointEnds > 0)

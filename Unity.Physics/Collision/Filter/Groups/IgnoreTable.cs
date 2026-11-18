@@ -13,8 +13,8 @@ namespace Unity.Physics.Collision.Filter.Groups
     /// </summary>
     internal unsafe struct IgnoreTable
     {
-        private static readonly ProfilerMarker ForgetIgnoredCollisions = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.ForgetIgnoredCollisions");
-        private static readonly ProfilerMarker IgnoreCollision = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.ShapeCommand.IgnoreCollision");
+        private static readonly ProfilerMarker ForgetIgnoredCollisions = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Filter.ForgetIgnoredPairs");
+        private static readonly ProfilerMarker IgnoreCollision = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Filter.IgnoreCollision");
 
         private const uint IdCount = 1u << 16;
         private const uint InitialSlots = 1024;

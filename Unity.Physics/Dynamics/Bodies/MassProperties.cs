@@ -10,8 +10,8 @@ namespace Unity.Physics.Dynamics.Bodies
 {
     internal static unsafe class MassProperties
     {
-        private static readonly ProfilerMarker ClosestPointOnBoundsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.ClosestPointOnBounds");
-        private static readonly ProfilerMarker RecomputeMassPropertiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Retooled.Physics.BodyCommand.RecomputeMassProperties");
+        private static readonly ProfilerMarker ClosestPointOnBoundsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Bodies.ClosestPointOnBounds");
+        private static readonly ProfilerMarker RecomputeMassPropertiesMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Bodies.RecomputeMass");
 
         private const uint OverrideCenterOfMass = 1;
         private const uint OverrideInertiaTensor = 2;

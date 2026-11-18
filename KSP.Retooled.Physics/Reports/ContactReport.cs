@@ -1,4 +1,4 @@
-using KSP.Retooled.Physics.Diagnostics;
+using Unity.Profiling;
 using Unity.Jobs;
 using Unity.Physics.Stepping;
 
@@ -6,9 +6,11 @@ namespace KSP.Retooled.Physics.Reports
 {
     internal static unsafe partial class ContactReport
     {
+        private static readonly ProfilerMarker StepPublishContactsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Backend.PublishContacts");
+
         internal static void Publish(StoreStepper* state, JobHandle contactsJoined)
         {
-            using (BackendMarkers.StepPublishContacts.Auto())
+            using (StepPublishContactsMarker.Auto())
             {
                 // Sort the manifolds after the sleep contact job has read them.
                 contactsJoined.Complete();
