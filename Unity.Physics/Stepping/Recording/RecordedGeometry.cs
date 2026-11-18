@@ -18,6 +18,8 @@ namespace Unity.Physics.Stepping.Recording
         private int nextId;
         private byte[] jointBuffer = Array.Empty<byte>();
         private byte[] joints;
+        private uint jointTopology;
+        private uint jointSettings;
         private byte[] build;
         private byte[] shapes;
 
@@ -45,6 +47,23 @@ namespace Unity.Physics.Stepping.Recording
                 return 0;
             }
 
+            uint topology = JointTopology.Version;
+            uint settings = JointSettings.Version;
+            const int header = sizeof(int);
+            if (joints != null && joints.Length == bytes + header && jointTopology == topology && jointSettings == settings)
+            {
+                fixed (byte* previous = joints)
+                {
+                    if (RecordedJoint.MatchesTargetsAndEnds(world, globals->engineObjectIdOffset, (RecordedJoint*)(previous + header)) != 0)
+                    {
+                        step.Geometry.Add(joints);
+                        return *(int*)previous;
+                    }
+                }
+            }
+
+            jointTopology = topology;
+            jointSettings = settings;
             if (jointBuffer.Length < bytes)
             {
                 jointBuffer = new byte[bytes];

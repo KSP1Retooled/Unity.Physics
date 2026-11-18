@@ -87,6 +87,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
             FlightRecorderSwitches.Enabled = true;
             Simulate(3);
             probe.AddForce(new Vector3(3, 0, 1), ForceMode.Impulse);
+            child.GetComponent<ConfigurableJoint>().targetAngularVelocity = new Vector3(0, 0.4f, 0.1f);
+            child.mass *= 1.25f;
             Rigidbody removed = DynamicBox(new Vector3(7, 1, 0));
             Simulate(2);
             Object.DestroyImmediate(removed.gameObject);
