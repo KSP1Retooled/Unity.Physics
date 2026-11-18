@@ -11,43 +11,6 @@ namespace Unity.Physics.Tests.Systems
     class SimulationStepInput_UnitTests
     {
         [Test]
-        public void VerifySetSubstep([Values(0, 2)] int numSubsteps)
-        {
-            float timeStep = 0.5f;
-            using (var world = new World("Test world"))
-            {
-                // create the build physics world system
-                var buildPhysicsWorld = world.GetOrCreateSystem<BuildPhysicsWorld>();
-                ref var bpwData = ref world.EntityManager.GetComponentDataRW<BuildPhysicsWorldData>(buildPhysicsWorld)
-                    .ValueRW;
-
-                var simulationStepInput = new SimulationStepInput()
-                {
-                    World = bpwData.PhysicsData.PhysicsWorld,
-                    TimeStep = timeStep,
-                    Gravity = new float3(0, -9.81f, 0),
-                    SynchronizeCollisionWorld = false,
-                    NumSubsteps = numSubsteps,
-                    NumSolverIterations = 3,
-                    SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
-                    HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
-                };
-
-                var expectedNumSubsteps = numSubsteps <= 0 ? 1 : numSubsteps;
-                Assert.AreEqual(expectedNumSubsteps, simulationStepInput.NumSubsteps);
-
-                if (numSubsteps == 0)
-                {
-                    Assert.That(simulationStepInput.SubstepTimeStep, Is.PrettyCloseTo(timeStep));
-                }
-                else
-                {
-                    Assert.That(simulationStepInput.SubstepTimeStep, Is.PrettyCloseTo(timeStep / numSubsteps));
-                }
-            }
-        }
-
-        [Test]
         public void VerifySetSolverIterations([Values(0, 2)] int numSolverIterations)
         {
             float timeStep = 0.5f;
@@ -75,7 +38,7 @@ namespace Unity.Physics.Tests.Systems
         }
 
         [Test]
-        public void VerifyDefaultPhysicsStepSubstepValue()
+        public void VerifyDefaultPhysicsStepSolverIterations()
         {
             using (var world = new World("Test world"))
             {
@@ -91,37 +54,8 @@ namespace Unity.Physics.Tests.Systems
                 jobHandle.Complete();
                 Assert.IsTrue(jobHandle.IsCompleted);
 
-                // confirm that the substep count and solver iteration count were initialized to default values
                 var physicsStep = world.EntityManager.GetComponentData<PhysicsStep>(physicsStepEntity);
-                Assert.That(physicsStep.SubstepCount, Is.EqualTo(1));
                 Assert.That(physicsStep.SolverIterationCount, Is.EqualTo(4));
-            }
-        }
-
-        [Test]
-        public void VerifyStepImmediateSetSubsteps([Values(0, 2)] int numSubsteps)
-        {
-            float timeStep = 0.02f;
-            using (var world = new World("Test world"))
-            {
-                // create the build physics world system
-                var buildPhysicsWorld = world.GetOrCreateSystem<BuildPhysicsWorld>();
-                ref var bpwData = ref world.EntityManager.GetComponentDataRW<BuildPhysicsWorldData>(buildPhysicsWorld)
-                    .ValueRW;
-                var simulationStepInput = new SimulationStepInput()
-                {
-                    World = bpwData.PhysicsData.PhysicsWorld,
-                    TimeStep = timeStep,
-                    Gravity = new float3(0, -9.81f, 0),
-                    SynchronizeCollisionWorld = false,
-                    NumSubsteps = numSubsteps,
-                    NumSolverIterations = 3,
-                    SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
-                    HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
-                };
-
-                var context = new SimulationContext();
-                Simulation.StepImmediate(simulationStepInput, ref context); //should not throw an exception
             }
         }
 
@@ -165,37 +99,6 @@ namespace Unity.Physics.Tests.Systems
 
         [Test]
         [Conditional(CompilationSymbols.CollectionsChecksSymbol)]
-        public void VerifyStepImmediateWithUnspecifiedSubstep()
-        {
-            float timeStep = 0.02f;
-            using (var world = new World("Test world"))
-            {
-                // create the build physics world system
-                var buildPhysicsWorld = world.GetOrCreateSystem<BuildPhysicsWorld>();
-                ref var bpwData = ref world.EntityManager.GetComponentDataRW<BuildPhysicsWorldData>(buildPhysicsWorld)
-                    .ValueRW;
-                var simulationStepInput = new SimulationStepInput()
-                {
-                    World = bpwData.PhysicsData.PhysicsWorld,
-                    TimeStep = timeStep,
-                    Gravity = new float3(0, -9.81f, 0),
-                    SynchronizeCollisionWorld = false,
-                    //NumSubsteps = DNE
-                    NumSolverIterations = 3,
-                    SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
-                    HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
-                };
-                Assert.That(simulationStepInput.NumSubsteps, Is.EqualTo(0));
-                var context = new SimulationContext();
-
-                // numSubsteps will be set to 1. And will not throw an error.
-                Assert.That(() => Simulation.StepImmediate(simulationStepInput, ref context),
-                    !Throws.Exception.TypeOf<System.ArgumentOutOfRangeException>());
-            }
-        }
-
-        [Test]
-        [Conditional(CompilationSymbols.CollectionsChecksSymbol)]
         public void VerifyStepImmediateWithUnspecifiedSolverIterations()
         {
             using (var world = new World("Test world"))
@@ -222,36 +125,6 @@ namespace Unity.Physics.Tests.Systems
                 // numSolverIterations will be set to 1 and will throw an error.
                 Assert.That(() => Simulation.StepImmediate(simulationStepInput, ref context),
                     Throws.Exception.TypeOf<System.ArgumentOutOfRangeException>());
-            }
-        }
-
-        [Test]
-        public void VerifyScheduleStepJobsWithUnspecifiedSubstep()
-        {
-            using (var world = new World("Test world"))
-            {
-                // create the build physics world system
-                var buildPhysicsWorld = world.GetOrCreateSystem<BuildPhysicsWorld>();
-                ref var bpwData = ref world.EntityManager.GetComponentDataRW<BuildPhysicsWorldData>(buildPhysicsWorld)
-                    .ValueRW;
-
-                var stepInput = new SimulationStepInput()
-                {
-                    World = bpwData.PhysicsData.PhysicsWorld,
-                    TimeStep = 0.02f,
-                    Gravity = new float3(0, -9.81f, 0),
-                    SynchronizeCollisionWorld = false,
-                    //NumSubsteps = DNE,
-                    NumSolverIterations = 3,
-                    SolverStabilizationHeuristicSettings = Solver.StabilizationHeuristicSettings.Default,
-                    HaveStaticBodiesChanged = new NativeReference<int>(1, Allocator.Temp)
-                };
-
-                var simulation = Simulation.Create();
-                var handles = new SimulationJobHandles(new JobHandle());
-
-                handles = simulation.ScheduleStepJobs(stepInput, default, false);
-                handles.FinalExecutionHandle.Complete();
             }
         }
 
@@ -289,7 +162,7 @@ namespace Unity.Physics.Tests.Systems
 
         [Test]
         [Conditional(CompilationSymbols.CollectionsChecksSymbol)]
-        public void VerifyStepImmediateSimulationResultWithUnspecifiedSubstep()
+        public void StepImmediateAppliesGravityAndDamping()
         {
             float timeStep = 0.02f;
             using (var world = new PhysicsWorld(0,1,0))
@@ -358,19 +231,17 @@ namespace Unity.Physics.Tests.Systems
                     Simulation.StepImmediate(simulationStepInput, ref context);
                 }
 
-                // if the substep is not passed into StepImmediate, gravity integration will be performed, but no
-                // Jacobian constraints will be solved and the final integrate step will skipped, meaning that the
-                // WorldFromMotion data won't be updated.
                 var vFinal = world.MotionVelocities[0].LinearVelocity.y;
 
                 var mass = math.rcp(velocity.InverseMass);
                 var gravity = simulationStepInput.Gravity.y;
                 var vNoDamping = mass * gravity * timeStep * frames;
-                Assert.IsTrue(vFinal > vNoDamping,"Error: Velocity Integration not performed with NumSubsteps unspecified.");
+                Assert.That(vFinal, Is.GreaterThan(vNoDamping).And.LessThan(0));
 
                 var dStart = motionData.WorldFromMotion.pos.y;
                 var dFinal = world.MotionDatas[0].WorldFromMotion.pos.y;
-                Assert.IsTrue(dFinal < dStart, "Error: MotionData update not performed when NumSubsteps unspecified.");
+                Assert.That(dFinal, Is.LessThan(dStart));
+                context.Dispose();
             }
         }
 

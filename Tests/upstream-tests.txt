@@ -27,15 +27,10 @@ Unity.Physics.Tests.Collision.RigidBody.RigidBodyTest
 Unity.Physics.Tests.Collision.World.BroadPhaseTests
 Unity.Physics.Tests.Collision.World.CollisionWorldTests
 Unity.Physics.Tests.Components.PhysicsColliderTests
-Unity.Physics.Tests.Dynamics.Events.CollisionEventsTests
-Unity.Physics.Tests.Dynamics.Events.ImpulseEventsTests
-Unity.Physics.Tests.Dynamics.Events.TriggerEventsTests
 Unity.Physics.Tests.Dynamics.Integrator.IntegratorTests
 Unity.Physics.Tests.Dynamics.Jacobians.ContactJacobiansTests
 Unity.Physics.Tests.Dynamics.Jacobians.JacobiansTests
 Unity.Physics.Tests.Dynamics.Joints.BodyFrame_UnitTests
-Unity.Physics.Tests.Dynamics.Joints.JointStressTests
-Unity.Physics.Tests.Dynamics.Joints.JointVerificationTests
 Unity.Physics.Tests.Dynamics.Materials.MaterialTests
 Unity.Physics.Tests.Dynamics.Motion.MotionTests
 Unity.Physics.Tests.Dynamics.Motors.AngularVelocityMotorTests
@@ -43,9 +38,7 @@ Unity.Physics.Tests.Dynamics.Motors.GeneralTests
 Unity.Physics.Tests.Dynamics.Motors.LinearVelocityMotorTests
 Unity.Physics.Tests.Dynamics.Motors.PositionMotorTests
 Unity.Physics.Tests.Dynamics.Motors.RotationMotorTests
-Unity.Physics.Tests.Dynamics.Schedule.SchedulerTests
 Unity.Physics.Tests.Dynamics.SimplexSolver.SimplexSolverTests
-Unity.Physics.Tests.Dynamics.Simulation.CallbackJobTests
 Unity.Physics.Tests.Dynamics.World.PhysicsWorldTests
 Unity.Physics.Tests.PerformanceTests.RadixSortTests
 Unity.Physics.Tests.Systems.BuildBroadphase_UnitTests

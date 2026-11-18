@@ -15,7 +15,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
         // 4) Verifies that the maxImpulse is never exceeded
         // 5) Verifies that the variance in the average angular velocity is within a threshold
         void TestSimulateAngularVelocityMotor_ConstantSpeed(string testName, Joint jointData,
-            int numSubsteps, int numSolverIterations, MotionVelocity velocityA, MotionVelocity velocityB, MotionData motionA, MotionData motionB,
+            MotionVelocity velocityA, MotionVelocity velocityB, MotionData motionA, MotionData motionB,
             bool useGravity, float3 targetVelocity, float maxImpulse)
         {
             int numFrames = 60; //duration 1.0s to get full rotation
@@ -28,22 +28,11 @@ namespace Unity.Physics.Tests.Dynamics.Motors
 
             MotorTestRunner.TestSimulateMotor(testName, ref jointData, MotorTestRunner.JointType.AngularVelocityMotor,
                 ref velocityA, ref velocityB, ref motionA, ref motionB,
-                useGravity, maxImpulse, motorOrientation, numSubsteps, numSolverIterations, numFrames, numStabilizingSteps,
+                useGravity, maxImpulse, motorOrientation, numFrames, numStabilizingSteps,
                 out float3 accumulateAngularVelocity, out float3 accumulateLinearVelocity);
 
-            // Testing thresholds:
-            float thresholdAngular;
-            float thresholdLinear;
-            if (numSubsteps > 1) // can decrease the thresholds a bit if using substeps
-            {
-                thresholdAngular = 0.001f;
-                thresholdLinear = 0.002f;
-            }
-            else
-            {
-                thresholdAngular = 0.01f;
-                thresholdLinear = 0.01f;
-            }
+            const float thresholdAngular = 0.01f;
+            const float thresholdLinear = 0.01f;
 
             // Angular speed after simulation should be within testThreshold of the target velocity:
             var compareToTarget = math.abs(velocityA.AngularVelocity - targetVelocity);
@@ -88,36 +77,26 @@ namespace Unity.Physics.Tests.Dynamics.Motors
         private static readonly TestCaseData[] k_AVM_ConstantVelocityTestCases =
         {
             // Arguments: axis of rotation, pivotPosition, using gravity
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), false).SetName("1/4: Axis Aligned -z, -x/+y pivot, gravity off"), // v = -358.163, off by 1.836
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), false).SetName("1/4: Axis Aligned -z, +x/+y pivot, gravity off"),  // v = -358.163, off by 1.836
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0f, 0f, 0),  false).SetName("1/4: Axis Aligned -z, 0/0 pivot, gravity off"),
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), false).SetName("1/4: Axis Aligned -z, -x/-y pivot, gravity off"), // v = -358.163, off by 1.836
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), false).SetName("1/4: Axis Aligned -z, +x/-y pivot, gravity off"),  // v = -358.164, off by 1.835
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), false).SetName("Axis Aligned -z, -x/+y pivot, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), false).SetName("Axis Aligned -z, +x/+y pivot, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0f, 0f, 0),  false).SetName("Axis Aligned -z, 0/0 pivot, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), false).SetName("Axis Aligned -z, -x/-y pivot, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), false).SetName("Axis Aligned -z, +x/-y pivot, gravity off"),
 
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), true).SetName("1/4: Axis Aligned -z, -x/+y pivot, gravity on"), // v = -362.664, off by 2.665
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), true).SetName("1/4: Axis Aligned -z, +x/+y pivot, gravity on"),  // v = -353.918, off by 6.082
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0f, 0f, 0), true).SetName("1/4: Axis Aligned -z, 0/0 pivot, gravity on"),
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), true).SetName("1/4: Axis Aligned -z, -x/-y pivot, gravity on"), // v= = -362.394, off by 2.394
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), true).SetName("1/4: Axis Aligned -z, +x/-y pivot, gravity on"),  // v = -353.670, off by 6.329
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), true).SetName("Axis Aligned -z, -x/+y pivot, gravity on"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), true).SetName("Axis Aligned -z, +x/+y pivot, gravity on"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0f, 0f, 0), true).SetName("Axis Aligned -z, 0/0 pivot, gravity on"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), true).SetName("Axis Aligned -z, -x/-y pivot, gravity on"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), true).SetName("Axis Aligned -z, +x/-y pivot, gravity on"),
 
             // Arguments: axis of rotation, pivotPosition, using gravity
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), false).SetName("4/1: Axis Aligned -z, -x/+y pivot, gravity off"), // v = -358.163, off by 1.836
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), false).SetName("4/1: Axis Aligned -z, +x/+y pivot, gravity off"),  // v = -358.163, off by 1.836
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0f, 0f, 0),  false).SetName("4/1: Axis Aligned -z, 0/0 pivot, gravity off"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), false).SetName("4/1: Axis Aligned -z, -x/-y pivot, gravity off"), // v = -358.163, off by 1.836
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), false).SetName("4/1: Axis Aligned -z, +x/-y pivot, gravity off"),  // v = -358.164, off by 1.835
 
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(-0.5f, 0.5f, 0), true).SetName("4/1: Axis Aligned -z, -x/+y pivot, gravity on"), // v = -362.664, off by 2.665
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), true).SetName("4/1: Axis Aligned -z, +x/+y pivot, gravity on"),  // v = -353.918, off by 6.082
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0f, 0f, 0), true).SetName("4/1: Axis Aligned -z, 0/0 pivot, gravity on"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(-0.5f, -0.5f, 0), true).SetName("4/1: Axis Aligned -z, -x/-y pivot, gravity on"), // v= = -362.394, off by 2.394
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, -0.5f, 0), true).SetName("4/1: Axis Aligned -z, +x/-y pivot, gravity on"),  // v = -353.670, off by 6.329
         };
 
         // Purpose of this test is for bodyA to make a full rotation in the expected amount of time and arrive back at its
         // starting point after one full rotation.
         [TestCaseSource(nameof(k_AVM_ConstantVelocityTestCases))]
-        public void ConstantVelocityTest_AVM(int numSubsteps, int numSolverIterations, float3 axisOfRotation, float3 pivotPosition, bool useGravity)
+        public void ConstantVelocityTest_AVM(float3 axisOfRotation, float3 pivotPosition, bool useGravity)
         {
             // Constants: BodyB is resting above BodyA
             RigidTransform worldFromA = new RigidTransform(quaternion.identity, new float3(-0.5f, 5f, -4f));
@@ -141,7 +120,6 @@ namespace Unity.Physics.Tests.Dynamics.Motors
                 PhysicsJoint.CreateAngularVelocityMotor(jointFrameA, jointFrameB, targetSpeedInRadians, maxImpulseForMotor));
 
             TestSimulateAngularVelocityMotor_ConstantSpeed("Constant Velocity Tests (AVM)", joint,
-                numSubsteps, numSolverIterations,
                 velocityA, velocityB, motionA, motionB, useGravity, targetVelocityInRadians, maxImpulseForMotor);
         }
 
@@ -155,8 +133,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
         // of bodyA for numStabilizingSteps, so that the average velocity is not skewed
         // checks: if the constant velocity is maintained after several steps, checks if the target
         // velocity is reached
-        void TestSimulateAngularVelocityMotor(string testName, Joint jointData, int numSubsteps, int numSolverIterations,
-            MotionVelocity velocityA, MotionVelocity velocityB, MotionData motionA, MotionData motionB,
+        void TestSimulateAngularVelocityMotor(string testName, Joint jointData, MotionVelocity velocityA, MotionVelocity velocityB, MotionData motionA, MotionData motionB,
             bool useGravity, float3 targetVelocity, float maxImpulse, bool isException = false)
         {
             int numFrames = 15; // duration = 0.25s
@@ -167,7 +144,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
 
             MotorTestRunner.TestSimulateMotor(testName, ref jointData, MotorTestRunner.JointType.AngularVelocityMotor,
                 ref velocityA, ref velocityB, ref motionA, ref motionB,
-                useGravity, maxImpulse, motorOrientation, numSubsteps, numSolverIterations, numFrames, numStabilizingSteps,
+                useGravity, maxImpulse, motorOrientation, numFrames, numStabilizingSteps,
                 out float3 accumulateAngularVelocity, out float3 accumulateLinearVelocity, isException);
 
             // Testing thresholds:
@@ -253,12 +230,6 @@ namespace Unity.Physics.Tests.Dynamics.Motors
             new float2(Constraint.DefaultSpringFrequency, 0.75f)
         };
 
-        private static readonly int2[] k_AVM_Steps =
-        {
-            new int2(1, 4),
-            new int2(4, 1)
-        };
-
         // Tests that for a given axis of rotation, pivot position, gravity setting, initial velocity, and spring/damping
         // values that the angular velocity of bodyA reaches the target and that the orientation of movement is correct
         // Constants: target speed, the max impulse of the motor
@@ -266,28 +237,25 @@ namespace Unity.Physics.Tests.Dynamics.Motors
         private static TestCaseData[] MakePermutations()
         {
             int count = 0;
-            int length = k_AVM_Steps.Length * k_AVM_UseGravity.Length * k_AVM_RotationAxis.Length * k_AVM_PivotPosition.Length *
+            int length = k_AVM_UseGravity.Length * k_AVM_RotationAxis.Length * k_AVM_PivotPosition.Length *
                 k_AVM_InitAtTargetVelocity.Length * k_AVM_SpringFrequencyAndDampingRatio.Length;
             TestCaseData[] testList = new TestCaseData[length];
 
-            foreach (int2 iStep in k_AVM_Steps)
+            foreach (bool iGravity in k_AVM_UseGravity)
             {
-                foreach (bool iGravity in k_AVM_UseGravity)
+                foreach (float3 iAxis in k_AVM_RotationAxis)
                 {
-                    foreach (float3 iAxis in k_AVM_RotationAxis)
+                    foreach (float3 iPivot in k_AVM_PivotPosition)
                     {
-                        foreach (float3 iPivot in k_AVM_PivotPosition)
+                        foreach (bool iTarget in k_AVM_InitAtTargetVelocity)
                         {
-                            foreach (bool iTarget in k_AVM_InitAtTargetVelocity)
+                            foreach (float2 iSpringAndDamping in k_AVM_SpringFrequencyAndDampingRatio)
                             {
-                                foreach (float2 iSpringAndDamping in k_AVM_SpringFrequencyAndDampingRatio)
-                                {
-                                    var name =
-                                        $"[{iStep.x}/{iStep.y}] Test {count}: gravity:{iGravity}, axis:{iAxis}, pivot:{iPivot}, initAtTarget:{iTarget}, springF:{iSpringAndDamping.x}, dampingR:{iSpringAndDamping.y}";
-                                    testList[count] = new TestCaseData(iStep.x, iStep.y, iAxis, iPivot, iGravity, iTarget,
-                                        iSpringAndDamping.x, iSpringAndDamping.y).SetName(name);
-                                    count++;
-                                }
+                                var name =
+                                    $"gravity:{iGravity}, axis:{iAxis}, pivot:{iPivot}, initAtTarget:{iTarget}, springF:{iSpringAndDamping.x}, dampingR:{iSpringAndDamping.y}";
+                                testList[count] = new TestCaseData(iAxis, iPivot, iGravity, iTarget,
+                                    iSpringAndDamping.x, iSpringAndDamping.y).SetName(name);
+                                count++;
                             }
                         }
                     }
@@ -298,7 +266,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
         }
 
         [TestCaseSource(nameof(k_AVM_Permutations))]
-        public void OrientationTests_AVM(int numSubsteps, int numSolverIterations, float3 axisOfRotation, float3 pivotPosition, bool useGravity,
+        public void OrientationTests_AVM(float3 axisOfRotation, float3 pivotPosition, bool useGravity,
             bool initAtTargetVelocity, float springFrequency, float dampingRatio)
         {
             // Input variables
@@ -325,39 +293,30 @@ namespace Unity.Physics.Tests.Dynamics.Motors
                 PhysicsJoint.CreateAngularVelocityMotor(jointFrameA, jointFrameB, targetSpeedInRadians,
                     maxImpulse, springFrequency, dampingRatio));
 
-            TestSimulateAngularVelocityMotor("Orientation Tests (AVM)", joint, numSubsteps, numSolverIterations,
-                velocityA, velocityB, motionA, motionB, useGravity, targetVelocityInRadians, maxImpulse, false);
+            TestSimulateAngularVelocityMotor("Orientation Tests (AVM)", joint, velocityA, velocityB, motionA, motionB, useGravity, targetVelocityInRadians, maxImpulse, false);
         }
 
         private static readonly TestCaseData[] k_AVM_maxImpulseTestCases =
         {
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, false, false).SetName("1/4: On-Axis maxImpulse=1, gravity off"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, false, false).SetName("4/1: On-Axis maxImpulse=1, gravity off"),
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, true, false).SetName("1/4: On-Axis maxImpulse=1, gravity on"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, true, false).SetName("4/1: On-Axis maxImpulse=1, gravity on"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, false, false).SetName("On-Axis maxImpulse=1, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 1.0f, true, false).SetName("On-Axis maxImpulse=1, gravity on"),
 
-            new TestCaseData(1, 4, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, false, false).SetName("1/4: Off-Axis maxImpulse=1, gravity off"),
-            new TestCaseData(4, 1, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, false, false).SetName("4/1: Off-Axis maxImpulse=1, gravity off"),
-            new TestCaseData(1, 4, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, true, false).SetName("1/4: Off-Axis maxImpulse=1, gravity on"),
-            new TestCaseData(4, 1, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, true, false).SetName("4/1: Off-Axis maxImpulse=1, gravity on"),
+            new TestCaseData(new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, false, false).SetName("Off-Axis maxImpulse=1, gravity off"),
+            new TestCaseData(new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 1.0f, true, false).SetName("Off-Axis maxImpulse=1, gravity on"),
 
             // mass balanced about pivot, so doesn't move with no impulse
-            new TestCaseData(1, 4, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, false, false).SetName("1/4: Off-Axis maxImpulse=0, gravity off"),
-            new TestCaseData(4, 1, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, false, false).SetName("4/1: Off-Axis maxImpulse=0, gravity off"),
-            new TestCaseData(1, 4, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, true, false).SetName("1/4: Off-Axis maxImpulse=0, gravity on"),
-            new TestCaseData(4, 1, new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, true, false).SetName("4/1: Off-Axis maxImpulse=0, gravity on"),
+            new TestCaseData(new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, false, false).SetName("Off-Axis maxImpulse=0, gravity off"),
+            new TestCaseData(new float3(1f, 1f, 1f), new float3(0.5f, 0.5f, 0.5f), 0.0f, true, false).SetName("Off-Axis maxImpulse=0, gravity on"),
 
             // with no gravity, the motor shouldn't move with no impulse
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, false, false).SetName("1/4: On-Axis maxImpulse=0, gravity off"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, false, false).SetName("4/1: On-Axis maxImpulse=0, gravity off"),
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, false, false).SetName("On-Axis maxImpulse=0, gravity off"),
 
             // these configurations will dangle off pivot due to gravity
-            new TestCaseData(1, 4, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, true, true).SetName("1/4: On-Axis maxImpulse=0, gravity on"),
-            new TestCaseData(4, 1, new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, true, true).SetName("4/1: On-Axis maxImpulse=0, gravity on")
+            new TestCaseData(new float3(0f, 0f, -1f), new float3(0.5f, 0.5f, 0), 0.0f, true, true).SetName("On-Axis maxImpulse=0, gravity on"),
         };
 
         [TestCaseSource(nameof(k_AVM_maxImpulseTestCases))]
-        public void MaxImpulseTest_AVM(int numSubsteps, int numSolverIterations, float3 axisOfRotation, float3 pivotPosition,
+        public void MaxImpulseTest_AVM(float3 axisOfRotation, float3 pivotPosition,
             float maxImpulse, bool useGravity, bool isException)
         {
             // Input variables
@@ -381,8 +340,7 @@ namespace Unity.Physics.Tests.Dynamics.Motors
             Joint joint = MotorTestRunner.CreateTestMotor(
                 PhysicsJoint.CreateAngularVelocityMotor(jointFrameA, jointFrameB, targetSpeedInRadians, maxImpulse));
 
-            TestSimulateAngularVelocityMotor("Max Impulse Tests (AVM)", joint, numSubsteps, numSolverIterations,
-                velocityA, velocityB, motionA, motionB, useGravity, targetVelocityInRadians, maxImpulse, isException);
+            TestSimulateAngularVelocityMotor("Max Impulse Tests (AVM)", joint, velocityA, velocityB, motionA, motionB, useGravity, targetVelocityInRadians, maxImpulse, isException);
         }
     }
 }
