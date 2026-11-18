@@ -542,6 +542,11 @@ namespace Unity.Physics.Dynamics.Solver.Islands
                     {
                         slotOfIdentity->Remove(previous);
                     }
+
+                    if (previous != firstIdentities[island])
+                    {
+                        ResetSlot(ref table[chosen]);
+                    }
                 }
                 else if (!full)
                 {
@@ -565,6 +570,21 @@ namespace Unity.Physics.Dynamics.Solver.Islands
             }
 
             free.Dispose();
+        }
+
+        private void ResetSlot(ref Slot slot)
+        {
+            if (slot.Forest != null)
+            {
+                ForgetOwners(slot.Forest);
+                ForestIsland.Destroy(slot.Forest);
+                slot.Forest = null;
+            }
+
+            if (slot.Created)
+            {
+                slot.Solver.InvalidateAnalysis();
+            }
         }
 
         /// <summary>

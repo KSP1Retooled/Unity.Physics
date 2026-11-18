@@ -686,6 +686,14 @@ namespace Unity.Physics.Dynamics.Solver.Sparse
 
         // Structure
 
+        /// <summary>Drop the previous problem's analysis and answer while keeping the solver's allocations.</summary>
+        internal void InvalidateAnalysis()
+        {
+            analyzedBodies = -1;
+            factored = false;
+            answered = false;
+        }
+
         /// <summary>Checks whether the nodes and their ordering from the last analysis match this problem.</summary>
         bool HasAnalyzedShape(in Problem problem, bool bounded)
         {

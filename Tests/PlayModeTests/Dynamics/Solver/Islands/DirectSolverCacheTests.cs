@@ -216,6 +216,9 @@ namespace Unity.Physics.Tests.Dynamics.Solver.Islands
                 }
 
                 Assign(ref cache, bodies, identities);
+                var previous = cache.ForestOf(1);
+                previous->StructureBuilds = 42;
+                cache.SetOwner(123, previous);
                 ulong last = (ulong)cache.ForestOf(first - 1);
                 Assert.That(cache.SlotCount, Is.EqualTo(first), "the first islands fill the slots that the table starts with");
                 for (int i = 0; i < 10; i++)
@@ -232,6 +235,8 @@ namespace Unity.Physics.Tests.Dynamics.Solver.Islands
 
                 Assign(ref cache, new[] { 0, 500, 600 }, new[] { identities[0], Identity(500), Identity(600) });
                 Assert.That(cache.SlotCount, Is.EqualTo(first + 1), "the new island takes a slot that no step used for a long time");
+                Assert.That(cache.ForestOf(2)->StructureBuilds, Is.Zero);
+                Assert.That((ulong)cache.OwnerOf(123), Is.Zero);
 
                 // The new island took the slot that was used least recently, the second island's. The last island's slot
                 // is still its own.
