@@ -134,25 +134,29 @@ namespace Unity.Physics.Stepping.Stages
         internal static JobHandle ScheduleBeforeContacts(WorldData* store, StoreGlobals* globals, ref PhysicsWorld world,
             ref BodyPartition partition, ref JointBuildState jointState, ref VesselState vessels, ref ContactState contacts,
             ref SleepState sleepState, ref TreeState trees, ref QuerySnapshotState queries, JobHandle warmStartsIndexed,
-            ref Simulation simulation, float deltaTime, ref JobHandle pending, out JobHandle snapshot, out JobHandle sleep)
+            NativeReference<StoreStepperCounters> counters, ref Simulation simulation, float deltaTime,
+            ref JobHandle pending, out JobHandle snapshot, out JobHandle sleep)
         {
             JobHandle solved = Track(ref pending,
                 JobHandle.CombineDependencies(simulation.FinalJobHandle, warmStartsIndexed, vessels.vesselsFilled));
             JobHandle motionsSolved = JobHandle.CombineDependencies(simulation.MotionsSolvedHandle, warmStartsIndexed, vessels.vesselsFilled);
 
+            // The event exporter reads solved motions. Wait for it before write-back can repair them.
+            JobHandle canRepair = JobHandle.CombineDependencies(simulation.FinalSimulationJobHandle, motionsSolved);
             JobHandle writtenBack = Track(ref pending, new StoreBodies.WriteBackJob
             {
                 Store = store->bodies,
+                Counters = (StoreStepperCounters*)counters.GetUnsafePtr(),
                 DynamicIndices = partition.dynamicIndices.AsArray(),
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
-            }.Schedule(partition.dynamicIndices.Length, ParallelBatchSize, motionsSolved));
+            }.Schedule(partition.dynamicIndices.Length, ParallelBatchSize, canRepair));
 
             JobHandle vesselsSettled = Track(ref pending, SolveStage.ScheduleVesselLoads(store, ref world, ref partition,
-                ref jointState, ref vessels, deltaTime, motionsSolved));
+                ref jointState, ref vessels, deltaTime, writtenBack));
 
             // Queries finish the refit when they need the tree. The step waits for its inputs.
-            trees.SchedulePendingRefit(store, ref world, deltaTime, motionsSolved);
+            trees.SchedulePendingRefit(store, ref world, deltaTime, writtenBack);
             StoreStepper.ThrowAfterRefitScheduledIfRequested();
 
             snapshot = Track(ref pending, queries.ScheduleQuerySnapshot(store, globals, ref world, ref partition, writtenBack));

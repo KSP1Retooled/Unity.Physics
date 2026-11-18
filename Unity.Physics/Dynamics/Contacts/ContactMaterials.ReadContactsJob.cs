@@ -39,10 +39,6 @@ namespace Unity.Physics.Dynamics.Contacts
             // diagonals are 0.021 m and 0.028 m. Points separated by at most this threshold share an anchor.
             private const float FrictionOffsetThreshold = 0.025f;
 
-            // Separation assigned to unreachable mesh contacts. Must exceed Solver.ContactRowReach so that no solver
-            // row is created.
-            private const float OutOfReach = 1.0e6f;
-
             /// <summary>
             /// Stores a static mesh polygon in world space and the motion of the body in contact with it.
             /// </summary>
@@ -103,14 +99,13 @@ namespace Unity.Physics.Dynamics.Contacts
                             continue;
                         }
 
-                        // Preserve the original point in the report. Change only the separation sent to the solver to put
-                        // it out of reach.
+                        // Keep the original geometry for the report. The Jacobian builder skips rejected points.
                         float distance = point->Distance;
                         float3 moving = face.MovingIsA ? point->Position + header->Normal * distance : point->Position;
                         bool reachable = !face.Valid || distance <= touchDistance || Reaches(face, moving, distance);
                         if (!reachable)
                         {
-                            point->Distance = OutOfReach;
+                            header->RejectedPoints |= 1u << i;
                         }
 
                         Add(ref output, point->Position, distance, touchDistance, reachable);

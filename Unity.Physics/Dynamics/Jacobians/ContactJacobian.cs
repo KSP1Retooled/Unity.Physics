@@ -196,10 +196,9 @@ namespace Unity.Physics
             ref JacobianHeader jacobianHeader,
             ref float3 centerA,
             ref float3 centerB,
-            ref NativeStream.Reader contactReader)
+            in ContactPoint contact)
         {
             ref ContactJacAngAndVelToReachCp jacAngular = ref jacobianHeader.AccessAngularJacobian(contactPointIndex);
-            ContactPoint contact = contactReader.Read<ContactPoint>();
             // world space contact point on surface of B
             float3 pointOnB = contact.Position;
             // world space contact point on surface of A

@@ -32,6 +32,7 @@ namespace Unity.Physics.Stepping
         internal TreeState Trees;
         internal StaticRows StaticBodies;
         private BodyPartition Partition;
+        private NativeReference<StoreStepperCounters> counters;
 
         // Prepared simulation, or null since the last FinishStep.
         // Avoid reading the singleton here, which would wait for solver cleanup before scheduling write-back.
@@ -64,6 +65,7 @@ namespace Unity.Physics.Stepping
             Colliders.Initialize();
             Trees.Initialize(store);
             Contacts.InitializePairCache();
+            counters = new NativeReference<StoreStepperCounters>(Allocator.Persistent);
         }
 
         internal void Dispose()
@@ -98,6 +100,7 @@ namespace Unity.Physics.Stepping
             Colliders.Dispose();
             Trees.Dispose();
             Contacts.DisposePairCache();
+            counters.Dispose();
         }
 
         /// <summary>The direct solver's cache, including the counts of solves that used the forest.</summary>
@@ -141,6 +144,8 @@ namespace Unity.Physics.Stepping
 
         /// <summary>The store updated by this simulation state. Used by tests.</summary>
         internal readonly WorldData* Store => store;
+
+        internal readonly StoreStepperCounters Counters => counters.Value;
 
         /// <summary>The manifolds of the last step, with the impulses that they started with. Used by tests.</summary>
         internal readonly NativeList<ManifoldRecord> Manifolds => Contacts.manifolds;
@@ -203,7 +208,7 @@ namespace Unity.Physics.Stepping
         {
             return FinishStage.ScheduleBeforeContacts(store, globals, ref world, ref Partition, ref Joints,
                 ref VesselData, ref Contacts, ref Sleep, ref Trees, ref Queries, warmStartsIndexed,
-                ref simulation, deltaTime, ref pending, out snapshot, out sleep);
+                counters, ref simulation, deltaTime, ref pending, out snapshot, out sleep);
         }
 
         internal JobHandle ScheduleSleep(JobHandle published, JobHandle snapshot, JobHandle sleep)
