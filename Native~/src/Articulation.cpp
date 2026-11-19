@@ -1,3 +1,4 @@
+#include <atomic>
 #include "Commands.h"
 #include "PhysicsArticulationCommandData.h"
 
@@ -151,7 +152,16 @@ namespace Retooled
         Bind<Link::GetShapeCount, None, CountOut>(table);
         Bind<Link::GetShapesUserData, BufferIn, WrittenOut>(table);
         Bind<Link::GetUserData, None, HandleOut>(table);
-        Bind<Link::SetCollisionDetectionMode, [](CommandArgs& a, const auto& c) { a.mode = static_cast<uint32_t>(c.value); }>(table);
+        Bind<Link::SetCollisionDetectionMode, [](CommandArgs& a, const auto& c)
+        {
+            static std::atomic<bool> warned{};
+            if (c.value != Physics::CollisionDetectionMode::Discrete && !warned.exchange(true))
+            {
+                LogInfo("[RetooledPhysics] articulation links use discrete collision detection");
+            }
+
+            a.mode = static_cast<uint32_t>(c.value);
+        }>(table);
         Bind<Link::AddForce, ForceIn>(table);
         Bind<Link::AddTorque, ForceIn>(table);
         Bind<Link::ClearForce>(table);
@@ -251,7 +261,11 @@ namespace Retooled
         // The editor publishes the ID but has no command data struct for GetLinks.
         table[static_cast<size_t>(Articulation::GetLinks)] = [](void*, const Context&, Command&)
         {
-            LogUnimplementedOnce(kArticulationCategory, static_cast<uint32_t>(Articulation::GetLinks));
+            static std::atomic<bool> warned{};
+            if (!warned.exchange(true))
+            {
+                LogInfo("[RetooledPhysics] the editor's plugin API has no command data for Articulation::GetLinks");
+            }
         };
         Bind<Tree::GetLinksUserData, BufferIn, WrittenOut>(table);
         Bind<Tree::GetLinkParent, LinkIn, HandleOut>(table);

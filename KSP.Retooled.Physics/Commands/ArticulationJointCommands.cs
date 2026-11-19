@@ -171,6 +171,9 @@ namespace KSP.Retooled.Physics.Commands
 
         internal static void Bulk(ArticulationCommand command, ArticulationData* tree, CommandArgs* a, StoreGlobals* globals)
         {
+            // Unity includes six reserved base entries in floating-base joint buffers. The root pose and
+            // velocity use their own commands. GetDofStartIndices also skips these entries for the first joint.
+            int firstJoint = tree->Count != 0 && !tree->FixedBase ? 6 : 0;
             int dofs = 0;
             for (int i = 0; i < tree->Count; i++)
             {
@@ -183,9 +186,9 @@ namespace KSP.Retooled.Physics.Commands
                 case ArticulationCommand.SetJointsVelocities:
                 case ArticulationCommand.SetJointsAccelerations:
                 case ArticulationCommand.SetJointsForces:
-                    if (a->size >= (ulong)dofs && dofs != 0 && a->pointer != null)
+                    if (a->size == (ulong)(firstJoint + dofs) && dofs != 0 && a->pointer != null)
                     {
-                        ReadState(tree, command, (float*)a->pointer);
+                        ReadState(tree, command, (float*)a->pointer + firstJoint);
                         if (command != ArticulationCommand.SetJointsAccelerations)
                         {
                             ArticulationSleep.Wake(tree);
@@ -200,7 +203,7 @@ namespace KSP.Retooled.Physics.Commands
                     return;
                 case ArticulationCommand.GetDenseJacobianAsFloatBuffer:
                     a->value = (uint)math.max(0, tree->Count - (tree->FixedBase ? 1 : 0)) * 6;
-                    a->value2 = (uint)(dofs + (tree->FixedBase || tree->Count == 0 ? 0 : 6));
+                    a->value2 = (uint)(dofs + firstJoint);
                     a->size = (ulong)a->value * a->value2;
                     a->pointer = AllocateFloats(globals, a->size);
                     if (a->pointer != null)
@@ -213,10 +216,21 @@ namespace KSP.Retooled.Physics.Commands
                     return;
             }
 
-            float* buffer = AllocateFloats(globals, (ulong)dofs);
+            a->size = (ulong)(dofs + firstJoint);
+            float* buffer = AllocateFloats(globals, a->size);
             a->pointer = buffer;
-            a->size = (ulong)dofs;
             if (buffer == null)
+            {
+                return;
+            }
+
+            if (firstJoint != 0)
+            {
+                UnsafeUtility.MemClear(buffer, firstJoint * sizeof(float));
+                buffer += firstJoint;
+            }
+
+            if (dofs == 0)
             {
                 return;
             }
