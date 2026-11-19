@@ -7,8 +7,24 @@ This folder holds the C++ plug-in that Unity loads as its physics backend. Unity
 
 The `Native plug-in` workflow (`.github/workflows/native.yml`) runs whenever a push changes the plug-in's source. It
 builds the plug-in for Windows, Linux and macOS, all for x86_64, and commits the three binaries to `Plugins/x86_64`
-in this folder on the branch that changed. To use them, copy the one for your platform into the project's
-`Assets/Plugins/x86_64` folder.
+in this folder on the branch that changed. The `.meta` files next to them make Unity preload each binary in the
+editor and player of its own platform.
+
+## Releases
+
+Publishing a GitHub release runs the `Publish to UPM` workflow (`.github/workflows/publish-upm.yml`). It copies
+`Plugins` from this folder to the package root, where Unity loads it, packs the package, attaches the `.tgz` to the
+release, and adds the release to the registry at `https://ksp1retooled.github.io/upm/`. The workflow refuses a
+release when:
+
+- the tag is not `v` followed by the `version` in `package.json`, such as `v6.7.0`;
+- the binaries are older than the plug-in's source, because the tag was made before the native workflow committed
+  them.
+
+A project that installs the package from the registry gets the plug-in from the package. Remove any copy of
+`RetooledPhysics` from the project's `Assets/Plugins`, or Unity will find two plug-ins with the same name. A project
+that uses this repository through a `file:` path does not get the plug-in from the package, so it still needs the
+copy in `Assets/Plugins`.
 
 ## Building locally
 

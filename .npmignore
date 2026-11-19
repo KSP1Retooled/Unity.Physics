@@ -1,0 +1,5 @@
+# The release workflow copies the built plug-in from Native~/Plugins to Plugins, where Unity loads it, so the
+# package does not need a second copy.
+/Native~/Plugins/
+/Native~/Plugins.meta
+/.github/
