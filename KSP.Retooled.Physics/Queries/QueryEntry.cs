@@ -604,6 +604,49 @@ namespace KSP.Retooled.Physics.Queries
             return 1;
         }
 
+        internal static float ArticulationClosestPoint(Body* body, RigidTransform worldFromBody, float3 point, out float3 closest)
+        {
+            closest = point;
+            float minimum = float.MaxValue;
+            for (int i = 0; i < body->shapeCount; i++)
+            {
+                var shape = (Shape*)body->shapes[i];
+                PrimitiveCollider primitive = default;
+                RigidTransform worldFromShape = math.mul(worldFromBody,
+                    new RigidTransform(shape->data.localRotation, shape->data.localPosition));
+                Collider* collider = ColliderOf(shape, ref primitive, worldFromShape, out RigidTransform worldFromCollider);
+                if (collider == null)
+                {
+                    continue;
+                }
+
+                var input = new PointDistanceInput
+                {
+                    Position = math.transform(math.inverse(worldFromCollider), point),
+                    MaxDistance = minimum,
+                    Filter = CollisionFilter.Default,
+                };
+                var collector = new ClosestHitCollector<DistanceHit>(minimum);
+                collider->CalculateDistance(input, ref collector);
+                if (collector.NumHits == 0)
+                {
+                    continue;
+                }
+
+                DistanceHit hit = collector.ClosestHit;
+                if (hit.Fraction <= 0f)
+                {
+                    closest = point;
+                    return 0f;
+                }
+
+                minimum = hit.Fraction;
+                closest = math.transform(worldFromCollider, hit.Position);
+            }
+
+            return math.lengthsq(closest - point);
+        }
+
         private static int Penetration(QueryInput* input, QueryOutput* output)
         {
             PrimitiveCollider primitiveA = default;

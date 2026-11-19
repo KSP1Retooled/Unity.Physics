@@ -328,9 +328,10 @@ namespace Retooled
         uint32_t treeReady;
         uint32_t reserved0;
         void* refit;
+        void* articulations;
     };
 
-    static_assert(sizeof(WorldData) == 216, "NativeStore.WorldData mirrors this layout");
+    static_assert(sizeof(WorldData) == 224, "NativeStore.WorldData mirrors this layout");
 
     // WorldData::queryDirty value indicating that only the dynamic tree refit remains before queries can read the
     // world.
@@ -534,9 +535,10 @@ namespace Retooled
         int32_t collisionDetectionMode;
         uint32_t positionIterations;
         uint32_t velocityIterations;
+        void* articulationLink;
     };
 
-    static_assert(sizeof(Body) == 48, "NativeStore.Body starts with this layout");
+    static_assert(sizeof(Body) == 56, "NativeStore.Body starts with this layout");
 
     // Mirrored. A shape, and the handle Unity holds. A shape can exist without a body, for use as query geometry.
     struct Shape

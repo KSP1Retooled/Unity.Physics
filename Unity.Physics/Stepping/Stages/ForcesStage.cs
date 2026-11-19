@@ -1,4 +1,5 @@
 using Unity.Jobs;
+using Unity.Physics.Dynamics.Articulations;
 using Unity.Physics.Dynamics.Bodies;
 using Unity.Physics.Dynamics.Sleep;
 using Unity.Physics.Dynamics.Vehicles;
@@ -46,6 +47,11 @@ namespace Unity.Physics.Stepping.Stages
                 contactState.WakeRefilteredPairs(store);
 
                 new WakePropagation.WakeJointedBodiesJob { World = store }.Run();
+
+                if (store->articulations != null)
+                {
+                    ArticulationSolver.Begin(store, deltaTime);
+                }
 
                 forcesApplied = new ExternalForces.ApplyForcesJob
                 {

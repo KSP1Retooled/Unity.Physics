@@ -63,6 +63,11 @@ namespace Unity.Physics.Stepping
             public void Execute(int index)
             {
                 ref BodyData body = ref Store[DynamicIndices[index]];
+                if ((body.flags & BodyFlags.ArticulationLink) != 0)
+                {
+                    return;
+                }
+
                 MotionVelocity velocity = MotionVelocities[index];
                 MotionData motion = MotionDatas[index];
                 bool sleeping = (body.flags & BodyFlags.Sleeping) != 0;

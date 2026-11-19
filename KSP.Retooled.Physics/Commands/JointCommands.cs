@@ -337,8 +337,10 @@ namespace KSP.Retooled.Physics.Commands
             descriptor->actor = body;
             descriptor->userData = body != null ? body->userData : null;
 
-            // Physics::ActorType: Invalid, Static, Dynamic.
-            descriptor->type = body == null ? (ushort)0 : (StoreRows.Hot(body)->flags & BodyFlags.Static) != 0 ? (ushort)1 : (ushort)2;
+            // Physics::ActorType assigns Invalid, Static, Dynamic and Link the values 0 through 3.
+            descriptor->type = body == null ? (ushort)0
+                : body->articulationLink != null ? (ushort)3
+                : (StoreRows.Hot(body)->flags & BodyFlags.Static) != 0 ? (ushort)1 : (ushort)2;
         }
 
         private static void Wake(Body* body)

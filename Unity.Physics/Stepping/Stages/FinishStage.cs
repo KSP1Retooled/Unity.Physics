@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Physics.Dynamics.Contacts;
+using Unity.Physics.Dynamics.Articulations;
 using Unity.Physics.Dynamics.Joint.Grouping;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Dynamics.Sleep;
@@ -143,6 +144,20 @@ namespace Unity.Physics.Stepping.Stages
                 MotionDatas = world.MotionDatas,
                 MotionVelocities = world.MotionVelocities,
             }.Schedule(partition.dynamicIndices.Length, ParallelBatchSize, canRepair));
+
+            if (store->articulations != null)
+            {
+                writtenBack = Track(ref pending, new ArticulationSolver.FinishJob
+                {
+                    World = store,
+                    Indices = partition.builtIndices.AsArray(),
+                    MotionData = world.MotionDatas,
+                    MotionVelocity = world.MotionVelocities,
+                    DeltaTime = deltaTime,
+                    Contacts = contacts.manifolds,
+                    Points = contacts.manifoldPoints,
+                }.Schedule(writtenBack));
+            }
 
             // Queries finish the refit when they need the tree. The step waits for its inputs.
             trees.SchedulePendingRefit(store, ref world, deltaTime, writtenBack);

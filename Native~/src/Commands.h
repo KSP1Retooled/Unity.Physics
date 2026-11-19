@@ -89,6 +89,7 @@ namespace Retooled
     void BindShapeCommands(FunctionBinding* table);
     void BindMeshCommands(FunctionBinding* table);
     void BindQueryCommands(FunctionBinding* table);
+    void BindArticulationCommands(FunctionBinding* table);
     void BindJointCommands(FunctionBinding* table);
     void BindExtensionCommands(FunctionBinding* table);
 

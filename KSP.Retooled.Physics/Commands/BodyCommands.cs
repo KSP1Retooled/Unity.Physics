@@ -110,7 +110,7 @@ namespace KSP.Retooled.Physics.Commands
             }
         }
 
-        private static void Execute(BodyCommand command, Body* body, CommandArgs* a, StoreGlobals* globals)
+        internal static void Execute(BodyCommand command, Body* body, CommandArgs* a, StoreGlobals* globals)
         {
             BodyData* hot = StoreRows.Hot(body);
             switch (command)

@@ -145,6 +145,7 @@ namespace Retooled
         BindShapeCommands(s_Shape.data());
         BindQueryCommands(s_Query.data());
         BindJointCommands(s_Joint.data());
+        BindArticulationCommands(s_Articulation.data());
         BindExtensionCommands(s_Extension.data());
     }
 
@@ -195,10 +196,15 @@ namespace Retooled
         }
 #endif
 
-        // The read-back after a step sends only these three commands per body. Any other command ends it.
-        if ((function & kFullMask) != kBodyFunctionMask
-            || (id != static_cast<uint32_t>(BodyCmd::GetPose::command) && id != static_cast<uint32_t>(BodyCmd::GetFlags::command)
-                && id != static_cast<uint32_t>(BodyCmd::GetIsSleeping::command)))
+        // Keep the read-back open while Unity reads body and link transforms and flags.
+        const uint32_t mask = function & kFullMask;
+        const bool bodyRead = mask == kBodyFunctionMask
+            && (id == static_cast<uint32_t>(BodyCmd::GetPose::command) || id == static_cast<uint32_t>(BodyCmd::GetFlags::command)
+                || id == static_cast<uint32_t>(BodyCmd::GetIsSleeping::command));
+        const bool linkRead = mask == kArticulationFunctionMask
+            && (id == static_cast<uint32_t>(Articulation::GetLinkPose) || id == static_cast<uint32_t>(Articulation::GetLinkFlags)
+                || id == static_cast<uint32_t>(Articulation::GetIsSleeping));
+        if (!bodyRead && !linkRead)
         {
             CloseReadBack();
         }
@@ -325,6 +331,8 @@ namespace Retooled
                 return sizeof(HeightField);
             case 20:
                 return VehicleCommandCount();
+            case 21:
+                return static_cast<int32_t>(PhysicsCommands::Articulation::Count);
             default:
                 return -1;
         }

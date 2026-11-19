@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using Unity.Physics.Collision.Queries.Snapshot;
 using Unity.Physics.Collision.World.Trees;
+using Unity.Physics.Store.Articulations;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Reports;
@@ -71,5 +72,7 @@ namespace Unity.Physics.Store.World
 
         /// <summary>The refit that a query helps to finish while <see cref="treeReady"/> is 0.</summary>
         public SharedDynamicTreeRefit* refit;
+
+        public ArticulationData* articulations;
     }
 }

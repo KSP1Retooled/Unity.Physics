@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Unity.Physics.Store.Articulations;
 using Unity.Physics.Store.Shapes;
 using Unity.Physics.Store.World;
 
@@ -16,6 +17,7 @@ namespace Unity.Physics.Store.Bodies
         public int collisionDetectionMode;
         public uint positionIterations;
         public uint velocityIterations;
+        public ArticulationLink* articulationLink;
 
         // As in BodyData, the plugin only knows the fields above.
         public BodyHome home;
