@@ -31,7 +31,7 @@ jobs:
     name: Unity plug-in headers
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: Native~/unity-links.json
           sparse-checkout-cone-mode: false
@@ -46,7 +46,7 @@ jobs:
           echo "changeset=$changeset" >> "$GITHUB_OUTPUT"
 
       - id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: PluginAPI
           key: unity-plugin-api-${{ steps.unity.outputs.changeset }}
@@ -63,7 +63,7 @@ jobs:
           mv "$(find . -type d -path '*/Data/PluginAPI' -print -quit)" PluginAPI
           test -f PluginAPI/IUnityPhysicsBackendSystem.h
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-api
           path: PluginAPI
@@ -92,9 +92,9 @@ jobs:
             python: python3
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: plugin-api
           path: PluginAPI
@@ -112,7 +112,7 @@ jobs:
       - name: Check links against Unity's player
         run: ${{ matrix.python }} Native~/check-links.py check "out/${{ matrix.file }}" --baseline Native~/unity-links.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.os }}
           path: out/${{ matrix.file }}
@@ -128,11 +128,11 @@ jobs:
     steps:
       # Check out the branch rather than the commit that started the run, so that the binaries land on the branch's
       # current head. A push made with this workflow's token does not start another run.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref_name }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: native-*
           path: Native~/Plugins/x86_64
