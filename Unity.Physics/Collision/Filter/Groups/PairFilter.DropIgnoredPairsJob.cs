@@ -7,6 +7,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics.Dynamics.Bodies;
+using Unity.Physics.Store.Articulations;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Store.Reports;
@@ -85,11 +86,31 @@ namespace Unity.Physics.Collision.Filter.Groups
             public void Execute(int index)
             {
                 DispatchPairSequencer.DispatchPair pair = Pairs[index];
-                if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled && (IsVesselJointed(pair, index) || IsIgnored(pair)))
+                if (pair.IsValid && pair.IsContact && pair.IsCollisionEnabled
+                    && (IsArticulationParentChild(pair) || IsVesselJointed(pair, index) || IsIgnored(pair)))
                 {
                     pair.DisableCollision();
                     Pairs[index] = pair;
                 }
+            }
+
+            private bool IsArticulationParentChild(DispatchPairSequencer.DispatchPair pair)
+            {
+                if (World->articulations == null)
+                {
+                    return false;
+                }
+
+                Entity a = Bodies[pair.BodyIndexA].Entity;
+                Entity b = Bodies[pair.BodyIndexB].Entity;
+                if (a.Version == 0 || b.Version == 0)
+                {
+                    return false;
+                }
+
+                ArticulationLink* first = Store[a.Index].owner->articulationLink;
+                ArticulationLink* second = Store[b.Index].owner->articulationLink;
+                return first != null && second != null && (first->Parent == second || second->Parent == first);
             }
 
             /// <summary>

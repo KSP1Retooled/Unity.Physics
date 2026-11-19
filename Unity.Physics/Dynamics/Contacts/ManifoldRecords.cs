@@ -42,6 +42,7 @@ namespace Unity.Physics.Dynamics.Contacts
             // WarmStart.WarmStartJob.Fraction of the cached impulse during the warm start.
             public float WarmImpulse;
             public float Impulse;
+            public float ArticulationImpulse;
             public bool Touching;
             public bool Trigger;
         }

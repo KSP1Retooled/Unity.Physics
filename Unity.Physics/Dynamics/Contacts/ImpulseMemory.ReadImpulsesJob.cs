@@ -50,6 +50,10 @@ namespace Unity.Physics.Dynamics.Contacts
                 {
                     ref ManifoldRecord record = ref Records.ElementAt(i);
                     byKey.TryAdd(KeyOf(record.BuiltPair, record.BuiltKeys), i);
+                    if (record.ArticulationImpulse != 0f)
+                    {
+                        record.Impulse = record.ArticulationImpulse;
+                    }
                 }
 
                 foreach (CollisionEvent collision in Events)
@@ -61,6 +65,10 @@ namespace Unity.Physics.Dynamics.Contacts
                         float impulse = collision.CalculateDetails(ref Built).EstimatedImpulse;
                         ref ManifoldRecord record = ref Records.ElementAt(index);
                         record.Impulse = math.isfinite(impulse) ? impulse + WarmStart.WarmStartJob.Fraction * record.WarmImpulse : 0.0f;
+                        if (record.ArticulationImpulse != 0f)
+                        {
+                            record.Impulse += record.ArticulationImpulse;
+                        }
                     }
                 }
             }

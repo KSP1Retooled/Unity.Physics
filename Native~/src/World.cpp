@@ -163,26 +163,6 @@ namespace Retooled
         // A body is part of the scene from CreateBody on, whether or not Unity batches it through here.
     }
 
-    static void CreateArticulation(void*, const Context&, WorldCmd::CreateArticulation& command)
-    {
-        LogUnimplementedOnce(kWorldCategory, static_cast<uint32_t>(PhysicsCommands::World::CreateArticulation));
-        command.outArticulation = nullptr;
-    }
-
-    static void DestroyArticulation(void*, const Context&, WorldCmd::DestoryArticulation&)
-    {
-    }
-
-    static void GetArticulationCount(void*, const Context&, WorldCmd::GetArticulationCount& command)
-    {
-        command.value = 0;
-    }
-
-    static void GetArticulations(void*, const Context&, WorldCmd::GetArticulations& command)
-    {
-        command.written = 0;
-    }
-
     template <typename T, Handler<T> Function>
     static void Bind(FunctionBinding* table)
     {
@@ -210,12 +190,20 @@ namespace Retooled
         Bind<WorldCmd::ReleaseLastSimulationStepData, ReleaseLastSimulationStepData>(table);
         Bind<WorldCmd::GetUserData, GetUserData>(table);
         Bind<WorldCmd::AddActorsToScene, AddActorsToScene>(table);
-        Bind<WorldCmd::CreateArticulation, CreateArticulation>(table);
-        Bind<WorldCmd::DestoryArticulation, DestroyArticulation>(table);
-        Bind<WorldCmd::GetArticulationCount, GetArticulationCount>(table);
-        Bind<WorldCmd::GetArticulations, GetArticulations>(table);
+        Forward<WorldCmd::CreateArticulation, [](CommandArgs& a, const auto& c)
+        {
+            a.flags = static_cast<uint32_t>(c.flags);
+            a.pointer = c.userData;
+        }, [](const CommandArgs& a, auto& c) { c.outArticulation = a.pointer; }>(table);
+        Forward<WorldCmd::DestoryArticulation, [](CommandArgs& a, const auto& c) { a.pointer = c.value; }>(table);
+        Forward<WorldCmd::GetArticulationCount, None, [](const CommandArgs& a, auto& c) { c.value = a.value; }>(table);
+        Forward<WorldCmd::GetArticulations, [](CommandArgs& a, const auto& c)
+        {
+            a.pointer = c.buffer;
+            a.size = c.bufferSize;
+        }, [](const CommandArgs& a, auto& c) { c.written = static_cast<uint32_t>(a.size); }>(table);
 
-        Forward<WorldCmd::GetBasicStats, None, [](const CommandArgs& a, auto& c) { c.value = Physics::WorldStats(0, a.value, 0); }>(table);
+        Forward<WorldCmd::GetBasicStats, None, [](const CommandArgs& a, auto& c) { c.value = Physics::WorldStats(a.value2, a.value, 0); }>(table);
         Forward<WorldCmd::GetLastSimulationStepStats, [](CommandArgs& a, auto& c)
         {
             c.value = Physics::SimulationStepStats();

@@ -9,6 +9,7 @@ using AOT;
 using Unity.Burst;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Physics.Store.Articulations;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
 using Unity.Physics.Store.Memory;
@@ -72,6 +73,8 @@ namespace KSP.Retooled.Physics.Commands
                 case WorldCommand.GetBasicStats:
                 case WorldCommand.GetLastSimulationStats:
                 case WorldCommand.GetAllShapesByLayerMask:
+                case WorldCommand.GetArticulationCount:
+                case WorldCommand.GetArticulations:
                     return true;
                 default:
                     return false;
@@ -109,9 +112,29 @@ namespace KSP.Retooled.Physics.Commands
 
         private static void Execute(WorldCommand command, WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
+            if (((uint)command & ArticulationCommands.Category) != 0)
+            {
+                ArticulationCommands.Execute((ArticulationCommand)((uint)command & ~ArticulationCommands.Category),
+                    world, a, globals);
+                return;
+            }
+
             switch (command)
             {
+                case WorldCommand.CreateArticulation:
+                    a->pointer = ArticulationCommands.Create(world, a->pointer, a->flags, globals);
+                    break;
+                case WorldCommand.DestroyArticulation:
+                    ArticulationCommands.Destroy(world, (ArticulationData*)a->pointer, globals);
+                    break;
+                case WorldCommand.GetArticulationCount:
+                    a->value = ArticulationCommands.Enumerate(world, null, 0);
+                    break;
+                case WorldCommand.GetArticulations:
+                    a->size = ArticulationCommands.Enumerate(world, (void**)a->pointer, (uint)a->size);
+                    break;
                 case WorldCommand.GetBasicStats:
+                    a->value2 = ArticulationCommands.Enumerate(world, null, 0);
                     a->value = world->bodyCount;
                     break;
                 case WorldCommand.GetLastSimulationStats:
@@ -165,7 +188,7 @@ namespace KSP.Retooled.Physics.Commands
             }
         }
 
-        private static Body* CreateBody(WorldData* world, CommandArgs* a, StoreGlobals* globals)
+        internal static Body* CreateBody(WorldData* world, CommandArgs* a, StoreGlobals* globals)
         {
             using ProfilerMarker.AutoScope span = CreateBodyMarker.Auto();
 
@@ -225,7 +248,7 @@ namespace KSP.Retooled.Physics.Commands
             return body;
         }
 
-        private static void DestroyBody(WorldData* world, Body* body, StoreGlobals* globals)
+        internal static void DestroyBody(WorldData* world, Body* body, StoreGlobals* globals)
         {
             if (body == null)
             {
@@ -280,6 +303,7 @@ namespace KSP.Retooled.Physics.Commands
         /// </summary>
         internal static void FreeBodies(WorldData* world, StoreGlobals* globals)
         {
+            ArticulationCommands.Free(world, globals);
             for (uint i = 0; i < world->bodyCount; i++)
             {
                 Body* body = world->bodies[i].owner;

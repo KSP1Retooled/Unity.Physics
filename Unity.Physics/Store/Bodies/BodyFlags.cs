@@ -16,6 +16,7 @@ namespace Unity.Physics.Store.Bodies
         // Only the shapes' poses have changed since the collider was built, so the children of a compound collider
         // can be reused.
         CollidersMoved = 1 << 12,
+        ArticulationLink = 1 << 13,
         PublicMask = Gravity | Kinematic | Simulated,
     }
 }

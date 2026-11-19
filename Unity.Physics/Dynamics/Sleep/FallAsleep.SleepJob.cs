@@ -79,7 +79,7 @@ namespace Unity.Physics.Dynamics.Sleep
 
             internal static bool Solved(BodyData* body)
             {
-                const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
+                const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic | BodyFlags.ArticulationLink;
                 return (body->flags & immobile) == 0 && (body->flags & BodyFlags.Simulated) != 0;
             }
 

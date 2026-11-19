@@ -35,6 +35,11 @@ namespace Unity.Physics.Dynamics.Bodies
                 NoteManagedRun();
 
                 ref BodyData body = ref Bodies[index];
+                if ((body.flags & BodyFlags.ArticulationLink) != 0)
+                {
+                    return;
+                }
+
                 const BodyFlags immobile = BodyFlags.Static | BodyFlags.Kinematic;
                 if ((body.flags & immobile) != 0 || (body.flags & BodyFlags.Simulated) == 0)
                 {

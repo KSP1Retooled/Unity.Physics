@@ -39,6 +39,7 @@ namespace KSP.Retooled.Physics.Interop
                 (int)JointCommand.Count,
                 sizeof(HeightField),
                 (int)VehicleCommand.Count,
+                (int)ArticulationCommand.Count,
             };
 
             string[] names =
@@ -64,6 +65,7 @@ namespace KSP.Retooled.Physics.Interop
                 nameof(JointCommand),
                 nameof(HeightField),
                 nameof(VehicleCommand),
+                nameof(ArticulationCommand),
             };
 
             for (int i = 0; i < sizes.Length; i++)

@@ -149,7 +149,8 @@ namespace Retooled
         const bool isStatic = (BodyRow(body->world->data, body->index)->flags & kBodyStatic) != 0;
         descriptor.actor = shape->body;
         descriptor.userData = body->userData;
-        descriptor.type = isStatic ? Physics::ActorType::Static : Physics::ActorType::Dynamic;
+        descriptor.type = body->articulationLink != nullptr ? Physics::ActorType::Link
+            : isStatic ? Physics::ActorType::Static : Physics::ActorType::Dynamic;
     }
 
     static void PackHeightField(CommandArgs& args, const Physics::HeightFieldDescriptor& descriptor)
