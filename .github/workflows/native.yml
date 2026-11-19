@@ -1,0 +1,153 @@
+name: Native plug-in
+
+# Whenever the native plug-in's source changes, build RetooledPhysics for Windows, Linux and macOS. Check that each
+# build links only to what Unity's own player links to, then commit the three binaries to the branch that changed.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'Native~/CMakeLists.txt'
+      - 'Native~/src/**'
+      - 'Native~/check-links.py'
+      - 'Native~/unity-links.json'
+      - '.github/workflows/native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces an older run, so the binaries always come from the newest source.
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  headers:
+    name: Unity plug-in headers
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Native~/unity-links.json
+          sparse-checkout-cone-mode: false
+
+      # unity-links.json records the editor whose players the builds are checked against, as "6000.7.0b9 (2e2e237e2443)".
+      # The headers come from the same editor.
+      - id: unity
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('Native~/unity-links.json'))['unity_version'])")
+          changeset=$(sed -E 's/.*\(([0-9a-f]+)\)$/\1/' <<< "$version")
+          echo "Unity $version, changeset $changeset"
+          echo "changeset=$changeset" >> "$GITHUB_OUTPUT"
+
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: PluginAPI
+          key: unity-plugin-api-${{ steps.unity.outputs.changeset }}
+
+      # Unity licenses the plug-in headers for Unity-dependent projects and ships them only inside the editor, so the
+      # repository does not carry a copy. The Linux editor archive is 4 GB. It is streamed, and only the PluginAPI
+      # folder is written to disk. The cache keeps that folder until the Unity version changes.
+      - if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          CHANGESET: ${{ steps.unity.outputs.changeset }}
+        run: |
+          curl -fsSL --retry 3 "https://download.unity3d.com/download_unity/$CHANGESET/LinuxEditorInstaller/Unity.tar.xz" \
+            | tar -xJ --wildcards '*/Data/PluginAPI/*'
+          mv "$(find . -type d -path '*/Data/PluginAPI' -print -quit)" PluginAPI
+          test -f PluginAPI/IUnityPhysicsBackendSystem.h
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-api
+          path: PluginAPI
+          retention-days: 1
+
+  build:
+    name: Build on ${{ matrix.os }}
+    needs: headers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Visual Studio links the same C++ runtime, msvcp140.dll, that Unity's Windows player links.
+          - os: windows-2022
+            file: RetooledPhysics.dll
+            python: python
+          # Unity's Linux player needs glibc 2.34. Ubuntu 22.04 has glibc 2.35, the oldest that GitHub still hosts,
+          # and check-links.py fails the build if it needs any symbol newer than the player's.
+          - os: ubuntu-22.04
+            file: RetooledPhysics.so
+            python: python3
+          # The arm64 runner builds x86_64 for macOS 12, which CMakeLists.txt sets. The plug-in uses std::atomic_ref,
+          # which needs the libc++ of a recent Xcode.
+          - os: macos-15
+            file: RetooledPhysics.dylib
+            python: python3
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-api
+          path: PluginAPI
+
+      - name: Build
+        run: |
+          # CMake writes the header path into generated #include lines, so Windows gets a path with forward slashes.
+          headers="$PWD/PluginAPI"
+          if command -v cygpath > /dev/null; then headers=$(cygpath -m "$headers"); fi
+          cmake -S Native~ -B build -DCMAKE_BUILD_TYPE=Release -DUNITY_PLUGIN_API="$headers"
+          cmake --build build --config Release
+          mkdir out
+          cp "$(find build -name '${{ matrix.file }}' -print -quit)" out/
+
+      - name: Check links against Unity's player
+        run: ${{ matrix.python }} Native~/check-links.py check "out/${{ matrix.file }}" --baseline Native~/unity-links.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.os }}
+          path: out/${{ matrix.file }}
+          retention-days: 7
+
+  commit:
+    name: Commit the binaries
+    needs: build
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # Check out the branch rather than the commit that started the run, so that the binaries land on the branch's
+      # current head. A push made with this workflow's token does not start another run.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: Native~/Plugins/x86_64
+          merge-multiple: true
+
+      - run: |
+          git add Native~/Plugins/x86_64
+          if git diff --cached --quiet; then
+            echo "The binaries did not change."
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Build the native plug-in from ${GITHUB_SHA::10}"
+          for attempt in 1 2 3; do
+            git push origin "HEAD:$GITHUB_REF_NAME" && exit 0
+            git pull --rebase origin "$GITHUB_REF_NAME"
+          done
+          exit 1
