@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.24)
 # The game ships x86_64 only, and a fresh macOS configure on an arm64 host would otherwise build for arm64.
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "" FORCE)
+    # Unity's macOS player runs on macOS 12, so the plug-in must not need anything newer. check-links.py verifies it.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "" FORCE)
 endif()
 
 project(RetooledPhysics CXX)
@@ -38,6 +40,19 @@ set_target_properties(RetooledPhysics PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET
 
 find_package(Threads REQUIRED)
 target_link_libraries(RetooledPhysics PRIVATE Threads::Threads)
+
+# The plug-in may link only to libraries that Unity's own player links to, so that it loads wherever the player
+# loads. check-links.py compares a build with the player's imports, which unity-links.json records.
+if(MSVC)
+    # Visual Studio 17.10 made the std::mutex constructor constexpr. A plug-in built that way crashes when a machine
+    # has an older msvcp140.dll than the compiler's, and the player cannot guarantee a newer one.
+    target_compile_definitions(RetooledPhysics PRIVATE _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+elseif(NOT APPLE)
+    # Unity's Linux player does not load libstdc++, so the plug-in carries its own copy and keeps that copy's symbols
+    # private, so that they cannot clash with another plug-in's. -z defs makes a missing library fail the link
+    # instead of failing the load.
+    target_link_options(RetooledPhysics PRIVATE -static-libstdc++ -Wl,--exclude-libs,ALL -Wl,-z,defs)
+endif()
 
 # The vehicle header reaches a sibling through its path inside Unity's source tree, which the plugin API does not have.
 set(ENGINE_PATHS "${CMAKE_CURRENT_BINARY_DIR}/EnginePaths")

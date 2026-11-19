@@ -1,0 +1,127 @@
+{
+  "unity_version": "6000.7.0b9 (2e2e237e2443)",
+  "windows": {
+    "format": "pe",
+    "libraries": [
+      "advapi32.dll",
+      "api-ms-win-core-synch-l1-2-0.dll",
+      "api-ms-win-core-winrt-l1-1-0.dll",
+      "api-ms-win-core-winrt-string-l1-1-0.dll",
+      "api-ms-win-crt-convert-l1-1-0.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-filesystem-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll",
+      "api-ms-win-crt-time-l1-1-0.dll",
+      "api-ms-win-crt-utility-l1-1-0.dll",
+      "api-ms-win-shcore-scaling-l1-1-1.dll",
+      "bcrypt.dll",
+      "crypt32.dll",
+      "d3d11.dll",
+      "d3d12.dll",
+      "dstorage.dll",
+      "dwmapi.dll",
+      "dxgi.dll",
+      "gdi32.dll",
+      "hid.dll",
+      "imm32.dll",
+      "iphlpapi.dll",
+      "kernel32.dll",
+      "msvcp140.dll",
+      "ole32.dll",
+      "oleaut32.dll",
+      "opengl32.dll",
+      "secur32.dll",
+      "setupapi.dll",
+      "shell32.dll",
+      "shlwapi.dll",
+      "uiautomationcore.dll",
+      "user32.dll",
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "version.dll",
+      "winhttp.dll",
+      "winmm.dll",
+      "ws2_32.dll"
+    ]
+  },
+  "linux": {
+    "format": "elf",
+    "libraries": [
+      "ld-linux-x86-64.so.2",
+      "libanl.so.1",
+      "libc.so.6",
+      "libgcc_s.so.1",
+      "libm.so.6"
+    ],
+    "versions": {
+      "ld-linux-x86-64.so.2": [
+        "GLIBC_2.3"
+      ],
+      "libc.so.6": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.4",
+        "GLIBC_2.6",
+        "GLIBC_2.7",
+        "GLIBC_2.9",
+        "GLIBC_2.14",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.25",
+        "GLIBC_2.28",
+        "GLIBC_2.32",
+        "GLIBC_2.33",
+        "GLIBC_2.34"
+      ],
+      "libgcc_s.so.1": [
+        "GCC_3.0",
+        "GCC_3.3",
+        "GCC_4.2.0"
+      ],
+      "libm.so.6": [
+        "GLIBC_2.2.5",
+        "GLIBC_2.27",
+        "GLIBC_2.29"
+      ]
+    }
+  },
+  "macos": {
+    "format": "macho",
+    "libraries": [
+      "/System/Library/Frameworks/AVFAudio.framework/Versions/A/AVFAudio",
+      "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+      "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "/System/Library/Frameworks/AudioUnit.framework/Versions/A/AudioUnit",
+      "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+      "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+      "/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa",
+      "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+      "/System/Library/Frameworks/GameController.framework/Versions/A/GameController",
+      "/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit",
+      "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+      "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+      "/System/Library/Frameworks/Quartz.framework/Versions/A/Quartz",
+      "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+      "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+      "/System/Library/Frameworks/SecurityFoundation.framework/Versions/A/SecurityFoundation",
+      "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libobjc.A.dylib"
+    ],
+    "minimum_macos": "12.0.0"
+  }
+}
