@@ -4,6 +4,14 @@ uid: changelog
 
 # Changelog
 
+## 0.1.2
+Projects reference the KSP.Retooled.Physics assemblies automatically again, as in 0.1.0, because game code outside an
+assembly definition uses them.
+
+The package's native plug-ins now load in players only. The editor chooses its physics backend before it registers
+registry packages, so it never loaded them. A project copies the plug-in for its editor's platform into
+`Assets/Plugins/x86_64` and enables it for the editor only.
+
 ## 0.1.1
 Projects no longer reference the KSP.Retooled.Physics assemblies automatically. Their namespace, KSP.Retooled.Physics,
 hid UnityEngine.Physics from code in KSP.Retooled namespaces, so calls such as Physics.Raycast stopped compiling. The
