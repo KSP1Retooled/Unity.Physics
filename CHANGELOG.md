@@ -4,6 +4,11 @@ uid: changelog
 
 # Changelog
 
+## 0.1.3
+Player builds no longer run the package's build check. The check looked only at the first plug-in named RetooledPhysics
+and failed the build when that copy didn't load at startup on the target, so a project's editor-only copy in
+`Assets/Plugins/x86_64` failed every player build.
+
 ## 0.1.2
 Projects reference the KSP.Retooled.Physics assemblies automatically again, as in 0.1.0, because game code outside an
 assembly definition uses them.
