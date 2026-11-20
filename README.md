@@ -1,8 +1,7 @@
-# About Unity Physics
-The Unity Physics package provides a stateless, high-performance constrained rigid body simulation.
+# KSP.Retooled.Physics
 
-## Installing Unity Physics
-To install this package, follow the instructions in the [Getting Started documentation](Documentation~/getting-started-installation.md).
+This is a heavily modified version of Unity.Physics that is meant to have much
+better performance when simulating large linked connections of joints
+(such as a rocket in KSP).
 
-## Using Unity Physics
-For information on how to use the Unity Physics package, see the [User manual](Documentation~/index.md).
+It is designed to be used via the unity custom physics plugin API.
