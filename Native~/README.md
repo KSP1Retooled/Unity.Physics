@@ -8,7 +8,7 @@ This folder holds the C++ plug-in that Unity loads as its physics backend. Unity
 The `Native plug-in` workflow (`.github/workflows/native.yml`) runs whenever a push changes the plug-in's source. It
 builds the plug-in for Windows, Linux and macOS, all for x86_64, and commits the three binaries to `Plugins/x86_64`
 in this folder on the branch that changed. The `.meta` files next to them make Unity preload each binary in the
-editor and player of its own platform.
+player of its own platform, and never in the editor.
 
 ## Releases
 
@@ -21,10 +21,12 @@ release when:
 - the binaries are older than the plug-in's source, because the tag was made before the native workflow committed
   them.
 
-A project that installs the package from the registry gets the plug-in from the package. Remove any copy of
-`RetooledPhysics` from the project's `Assets/Plugins`, or Unity will find two plug-ins with the same name. A project
-that uses this repository through a `file:` path does not get the plug-in from the package, so it still needs the
-copy in `Assets/Plugins`.
+A player built from a project that installs the package from the registry gets the plug-in from the package. The
+editor cannot: it chooses its physics backend before it registers packages from a registry, so it never preloads a
+plug-in that one of them carries. The package's plug-ins are therefore enabled for players only, and the project
+must copy the one for its editor's platform into `Assets/Plugins/x86_64`, enabled for the editor only. Unity allows
+two plug-ins with the same name when no platform loads both. A project that uses this repository through a `file:`
+path or a link gets no plug-in from the package at all, so its copy must also be enabled for its player.
 
 ## Building locally
 
