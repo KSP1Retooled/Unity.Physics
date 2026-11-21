@@ -4,6 +4,10 @@ uid: changelog
 
 # Changelog
 
+## 0.1.4
+Player builds compile the package again. BackendHost imported the namespace of the native world layout only in
+the editor, so every player build failed with five CS0246 errors.
+
 ## 0.1.3
 Player builds no longer run the package's build check. The check looked only at the first plug-in named RetooledPhysics
 and failed the build when that copy didn't load at startup on the target, so a project's editor-only copy in
