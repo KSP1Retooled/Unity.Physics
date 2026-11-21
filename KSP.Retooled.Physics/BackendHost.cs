@@ -15,9 +15,9 @@ using Unity.Entities;
 using Unity.Physics.Base.Threading;
 using Unity.Physics.Systems;
 using UnityEngine;
+using Unity.Physics.Store.World;
 #if UNITY_EDITOR
 using UnityEditor;
-using Unity.Physics.Store.World;
 #endif
 using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Dynamics.Bodies;
