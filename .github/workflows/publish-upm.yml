@@ -1,8 +1,8 @@
 name: Publish to UPM
 
-# When a release is published, pack the Unity package with the native plug-in, attach the .tgz to the release, and
-# add the release to the KSP1Retooled registry (https://ksp1retooled.github.io/upm/). To publish an existing release
-# again, run this workflow by hand with its tag.
+# When a release is published, pack the Unity package with the native plug-in, sign it, attach the signed .tgz to the
+# release, and add the release to the KSP1Retooled registry (https://ksp1retooled.github.io/upm/). To publish an
+# existing release again, run this workflow by hand with its tag.
 
 on:
   release:
@@ -17,14 +17,17 @@ defaults:
   run:
     shell: bash
 
+env:
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+
 jobs:
   pack:
     name: Pack the package
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      contents: read
+    outputs:
+      filename: ${{ steps.pack.outputs.filename }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,51 +35,70 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The registry takes the version from package.json, so a tag that names another version would publish
-      # something other than what the release says.
-      - name: Check that the tag names the package's version
-        run: |
-          version=$(jq -er .version package.json)
-          if [[ "${TAG#v}" != "$version" ]]; then
-            echo "::error::The tag $TAG does not match version $version in package.json. Tag the release v$version."
-            exit 1
-          fi
-
-      # The native workflow commits the binaries after every change to the plug-in's source. A release that was
-      # tagged before that commit landed would ship binaries built from older source.
-      - name: Check that the binaries were built from the tagged source
-        run: |
-          source=$(git rev-list -1 HEAD -- Native~/CMakeLists.txt Native~/src)
-          binaries=$(git rev-list -1 HEAD -- Native~/Plugins/x86_64/RetooledPhysics.dll Native~/Plugins/x86_64/RetooledPhysics.so Native~/Plugins/x86_64/RetooledPhysics.dylib)
-          if [[ -z "$binaries" ]] || ! git merge-base --is-ancestor "$source" "$binaries"; then
-            echo "::error::The native plug-in's binaries are older than its source. Wait for the Native plug-in workflow to commit them, then tag that commit."
-            exit 1
-          fi
+      - uses: KSP1Retooled/upm/check-release@main
+        with:
+          tag: ${{ env.TAG }}
+          source: |
+            Native~/CMakeLists.txt
+            Native~/src
+          binaries: |
+            Native~/Plugins/x86_64/RetooledPhysics.dll
+            Native~/Plugins/x86_64/RetooledPhysics.so
+            Native~/Plugins/x86_64/RetooledPhysics.dylib
 
       # Unity ignores Native~, so the plug-in moves to Plugins with the .meta files that preload it on each platform.
       - name: Put the plug-in where Unity loads it
         run: cp -R Native~/Plugins Native~/Plugins.meta .
 
-      - name: Pack and attach the package
+      - id: pack
+        uses: KSP1Retooled/upm/pack@main
+        with:
+          expect: |
+            Plugins/x86_64/RetooledPhysics.dll
+            Plugins/x86_64/RetooledPhysics.dll.meta
+            Plugins/x86_64/RetooledPhysics.so
+            Plugins/x86_64/RetooledPhysics.so.meta
+            Plugins/x86_64/RetooledPhysics.dylib
+            Plugins/x86_64/RetooledPhysics.dylib.meta
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: ${{ steps.pack.outputs.path }}
+          retention-days: 1
+
+  sign:
+    name: Sign the package
+    needs: pack
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/ksp1retooled/ksp-ci:1
+      options: --user 1003:1003
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+
+      - id: sign
+        uses: KSP1Retooled/upm/sign@main
+        with:
+          tarball: ${{ runner.temp }}/package/${{ needs.pack.outputs.filename }}
+          organization-id: ${{ vars.UPM_ORG_ID }}
+          key-id: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_ID }}
+          key: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY }}
+
+      - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          asset=$(npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" | jq -er '.[0].filename')
-          tar -tzf "$RUNNER_TEMP/$asset" > "$RUNNER_TEMP/contents.txt"
-          for file in RetooledPhysics.dll RetooledPhysics.so RetooledPhysics.dylib; do
-            grep -qx "package/Plugins/x86_64/$file" "$RUNNER_TEMP/contents.txt"
-            grep -qx "package/Plugins/x86_64/$file.meta" "$RUNNER_TEMP/contents.txt"
-          done
-          assets=$(gh release view --repo "$GITHUB_REPOSITORY" --json assets -- "$TAG")
-          if jq -e --arg name "$asset" 'any(.assets[]; .name == $name)' <<< "$assets" > /dev/null; then
-            echo "Using the existing release asset $asset"
-          else
-            gh release upload --repo "$GITHUB_REPOSITORY" -- "$TAG" "$RUNNER_TEMP/$asset"
-          fi
+          SIGNED: ${{ steps.sign.outputs.path }}
+        run: gh release upload --repo "$GITHUB_REPOSITORY" -- "$TAG" "$SIGNED"
 
   publish:
     name: Publish to the registry
-    needs: pack
+    needs: sign
     permissions:
       contents: read
     uses: KSP1Retooled/upm/.github/workflows/publish.yml@main
