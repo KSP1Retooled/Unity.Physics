@@ -174,6 +174,9 @@ namespace Unity.Physics
 
         public float CoefficientOfFriction;
         public float CoefficientOfRestitution;
+
+        // The most normal impulse the manifold may apply in this step, or zero for no limit.
+        public float MaxNormalImpulse;
         public float SumImpulsesOverSubsteps;
         public float SumImpulsesOverSolverIterations;
 
@@ -439,6 +442,11 @@ namespace Unity.Physics
 
             float sumImpulses = 0.0f;         // Impulse accumulated across NumContacts for current solve call (across multiple Jacobians)
             bool forceCollisionEvent = false; // Is raised when there is a penetration regardless of impulse conditions
+
+            // A crash contact shares what is left of its limit between its points.
+            float mostImpulse = MaxNormalImpulse > 0.0f
+                ? math.max(MaxNormalImpulse - SumImpulsesOverSubsteps, 0.0f) / BaseJacobian.NumContacts
+                : float.MaxValue;
             for (int j = 0; j < BaseJacobian.NumContacts; j++)
             {
                 ref ContactJacAngAndVelToReachCp jacAngular = ref jacHeader.AccessAngularJacobian(j);
@@ -470,7 +478,7 @@ namespace Unity.Physics
                 float impulse = dv * jacAngular.Jac.EffectiveMass;
 
                 // Accumulation of impulses for each individual contact point over numSolverIterations. Cannot be negative
-                float jacAccumulatedImpulse = math.max(jacAngular.Jac.Impulse + impulse, 0.0f);
+                float jacAccumulatedImpulse = math.clamp(jacAngular.Jac.Impulse + impulse, 0.0f, mostImpulse);
                 if (jacAccumulatedImpulse != jacAngular.Jac.Impulse)
                 {
                     float deltaImpulse = jacAccumulatedImpulse - jacAngular.Jac.Impulse;

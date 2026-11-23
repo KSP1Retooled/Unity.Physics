@@ -545,6 +545,7 @@ namespace Unity.Physics
                             contactJacobian.BaseJacobian = baseJac;
                             contactJacobian.CoefficientOfFriction = contactHeader.CoefficientOfFriction;
                             contactJacobian.CoefficientOfRestitution = contactHeader.CoefficientOfRestitution;
+                            contactJacobian.MaxNormalImpulse = contactHeader.MaxNormalImpulse;
                             contactJacobian.SumImpulsesOverSubsteps = 0.0f;
                             contactJacobian.SumImpulsesOverSolverIterations = 0.0f;
                             contactJacobian.NormalImpulseOverSubsteps = 0.0f;

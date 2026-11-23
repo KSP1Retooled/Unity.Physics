@@ -36,7 +36,14 @@ namespace Unity.Physics.Collision.Filter.Groups
 
             /// <summary>The index of the collider's group record plus one, or zero if it has no group.</summary>
             public uint Record;
-            private readonly uint reserved0;
+
+            /// <summary>The relative speed above which the game destroys the collider's part on impact, or zero for none.</summary>
+            public float CrashSpeed;
+
+            /// <summary>
+            /// Whether the entry holds something the game set, which the collider keeps while it has no shape.
+            /// </summary>
+            public bool Kept => Record != 0 || CrashSpeed > 0.0f;
         }
 
         private Entry* entries;
@@ -55,7 +62,7 @@ namespace Unity.Physics.Collision.Filter.Groups
         private uint pairsLive;
 
         /// <summary>
-        /// Count of group records without shapes, used to trigger checks for destroyed colliders.
+        /// Count of kept entries without shapes, used to trigger checks for destroyed colliders.
         /// </summary>
         internal uint Orphans;
 
@@ -104,8 +111,8 @@ namespace Unity.Physics.Collision.Filter.Groups
         }
 
         /// <summary>
-        /// Enters a new shape in the map, and gives it the group record of its collider if the game has already set
-        /// one.
+        /// Enters a new shape in the map, and gives it the group record and crash speed of its collider if the game has
+        /// already set them.
         /// </summary>
         internal static void AddShape(StoreGlobals* globals, Shape* shape)
         {
@@ -120,7 +127,7 @@ namespace Unity.Physics.Collision.Filter.Groups
             // Take the slot before reading the entries pointer, because taking a slot may move the entries.
             uint slot = table->TakeEntry(globals, key);
             ref Entry entry = ref table->entries[slot];
-            if (entry.Shape == null && entry.Record != 0)
+            if (entry.Shape == null && entry.Kept)
             {
                 table->Orphans--;
                 globals->ignoreVersion++;
@@ -131,8 +138,8 @@ namespace Unity.Physics.Collision.Filter.Groups
         }
 
         /// <summary>
-        /// Removes a destroyed shape from the map. The collider keeps its group record in case Unity creates a new shape
-        /// for it.
+        /// Removes a destroyed shape from the map. The collider keeps its group record and crash speed in case Unity
+        /// creates a new shape for it.
         /// </summary>
         internal static void RemoveShape(StoreGlobals* globals, Shape* shape)
         {
@@ -150,7 +157,7 @@ namespace Unity.Physics.Collision.Filter.Groups
             }
 
             entry.Shape = null;
-            if (entry.Record == 0)
+            if (!entry.Kept)
             {
                 entry.Key = DeletedKey;
             }
@@ -181,10 +188,15 @@ namespace Unity.Physics.Collision.Filter.Groups
                 }
 
                 ref Entry cleared = ref table->entries[found];
+                if (cleared.Record == 0)
+                {
+                    return cleared.Shape;
+                }
+
                 table->FreeRecord(cleared.Record);
                 cleared.Record = 0;
                 Shape* shape = cleared.Shape;
-                if (shape == null)
+                if (shape == null && !cleared.Kept)
                 {
                     table->Orphans--;
                     cleared.Key = DeletedKey;
@@ -201,8 +213,8 @@ namespace Unity.Physics.Collision.Filter.Groups
             ref Entry entry = ref table->entries[slot];
             if (entry.Record == 0)
             {
+                table->Orphans += entry.Shape == null && !entry.Kept ? 1u : 0u;
                 entry.Record = table->TakeRecord(globals);
-                table->Orphans += entry.Shape == null ? 1u : 0u;
             }
 
             table->records[entry.Record - 1] = new Record { Group = group, Member = member, Flags = flags };
@@ -226,6 +238,60 @@ namespace Unity.Physics.Collision.Filter.Groups
 
             record = IgnoreTable.GroupsOf(globals)->records[index - 1];
             return true;
+        }
+
+        /// <summary>
+        /// Sets the crash speed of a collider, or removes it when <paramref name="speed"/> is zero. The collider keeps it
+        /// whether or not it has a shape yet, and across new shapes.
+        /// </summary>
+        internal static void SetCrashSpeed(StoreGlobals* globals, ulong engineId, float speed)
+        {
+            if (engineId == EmptyKey)
+            {
+                return;
+            }
+
+            GroupTable* table = TableOf(globals);
+            if (speed <= 0.0f)
+            {
+                if (!table->FindEntry(engineId, out uint found))
+                {
+                    return;
+                }
+
+                ref Entry cleared = ref table->entries[found];
+                if (cleared.CrashSpeed <= 0.0f)
+                {
+                    return;
+                }
+
+                cleared.CrashSpeed = 0.0f;
+                if (cleared.Shape == null && !cleared.Kept)
+                {
+                    table->Orphans--;
+                    cleared.Key = DeletedKey;
+                }
+
+                return;
+            }
+
+            uint slot = table->TakeEntry(globals, engineId);
+            ref Entry entry = ref table->entries[slot];
+            table->Orphans += entry.Shape == null && !entry.Kept ? 1u : 0u;
+            entry.CrashSpeed = speed;
+        }
+
+        /// <summary>Returns the crash speed of a shape's collider, or zero if it has none.</summary>
+        internal static float CrashSpeedOf(StoreGlobals* globals, ShapeData* shape)
+        {
+            GroupTable* table = IgnoreTable.GroupsOf(globals);
+            ulong key = EngineIdOf(globals, (Shape*)shape);
+            if (table == null || key == EmptyKey || !table->FindEntry(key, out uint slot))
+            {
+                return 0.0f;
+            }
+
+            return table->entries[slot].CrashSpeed;
         }
 
         /// <summary>Returns the shape of a collider, or null if the collider has no shape.</summary>
@@ -255,7 +321,7 @@ namespace Unity.Physics.Collision.Filter.Groups
                 + table->recordCapacity * (ulong)sizeof(Record) + table->pairCount * (ulong)sizeof(ulong);
         }
 
-        /// <summary>Lists the engine ids of colliders that have a group record but no shape.</summary>
+        /// <summary>Lists the engine ids of colliders that have a group record or crash speed but no shape.</summary>
         internal static int ListOrphans(StoreGlobals* globals, ulong* ids, int capacity)
         {
             GroupTable* table = IgnoreTable.GroupsOf(globals);
@@ -263,7 +329,7 @@ namespace Unity.Physics.Collision.Filter.Groups
             for (uint i = 0; table != null && i < table->entryCount && count < capacity; i++)
             {
                 Entry entry = table->entries[i];
-                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Shape == null && entry.Record != 0)
+                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Shape == null && entry.Kept)
                 {
                     ids[count++] = entry.Key;
                 }
