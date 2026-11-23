@@ -40,6 +40,12 @@ namespace Unity.Physics.Dynamics.Contacts
             private const float FrictionOffsetThreshold = 0.025f;
 
             /// <summary>
+            /// The share of its own momentum that a crashing part may pass on before the game destroys it. Stock PhysX
+            /// passes on more for a part that is heavy next to its vessel; that ratio has not been measured yet.
+            /// </summary>
+            private const float CrashAbsorption = 1.0f;
+
+            /// <summary>
             /// Stores a static mesh polygon in world space and the motion of the body in contact with it.
             /// </summary>
             private struct MeshFace
@@ -296,6 +302,57 @@ namespace Unity.Physics.Dynamics.Contacts
                 {
                     LastImpulses.TryGetValue(PersistentManifoldKey.Of(ref record), out record.WarmImpulse);
                 }
+
+                header.MaxNormalImpulse = CrashImpulseLimit(ref record, center);
+            }
+
+            /// <summary>
+            /// Limit the impulse of a manifold that starts pushing in this step faster than the crash speed of one of
+            /// its colliders. The game destroys that collider's part in the step's collision callback, so the part
+            /// may give the rest of its vessel no more than <see cref="CrashAbsorption"/> times its own momentum.
+            /// Return zero for no limit. The limit lasts one step, because the manifold has a cached impulse afterwards.
+            /// </summary>
+            private float CrashImpulseLimit(ref ManifoldRecord record, float3 center)
+            {
+                if (!record.Touching || LastImpulses.ContainsKey(PersistentManifoldKey.Of(ref record)))
+                {
+                    return 0.0f;
+                }
+
+                float3 velocityA = PointVelocity(ref Store[record.RowA], record.LinearVelocityA, record.AngularVelocityA, center);
+                float3 velocityB = PointVelocity(ref Store[record.RowB], record.LinearVelocityB, record.AngularVelocityB, center);
+                float speed = math.length(velocityB - velocityA);
+                float limitA = CrashImpulseLimit(record.ShapeA, ref Store[record.RowA], ref Store[record.RowB], speed);
+                float limitB = CrashImpulseLimit(record.ShapeB, ref Store[record.RowB], ref Store[record.RowA], speed);
+                if (limitA > 0.0f && limitB > 0.0f)
+                {
+                    return math.min(limitA, limitB);
+                }
+
+                return math.max(limitA, limitB);
+            }
+
+            /// <summary>
+            /// Apply the rule of the game's Part.HandleCollision to one side of a pair: the speed must exceed the crash
+            /// speed, and against a body that is not static, so must the speed times that body's mass.
+            /// </summary>
+            private float CrashImpulseLimit(ShapeData* shape, ref BodyData body, ref BodyData other, float speed)
+            {
+                float crashSpeed = GroupTable.CrashSpeedOf(Globals, shape);
+                float inverseMass = body.mass->InverseMass;
+                if (crashSpeed <= 0.0f || speed <= crashSpeed || inverseMass <= 0.0f)
+                {
+                    return 0.0f;
+                }
+
+                bool otherHasBody = (other.flags & BodyFlags.Static) == 0;
+                float otherInverseMass = other.mass->InverseMass;
+                if (otherHasBody && otherInverseMass > 0.0f && speed <= crashSpeed * otherInverseMass)
+                {
+                    return 0.0f;
+                }
+
+                return CrashAbsorption * speed / inverseMass;
             }
 
             /// <summary>
