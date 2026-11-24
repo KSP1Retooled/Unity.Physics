@@ -17,7 +17,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
     {
         internal delegate void Inspect(long step, StoreStepper* world);
 
-        internal static int Run(string path, long stopAt, TextWriter summary, Inspect before = null, Inspect after = null)
+        internal static int Run(string path, long stopAt, TextWriter summary, Inspect before = null, Inspect after = null,
+            Action<long, string> mismatch = null, long startAt = long.MinValue)
         {
             RecordedPhysicsSettings settings = RecordedPhysicsSettings.Read();
             StoreStepper* original = StepEntryPoints.Current;
@@ -59,6 +60,14 @@ namespace KSP.Retooled.Physics.Tests.Tools
                         throw new EndOfStreamException();
                     }
 
+                    if (number < startAt)
+                    {
+                        // Every step carries its own input, so the steps before the first wanted one are only read past.
+                        int skipped = reader.ReadCount(1 << 24);
+                        reader.ReadBytes(checked(skipped * sizeof(RecordedBody)));
+                        continue;
+                    }
+
                     using var input = new BinaryReader(new MemoryStream(bytes, writable: false));
                     using var store = new ReplayStore();
                     store.Read(input, payloads);
@@ -70,12 +79,14 @@ namespace KSP.Retooled.Physics.Tests.Tools
                     StepEntryPoints.Current = store.Stepper;
                     before?.Invoke(number, store.Stepper);
                     Step(store.Stepper, dt);
-                    Compare(number, reader, store.Stepper);
+                    Compare(number, reader, store.Stepper, mismatch);
                     after?.Invoke(number, store.Stepper);
                     replayed++;
                 }
 
-                summary.WriteLine($"Replayed {replayed} steps. Every pose and velocity matched bit for bit.");
+                summary.WriteLine(mismatch == null
+                    ? $"Replayed {replayed} steps. Every pose and velocity matched bit for bit."
+                    : $"Replayed {replayed} steps. Differences from the recording went to the caller.");
                 return replayed;
             }
             finally
@@ -155,9 +166,15 @@ namespace KSP.Retooled.Physics.Tests.Tools
             }
         }
 
-        private static void Compare(long number, BinaryReader reader, StoreStepper* stepper)
+        // With a mismatch callback, a step that differs from the recording reports its first difference and the count
+        // of differing bodies, and the replay goes on: every step starts from its own recorded input.
+        private static void Compare(long number, BinaryReader reader, StoreStepper* stepper, Action<long, string> mismatch)
         {
             var store = stepper->Store;
+            string first = null;
+            int different = 0;
+            float worst = 0f;
+            uint worstBody = 0;
             int count = reader.ReadCount(1 << 24);
             if (count != store->bodyCount)
             {
@@ -168,15 +185,35 @@ namespace KSP.Retooled.Physics.Tests.Tools
             {
                 RecordedBody expected = reader.ReadValue<RecordedBody>();
                 RecordedBody actual = RecordedBody.Read(store->bodies + i, stepper->Globals->engineObjectIdOffset);
-                if (expected.Serial != actual.Serial)
+                try
                 {
-                    throw new InvalidDataException($"Step {number}, row {i}: expected body {expected.Serial}, got {actual.Serial}.");
-                }
+                    if (expected.Serial != actual.Serial)
+                    {
+                        throw new InvalidDataException($"Step {number}, row {i}: expected body {expected.Serial}, got {actual.Serial}.");
+                    }
 
-                Check(number, expected, nameof(expected.Position), expected.Position, actual.Position);
-                Check(number, expected, nameof(expected.Rotation), expected.Rotation.value, actual.Rotation.value);
-                Check(number, expected, nameof(expected.Linear), expected.Linear, actual.Linear);
-                Check(number, expected, nameof(expected.Angular), expected.Angular, actual.Angular);
+                    Check(number, expected, nameof(expected.Position), expected.Position, actual.Position);
+                    Check(number, expected, nameof(expected.Rotation), expected.Rotation.value, actual.Rotation.value);
+                    Check(number, expected, nameof(expected.Linear), expected.Linear, actual.Linear);
+                    Check(number, expected, nameof(expected.Angular), expected.Angular, actual.Angular);
+                }
+                catch (InvalidDataException error) when (mismatch != null)
+                {
+                    first ??= error.Message;
+                    different++;
+                    float change = Unity.Mathematics.math.length(expected.Linear - actual.Linear);
+                    if (change > worst)
+                    {
+                        worst = change;
+                        worstBody = expected.Serial;
+                    }
+                }
+            }
+
+            if (first != null)
+            {
+                mismatch(number, $"{different} of {count} bodies differ from the recording; the largest linear velocity difference "
+                    + $"is {worst:R} m/s on body {worstBody}. First: {first}");
             }
         }
 

@@ -13,10 +13,11 @@ namespace Unity.Physics.Collision.Filter.Groups
             writer.Write(checked((int)PairCount(globals)));
             for (uint i = 0; table != null && i < table->slotCount; i++)
             {
-                uint key = table->slots[i];
-                if (key != EmptySlot && key != DeletedSlot)
+                // A slot holds the index of its pair's edge plus one; the edge holds the pair's key.
+                uint content = table->slots[i];
+                if (content != EmptySlot && content != DeletedSlot)
                 {
-                    writer.Write(key);
+                    writer.Write(table->edges[content - 1].Key);
                 }
             }
 

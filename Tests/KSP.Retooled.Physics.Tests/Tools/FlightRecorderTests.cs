@@ -104,6 +104,50 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assert.That(numbers, Is.EqualTo(new long[] { 3, 4 }));
         }
 
+        /// <summary>
+        /// The replay holds the same ignored collider pairs as the recorded world, not pairs made from the table's
+        /// internal slot contents.
+        /// </summary>
+        [Test]
+        public void ReplayKeepsIgnoredPairs()
+        {
+            Ground();
+            Rigidbody first = DynamicBox(new Vector3(0, 0.5f, 0));
+            Rigidbody second = DynamicBox(new Vector3(3, 0.5f, 0));
+            Rigidbody third = DynamicBox(new Vector3(6, 0.5f, 0));
+            UnityEngine.Physics.IgnoreCollision(first.GetComponent<Collider>(), second.GetComponent<Collider>());
+            UnityEngine.Physics.IgnoreCollision(second.GetComponent<Collider>(), third.GetComponent<Collider>());
+            FlightRecorderSwitches.Enabled = true;
+            Simulate(3);
+
+            string path = WaitForRecording(FlightRecorderSwitches.SaveWithReason("ignored pairs test"));
+            var counts = new List<int>();
+            FlightReplay.Run(path, long.MaxValue, TextWriter.Null, null, (step, world) =>
+            {
+                var store = world->Store;
+                int ignored = 0;
+                for (uint a = 0; a < store->bodyCount; a++)
+                {
+                    for (uint b = a + 1; b < store->bodyCount; b++)
+                    {
+                        for (uint i = 0; i < store->bodies[a].shapeCount; i++)
+                        {
+                            for (uint j = 0; j < store->bodies[b].shapeCount; j++)
+                            {
+                                ignored += Unity.Physics.Collision.Filter.Groups.IgnoreTable.Contains(world->Globals,
+                                    store->bodies[a].shapes[i]->ignorePairId, store->bodies[b].shapes[j]->ignorePairId) ? 1 : 0;
+                            }
+                        }
+                    }
+                }
+
+                counts.Add(ignored);
+            });
+
+            Assert.That(counts, Is.Not.Empty);
+            Assert.That(counts, Is.All.EqualTo(2));
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
