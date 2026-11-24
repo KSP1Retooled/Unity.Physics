@@ -1527,6 +1527,14 @@ namespace Unity.Physics
                                         // impulse nonnegative.
                                         l[normalRow] = -contactAngularJac.Jac.Impulse;
 
+                                        // A crash contact shares what is left of its limit between its points, so a
+                                        // part that the game is about to destroy cannot stop the vessel behind it.
+                                        if (contactJacobian.MaxNormalImpulse > 0.0f)
+                                        {
+                                            float left = math.max(contactJacobian.MaxNormalImpulse - contactJacobian.NormalImpulseOverSubsteps, 0.0f);
+                                            u[normalRow] = math.max(left / numContacts - contactAngularJac.Jac.Impulse, l[normalRow]);
+                                        }
+
                                         // Since by design (see skip if inactive contact) the contact is already penetrating,
                                         // as initial guess we assume the variable to be free.
 

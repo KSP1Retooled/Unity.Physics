@@ -16,6 +16,9 @@ namespace Unity.Physics
         public float3 Normal;
         public float CoefficientOfFriction;
         public float CoefficientOfRestitution;
+
+        // The most normal impulse the manifold may apply in this step, or zero for no limit.
+        public float MaxNormalImpulse;
         public ColliderKeyPair ColliderKeys;
 
         // One bit per point, in stream order. Keep rejected points available for contact reporting.

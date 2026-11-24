@@ -49,12 +49,7 @@ namespace KSP.Retooled.Physics
             ulong engineId = EntityId.ToULong(collider.GetEntityId());
             Shape* shape = GroupTable.Set(globals, engineId, group, member, selfCollides ? GroupTable.SelfCollides : 0u);
             Wake(shape);
-            if (IgnoreTable.GroupsOf(globals)->Orphans >= nextOrphanCheck)
-            {
-                ForgetDestroyedColliders(globals);
-                nextOrphanCheck = System.Math.Max(OrphanCheckThreshold, IgnoreTable.GroupsOf(globals)->Orphans * 2);
-            }
-
+            CheckOrphans(globals);
             return true;
         }
 
@@ -143,6 +138,19 @@ namespace KSP.Retooled.Physics
             }
         }
 
+        /// <summary>
+        /// Forgets destroyed colliders once enough entries have lost their shapes, so that the table doesn't grow without
+        /// bound.
+        /// </summary>
+        internal static void CheckOrphans(StoreGlobals* globals)
+        {
+            if (IgnoreTable.GroupsOf(globals)->Orphans >= nextOrphanCheck)
+            {
+                ForgetDestroyedColliders(globals);
+                nextOrphanCheck = System.Math.Max(OrphanCheckThreshold, IgnoreTable.GroupsOf(globals)->Orphans * 2);
+            }
+        }
+
         internal static void ForgetDestroyedColliders(StoreGlobals* globals)
         {
             int capacity = (int)IgnoreTable.GroupsOf(globals)->Orphans;
@@ -160,6 +168,7 @@ namespace KSP.Retooled.Physics
             {
                 if (!valid[i])
                 {
+                    GroupTable.SetCrashSpeed(globals, ids[i], 0.0f);
                     GroupTable.Set(globals, ids[i], 0, 0, 0);
                 }
             }
