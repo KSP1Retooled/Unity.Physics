@@ -17,11 +17,13 @@ namespace Unity.Physics.Collision.Filter.Groups
 
             writer.Write(table->recordsUsed);
             writer.WriteBlock(table->records, checked((int)table->recordsUsed * sizeof(Record)));
+            // An entry is written when it holds a group record or a crash speed. The crash speed limits the first impulse
+            // of a fast contact, so a replay without it would solve crashes differently.
             int entryCount = 0;
             for (uint i = 0; i < table->entryCount; i++)
             {
                 ref Entry entry = ref table->entries[i];
-                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Record != 0)
+                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Kept)
                 {
                     entryCount++;
                 }
@@ -31,10 +33,11 @@ namespace Unity.Physics.Collision.Filter.Groups
             for (uint i = 0; i < table->entryCount; i++)
             {
                 ref Entry entry = ref table->entries[i];
-                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Record != 0)
+                if (entry.Key != EmptyKey && entry.Key != DeletedKey && entry.Kept)
                 {
                     writer.Write(entry.Key);
                     writer.Write(entry.Record);
+                    writer.Write(entry.CrashSpeed);
                 }
             }
 
@@ -71,8 +74,10 @@ namespace Unity.Physics.Collision.Filter.Groups
             {
                 ulong key = reader.ReadUInt64();
                 uint record = reader.ReadUInt32();
+                float crashSpeed = reader.ReadSingle();
                 uint slot = table->TakeEntry(globals, key);
                 table->entries[slot].Record = record;
+                table->entries[slot].CrashSpeed = crashSpeed;
             }
 
             int pairs = reader.ReadCount(1 << 24);

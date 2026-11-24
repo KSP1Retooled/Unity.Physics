@@ -8,7 +8,7 @@ namespace Unity.Physics.Stepping.Recording
     internal static unsafe class RecordingBinary
     {
         internal const string Magic = "Retooled flight recorder";
-        internal const int Version = 10;
+        internal const int Version = 11;
         internal const int EmptyVehicle = -2;
 
         internal static T ReadValue<T>(this BinaryReader reader) where T : unmanaged

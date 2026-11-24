@@ -148,6 +148,49 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assert.That(counts, Is.All.EqualTo(2));
         }
 
+        /// <summary>
+        /// The replay keeps the crash speed that the game gave a collider. The bottom box of a falling two-box vessel
+        /// hits the ground above its crash speed, so its contact may take only the box's own momentum in its first step.
+        /// A replay without the crash speed would stop the whole vessel in that step and differ from the recording.
+        /// </summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ReplayKeepsCrashSpeeds(bool fused)
+        {
+            SetMode(true, fused);
+            Ground();
+            Rigidbody bottom = DynamicBox(new Vector3(0, 1.5f, 0));
+            Rigidbody top = DynamicBox(new Vector3(0, 2.5f, 0));
+            StackJoint(top, bottom);
+            Assert.That(CrashContacts.SetCrashSpeed(bottom.GetComponent<Collider>(), 5.0f), Is.True, "crash speed set");
+            Simulate();
+            bottom.linearVelocity = top.linearVelocity = new Vector3(0, -30, 0);
+            FlightRecorderSwitches.Enabled = true;
+            Simulate(4);
+
+            string path = WaitForRecording(FlightRecorderSwitches.SaveWithReason("crash speed test"));
+            var crashShapes = new List<int>();
+            using var summary = new StringWriter();
+            FlightReplay.Run(path, long.MaxValue, summary, after: (step, world) =>
+            {
+                var store = world->Store;
+                int count = 0;
+                for (uint row = 0; row < store->bodyCount; row++)
+                {
+                    for (uint i = 0; i < store->bodies[row].shapeCount; i++)
+                    {
+                        float speed = Unity.Physics.Collision.Filter.Groups.GroupTable.CrashSpeedOf(world->Globals, store->bodies[row].shapes[i]);
+                        count += speed == 5.0f ? 1 : 0;
+                    }
+                }
+
+                crashShapes.Add(count);
+            });
+
+            Assert.That(crashShapes, Is.Not.Empty);
+            Assert.That(crashShapes, Is.All.EqualTo(1), summary.ToString());
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]
