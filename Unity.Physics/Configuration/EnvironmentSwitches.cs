@@ -21,6 +21,7 @@ namespace Unity.Physics.Configuration
             }
 
             initialized = true;
+            FlightRecorderSwitches.ReadEnvironment(Environment.GetEnvironmentVariable("RETOOLED_FLIGHT_RECORDER"));
             ReadForest();
             ReadVessels();
             StepCacheSwitches.PairSortReuseEnabled = Environment.GetEnvironmentVariable("RETOOLED_PAIR_SORT_REUSE") != "0";

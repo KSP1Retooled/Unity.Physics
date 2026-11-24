@@ -81,6 +81,7 @@ namespace Unity.Physics.Stepping
 
             // A step that threw before FinishStep leaves the fill jobs unfinished, and they write the vessel lists.
             VesselData.vesselsFilled.Complete();
+            FreeRecorderIslands();
             Colliders.ReleaseWorldColliders(store);
 
             store->queryDirty = 1;
@@ -208,7 +209,7 @@ namespace Unity.Physics.Stepping
         {
             return FinishStage.ScheduleBeforeContacts(store, globals, ref world, ref Partition, ref Joints,
                 ref VesselData, ref Contacts, ref Sleep, ref Trees, ref Queries, warmStartsIndexed,
-                counters, ref simulation, deltaTime, ref pending, out snapshot, out sleep);
+                counters, RecorderRestoredMotion, ref simulation, deltaTime, ref pending, out snapshot, out sleep);
         }
 
         internal JobHandle ScheduleSleep(JobHandle published, JobHandle snapshot, JobHandle sleep)

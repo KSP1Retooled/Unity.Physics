@@ -33,6 +33,14 @@ namespace Unity.Physics.Stepping.State
         internal NativeQueue<PairFilter.DropIgnoredPairsJob.KeyValue> learnedBodyPairs;
         internal uint stepCount;
 
+        internal readonly bool HasPendingRefilter => seenPairFilterVersion != PairFilterVersion.Version;
+
+        internal void RestorePendingRefilter(bool pending)
+        {
+            uint version = PairFilterVersion.Version;
+            seenPairFilterVersion = pending ? unchecked(version - 1) : version;
+        }
+
         internal void Initialize()
         {
             manifolds = new NativeList<ManifoldRecord>(Allocator.Persistent);

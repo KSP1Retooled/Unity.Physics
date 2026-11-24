@@ -10,6 +10,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Collision.Queries.Snapshot;
 using Unity.Physics.Configuration;
 using Unity.Physics.Stepping;
+using Unity.Physics.Stepping.Recording;
 
 namespace KSP.Retooled.Physics.Host
 {
@@ -22,6 +23,9 @@ namespace KSP.Retooled.Physics.Host
         private readonly StoreStepper* state;
         private readonly QueryWorld* query;
         private readonly WorldData* store;
+        private FlightRecorder recorder;
+        private bool recorderInputFailed;
+        private bool recorderOutputFailed;
 
         internal WorldState(WorldData* store)
         {
@@ -47,6 +51,10 @@ namespace KSP.Retooled.Physics.Host
 
         public void Dispose()
         {
+            if (recorder != null)
+            {
+                FlightRecorder.Forget(recorder);
+            }
             if (StepEntryPoints.Current == state)
             {
                 StepEntryPoints.Current = null;
@@ -74,11 +82,64 @@ namespace KSP.Retooled.Physics.Host
                 // The last step's refit of the dynamic tree writes the built world, which this step builds again.
                 state->FinishPendingRefit();
                 StepEntryPoints.Current = state;
-                group.Step(deltaTime);
+                if (FlightRecorderSwitches.Enabled)
+                {
+                    StepAndRecord(group, deltaTime);
+                }
+                else
+                {
+                    group.Step(deltaTime);
+                }
             }
             finally
             {
                 BodyEntities.PrepareForJobs(store);
+            }
+        }
+
+        private void StepAndRecord(PhysicsSystemGroup group, float deltaTime)
+        {
+            RecordedStep step = null;
+            try
+            {
+                BodyEntities.PrepareForJobs(store);
+                state->BeginRecorderStep();
+                recorder = FlightRecorder.Start(recorder);
+                step = recorder.Begin(state, deltaTime);
+                recorderInputFailed = false;
+            }
+            catch (Exception error)
+            {
+                if (!recorderInputFailed)
+                {
+                    UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step input: {error}");
+                    recorderInputFailed = true;
+                }
+            }
+
+            try
+            {
+                group.Step(deltaTime);
+                if (step != null)
+                {
+                    try
+                    {
+                        recorder.End(state, step);
+                        recorderOutputFailed = false;
+                    }
+                    catch (Exception error)
+                    {
+                        if (!recorderOutputFailed)
+                        {
+                            UnityEngine.Debug.LogWarning($"[FlightRecorder] Could not capture step output: {error}");
+                            recorderOutputFailed = true;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                state->StopRecorderStep();
             }
         }
 

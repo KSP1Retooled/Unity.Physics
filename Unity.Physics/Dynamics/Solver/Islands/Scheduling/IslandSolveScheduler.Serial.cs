@@ -132,6 +132,19 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 export.Execute(i);
             }
 
+            if (stepInput.IslandSolverCache.RecorderIslands != null)
+            {
+                new RecordIslandsJob
+                {
+                    Islands = work.Islands,
+                    Starts = info.DirectPairsDirectScheduling.FirstIslandBodyIndices,
+                    Bodies = info.DirectPairsDirectScheduling.IslandBodies,
+                    RigidBodies = world.Bodies,
+                    Output = stepInput.IslandSolverCache.RecorderIslands,
+                    Paths = stepInput.IslandSolverCache.RecorderPaths,
+                }.Execute();
+            }
+
             work.Headers.Dispose();
             work.Islands.Dispose();
             work.IslandVessels.Dispose();
