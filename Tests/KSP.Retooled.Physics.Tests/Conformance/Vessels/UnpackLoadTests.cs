@@ -53,6 +53,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TearDown]
         public void RestoreSolverSettings()
         {
+            VesselRowSwitches.LinearCap = 0.0;
+            VesselRowSwitches.AngularCap = 0.0;
             VesselSwitches.Enabled = previousVessels;
             SolverSwitches.VesselFused = previousFused;
             VesselSwitches.MinimumParts = previousMinimumParts;
@@ -456,6 +458,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TestCase(false)]
         public unsafe void AReleasedSectionDoesNotLoadOpposingHardRows(bool fused)
         {
+            // The case checks each hard row's exact share in the step after the release. With the row caps, the two 81 t
+            // parts sit on a critically damped spring with a period of about four steps, so the shares lag behind.
+            VesselRowSwitches.LinearCap = -1.0;
+            VesselRowSwitches.AngularCap = -1.0;
             VesselSwitches.Enabled = true;
             SolverSwitches.VesselFused = fused;
             const float x = 1280.0f;

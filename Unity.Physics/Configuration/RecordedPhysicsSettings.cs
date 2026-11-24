@@ -32,6 +32,8 @@ namespace Unity.Physics.Configuration
         internal bool AlwaysRefit;
         internal bool BoundsCache;
         internal bool ShapeBounds;
+        internal double RowLinearCap;
+        internal double RowAngularCap;
 
         internal static RecordedPhysicsSettings Read() => new RecordedPhysicsSettings
         {
@@ -62,6 +64,8 @@ namespace Unity.Physics.Configuration
             AlwaysRefit = BroadphaseSwitches.TreeAlwaysRefitted,
             BoundsCache = BroadphaseSwitches.BoundsCacheEnabled,
             ShapeBounds = BroadphaseSwitches.ShapeBoundsEnabled,
+            RowLinearCap = VesselRowSwitches.LinearCap,
+            RowAngularCap = VesselRowSwitches.AngularCap,
         };
 
         internal readonly void Apply()
@@ -99,6 +103,10 @@ namespace Unity.Physics.Configuration
             }
             BroadphaseSwitches.BoundsCacheEnabled = BoundsCache;
             BroadphaseSwitches.ShapeBoundsEnabled = ShapeBounds;
+
+            // A cap read as 0 was off. A negative value keeps it off, where 0 would restore the default.
+            VesselRowSwitches.LinearCap = RowLinearCap > 0.0 ? RowLinearCap : -1.0;
+            VesselRowSwitches.AngularCap = RowAngularCap > 0.0 ? RowAngularCap : -1.0;
         }
     }
 }
