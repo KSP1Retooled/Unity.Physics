@@ -754,7 +754,8 @@ namespace Unity.Physics
                                         in rhs, in stepInput, in jointRegularizationData,
                                         PredictiveLimit(ixBodyA, ixBodyB, !bodyAIsStatic && !bodyAIsKinematic,
                                             !bodyBIsStatic && !bodyBIsKinematic, motionVelocities, motionDatas,
-                                            IsNarrowConfigurableStop(ref header, angJacobian.MinAngle, angJacobian.MaxAngle)));
+                                            IsNarrowConfigurableStop(ref header, angJacobian.MinAngle, angJacobian.MaxAngle)),
+                                        angJacobian.IsServoLimit);
 
                                     break;
                                 }

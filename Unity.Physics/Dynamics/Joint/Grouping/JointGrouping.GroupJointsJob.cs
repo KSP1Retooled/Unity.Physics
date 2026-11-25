@@ -13,6 +13,7 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Dynamics.Joint.Translation;
+using Unity.Physics.Configuration;
 
 namespace Unity.Physics.Dynamics.Joint.Grouping
 {
@@ -44,7 +45,8 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             public void Execute()
             {
                 Units.Clear();
-                NativeArray<int> groupOf = FindGroups();
+                bool servoEdges = VesselSwitches.ServoEdges;
+                NativeArray<int> groupOf = FindGroups(servoEdges);
                 for (int i = 0; i < World->jointCount; i++)
                 {
                     int group = groupOf[i];
@@ -54,7 +56,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     }
                 }
 
-                FindForest();
+                FindForest(servoEdges);
                 Written.ResizeUninitialized(Units.Length);
             }
 
@@ -62,7 +64,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             /// Build the vessel spanning forest with Kruskal's algorithm in store order.
             /// Mergeable units joining trees become edges; units within a tree become closures.
             /// </summary>
-            private void FindForest()
+            private void FindForest(bool servoEdges)
             {
                 Roles.ResizeUninitialized(Units.Length);
                 if (!Forest)
@@ -77,15 +79,22 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
 
                 int bodyCount = (int)World->bodyCount;
                 var root = new NativeArray<int>(bodyCount, Allocator.Temp);
+                // Servo edges join vessels only. The row forest needs its own connectivity when a servo is present.
+                var vesselRoot = new NativeArray<int>(servoEdges ? bodyCount : 0, Allocator.Temp);
                 for (int i = 0; i < bodyCount; i++)
                 {
                     root[i] = i;
+                    if (servoEdges)
+                    {
+                        vesselRoot[i] = i;
+                    }
                 }
 
                 for (int u = 0; u < Units.Length; u++)
                 {
                     JointData* joint = World->joints[Units[u].Joint];
-                    if (!JointTranslation.BuildJointsJob.Mergeable(joint))
+                    bool servo = servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint);
+                    if (!servo && !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
                         Roles[u] = JointForestRole.None;
                         continue;
@@ -93,11 +102,29 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
 
                     if (Immobile(joint->body0) || Immobile(joint->body1))
                     {
-                        Roles[u] = JointForestRole.Tree;
+                        Roles[u] = servo ? JointForestRole.None : JointForestRole.Tree;
                         continue;
                     }
 
-                    int a = Find(root, (int)joint->body0->index), b = Find(root, (int)joint->body1->index);
+                    int body0 = (int)joint->body0->index, body1 = (int)joint->body1->index;
+                    if (servoEdges)
+                    {
+                        bool joinsVesselTrees = false;
+                        if ((StoreMemory.Row(joint->body0)->flags & StoreMemory.Row(joint->body1)->flags & BodyFlags.Simulated) != 0)
+                        {
+                            int first = Find(vesselRoot, body0), second = Find(vesselRoot, body1);
+                            joinsVesselTrees = first != second;
+                            vesselRoot[first] = second;
+                        }
+
+                        if (servo)
+                        {
+                            Roles[u] = joinsVesselTrees ? JointForestRole.ServoTree : JointForestRole.None;
+                            continue;
+                        }
+                    }
+
+                    int a = Find(root, body0), b = Find(root, body1);
                     if (a == b)
                     {
                         Roles[u] = JointForestRole.Closure;
@@ -130,7 +157,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             /// Merge compatible joints between the same bodies into groups of at least two, avoiding redundant solver
             /// rows.
             /// </summary>
-            private NativeArray<int> FindGroups()
+            private NativeArray<int> FindGroups(bool servoEdges)
             {
                 Groups.Clear();
                 Members.Clear();
@@ -144,7 +171,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     groupOf[i] = -1;
                     leaderOf[i] = -1;
                     JointData* joint = World->joints[i];
-                    if (!JointTranslation.BuildJointsJob.Mergeable(joint))
+                    if ((servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint)) || !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
                         continue;
                     }

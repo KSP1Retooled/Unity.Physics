@@ -267,7 +267,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double4 rest;
             double3 linearStiffness, linearDamping, angularStiffness, angularDamping;
             bool3 hardLinearAxes;
-            bool freeSwing = false;
+            bool freeAxis = false;
             double driveTarget = 0.0;
 
             // Hard rows take their stiffness from the two sections' reduced mass and inertia, at the hard period.
@@ -309,7 +309,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 hardLinearAxes = true;
                 if (edge->State == VesselEdgeState.FreeAxis)
                 {
-                    freeSwing = true;
+                    freeAxis = true;
                     angularStiffness = new double3(edge->TwistStiffness, hardAngular, hardAngular);
                     angularDamping = new double3(edge->TwistDamping, hardAngular * angularDampingPerStiffness, hardAngular * angularDampingPerStiffness);
                     driveTarget = edge->DriveTarget;
@@ -335,7 +335,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             }
 
             // A stiffness of infinity asks for a hard row: the caller marks an axis that way when it is locked.
-            bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeSwing, freeSwing);
+            bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeAxis, freeAxis);
             Harden(ref linearStiffness, ref linearDamping, hardLinear, linearDampingPerStiffness);
             Harden(ref angularStiffness, ref angularDamping, hardAngular, angularDampingPerStiffness);
 
@@ -347,22 +347,44 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double3 childArm = childPoint - childSection->Center;
             double3 parentArm = parentPoint - parentSection->Center;
 
-            // The rotation from rest, as a vector in world: twice the vector part of (conj(parent) child) conj(rest),
-            // taken the short way round.
+            // Measure the rotation from rest in the parent's motion frame.
             double4 error = DoubleMath.MultiplyQuaternions(
                 DoubleMath.MultiplyQuaternions(DoubleMath.ConjugateQuaternion(parent->Orientation), child->Orientation),
                 DoubleMath.ConjugateQuaternion(rest));
-            double3 rotation = (error.w < 0.0 ? -2.0 : 2.0) * error.xyz;
             double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
-            double3 angularError = math.mul(math.transpose(axes), math.mul(parentRotation, rotation));
-            if (!math.all(hardAngularAxes))
+            double3 angularError;
+            if (freeAxis)
             {
-                // A finite spring acts on the angle. The quaternion vector is only a small-angle approximation.
-                double sine = math.length(error.xyz);
-                if (sine > 1e-8)
+                // Express the rotation in the parent joint frame and remove twist before measuring swing.
+                error.xyz = math.mul(math.transpose(frame), error.xyz);
+                double lengthSquared = math.lengthsq(error.xw);
+                if (lengthSquared > 1e-24)
                 {
-                    double angleScale = math.atan2(sine, math.abs(error.w)) / sine;
-                    angularError = math.select(angularError * angleScale, angularError, hardAngularAxes);
+                    double2 twist = error.xw * math.rsqrt(lengthSquared);
+                    double4 swing = DoubleMath.MultiplyQuaternions(error, new double4(-twist.x, 0.0, 0.0, twist.y));
+                    double sign = twist.y < 0.0 ? -1.0 : 1.0;
+                    double twistAngle = angularStiffness.x > 0.0 ? 2.0 * math.atan2(sign * twist.x, sign * twist.y) : 0.0;
+                    angularError = new double3(twistAngle, 2.0 * swing.yz);
+                }
+                else
+                {
+                    // At a half turn perpendicular to X there is no unique twist.
+                    angularError = new double3(0.0, 2.0 * error.yz);
+                }
+            }
+            else
+            {
+                double3 rotation = (error.w < 0.0 ? -2.0 : 2.0) * error.xyz;
+                angularError = math.mul(math.transpose(axes), math.mul(parentRotation, rotation));
+                if (!math.all(hardAngularAxes))
+                {
+                    // A finite spring acts on the angle. The quaternion vector is only a small-angle approximation.
+                    double sine = math.length(error.xyz);
+                    if (sine > 1e-8)
+                    {
+                        double angleScale = math.atan2(sine, math.abs(error.w)) / sine;
+                        angularError = math.select(angularError * angleScale, angularError, hardAngularAxes);
+                    }
                 }
             }
 

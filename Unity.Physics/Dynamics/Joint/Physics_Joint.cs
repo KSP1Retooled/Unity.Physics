@@ -97,6 +97,10 @@ namespace Unity.Physics
 
         [FieldOffset(49)]
         internal bool HasDriveCoefficients;
+
+        [FieldOffset(50)]
+        internal bool IsServoLimit;
+
         // The spring and damper in force units. Keep the frequency and damping ratio for the iterative solver.
         [FieldOffset(52)]
         internal float2 DriveCoefficients;
@@ -612,6 +616,7 @@ namespace Unity.Physics
                 && Target.Equals(other.Target)
                 && DirectStiffnessScale.Equals(other.DirectStiffnessScale)
                 && IsConfigurableLimit == other.IsConfigurableLimit
+                && IsServoLimit == other.IsServoLimit
                 && HasDriveCoefficients == other.HasDriveCoefficients
                 && DriveCoefficients.Equals(other.DriveCoefficients);
         }

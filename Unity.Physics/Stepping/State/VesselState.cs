@@ -118,6 +118,7 @@ namespace Unity.Physics.Stepping.State
                 {
                     World = store,
                     Units = joints.jointUnits.AsDeferredJobArray(),
+                    Roles = joints.jointRoles.AsDeferredJobArray(),
                     Groups = joints.jointGroups.AsDeferredJobArray(),
                     Members = joints.jointGroupMembers.AsDeferredJobArray(),
                     UnitVessels = vesselBuild.UnitVessels.AsArray(),

@@ -11,5 +11,8 @@ namespace Unity.Physics
 
         /// <summary>A forest joint that closes a loop, such as a strut.</summary>
         Closure,
+
+        /// <summary>A servo that can join the vessel tree and keeps ordinary rows outside an active vessel.</summary>
+        ServoTree,
     }
 }

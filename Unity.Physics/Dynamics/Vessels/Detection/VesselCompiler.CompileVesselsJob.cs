@@ -303,7 +303,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     {
                         int a = partBody[vessel.FirstPart + oldClosurePartA[c]];
                         int b = partBody[vessel.FirstPart + oldClosurePartB[c]];
-                        closureUnit[c] = Claim(unitsByBodies, a, b, oldClosures[c], oldClosureSerials[c]);
+                        closureUnit[c] = Claim(unitsByBodies, a, b, oldClosures[c], oldClosureSerials[c], closure: true);
                     }
 
                     // Then give the others any unit between their bodies, or make them tombstones.
@@ -332,7 +332,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
 
                         int a = partBody[vessel.FirstPart + oldClosurePartA[c]];
                         int b = partBody[vessel.FirstPart + oldClosurePartB[c]];
-                        closureUnit[c] = Claim(unitsByBodies, a, b, IntPtr.Zero, 0);
+                        closureUnit[c] = Claim(unitsByBodies, a, b, IntPtr.Zero, 0, closure: true);
                         if (closureUnit[c] < 0 && (Expired(oldClosureTombstones[c]) || StillJoins(oldClosures[c], oldClosureSerials[c], a, b)))
                         {
                             return false;
@@ -394,13 +394,15 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 /// Claim an eligible unit between two bodies, or return -1.
                 /// If a joint record is supplied, require the unit to contain that record and serial.
                 /// </summary>
-                private int Claim(NativeParallelMultiHashMap<ulong, int> unitsByBodies, int bodyA, int bodyB, IntPtr record, uint serial)
+                private int Claim(NativeParallelMultiHashMap<ulong, int> unitsByBodies, int bodyA, int bodyB, IntPtr record, uint serial,
+                    bool closure = false)
                 {
                     if (unitsByBodies.TryGetFirstValue(VesselBuild.PairKey(bodyA, bodyB), out int unit, out NativeParallelMultiHashMapIterator<ulong> iterator))
                     {
                         do
                         {
-                            if (!claimed[unit] && (record == IntPtr.Zero || Holds(unit, record, serial)))
+                            if (!claimed[unit] && (!closure || Roles[unit] != JointForestRole.ServoTree)
+                                && (record == IntPtr.Zero || Holds(unit, record, serial)))
                             {
                                 claimed[unit] = true;
                                 return unit;
@@ -543,7 +545,10 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                         b = Find(root, b);
                         if (a == b)
                         {
-                            kinds[u] = JointForestRole.Closure;
+                            if (Roles[u] != JointForestRole.ServoTree)
+                            {
+                                kinds[u] = JointForestRole.Closure;
+                            }
                             continue;
                         }
 

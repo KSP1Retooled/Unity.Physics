@@ -31,6 +31,9 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
             [ReadOnly]
             public NativeArray<JointUnit> Units;
 
+            [ReadOnly]
+            public NativeArray<JointForestRole> Roles;
+
             // Concurrent fill jobs write disjoint groups: active edges here, active closures in
             // VesselClosureFill.FillVesselClosuresJob,
             // and inactive units in JointTranslation.BuildJointsJob. Do not read groups owned by another job.
@@ -129,31 +132,54 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 BodyData* parent = World->bodies + PartStoreBodies[PartVesselFirst[part] + PartParents[part]];
                 RigidTransform childMotion = child->mass->Transform;
                 RigidTransform parentMotion = parent->mass->Transform;
-                uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, Units[unit], Groups, Members) : EdgeCacheStamps[part];
-                if (!RefillAll && stamp == EdgeCacheStamps[part] && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
+                JointUnit jointUnit = Units[unit];
+                uint oldStamp = EdgeCacheStamps[part];
+                uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, jointUnit, Groups, Members) : oldStamp;
+                if (!RefillAll && (stamp == oldStamp || Roles[unit] == JointForestRole.ServoTree)
+                    && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
                     && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))
                 {
-                    Edges[part] = EdgeCache[part];
-                    return;
+                    VesselEdge cached = EdgeCache[part];
+                    if (stamp == oldStamp)
+                    {
+                        Edges[part] = cached;
+                        return;
+                    }
+
+                    // Frame changes recompile the vessel. Of the remaining servo settings, only the break limits affect the edge.
+                    JointData* changed = World->joints[jointUnit.Joint];
+                    if (cached.BreakForce == changed->breakForce && cached.BreakTorque == changed->breakTorque)
+                    {
+                        Edges[part] = cached;
+                        EdgeCacheStamps[part] = stamp;
+                        return;
+                    }
                 }
 
-                UnitParameters parameters = UnitParameters.Of(World, Units[unit], Groups, Members);
+                JointData* joint = World->joints[jointUnit.Joint];
+                bool servo = Roles[unit] == JointForestRole.ServoTree;
+                UnitParameters parameters = UnitParameters.Of(World, jointUnit, Groups, Members, servo);
                 bool childIsBody0 = PartIsBody0[part] != 0;
                 float3 childAnchor = childIsBody0 ? parameters.Anchor0 : parameters.Anchor1;
                 float3 parentAnchor = childIsBody0 ? parameters.Anchor1 : parameters.Anchor0;
                 quaternion childFrame = childIsBody0 ? parameters.Rotation0 : parameters.Rotation1;
                 quaternion parentFrame = childIsBody0 ? parameters.Rotation1 : parameters.Rotation0;
 
-                var angles = JointTranslation.BuildJointsJob.NearAngularLimits(World->joints[Units[unit].Joint]);
-                bool3 narrow = angles < float.PositiveInfinity & parameters.Stiffness < double.PositiveInfinity;
-                double flexTorque = math.cmin(math.select(double.PositiveInfinity, math.max(1e-12, (double3)angles * parameters.Stiffness), narrow));
-                float nearest = math.cmin(angles);
-                double unlockRotation = nearest < float.PositiveInfinity ? math.sin(0.375 * math.max(0.001, nearest)) : 0.0;
+                double flexTorque = double.PositiveInfinity;
+                double unlockRotation = 0.0;
+                if (!servo)
+                {
+                    var angles = JointTranslation.BuildJointsJob.NearAngularLimits(joint);
+                    bool3 narrow = angles < float.PositiveInfinity & parameters.Stiffness < double.PositiveInfinity;
+                    flexTorque = math.cmin(math.select(double.PositiveInfinity, math.max(1e-12, (double3)angles * parameters.Stiffness), narrow));
+                    float nearest = math.cmin(angles);
+                    unlockRotation = nearest < float.PositiveInfinity ? math.sin(0.375 * math.max(0.001, nearest)) : 0.0;
+                }
                 var edge = new VesselEdge
                 {
                     Parent = PartParents[part],
-                    State = VesselEdgeState.Yielding,
-                    MayLock = true,
+                    State = servo ? VesselEdgeState.FreeAxis : VesselEdgeState.Yielding,
+                    MayLock = !servo,
                     ParentAnchor = UnitParameters.InMotionFrame(parent, parentAnchor),
                     ChildAnchor = UnitParameters.InMotionFrame(child, childAnchor),
                     Frame = UnitParameters.Frame(parent, parentFrame),

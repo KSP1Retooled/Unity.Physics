@@ -114,7 +114,11 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     role = JointForestRole.None;
                     forestLock = JointForestLock.None;
                     JointData* joint = World->joints[unit.Joint];
-                    if (AngularLimitWithinReach(joint))
+                    bool servo = Roles[index] == JointForestRole.ServoTree;
+                    bool limit = servo ? ServoLimitWithinReach(joint) : AngularLimitWithinReach(joint);
+                    JointAxis* drive = AngularDrive(joint, 0);
+                    bool driven = servo && HasAxisDrive(drive);
+                    if (limit || driven)
                     {
                         Entity entity = unit.Group < 0
                             ? new Entity { Index = unit.Joint, Version = 1 }
@@ -122,7 +126,23 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                         // These angular rows use only the two rotations. The anchors have no effect.
                         if (Begin(joint, joint->position0, joint->position1, entity))
                         {
-                            AddAngularLimits(joint);
+                            if (limit)
+                            {
+                                if (servo)
+                                {
+                                    AddTwistLimit(joint, drive, servo: true);
+                                }
+                                else
+                                {
+                                    AddAngularLimits(joint);
+                                }
+                            }
+
+                            if (driven)
+                            {
+                                AddAxisDrive(joint, 0, drive);
+                            }
+
                             Flush();
                         }
                     }
@@ -132,7 +152,7 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     return;
                 }
 
-                role = Roles[index];
+                role = Roles[index] == JointForestRole.ServoTree ? JointForestRole.None : Roles[index];
                 forestLock = JointForestLock.None;
                 if (Locking && role != JointForestRole.None)
                 {
@@ -209,6 +229,17 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             {
                 return math.all(first->rotation0.value == second->rotation0.value) && math.all(first->rotation1.value == second->rotation1.value)
                     && first->flags == second->flags;
+            }
+
+            internal static bool ServoJoint(JointData* joint)
+            {
+                return (joint->state & JointConstraints.Inactive) == 0 && joint->type == StoreConstants.JointTypeDof6
+                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX)->dofLock == StoreConstants.DofLocked
+                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX + 1)->dofLock == StoreConstants.DofLocked
+                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX + 2)->dofLock == StoreConstants.DofLocked
+                    && JointData.AxisOf(joint, StoreConstants.AxisAngularX)->dofLock != StoreConstants.DofLocked
+                    && JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLocked
+                    && JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLocked;
             }
 
             /// <summary>
@@ -324,6 +355,25 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 quaternion relative = math.mul(math.conjugate(JointConstraints.WorldRotation0(joint)), JointConstraints.WorldRotation1(joint));
                 float reach = 0.5f * (limit - math.length(JointConstraints.RelativeAngularVelocity(joint)) * DeltaTime);
                 return reach <= 0.0f || math.lengthsq(relative.value.xyz) >= math.square(math.sin(0.5f * reach));
+            }
+
+            private bool ServoLimitWithinReach(JointData* joint)
+            {
+                JointAxis* twist = AngularDrive(joint, 0);
+                if (!HasTwistLimit(twist))
+                {
+                    return false;
+                }
+
+                quaternion frame = JointConstraints.WorldRotation0(joint);
+                quaternion relative = math.mul(math.conjugate(frame), JointConstraints.WorldRotation1(joint));
+                float angle = AngularLimit1DJacobian.WrapAngle(CalculateTwistAngle(relative, 0), twist->min, twist->max);
+                float distance = math.min(angle - twist->min, twist->max - angle);
+                float speed = math.abs(math.dot(JointConstraints.RelativeAngularVelocity(joint), math.rotate(frame, new float3(1, 0, 0))));
+
+                // Leave room for the drive and contacts to change the speed after this job.
+                float reach = 0.1f + 2.0f * speed * DeltaTime;
+                return distance <= reach;
             }
 
             internal static bool HasAxisDrive(JointAxis* drive)
@@ -695,10 +745,9 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             private void AddAngularLimits(JointData* joint)
             {
                 JointAxis* twist = JointData.AxisOf(joint, StoreConstants.AxisAngularX);
-                if (twist->dofLock == StoreConstants.DofLimited && (twist->min > -math.PI || twist->max < math.PI))
+                if (HasTwistLimit(twist))
                 {
-                    Softness(twist->limitSpring, twist->limitDamping, JointConstraints.AngularMass(joint, 0), false, out float frequency, out float damping);
-                    AddLimit(Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping));
+                    AddTwistLimit(joint, twist);
                 }
 
                 // The shared swing limit stores the angle about y in min and the angle about z in max.
@@ -727,6 +776,19 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                         }
                     }
                 }
+            }
+
+            private static bool HasTwistLimit(JointAxis* twist)
+            {
+                return twist->dofLock == StoreConstants.DofLimited && (twist->min > -math.PI || twist->max < math.PI);
+            }
+
+            private void AddTwistLimit(JointData* joint, JointAxis* twist, bool servo = false)
+            {
+                Softness(twist->limitSpring, twist->limitDamping, JointConstraints.AngularMass(joint, 0), false, out float frequency, out float damping);
+                Constraint constraint = Constraint.Twist(0, new FloatRange(twist->min, twist->max), ReportEveryImpulse, frequency, damping);
+                constraint.IsServoLimit = servo;
+                AddLimit(constraint);
             }
 
             private void AddLimit(Constraint constraint)

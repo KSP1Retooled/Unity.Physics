@@ -79,6 +79,9 @@ namespace Unity.Physics.Configuration
 
         private static void ReadVessels()
         {
+            string servoEdges = Environment.GetEnvironmentVariable("RETOOLED_SERVO_EDGES");
+            VesselSwitches.ServoEdges = servoEdges == "1" || string.Equals(servoEdges, "true", StringComparison.OrdinalIgnoreCase);
+
             string minimum = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_MIN_PARTS");
             if (int.TryParse(minimum, out int parts))
             {

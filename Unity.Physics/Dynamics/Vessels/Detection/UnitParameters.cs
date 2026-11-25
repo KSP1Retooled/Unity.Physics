@@ -46,7 +46,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         private const float SpreadSquared = 1e-8f;
 
         public static UnitParameters Of(WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
-            NativeArray<JointGroupMember> members)
+            NativeArray<JointGroupMember> members, bool servo = false)
         {
             var parameters = new UnitParameters();
             JointData* leader = world->joints[unit.Joint];
@@ -65,6 +65,12 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
 
             parameters.Anchor0 /= count;
             parameters.Anchor1 /= count;
+
+            if (servo)
+            {
+                parameters.Stiffness = new double3(0.0, double.PositiveInfinity, double.PositiveInfinity);
+                return parameters;
+            }
 
             // Treat locked axes as rigid. For a driven axis, sum the spring stiffness and damping from the members'
             // drives.

@@ -28,7 +28,13 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 using var file = File.OpenRead(path);
                 using var gzip = new GZipStream(file, CompressionMode.Decompress);
                 using var reader = new BinaryReader(gzip);
-                if (reader.ReadString() != RecordingBinary.Magic || reader.ReadInt32() != RecordingBinary.Version)
+                if (reader.ReadString() != RecordingBinary.Magic)
+                {
+                    throw new InvalidDataException("Unsupported flight recorder format.");
+                }
+
+                int version = reader.ReadInt32();
+                if (version != RecordingBinary.Version && version != RecordingBinary.VersionBeforeServoEdges)
                 {
                     throw new InvalidDataException("Unsupported flight recorder format.");
                 }
@@ -70,7 +76,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
                     using var input = new BinaryReader(new MemoryStream(bytes, writable: false));
                     using var store = new ReplayStore();
-                    store.Read(input, payloads);
+                    store.Read(input, payloads, version);
                     if (input.BaseStream.Position != input.BaseStream.Length)
                     {
                         throw new InvalidDataException($"Extra input bytes at step {number}.");
