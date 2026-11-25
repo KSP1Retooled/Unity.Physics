@@ -93,7 +93,8 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                 for (int u = 0; u < Units.Length; u++)
                 {
                     JointData* joint = World->joints[Units[u].Joint];
-                    bool servo = servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint);
+                    ServoAxis axis = servoEdges ? JointTranslation.BuildJointsJob.ServoJoint(joint) : ServoAxis.None;
+                    bool servo = axis != ServoAxis.None;
                     if (!servo && !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
                         Roles[u] = JointForestRole.None;
@@ -119,7 +120,8 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
 
                         if (servo)
                         {
-                            Roles[u] = joinsVesselTrees ? JointForestRole.ServoTree : JointForestRole.None;
+                            Roles[u] = !joinsVesselTrees ? JointForestRole.None
+                                : axis == ServoAxis.LinearX ? JointForestRole.PistonTree : JointForestRole.ServoTree;
                             continue;
                         }
                     }
@@ -171,7 +173,8 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     groupOf[i] = -1;
                     leaderOf[i] = -1;
                     JointData* joint = World->joints[i];
-                    if ((servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint)) || !JointTranslation.BuildJointsJob.Mergeable(joint))
+                    if ((servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint) != ServoAxis.None)
+                        || !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
                         continue;
                     }

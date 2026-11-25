@@ -744,7 +744,7 @@ namespace Unity.Physics
                 {
                     Epsilon = epsilon,
                     Gamma = gamma,
-                    Hard = stiffnessCoefficient >= maximumStiffness,
+                    Hard = stiffnessCoefficient >= maximumStiffness && !constraint.IsSoftServoLimit,
                 };
             }
 

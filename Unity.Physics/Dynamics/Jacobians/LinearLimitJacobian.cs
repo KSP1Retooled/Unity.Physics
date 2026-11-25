@@ -31,6 +31,8 @@ namespace Unity.Physics
         // True if the jacobian limits one degree of freedom
         public bool Is1D;
 
+        public bool IsServoLimit;
+
         // Position error at the beginning of the step
         public float InitialError;
 
@@ -50,6 +52,7 @@ namespace Unity.Physics
             MinDistance = constraint.Min;
             MaxDistance = constraint.Max;
             ConstrainedAxes = constraint.ConstrainedAxes;
+            IsServoLimit = constraint.IsServoLimit;
 
             Tau = tau;
             Damping = damping;

@@ -401,7 +401,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                     {
                         do
                         {
-                            if (!claimed[unit] && (!closure || Roles[unit] != JointForestRole.ServoTree)
+                            if (!claimed[unit] && (!closure || !Roles[unit].IsServoTree())
                                 && (record == IntPtr.Zero || Holds(unit, record, serial)))
                             {
                                 claimed[unit] = true;
@@ -545,7 +545,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                         b = Find(root, b);
                         if (a == b)
                         {
-                            if (Roles[u] != JointForestRole.ServoTree)
+                            if (!Roles[u].IsServoTree())
                             {
                                 kinds[u] = JointForestRole.Closure;
                             }

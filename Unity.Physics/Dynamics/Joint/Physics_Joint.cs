@@ -101,6 +101,10 @@ namespace Unity.Physics
         [FieldOffset(50)]
         internal bool IsServoLimit;
 
+        // A spring limit still waits for penetration if its stiffness reaches the solver cap.
+        [FieldOffset(51)]
+        internal bool IsSoftServoLimit;
+
         // The spring and damper in force units. Keep the frequency and damping ratio for the iterative solver.
         [FieldOffset(52)]
         internal float2 DriveCoefficients;
@@ -617,6 +621,7 @@ namespace Unity.Physics
                 && DirectStiffnessScale.Equals(other.DirectStiffnessScale)
                 && IsConfigurableLimit == other.IsConfigurableLimit
                 && IsServoLimit == other.IsServoLimit
+                && IsSoftServoLimit == other.IsSoftServoLimit
                 && HasDriveCoefficients == other.HasDriveCoefficients
                 && DriveCoefficients.Equals(other.DriveCoefficients);
         }

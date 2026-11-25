@@ -267,7 +267,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double4 rest;
             double3 linearStiffness, linearDamping, angularStiffness, angularDamping;
             bool3 hardLinearAxes;
-            bool freeAxis = false;
+            bool freeTwist = false, freeSlide = false, frameInChild = false;
             double driveTarget = 0.0;
 
             // Hard rows take their stiffness from the two sections' reduced mass and inertia, at the hard period.
@@ -309,15 +309,23 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 hardLinearAxes = true;
                 if (edge->State == VesselEdgeState.FreeAxis)
                 {
-                    freeAxis = true;
-                    angularStiffness = new double3(edge->TwistStiffness, hardAngular, hardAngular);
-                    angularDamping = new double3(edge->TwistDamping, hardAngular * angularDampingPerStiffness, hardAngular * angularDampingPerStiffness);
+                    freeSlide = edge->ServoAxis == ServoAxis.LinearX;
+                    freeTwist = !freeSlide;
+                }
+
+                angularStiffness = edge->AngularStiffness;
+                angularDamping = edge->AngularDamping;
+                if (freeTwist)
+                {
+                    angularStiffness.yz = new double2(hardAngular);
+                    angularDamping.yz = new double2(hardAngular * angularDampingPerStiffness);
                     driveTarget = edge->DriveTarget;
                 }
-                else
+                else if (freeSlide)
                 {
-                    angularStiffness = edge->AngularStiffness;
-                    angularDamping = edge->AngularDamping;
+                    frameInChild = edge->FrameInChild;
+                    linearStiffness.x = linearDamping.x = 0.0;
+                    hardLinearAxes.x = false;
                 }
             }
             else
@@ -335,7 +343,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             }
 
             // A stiffness of infinity asks for a hard row: the caller marks an axis that way when it is locked.
-            bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeAxis, freeAxis);
+            bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeTwist, freeTwist);
             Harden(ref linearStiffness, ref linearDamping, hardLinear, linearDampingPerStiffness);
             Harden(ref angularStiffness, ref angularDamping, hardAngular, angularDampingPerStiffness);
 
@@ -343,7 +351,23 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double3x3 parentRotation = DoubleMath.Rotation(parent->Orientation);
             double3 childPoint = child->Position + math.mul(childRotation, childAnchor);
             double3 parentPoint = parent->Position + math.mul(parentRotation, parentAnchor);
-            double3x3 axes = math.mul(parentRotation, frame);
+            double3x3 axes = math.mul(frameInChild ? childRotation : parentRotation, frame);
+            double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
+            if (freeSlide)
+            {
+                linearError.x = 0.0;
+                // The transverse constraint follows the owner's rotating axis. Its derivative applies equal and
+                // opposite forces at the connected anchor, even when the two anchors are far apart.
+                if (frameInChild)
+                {
+                    childPoint = parentPoint;
+                }
+                else
+                {
+                    parentPoint = childPoint;
+                }
+            }
+
             double3 childArm = childPoint - childSection->Center;
             double3 parentArm = parentPoint - parentSection->Center;
 
@@ -351,9 +375,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double4 error = DoubleMath.MultiplyQuaternions(
                 DoubleMath.MultiplyQuaternions(DoubleMath.ConjugateQuaternion(parent->Orientation), child->Orientation),
                 DoubleMath.ConjugateQuaternion(rest));
-            double3 linearError = math.mul(math.transpose(axes), childPoint - parentPoint);
             double3 angularError;
-            if (freeAxis)
+            if (freeTwist)
             {
                 // Express the rotation in the parent joint frame and remove twist before measuring swing.
                 error.xyz = math.mul(math.transpose(frame), error.xyz);

@@ -122,7 +122,7 @@ namespace Unity.Physics
 
             isLCP = true;
             float error;
-            // Keep the nearer side of a hard angular stop available to the coupled solve if the builder already
+            // Keep the nearer side of a hard stop available to the coupled solve if the builder already
             // checked its reach or if the ordinary narrow stop is close.
             // Its impulse remains zero until the other rows would take the joint past the stop.
             bool upper = reach >= 0.5f * (minimum + maximum);

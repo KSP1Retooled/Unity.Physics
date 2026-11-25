@@ -107,14 +107,22 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 written = 0;
                 JointUnit unit = Units[index];
 
-                // The vessel solver handles the springs and locks. Use boundary rows for angular stops when they
-                // are within reach. FillVesselEdgesJob and FillVesselClosuresJob prepare the groups.
+                // The vessel solver handles the edge springs and locks. Boundary rows handle servo drives and stops.
                 if (Vessels && UnitVessels[index] >= 0 && VesselActive[UnitVessels[index]] != 0)
                 {
                     role = JointForestRole.None;
                     forestLock = JointForestLock.None;
                     JointData* joint = World->joints[unit.Joint];
-                    bool servo = Roles[index] == JointForestRole.ServoTree;
+                    JointForestRole vesselRole = Roles[index];
+                    if (vesselRole == JointForestRole.PistonTree)
+                    {
+                        AddPistonRows(unit, joint);
+                        Output.EndForEachIndex();
+                        Written[index] = written;
+                        return;
+                    }
+
+                    bool servo = vesselRole == JointForestRole.ServoTree;
                     bool limit = servo ? ServoLimitWithinReach(joint) : AngularLimitWithinReach(joint);
                     JointAxis* drive = AngularDrive(joint, 0);
                     bool driven = servo && HasAxisDrive(drive);
@@ -152,7 +160,11 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     return;
                 }
 
-                role = Roles[index] == JointForestRole.ServoTree ? JointForestRole.None : Roles[index];
+                role = Roles[index];
+                if (role.IsServoTree())
+                {
+                    role = JointForestRole.None;
+                }
                 forestLock = JointForestLock.None;
                 if (Locking && role != JointForestRole.None)
                 {
@@ -231,15 +243,25 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     && first->flags == second->flags;
             }
 
-            internal static bool ServoJoint(JointData* joint)
+            internal static ServoAxis ServoJoint(JointData* joint)
             {
-                return (joint->state & JointConstraints.Inactive) == 0 && joint->type == StoreConstants.JointTypeDof6
-                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX)->dofLock == StoreConstants.DofLocked
-                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX + 1)->dofLock == StoreConstants.DofLocked
-                    && JointData.AxisOf(joint, StoreConstants.AxisLinearX + 2)->dofLock == StoreConstants.DofLocked
-                    && JointData.AxisOf(joint, StoreConstants.AxisAngularX)->dofLock != StoreConstants.DofLocked
-                    && JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock == StoreConstants.DofLocked
-                    && JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock == StoreConstants.DofLocked;
+                if ((joint->state & JointConstraints.Inactive) != 0 || joint->type != StoreConstants.JointTypeDof6
+                    || JointData.AxisOf(joint, StoreConstants.AxisLinearX + 1)->dofLock != StoreConstants.DofLocked
+                    || JointData.AxisOf(joint, StoreConstants.AxisLinearX + 2)->dofLock != StoreConstants.DofLocked
+                    || JointData.AxisOf(joint, StoreConstants.AxisAngularY)->dofLock != StoreConstants.DofLocked
+                    || JointData.AxisOf(joint, StoreConstants.AxisAngularZ)->dofLock != StoreConstants.DofLocked)
+                {
+                    return ServoAxis.None;
+                }
+
+                bool linearLocked = JointData.AxisOf(joint, StoreConstants.AxisLinearX)->dofLock == StoreConstants.DofLocked;
+                bool angularLocked = JointData.AxisOf(joint, StoreConstants.AxisAngularX)->dofLock == StoreConstants.DofLocked;
+                if (linearLocked == angularLocked)
+                {
+                    return ServoAxis.None;
+                }
+
+                return linearLocked ? ServoAxis.AngularX : ServoAxis.LinearX;
             }
 
             /// <summary>
@@ -373,6 +395,71 @@ namespace Unity.Physics.Dynamics.Joint.Translation
 
                 // Leave room for the drive and contacts to change the speed after this job.
                 float reach = 0.1f + 2.0f * speed * DeltaTime;
+                return distance <= reach;
+            }
+
+            private void AddPistonRows(JointUnit unit, JointData* joint)
+            {
+                JointAxis* drive = JointData.AxisOf(joint, StoreConstants.AxisLinearX);
+                bool driven = HasAxisDrive(drive);
+                bool limited = drive->dofLock == StoreConstants.DofLimited;
+                if (!driven && !limited)
+                {
+                    return;
+                }
+
+                float position = JointConstraints.RelativePosition(joint).x;
+                JointAxis* stop = JointData.AxisOf(joint, StoreConstants.AxisDistance);
+                bool limit = limited && PistonLimitWithinReach(joint, drive, position, stop->max, driven);
+                if ((!limit && !driven) || !Begin(joint, joint->position0, joint->position1, new Entity { Index = unit.Joint, Version = 1 }))
+                {
+                    return;
+                }
+
+                if (limit)
+                {
+                    AddLinearLimit(joint, new bool3(true, false, false), -stop->max, stop, servo: true);
+                }
+
+                if (driven)
+                {
+                    AddLinearDrive(joint, 0, drive, position);
+                }
+
+                Flush();
+            }
+
+            private bool PistonLimitWithinReach(JointData* joint, JointAxis* drive, float position, float limit, bool driven)
+            {
+                if (!math.isfinite(limit))
+                {
+                    return false;
+                }
+
+                float distance = limit - math.abs(position);
+                // The reach includes five centimetres for velocity changes caused later by contacts.
+                const float contactReach = 0.05f;
+                if (distance <= contactReach)
+                {
+                    return true;
+                }
+
+                float speed = JointConstraints.RelativeLinearSpeedX(joint);
+                float reach = contactReach + 2.0f * math.abs(speed) * DeltaTime;
+                if (distance > reach && driven)
+                {
+                    // The reduced mass and the implicit spring and damper estimate the drive's extra travel.
+                    float mass = JointConstraints.LinearDriveMass(joint, 0);
+                    float scale = drive->driveUsesAcceleration != 0 ? mass : 1.0f;
+                    float spring = scale * drive->driveSpring;
+                    float damper = scale * drive->driveDamper;
+                    float force = math.abs(spring * (joint->targetPosition.x - position - speed * DeltaTime)
+                        + damper * (joint->targetLinearVelocity.x - speed));
+                    float driveTravel = DeltaTime * DeltaTime * math.min(force / (mass + DeltaTime * (damper + DeltaTime * spring)),
+                        drive->driveMaxForce / mass);
+                    reach += driveTravel;
+                }
+
                 return distance <= reach;
             }
 
@@ -703,10 +790,18 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 {
                     // Unity limits the combined distance along the limited axes. These constraints measure that distance.
                     JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisDistance);
-                    Softness(axis->limitSpring, axis->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
                     bool signed = limited.x ^ limited.y ^ limited.z && !math.all(limited);
-                    AddLimit(LinearAxes(limited, signed ? -axis->max : axis->min, axis->max, frequency, damping));
+                    AddLinearLimit(joint, limited, signed ? -axis->max : axis->min, axis);
                 }
+            }
+
+            private void AddLinearLimit(JointData* joint, bool3 axes, float min, JointAxis* limit, bool servo = false)
+            {
+                Softness(limit->limitSpring, limit->limitDamping, JointConstraints.LinearMass(joint), false, out float frequency, out float damping);
+                Constraint constraint = LinearAxes(axes, min, limit->max, frequency, damping);
+                constraint.IsServoLimit = servo;
+                constraint.IsSoftServoLimit = servo && (limit->limitSpring > 0.0f || limit->limitDamping > 0.0f);
+                AddLimit(constraint);
             }
 
             /// <summary>
@@ -829,20 +924,23 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 for (int i = 0; i < 3; i++)
                 {
                     JointAxis* axis = JointData.AxisOf(joint, StoreConstants.AxisLinearX + i);
-                    if (axis->dofLock == StoreConstants.DofLocked || HeldByDrive(joint, i) || axis->driveMaxForce <= 0.0f || (axis->driveSpring <= 0.0f && axis->driveDamper <= 0.0f))
+                    if (axis->dofLock != StoreConstants.DofLocked && !HeldByDrive(joint, i) && HasAxisDrive(axis))
                     {
-                        continue;
+                        AddLinearDrive(joint, i, axis, current[i]);
                     }
-
-                    // Express target velocity as a spring target offset: F = k(x* + (c/k)v* - x) - cv.
-                    // For a pure damper, target the current position before applying the offset.
-                    float spring = math.max(axis->driveSpring, axis->driveDamper * PureDamperSpringRatio);
-                    float velocityOffset = axis->driveDamper / spring * joint->targetLinearVelocity[i];
-                    float target = (axis->driveSpring > 0.0f ? joint->targetPosition[i] : current[i]) + velocityOffset;
-
-                    float mass = JointConstraints.LinearDriveMass(joint, i);
-                    Add(WithDrive(OnAxis(i, Constraint.MotorPlanar(target, MaxImpulse(axis))), axis, spring, mass));
                 }
+            }
+
+            private void AddLinearDrive(JointData* joint, int index, JointAxis* axis, float current)
+            {
+                // Express target velocity as a spring target offset: F = k(x* + (c/k)v* - x) - cv.
+                // For a pure damper, target the current position before applying the offset.
+                float spring = math.max(axis->driveSpring, axis->driveDamper * PureDamperSpringRatio);
+                float velocityOffset = axis->driveDamper / spring * joint->targetLinearVelocity[index];
+                float target = (axis->driveSpring > 0.0f ? joint->targetPosition[index] : current) + velocityOffset;
+
+                float mass = JointConstraints.LinearDriveMass(joint, index);
+                Add(WithDrive(OnAxis(index, Constraint.MotorPlanar(target, MaxImpulse(axis))), axis, spring, mass));
             }
 
             private void AddAngularDrives(JointData* joint)

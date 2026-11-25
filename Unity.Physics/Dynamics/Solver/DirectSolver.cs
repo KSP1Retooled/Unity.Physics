@@ -1172,7 +1172,7 @@ namespace Unity.Physics
 
                                             gamma_phi_0 = SetLimitRow(currentDistance, limitJacobian.MinDistance,
                                                 limitJacobian.MaxDistance, rate, jointRegularizationData, stepInput.Timestep,
-                                                startRow, in l, in u, ref indexSetArray, ref isLCP);
+                                                startRow, in l, in u, ref indexSetArray, ref isLCP, servoStop: limitJacobian.IsServoLimit);
                                         }
 
                                         // Note: \phi(q_) and gamma appear on rhs as rhs = v0 - \gamma * \phi(q_)/dt - JinvM (...)

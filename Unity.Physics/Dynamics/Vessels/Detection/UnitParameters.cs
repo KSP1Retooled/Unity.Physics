@@ -46,7 +46,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         private const float SpreadSquared = 1e-8f;
 
         public static UnitParameters Of(WorldData* world, JointUnit unit, NativeArray<JointGroup> groups,
-            NativeArray<JointGroupMember> members, bool servo = false)
+            NativeArray<JointGroupMember> members, ServoAxis servo = ServoAxis.None)
         {
             var parameters = new UnitParameters();
             JointData* leader = world->joints[unit.Joint];
@@ -66,9 +66,14 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
             parameters.Anchor0 /= count;
             parameters.Anchor1 /= count;
 
-            if (servo)
+            if (servo != ServoAxis.None)
             {
-                parameters.Stiffness = new double3(0.0, double.PositiveInfinity, double.PositiveInfinity);
+                parameters.Stiffness = double.PositiveInfinity;
+                if (servo == ServoAxis.AngularX)
+                {
+                    parameters.Stiffness.x = 0.0;
+                }
+
                 return parameters;
             }
 

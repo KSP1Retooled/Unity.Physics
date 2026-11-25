@@ -135,7 +135,7 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 JointUnit jointUnit = Units[unit];
                 uint oldStamp = EdgeCacheStamps[part];
                 uint stamp = RefillAll || SettingsChanged ? UnitParameters.Stamp(World, jointUnit, Groups, Members) : oldStamp;
-                if (!RefillAll && (stamp == oldStamp || Roles[unit] == JointForestRole.ServoTree)
+                if (!RefillAll && (stamp == oldStamp || Roles[unit].IsServoTree())
                     && UnitParameters.Same(EdgeCacheFrames[2 * part], childMotion)
                     && UnitParameters.Same(EdgeCacheFrames[2 * part + 1], parentMotion))
                 {
@@ -157,17 +157,23 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 }
 
                 JointData* joint = World->joints[jointUnit.Joint];
-                bool servo = Roles[unit] == JointForestRole.ServoTree;
+                ServoAxis servo = Roles[unit] switch
+                {
+                    JointForestRole.ServoTree => ServoAxis.AngularX,
+                    JointForestRole.PistonTree => ServoAxis.LinearX,
+                    _ => ServoAxis.None,
+                };
                 UnitParameters parameters = UnitParameters.Of(World, jointUnit, Groups, Members, servo);
                 bool childIsBody0 = PartIsBody0[part] != 0;
                 float3 childAnchor = childIsBody0 ? parameters.Anchor0 : parameters.Anchor1;
                 float3 parentAnchor = childIsBody0 ? parameters.Anchor1 : parameters.Anchor0;
                 quaternion childFrame = childIsBody0 ? parameters.Rotation0 : parameters.Rotation1;
                 quaternion parentFrame = childIsBody0 ? parameters.Rotation1 : parameters.Rotation0;
+                bool frameInChild = servo == ServoAxis.LinearX && childIsBody0;
 
                 double flexTorque = double.PositiveInfinity;
                 double unlockRotation = 0.0;
-                if (!servo)
+                if (servo == ServoAxis.None)
                 {
                     var angles = JointTranslation.BuildJointsJob.NearAngularLimits(joint);
                     bool3 narrow = angles < float.PositiveInfinity & parameters.Stiffness < double.PositiveInfinity;
@@ -178,11 +184,13 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
                 var edge = new VesselEdge
                 {
                     Parent = PartParents[part],
-                    State = servo ? VesselEdgeState.FreeAxis : VesselEdgeState.Yielding,
-                    MayLock = !servo,
+                    State = servo != ServoAxis.None ? VesselEdgeState.FreeAxis : VesselEdgeState.Yielding,
+                    MayLock = servo == ServoAxis.None,
+                    ServoAxis = servo,
+                    FrameInChild = frameInChild,
                     ParentAnchor = UnitParameters.InMotionFrame(parent, parentAnchor),
                     ChildAnchor = UnitParameters.InMotionFrame(child, childAnchor),
-                    Frame = UnitParameters.Frame(parent, parentFrame),
+                    Frame = frameInChild ? UnitParameters.Frame(child, childFrame) : UnitParameters.Frame(parent, parentFrame),
                     Rest = UnitParameters.Rest(parent, parentFrame, child, childFrame),
                     AngularStiffness = parameters.Stiffness,
                     AngularDamping = parameters.Damping,

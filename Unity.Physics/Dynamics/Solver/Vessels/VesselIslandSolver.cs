@@ -182,7 +182,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         static unsafe void SolveVesselRows(ref ForestRun run, float* rhs, float* impulses)
         {
             SolveForest(ref run, rhs, impulses);
-            if (ReopenAngularStops(ref run, rhs))
+            if (ReopenStops(ref run, rhs))
             {
                 SolveForest(ref run, rhs, impulses);
             }

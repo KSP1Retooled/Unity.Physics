@@ -18,6 +18,10 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         /// </summary>
         public bool MayLock;
 
+        public ServoAxis ServoAxis;
+
+        public bool FrameInChild;
+
         /// <summary>The joint point in the parent's frame, relative to its centre of mass.</summary>
         public double3 ParentAnchor;
 
@@ -25,8 +29,7 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         public double3 ChildAnchor;
 
         /// <summary>
-        /// The joint axes in the parent's frame, stored as columns: the twist axis followed by the two swing axes. The
-        /// constraint rows act along these axes.
+        /// The joint axes in the parent's motion frame, or the child's when FrameInChild is set.
         /// </summary>
         public double3x3 Frame;
 
