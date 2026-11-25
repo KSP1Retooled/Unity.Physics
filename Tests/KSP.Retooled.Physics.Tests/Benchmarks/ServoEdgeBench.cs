@@ -8,6 +8,7 @@ using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Solver.Forest;
 using UnityEngine;
 using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
+using PistonEdgeTests = KSP.Retooled.Physics.Tests.Conformance.Vessels.PistonEdgeTests;
 using ServoEdgeTests = KSP.Retooled.Physics.Tests.Conformance.Vessels.ServoEdgeTests;
 
 namespace KSP.Retooled.Physics.Tests.Benchmarks
@@ -23,10 +24,13 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         private Rigidbody Part(Vector3 position)
             => ServoEdgeTests.Body(Track(new GameObject("benchmark part")), position, 1.0f, 0.2f);
 
-        private ConfigurableJoint[] Build(int parts, int servos)
+        private const float PistonStroke = 2.4f;
+
+        private (ConfigurableJoint[] pistons, ConfigurableJoint[] hinges) Build(int parts, int pistons, int hinges)
         {
-            int branchParts = parts / (servos + 1);
-            int spineParts = parts - servos * branchParts;
+            int branches = Mathf.Max(pistons, hinges);
+            int branchParts = parts / (branches + 1);
+            int spineParts = parts - branches * branchParts;
             var spine = new Rigidbody[spineParts];
             for (int i = 0; i < spineParts; i++)
             {
@@ -37,28 +41,48 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 }
             }
 
-            var drives = new ConfigurableJoint[servos];
-            for (int i = 0; i < servos; i++)
+            var sliders = new ConfigurableJoint[pistons];
+            var rotary = new ConfigurableJoint[hinges];
+            for (int i = 0; i < branches; i++)
             {
                 Rigidbody parent = spine[i % spineParts];
                 Vector3 pivot = parent.position;
+                bool hasPiston = i < pistons;
+                float pistonOffset = hasPiston ? 0.5f * PistonStroke - 0.33f : 0.0f;
                 for (int part = 0; part < branchParts; part++)
                 {
-                    Rigidbody body = Part(pivot + 0.33f * (part + 1) * Vector3.right);
-                    ConfigurableJoint joint = ServoEdgeTests.Link(body, parent, parent.position, Vector3.right, part == 0);
-                    if (part == 0)
+                    Rigidbody body = Part(pivot + (0.33f * (part + 1) + pistonOffset) * Vector3.right);
+                    if (hasPiston && part == 0)
                     {
-                        drives[i] = joint;
-                        ServoEdgeTests.Drive(joint, 40.0f, 12.0f, 80.0f);
+                        sliders[i] = PistonEdgeTests.Piston(body, parent, Vector3.right, PistonStroke);
                     }
+                    else
+                    {
+                        bool hinge = i < hinges && part == (hasPiston ? 1 : 0);
+                        ConfigurableJoint joint = ServoEdgeTests.Link(body, parent, parent.position, Vector3.right, hinge);
+                        if (hinge)
+                        {
+                            rotary[i] = joint;
+                            ServoEdgeTests.Drive(joint, 40.0f, 12.0f, 80.0f);
+                        }
+                    }
+
                     parent = body;
                 }
             }
-            return drives;
+
+            return (sliders, rotary);
         }
 
         [Test]
         public void Measure()
+            => MeasureCases(new[] { (500, 0, 0), (500, 0, 5), (500, 0, 20), (500, 0, 60), (60, 0, 10) });
+
+        [Test]
+        public void MeasurePistons()
+            => MeasureCases(new[] { (500, 20, 0), (500, 20, 20) });
+
+        private void MeasureCases((int parts, int pistons, int hinges)[] cases)
         {
             Assert.That(BackendInfo.IsRetooled, Is.True);
             Assert.That(BurstCompiler.IsEnabled, Is.True);
@@ -73,9 +97,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 {
                     JobsUtility.JobWorkerCount = count;
                     Assert.That(JobsUtility.JobWorkerCount, Is.EqualTo(count));
-                    foreach (var (parts, servos) in new[] { (500, 0), (500, 5), (500, 20), (500, 60), (60, 10) })
+                    foreach (var (parts, pistons, hinges) in cases)
                     {
-                        MeasureCraft(count, parts, servos);
+                        MeasureCraft(count, parts, pistons, hinges);
                     }
                 }
             }
@@ -86,9 +110,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             }
         }
 
-        private void MeasureCraft(int workers, int parts, int servos)
+        private void MeasureCraft(int workers, int parts, int pistons, int hinges)
         {
-            ConfigurableJoint[] drives = Build(parts, servos);
+            var (sliders, rotary) = Build(parts, pistons, hinges);
             var times = new[] { new List<double>(), new List<double>() };
             var rows = new long[2];
             var samples = new long[2];
@@ -99,10 +123,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 VesselSwitches.ServoEdges = mode == 1;
                 for (int i = 0; i < WarmupSteps + StepsPerBlock; i++)
                 {
-                    for (int drive = 0; drive < drives.Length; drive++)
+                    for (int drive = 0; drive < sliders.Length; drive++)
+                    {
+                        sliders[drive].targetPosition = 0.2f * Mathf.Sin(0.05f * step + 0.27f * drive) * Vector3.right;
+                    }
+                    for (int drive = 0; drive < rotary.Length; drive++)
                     {
                         float angle = 22.0f * Mathf.Sin(0.05f * step + 0.27f * drive);
-                        drives[drive].targetRotation = Quaternion.AngleAxis(angle, Vector3.right);
+                        rotary[drive].targetRotation = Quaternion.AngleAxis(angle, Vector3.right);
                     }
                     step++;
                     BoundaryCounters before = BoundaryCounters.Current;
@@ -126,9 +154,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 int middle = times[mode].Count / 2;
                 double median = 0.5 * (times[mode][middle - 1] + times[mode][middle]);
                 double rowCount = samples[mode] > 0 ? rows[mode] / (double)samples[mode] : 0.0;
-                TestContext.WriteLine($"{workers} workers, {parts} parts, {servos} servos, edges {(mode == 1 ? "on" : "off")}: "
+                TestContext.WriteLine($"{workers} workers, {parts} parts, {pistons} pistons, {hinges} hinges, edges {(mode == 1 ? "on" : "off")}: "
                     + $"median {median:F3} ms, minimum {times[mode][0]:F3} ms, {rowCount:F2} boundary rows.");
-                Assert.That(rowCount, Is.EqualTo(servos * (mode == 1 ? 1 : 6)));
+                Assert.That(rowCount, Is.EqualTo((pistons + hinges) * (mode == 1 ? 1 : 6)));
             }
             DestroyAll();
         }
