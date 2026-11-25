@@ -435,7 +435,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(speed, Is.EqualTo(expected).Within(0.06f));
         }
 
-        private static (Vector3 linear, Vector3 angular) Momentum(Rigidbody[] bodies)
+        internal static (Vector3 linear, Vector3 angular) Momentum(Rigidbody[] bodies)
         {
             Vector3 linear = Vector3.zero, angular = Vector3.zero;
             foreach (Rigidbody body in bodies)
