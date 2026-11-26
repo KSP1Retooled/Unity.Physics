@@ -13,8 +13,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
     /// </summary>
     public class VesselSectionTests : PhysicsScene
     {
-        private bool wasEnabled;
-        private bool wasVessels;
+        private int wasMinimumParts;
         private bool wasLocking;
 
         [SetUp]
@@ -28,20 +27,17 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
             EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
 
-            // These test the forest path with Unity's joint rows, which vessels replace.
-            VesselSwitches.Enabled = false;
-            wasEnabled = ForestSwitches.Enabled;
+            // These tests exercise how the forest locks ordinary joint rows.
+            wasMinimumParts = VesselSwitches.MinimumParts;
+            VesselSwitches.MinimumParts = int.MaxValue;
             wasLocking = ForestSwitches.Locking;
-            ForestSwitches.Enabled = true;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            ForestSwitches.Enabled = wasEnabled;
-            VesselSwitches.Enabled = wasVessels;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             ForestSwitches.Locking = wasLocking;
         }
 
@@ -49,7 +45,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             TearDownScene();
             SetUpScene();
-            ForestSwitches.Enabled = true;
             ForestSwitches.Locking = locking;
 
             // Islands keep their lock states by their first body, which the last scene's islands had too.

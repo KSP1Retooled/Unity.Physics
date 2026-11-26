@@ -8,8 +8,22 @@ namespace Unity.Physics.Stepping.Recording
     internal static unsafe class RecordingBinary
     {
         internal const string Magic = "Retooled flight recorder";
-        internal const int Version = 13;
+        internal const int Version = 14;
         internal const int EmptyVehicle = -2;
+
+        internal static void RequireCurrentVersion(BinaryReader reader)
+        {
+            if (reader.ReadString() != Magic)
+            {
+                throw new InvalidDataException("Unsupported flight recorder format.");
+            }
+
+            int version = reader.ReadInt32();
+            if (version != Version)
+            {
+                throw new InvalidDataException($"The recording uses format version {version}. Replay requires version {Version}.");
+            }
+        }
 
         internal static T ReadValue<T>(this BinaryReader reader) where T : unmanaged
         {

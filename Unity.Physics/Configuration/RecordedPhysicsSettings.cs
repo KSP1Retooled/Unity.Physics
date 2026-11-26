@@ -5,16 +5,11 @@ namespace Unity.Physics.Configuration
     /// <summary>Settings that the step reads outside the store.</summary>
     internal struct RecordedPhysicsSettings
     {
-        internal bool Vessels;
-        internal bool Fused;
-        internal bool FusedContacts;
         internal int FusedParts;
         internal int MinimumParts;
-        internal bool StrutLoads;
         internal int StrutExperiment;
         internal SolverSwitches.SubstepFolding Folding;
         internal int SerialIslandPairLimit;
-        internal bool Forest;
         internal int BoundaryRowCap;
         internal BoundaryCaps Caps;
         internal bool Locking;
@@ -37,16 +32,11 @@ namespace Unity.Physics.Configuration
 
         internal static RecordedPhysicsSettings Read() => new RecordedPhysicsSettings
         {
-            Vessels = VesselSwitches.Enabled,
-            Fused = true,
-            FusedContacts = true,
             FusedParts = SolverSwitches.FusedVesselParts,
             MinimumParts = VesselSwitches.MinimumParts,
-            StrutLoads = true,
             StrutExperiment = VesselSwitches.StrutExperiment,
             Folding = SolverSwitches.UnfusedFolding,
             SerialIslandPairLimit = SolverSwitches.SerialIslandPairLimit,
-            Forest = ForestSwitches.Enabled,
             BoundaryRowCap = ForestSwitches.BoundaryRowCap,
             Caps = ForestSwitches.Caps,
             Locking = ForestSwitches.Locking,
@@ -70,13 +60,11 @@ namespace Unity.Physics.Configuration
 
         internal readonly void Apply()
         {
-            VesselSwitches.Enabled = Vessels;
             SolverSwitches.FusedVesselParts = FusedParts;
             VesselSwitches.MinimumParts = MinimumParts;
             VesselSwitches.StrutExperiment = StrutExperiment;
             SolverSwitches.UnfusedFolding = Folding;
             SolverSwitches.SerialIslandPairLimit = SerialIslandPairLimit;
-            ForestSwitches.Enabled = Forest;
             ForestSwitches.BoundaryRowCap = BoundaryRowCap;
             ForestSwitches.Caps = Caps;
             ForestSwitches.Locking = Locking;

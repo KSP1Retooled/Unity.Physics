@@ -6,8 +6,17 @@ uid: changelog
 
 ## Unreleased
 The vessel solver uses a free-axis edge for each DLC hinge, rotation servo, rotor, or piston that joins two vessel
-trees. A servo that cannot become an edge still uses boundary rows. The flight recorder now writes version 13, and
-the replay tool requires that version.
+trees. A servo that cannot become an edge still uses boundary rows.
+
+The backend always compiles eligible vessels and uses the forest for eligible joint rows. Craft that fall below the
+minimum vessel size still use ordinary Unity Physics joints. The solver fuses eligible vessel islands across
+substeps, including islands that have boundary rows. It still uses the separate substeps for islands that do not
+qualify, including those below the configured minimum size for the fused solve.
+
+The solver uses static equilibrium to share loads inside locked sections that have struts. It leaves dormant
+joint rows out of the vessel boundary until they are needed.
+
+The flight recorder writes version 14. The replay tool requires that version.
 
 ## 0.1.5
 A part that a fast impact destroys no longer stops its vessel before the game destroys it. The game gives each such

@@ -31,8 +31,9 @@ using Unity.Physics.Configuration;
 namespace KSP.Retooled.Physics.Tests.Benchmarks
 {
     /// <summary>
-    /// Benchmark whole craft steps on sparse, forest, locking, supplied-vessel and compiled-vessel paths.
+    /// Measures whole steps with compiled or supplied vessels, with optional locking.
     /// Select configurations with RETOOLED_BENCH_CRAFT, _SCENE, _THREADS and _PATHS.
+    /// The paths are compiled, locked and vessel. Use parts=n after a colon to change the minimum size for fusing.
     /// Write timings and CPU load to Logs/VesselForestBench.txt.
     /// </summary>
     [Explicit("A benchmark, minutes long")]
@@ -714,18 +715,15 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             double clear = Since(clock);
             // The parts option sets the minimum island size for the fused job.
             string[] options = path.Split(':');
+            path = options[0];
+            Assert.That(path, Is.EqualTo("compiled").Or.EqualTo("locked").Or.EqualTo("vessel"), "the benchmark path");
             SolverSwitches.FusedVesselParts = fusedParts;
             for (int i = 1; i < options.Length; i++)
             {
-                if (options[i].StartsWith("parts="))
-                {
-                    SolverSwitches.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
-                }
+                Assert.That(options[i], Does.StartWith("parts="), "the benchmark option");
+                SolverSwitches.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
             }
 
-            path = options[0];
-            ForestSwitches.Enabled = path != "sparse";
-            VesselSwitches.Enabled = path == "compiled";
             ForestDiagnostics.ForgetIslands();
             ForestSwitches.Locking = path == "locked";
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
@@ -827,18 +825,14 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             ForestDiagnostics.GetSectionCounts(out long sections1, out long locked1, out long builds1, out long changes1, out double rebuild1,
                 out double residual, out _, out _);
             long forestSolves = System.Math.Max(1, solves - solvesBefore);
-            lastTimes = path == "sparse" ? $"sparse {(s1 - s0) / steps:F2}"
-                : $"start {(a1 - a0) / steps:F2} (factor {(f1 - f0) / steps:F2}, boundary {(w1 - w0) / steps:F2}), " +
+            lastTimes = $"start {(a1 - a0) / steps:F2} (factor {(f1 - f0) / steps:F2}, boundary {(w1 - w0) / steps:F2}), " +
                 $"solve {(b1 - b0) / steps:F2}, finish {(c1 - c0) / steps:F2} (settle {(ForestDiagnostics.SettleMilliseconds - settle0) / steps:F2}, " +
                 $"drift aim {(d1 - d0) / steps:F2}), " +
                 $"fallback sparse {(s1 - s0) / steps:F2}";
-            if (path != "sparse")
-            {
-                double[] serial1 = ForestDiagnostics.SerialMilliseconds();
-                lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / steps:F2}, decide {(serial1[1] - serial0[1]) / steps:F2}, " +
-                    $"section sums {(serial1[2] - serial0[2]) / steps:F2}, body impulses {(serial1[3] - serial0[3]) / steps:F2}, " +
-                    $"subtree {(serial1[4] - serial0[4]) / steps:F2}";
-            }
+            double[] serial1 = ForestDiagnostics.SerialMilliseconds();
+            lastTimes += $"; one lane: classify {(serial1[0] - serial0[0]) / steps:F2}, decide {(serial1[1] - serial0[1]) / steps:F2}, " +
+                $"section sums {(serial1[2] - serial0[2]) / steps:F2}, body impulses {(serial1[3] - serial0[3]) / steps:F2}, " +
+                $"subtree {(serial1[4] - serial0[4]) / steps:F2}";
 
             // How fast the teams' helpers reached the stages that the leaders published.
             WorkTeamCounters handOff = WorkTeamCounters.Current;
@@ -961,7 +955,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         {
             TearDownScene();
             SetUpScene();
-            ForestSwitches.Enabled = true;
             ForestDiagnostics.ForgetIslands();
             string cap = Environment.GetEnvironmentVariable("RETOOLED_BENCH_CAP");
             ForestSwitches.BoundaryRowCap = string.IsNullOrEmpty(cap) ? ForestSwitches.DefaultBoundaryRowCap : int.Parse(cap, CultureInfo.InvariantCulture);
@@ -1064,7 +1057,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             }
 
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            bool wasEnabled = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            bool wasLocking = ForestSwitches.Locking;
             float wasLock = ForestSwitches.LockAngle, wasYield = ForestSwitches.YieldAngle;
             int wasHold = ForestSwitches.MinimumHoldSteps, wasSmoothing = ForestSwitches.DeflectionSmoothingSteps;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
@@ -1124,7 +1117,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                ForestSwitches.Enabled = wasEnabled;
                 ForestSwitches.Locking = wasLocking;
                 ForestSwitches.LockAngle = wasLock;
                 ForestSwitches.YieldAngle = wasYield;
@@ -1169,7 +1161,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
 
             Assert.IsTrue(BurstCompiler.IsEnabled, "Burst is disabled");
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
-            bool wasVessels = VesselSwitches.Enabled, wasEnabled = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            bool wasLocking = ForestSwitches.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
             bool jobDebugger = JobsUtility.JobDebuggerEnabled;
@@ -1182,8 +1174,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             report.Append("craft | bodies | scene | threads | prepare | run | publish | whole step\n");
             try
             {
-                ForestSwitches.Enabled = true;
-                VesselSwitches.Enabled = true;
                 ForestSwitches.Locking = false;
                 foreach (string craft in Choice("RETOOLED_BENCH_CRAFT", "tu160,tu160x4"))
                 {
@@ -1247,9 +1237,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                ForestSwitches.Enabled = wasEnabled;
                 ForestSwitches.Locking = wasLocking;
-                VesselSwitches.Enabled = wasVessels;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 
@@ -1267,7 +1255,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         [Timeout(7200000)]
         public void Measure()
         {
-            bool wasVessels = VesselSwitches.Enabled;
             if (!BackendInfo.IsRetooled)
             {
                 Assert.Ignore("The forest is part of the Unity Physics backend.");
@@ -1277,7 +1264,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             long benchStart = Stopwatch.GetTimestamp();
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             double kernelWait = Since(benchStart);
-            bool wasEnabled = ForestSwitches.Enabled;
             bool wasLocking = ForestSwitches.Locking;
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(PartLayer, PartLayer);
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, true);
@@ -1293,7 +1279,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 $"CPU load at start {load:F1}%, {SystemInfo.processorCount} logical processors, {workers} job workers by default; " +
                 $"{kernelWait / 1000.0:F1} s waiting for the compiled kernels, {Blocks} blocks of measured steps, " +
                 $"{(share ? "one scene for every number of threads" : "a new scene for each number of threads")}\n");
-            string[] paths = Choice("RETOOLED_BENCH_PATHS", "sparse,forest,locked");
+            string[] paths = Choice("RETOOLED_BENCH_PATHS", "compiled");
             report.Append($"craft | bodies | scene | threads | {string.Join(" | ", paths)} (ms min / median) | " +
                 "island solve ms per step and counts, by path | set-up times and other processes' load, by path\n");
             int[] threadCounts = Choice("RETOOLED_BENCH_THREADS", "1,8").Select(int.Parse).ToArray();
@@ -1345,8 +1331,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                             {
                                 SessionResult result = results[t][p];
                                 cells.Add($"{result.Min:F2} / {result.Median:F2}");
-                                notes.Add(paths[p] == "sparse" ? $"{paths[p]}: {result.Times}"
-                                    : $"{paths[p]}: {result.Solves} forest solves / {result.Fallbacks} fallbacks, {result.Times}");
+                                notes.Add($"{paths[p]}: {result.Solves} forest solves / {result.Fallbacks} fallbacks, {result.Times}");
                                 setUps.Add($"{paths[p]}: {result.SetUp}");
                             }
 
@@ -1363,9 +1348,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             {
                 JobsUtility.JobWorkerCount = workers;
                 JobsUtility.JobDebuggerEnabled = jobDebugger;
-                ForestSwitches.Enabled = wasEnabled;
                 ForestSwitches.Locking = wasLocking;
-                VesselSwitches.Enabled = wasVessels;
                 UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             }
 

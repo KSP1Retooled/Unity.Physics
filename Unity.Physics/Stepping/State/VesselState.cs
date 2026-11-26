@@ -49,14 +49,13 @@ namespace Unity.Physics.Stepping.State
         }
 
         internal bool CompileAndChoose(WorldData* store, ref JointBuildState joints, ref BodyPartition partition,
-            bool vessels, bool regrouped, ref uint stepCount, JobHandle groupsFound)
+            bool regrouped, ref uint stepCount, JobHandle groupsFound)
         {
-            // Recompile vessels when topology or forest settings change, support is enabled, or a tombstone
-            // expires.
+            // Compile vessels on the first step, when the topology changes, or when a tombstone expires.
             // Run synchronously because island scheduling needs the vessel count.
             bool tombstoneExpired = tombstoneExpiry >= 0 && (int)stepCount >= tombstoneExpiry;
             bool compiledThisStep = false;
-            if (vessels && (!compiled || regrouped || tombstoneExpired))
+            if (!compiled || regrouped || tombstoneExpired)
             {
                 compiledThisStep = true;
                 groupsFound.Complete();
@@ -76,24 +75,13 @@ namespace Unity.Physics.Stepping.State
                 CompilationVersion++;
                 tombstoneExpiry = vesselBuild.TombstoneExpiry(VesselSwitches.TombstoneSteps);
             }
-            else if (!vessels && compiled)
-            {
-                vesselBuild.Clear(0);
-                compiled = false;
-                CompilationVersion++;
-                tombstoneExpiry = -1;
-            }
 
-            vesselSet = default;
-            if (vessels)
+            if (StepCacheSwitches.MemoryChecks)
             {
-                if (StepCacheSwitches.MemoryChecks)
-                {
-                    ValidatePartRows(store);
-                }
-                vesselBuild.ChooseStepVessels(store, partition.builtIndices.AsArray(), partition.dynamicIndices.Length);
-                vesselSet = vesselBuild.Set();
+                ValidatePartRows(store);
             }
+            vesselBuild.ChooseStepVessels(store, partition.builtIndices.AsArray(), partition.dynamicIndices.Length);
+            vesselSet = vesselBuild.Set();
             return compiledThisStep;
         }
 

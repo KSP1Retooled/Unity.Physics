@@ -16,8 +16,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
     {
         private const float PartMass = 4.0f;
 
-        private bool wasVessels;
-        private bool wasForest;
         private BoundaryCaps wasCaps;
 
         [SetUp]
@@ -30,8 +28,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
 
             EnvironmentSwitches.Read();
             EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
-            wasForest = ForestSwitches.Enabled;
             wasCaps = ForestSwitches.Caps;
             Fresh(default);
         }
@@ -39,8 +35,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselSwitches.Enabled = wasVessels;
-            ForestSwitches.Enabled = wasForest;
             ForestSwitches.Caps = wasCaps;
         }
 
@@ -48,8 +42,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Contacts
         {
             TearDownScene();
             SetUpScene();
-            VesselSwitches.Enabled = true;
-            ForestSwitches.Enabled = true;
             ForestSwitches.Caps = caps;
             ForestDiagnostics.ForgetIslands();
         }

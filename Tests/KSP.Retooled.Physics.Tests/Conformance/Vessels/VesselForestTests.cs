@@ -8,8 +8,7 @@ using Unity.Physics.Configuration;
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
     /// <summary>
-    /// Compare forest and sparse solving, verifying matching motion, actual forest use and fallback above the
-    /// boundary cap.
+    /// Checks motion and push-out with ordinary joints in the forest, including fallback above the boundary cap.
     /// </summary>
     public class VesselForestTests : PhysicsScene
     {
@@ -17,8 +16,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         private const float PartHeight = 2.0f;
         private const float PartMass = 4.0f;
 
-        private bool wasEnabled;
-        private bool wasVessels;
+        private int wasMinimumParts;
         private bool wasLocking;
         private int wasCap;
 
@@ -33,23 +31,21 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             // The environment's switches apply when the first world attaches; read them now, so they can't land on top
             // of what this fixture sets.
             EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
 
-            // These test the forest path with Unity's joint rows, which vessels replace.
-            VesselSwitches.Enabled = false;
-            wasEnabled = ForestSwitches.Enabled;
+            // These tests exercise the forest with ordinary joint rows.
+            wasMinimumParts = VesselSwitches.MinimumParts;
+            VesselSwitches.MinimumParts = Parts + 1;
             wasLocking = ForestSwitches.Locking;
             wasCap = ForestSwitches.BoundaryRowCap;
 
-            // These compare the forest's solve with the sparse one, so nothing locks (VesselSectionTests covers locking).
+            // Keep the joints yielding so that each run tests the forest with the same springs.
             ForestSwitches.Locking = false;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            ForestSwitches.Enabled = wasEnabled;
-            VesselSwitches.Enabled = wasVessels;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             ForestSwitches.Locking = wasLocking;
             ForestSwitches.BoundaryRowCap = wasCap;
         }
@@ -104,11 +100,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         /// <summary>Builds the scene, swings it, and returns every part's position after a few seconds.</summary>
-        private Vector3[] Run(bool forest, bool standing, int steps, float sunk = 0.0f)
+        private Vector3[] Run(bool standing, int steps, float sunk = 0.0f)
         {
             TearDownScene();
             SetUpScene();
-            ForestSwitches.Enabled = forest;
             if (standing)
             {
                 Ground();
@@ -126,71 +121,69 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return positions;
         }
 
-        private static float Largest(Vector3[] a, Vector3[] b)
+        private static void AssertJointSpacing(Vector3[] positions)
         {
-            float largest = 0.0f;
-            for (int i = 0; i < a.Length; i++)
+            for (int i = 1; i < positions.Length; i++)
             {
-                largest = Mathf.Max(largest, (a[i] - b[i]).magnitude);
+                Assert.That(Vector3.Distance(positions[i], positions[i - 1]), Is.EqualTo(PartHeight).Within(1e-3f),
+                    $"the joint between parts {i - 1} and {i} keeps their spacing");
             }
-
-            return largest;
         }
 
         [Test]
-        public void AHangingColumnSwingsAsOnTheSparsePath()
+        public void AHangingColumnSwingsAndStaysAttached()
         {
-            Vector3[] sparse = Run(false, false, 100);
             ForestDiagnostics.GetCounts(out long solvesBefore, out _, out _);
-            Vector3[] forest = Run(true, false, 100);
-            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out long builds);
-            float difference = Largest(sparse, forest);
-            Debug.Log($"[VesselForestTests] hanging: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
-                $"largest difference {difference:E2} m, bottom moved {(sparse[0] - new Vector3(0, 6, 0)).magnitude:F3} m");
-            Assert.Greater(solves, solvesBefore, "the forest path never ran");
-            Assert.Less(difference, 1e-3f);
+            Vector3[] positions = Run(false, 100);
+            ForestDiagnostics.GetCounts(out long solves, out _, out _);
+            Assert.That(solves, Is.GreaterThan(solvesBefore));
+            AssertJointSpacing(positions);
+            Assert.That(positions[Parts - 1].y, Is.EqualTo(28.0f).Within(1e-3f), "the top stays near its anchor");
+            // After 100 steps, the bottom has swung back to within a millimetre of its starting position on the
+            // original reference run. Allow the original one-millimetre tolerance on top of that displacement.
+            Assert.That(Vector3.Distance(positions[0], new Vector3(0.0f, 6.0f, 0.0f)), Is.LessThan(0.002f));
         }
 
         [Test]
-        public void AStandingColumnRocksAsOnTheSparsePath()
+        public void AStandingColumnRocksAndStaysOnTheGround()
         {
-            Vector3[] sparse = Run(false, true, 100);
             ForestDiagnostics.GetCounts(out long solvesBefore, out _, out _);
-            Vector3[] forest = Run(true, true, 100);
-            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out long builds);
-            float difference = Largest(sparse, forest);
-            Debug.Log($"[VesselForestTests] standing: forest solves {solves - solvesBefore}, fallbacks {fallbacks}, builds {builds}; " +
-                $"largest difference {difference:E2} m, top at {sparse[Parts - 1]:F3}");
-            Assert.Greater(solves, solvesBefore, "the forest path never ran");
-            Assert.Less(difference, 1e-2f);
+            Vector3[] positions = Run(true, 100);
+            ForestDiagnostics.GetCounts(out long solves, out _, out _);
+            Assert.That(solves, Is.GreaterThan(solvesBefore));
+            AssertJointSpacing(positions);
+            Assert.That(positions[0].y, Is.EqualTo(1.0f).Within(1e-2f), "the bottom stays on the ground");
+            // The original reference run puts the top here after 100 steps.
+            var expectedTop = new Vector3(-0.095f, 23.001f, -0.021f);
+            Assert.That(Vector3.Distance(positions[Parts - 1], expectedTop), Is.LessThan(1e-2f), "the top rocks sideways");
         }
 
-        /// <summary>
-        /// The bottom part starts 20 cm into the ground, deep enough that the push-out moves the column, which the forest
-        /// path solves against its own factor.
-        /// </summary>
         [Test]
-        public void AColumnSunkIntoTheGroundComesOutAsOnTheSparsePath()
+        public void AColumnSunkIntoTheGroundComesOutInOnePiece()
         {
-            Vector3[] sparse = Run(false, true, 10, 0.7f);
-            Vector3[] forest = Run(true, true, 10, 0.7f);
-            float difference = Largest(sparse, forest);
-            Debug.Log($"[VesselForestTests] sunk: largest difference {difference:E2} m, bottom at {sparse[0]:F3} / {forest[0]:F3}");
-            Assert.Greater(forest[0].y, 0.95f, "the bottom part came out of the ground");
-            Assert.Less(difference, 1e-2f);
+            Vector3[] positions = Run(true, 10, 0.7f);
+            // The original reference run puts the foot here after 10 steps.
+            var expectedFoot = new Vector3(0.003f, 0.998f, 0.002f);
+            Assert.That(Vector3.Distance(positions[0], expectedFoot), Is.LessThan(1e-2f), "the bottom came out of the ground");
+            AssertJointSpacing(positions);
         }
 
         [Test]
         public void ATooBigBoundaryFallsBackToTheSparsePath()
         {
-            ForestSwitches.BoundaryRowCap = 1;
-            ForestDiagnostics.GetCounts(out long solvesBefore, out long fallbacksBefore, out _);
-            Vector3[] capped = Run(true, true, 20);
-            ForestDiagnostics.GetCounts(out long solves, out long fallbacks, out _);
             ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
-            Vector3[] sparse = Run(false, true, 20);
-            Assert.Greater(fallbacks, fallbacksBefore);
-            Assert.Less(Largest(sparse, capped), 1e-4f);
+            Vector3[] positions = Run(true, 20);
+            ForestDiagnostics.GetCounts(out _, out long fallbacksBefore, out _);
+
+            ForestSwitches.BoundaryRowCap = 1;
+            Vector3[] capped = Run(true, 20);
+            ForestDiagnostics.GetCounts(out _, out long fallbacks, out _);
+            Assert.That(fallbacks, Is.GreaterThan(fallbacksBefore));
+            for (int i = 0; i < Parts; i++)
+            {
+                Assert.That(Vector3.Distance(capped[i], positions[i]), Is.LessThan(1e-4f),
+                    $"part {i} ends at the same position when the cap makes the forest fall back");
+            }
         }
     }
 }

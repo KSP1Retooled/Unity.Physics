@@ -1,7 +1,7 @@
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
     /// <summary>
-    /// Run VesselModeTests with fused solving enabled for every eligible island.
+    /// Runs VesselModeTests at the configured minimum size for fused solving.
     /// </summary>
     public class FusedVesselModeTests : VesselModeTests
     {

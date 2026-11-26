@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Threading;
 using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Tests.Benchmarks;
@@ -68,6 +69,23 @@ namespace KSP.Retooled.Physics.Tests.Tools
             FlightRecorderSwitches.PostTriggerSteps = postSteps;
             settings.Apply();
             directory = null;
+        }
+
+        [Test]
+        public void ReplayRejectsVersion13BeforeReadingTheStepData()
+        {
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "version-13.recording");
+            using (var file = File.Create(path))
+            using (var gzip = new GZipStream(file, CompressionMode.Compress))
+            using (var writer = new BinaryWriter(gzip))
+            {
+                writer.Write(RecordingBinary.Magic);
+                writer.Write(13);
+            }
+
+            var error = Assert.Throws<InvalidDataException>(() => FlightReplay.Run(path, long.MaxValue, TextWriter.Null));
+            Assert.That(error.Message, Is.EqualTo("The recording uses format version 13. Replay requires version 14."));
         }
 
         [Test]

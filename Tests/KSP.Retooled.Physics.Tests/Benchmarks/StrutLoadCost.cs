@@ -112,7 +112,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(30, 30);
             UnityEngine.Physics.IgnoreLayerCollision(30, 30, true);
             MethodInfo build = typeof(VesselForestBench).GetMethod("Build", BindingFlags.NonPublic | BindingFlags.Instance);
-            bool wasForest = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            bool wasLocking = ForestSwitches.Locking;
             int wasHold = ForestSwitches.MinimumHoldSteps;
             try
             {
@@ -120,7 +120,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 {
                     foreach (string scene in new[] { "ground", "floating", "dropped, 20 kN" })
                     {
-                        ForestSwitches.Enabled = true;
                         ForestSwitches.Locking = false;
                         ForestSwitches.MinimumHoldSteps = -1;
                         ForestDiagnostics.ForgetIslands();
@@ -174,7 +173,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             }
             finally
             {
-                ForestSwitches.Enabled = wasForest;
                 ForestSwitches.Locking = wasLocking;
                 ForestSwitches.MinimumHoldSteps = wasHold;
                 UnityEngine.Physics.IgnoreLayerCollision(30, 30, !collided);
@@ -213,7 +211,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             UnityEngine.Physics.IgnoreLayerCollision(30, 30, true);
             MethodInfo build = typeof(VesselForestBench).GetMethod("Build", BindingFlags.NonPublic | BindingFlags.Instance);
             int workers = Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount;
-            bool wasForest = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            bool wasLocking = ForestSwitches.Locking;
             int wasHold = ForestSwitches.MinimumHoldSteps;
             try
             {
@@ -224,7 +222,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     {
                         for (int run = 0; run < rounds; run++)
                         {
-                            ForestSwitches.Enabled = true;
                             ForestSwitches.Locking = false;
                             ForestSwitches.MinimumHoldSteps = -1;
                             ForestDiagnostics.ForgetIslands();
@@ -280,7 +277,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             finally
             {
                 Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = workers;
-                ForestSwitches.Enabled = wasForest;
                 ForestSwitches.Locking = wasLocking;
                 ForestSwitches.MinimumHoldSteps = wasHold;
                 UnityEngine.Physics.IgnoreLayerCollision(30, 30, !collided);

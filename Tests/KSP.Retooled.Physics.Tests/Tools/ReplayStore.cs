@@ -142,6 +142,11 @@ namespace KSP.Retooled.Physics.Tests.Tools
             byte[] build = payloads[reader.ReadInt32()];
             using var buildReader = new BinaryReader(new MemoryStream(build, sizeof(int), build.Length - sizeof(int), writable: false));
             state->ReadBuildCheckpoint(buildReader);
+            if (buildReader.BaseStream.Position != buildReader.BaseStream.Length)
+            {
+                throw new InvalidDataException("Extra bytes in the checkpoint for the joint groups.");
+            }
+
             byte[] vessels = payloads[reader.ReadInt32()];
             using var vesselReader = new BinaryReader(new MemoryStream(vessels, sizeof(int), vessels.Length - sizeof(int), writable: false));
             state->ReadVesselCheckpoint(vesselReader, ResolveBody, ResolveJoint);

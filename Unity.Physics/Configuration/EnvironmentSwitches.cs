@@ -51,13 +51,6 @@ namespace Unity.Physics.Configuration
 
         private static void ReadForest()
         {
-            string value = Environment.GetEnvironmentVariable("RETOOLED_FOREST");
-            if (!string.IsNullOrEmpty(value))
-            {
-                ForestSwitches.Enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
-                UnityEngine.Debug.Log($"[ForestSwitches] RETOOLED_FOREST={value}: forest path {(ForestSwitches.Enabled ? "on" : "off")}");
-            }
-
             string locking = Environment.GetEnvironmentVariable("RETOOLED_LOCK");
             if (!string.IsNullOrEmpty(locking))
             {
@@ -87,16 +80,6 @@ namespace Unity.Physics.Configuration
                 SolverSwitches.FusedVesselParts = fusedMinimum;
                 UnityEngine.Debug.Log($"[VesselSwitches] RETOOLED_VESSEL_FUSED_PARTS={fusedParts}: the fused job takes vessel islands of {fusedMinimum} parts or more");
             }
-
-            string value = Environment.GetEnvironmentVariable("RETOOLED_VESSEL");
-            if (string.IsNullOrEmpty(value))
-            {
-                VesselSwitches.Enabled = true;
-                return;
-            }
-
-            VesselSwitches.Enabled = !IsOff(value);
-            UnityEngine.Debug.Log($"[VesselSwitches] RETOOLED_VESSEL={value}: vessels {(VesselSwitches.Enabled ? "on" : "off")}");
         }
 
         private static void ApplyBoundsCache()
@@ -131,11 +114,6 @@ namespace Unity.Physics.Configuration
             {
                 UnityEngine.Debug.Log("[StoreStepper] RETOOLED_STATIC_REUSE=0: every build writes the static bodies' rows from the store");
             }
-        }
-
-        private static bool IsOff(string value)
-        {
-            return value == "0" || string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

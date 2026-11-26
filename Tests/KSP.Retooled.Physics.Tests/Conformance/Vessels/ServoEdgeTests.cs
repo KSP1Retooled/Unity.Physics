@@ -27,7 +27,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             EnvironmentSwitches.Read();
             settings = RecordedPhysicsSettings.Read();
-            VesselSwitches.Enabled = true;
             VesselSwitches.MinimumParts = 2;
         }
 
@@ -221,10 +220,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         [Test]
-        public void WithoutVesselsTheServoBuildsOrdinaryRows()
+        public void AServoBelowTheVesselSizeBuildsOrdinaryRows()
         {
-            VesselSwitches.Enabled = false;
-            ForestSwitches.Enabled = true;
+            VesselSwitches.MinimumParts = 5;
             Rigidbody[] bodies = Coaxial();
             var servo = Link(bodies[2], bodies[1], Vector3.right, Vector3.right, true);
             Drive(servo, 20.0f, 8.0f, 50.0f);

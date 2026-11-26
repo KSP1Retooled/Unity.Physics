@@ -14,7 +14,7 @@ using Unity.Physics.Dynamics.Solver.Forest;
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
     /// <summary>
-    /// Test whole steps with backend-compiled vessels, comparing with ordinary Unity joints where applicable.
+    /// Test whole steps with vessels that the backend compiles from part joints.
     /// </summary>
     public unsafe class VesselStepTests : PhysicsScene
     {
@@ -23,9 +23,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         /// <summary>How many vessels the backend handed to the last step.</summary>
         private static int VesselCount() => StepEntryPoints.Current->VesselSet.VesselCount;
 
-        private bool wasVessels;
-        private bool wasForest;
         private int wasFusedParts;
+        private int wasMinimumParts;
 
         /// <summary>
         /// Fused-job part threshold for these tests. int.MaxValue keeps substep solving; zero uses the default.
@@ -33,7 +32,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         protected virtual int FusedParts => int.MaxValue;
 
         [SetUp]
-        public void TurnVesselsOn()
+        public void ConfigureVesselSizes()
         {
             if (!BackendInfo.IsRetooled)
             {
@@ -41,11 +40,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
-            wasForest = ForestSwitches.Enabled;
 
             // These crafts are small, so let them compile into vessels.
+            wasMinimumParts = VesselSwitches.MinimumParts;
             VesselSwitches.MinimumParts = 2;
             wasFusedParts = SolverSwitches.FusedVesselParts;
             if (FusedParts > 0)
@@ -53,24 +50,20 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 SolverSwitches.FusedVesselParts = FusedParts;
             }
 
-            Fresh(true);
+            Fresh();
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselSwitches.Enabled = wasVessels;
-            ForestSwitches.Enabled = wasForest;
-            VesselSwitches.MinimumParts = 0;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
-        private void Fresh(bool vessels)
+        private void Fresh()
         {
             TearDownScene();
             SetUpScene();
-            VesselSwitches.Enabled = vessels;
-            ForestSwitches.Enabled = vessels;
             ForestDiagnostics.ForgetIslands();
         }
 
@@ -142,72 +135,59 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
         }
 
-        /// <summary>
-        /// Compare horizontal stack-arm droop with vessel constraints and ordinary joints.
-        /// </summary>
         [Test]
-        public void AStackArmDroopsFarLessThanToday()
+        public void AStackArmStaysNearlyHorizontal()
         {
-            var droop = new float[2];
-            for (int pass = 0; pass < 2; pass++)
+            var bodies = new List<Rigidbody>();
+            for (int i = 0; i < 5; i++)
             {
-                Fresh(pass == 1);
-                var bodies = new List<Rigidbody>();
-                for (int i = 0; i < 5; i++)
+                Rigidbody body = Box(new Vector3(i, 5.0f, 0.0f), new Vector3(1.0f, 0.8f, 0.8f)).AddComponent<Rigidbody>();
+                body.mass = PartMass;
+                body.sleepThreshold = 0.0f;
+                bodies.Add(body);
+                if (i == 0)
                 {
-                    Rigidbody body = Box(new Vector3(i, 5.0f, 0.0f), new Vector3(1.0f, 0.8f, 0.8f)).AddComponent<Rigidbody>();
-                    body.mass = PartMass;
-                    body.sleepThreshold = 0.0f;
-                    bodies.Add(body);
-                    if (i == 0)
+                    ConfigurableJoint hook = body.gameObject.AddComponent<ConfigurableJoint>();
+                    hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
+                    hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
+                }
+                else
+                {
+                    // The node's three anchors lie in the plane of the joint, across the arm.
+                    ConfigurableJoint[] joints = StackJoint(body, bodies[i - 1], new Vector3(i - 0.5f, 5.0f, 0.0f));
+                    foreach (ConfigurableJoint joint in joints)
                     {
-                        ConfigurableJoint hook = body.gameObject.AddComponent<ConfigurableJoint>();
-                        hook.xMotion = hook.yMotion = hook.zMotion = ConfigurableJointMotion.Locked;
-                        hook.angularXMotion = hook.angularYMotion = hook.angularZMotion = ConfigurableJointMotion.Locked;
-                    }
-                    else
-                    {
-                        // The node's three anchors lie in the plane of the joint, across the arm.
-                        ConfigurableJoint[] joints = StackJoint(body, bodies[i - 1], new Vector3(i - 0.5f, 5.0f, 0.0f));
-                        foreach (ConfigurableJoint joint in joints)
-                        {
-                            joint.axis = Vector3.up;
-                        }
+                        joint.axis = Vector3.up;
                     }
                 }
-
-                Simulate(100);
-                droop[pass] = -bodies[0].transform.InverseTransformPoint(bodies[4].position).y;
             }
 
-            Debug.Log($"[VesselStepTests] arm: tip droop today {droop[0] * 1e3f:F3} mm, with vessels {droop[1] * 1e3f:F4} mm");
-            Assert.That(droop[1], Is.LessThan(0.1f * droop[0]), "the vessel's arm hardly droops");
+            Simulate(100);
+            float droop = bodies[0].transform.InverseTransformPoint(bodies[4].position).y;
+            Assert.That(droop, Is.EqualTo(0.0f).Within(0.0001f), "vertical displacement of the tip in metres");
         }
 
         [Test]
         public void AStackJointBreaksAtItsBreakForce()
         {
-            var brokeAt = new int[2];
-            for (int pass = 0; pass < 2; pass++)
+            const float limit = 100.0f;
+            const float addedForcePerStep = 2.0f;
+            List<Rigidbody> bodies = HangingColumn(2, limit);
+            Simulate(10);
+            int brokeAt = -1;
+            for (int i = 0; i < 200 && brokeAt < 0; i++)
             {
-                Fresh(pass == 1);
-                List<Rigidbody> bodies = HangingColumn(2, 100.0f);
-                Simulate(10);
-                brokeAt[pass] = -1;
-                for (int i = 0; i < 200 && brokeAt[pass] < 0; i++)
+                bodies[1].AddForce(-i * addedForcePerStep * Vector3.up);
+                Simulate();
+                if (bodies[1].GetComponents<ConfigurableJoint>().Length == 0)
                 {
-                    bodies[1].AddForce(new Vector3(0.0f, -2.0f * i, 0.0f));
-                    Simulate();
-                    if (bodies[1].GetComponents<ConfigurableJoint>().Length == 0)
-                    {
-                        brokeAt[pass] = i;
-                    }
+                    brokeAt = i;
                 }
             }
 
-            Debug.Log($"[VesselStepTests] break: today at step {brokeAt[0]}, with vessels at step {brokeAt[1]}");
-            Assert.That(brokeAt[1], Is.GreaterThan(0), "the joint breaks");
-            Assert.That(Mathf.Abs(brokeAt[1] - brokeAt[0]), Is.LessThanOrEqualTo(3), "at the load it breaks at today");
+            // In the reference run, the smoothed load reached the limit at step 136. Each joint carries a third
+            // of the weight and the applied force, so the break follows the step where their sum reaches 300 N.
+            Assert.That(brokeAt, Is.EqualTo(136).Within(3), "the step when the three joints break under the force ramp");
         }
 
         [Test]
@@ -320,69 +300,64 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 caps.PivotRounds = pinned ? 2 : 0;
                 ForestSwitches.Caps = caps;
 
-                foreach (bool vessels in new[] { false, true })
+                Ground();
+                GameObject tower = Box(new Vector3(0.865f, 3.78f, 0.1f), new Vector3(0.5f, 7.5f, 0.5f));
+                tower.transform.rotation = Quaternion.Euler(0.0f, 13.0f, 3.0f);
+                Rigidbody clamp = tower.AddComponent<Rigidbody>();
+                clamp.mass = 0.1f;
+                clamp.inertiaTensor = new Vector3(6.95f, 0.1f, 6.95f);
+                clamp.sleepThreshold = 0.0f;
+                clamp.maxAngularVelocity = 50.0f;
+                if (pinned)
                 {
-                    Fresh(vessels);
-                    ForestSwitches.Enabled = false;
-                    Ground();
-                    GameObject tower = Box(new Vector3(0.865f, 3.78f, 0.1f), new Vector3(0.5f, 7.5f, 0.5f));
-                    tower.transform.rotation = Quaternion.Euler(0.0f, 13.0f, 3.0f);
-                    Rigidbody clamp = tower.AddComponent<Rigidbody>();
-                    clamp.mass = 0.1f;
-                    clamp.inertiaTensor = new Vector3(6.95f, 0.1f, 6.95f);
-                    clamp.sleepThreshold = 0.0f;
-                    clamp.maxAngularVelocity = 50.0f;
-                    if (pinned)
+                    var pin = tower.AddComponent<ConfigurableJoint>();
+                    pin.autoConfigureConnectedAnchor = false;
+                    pin.anchor = Vector3.up * 3.75f;
+                    pin.connectedAnchor = tower.transform.TransformPoint(pin.anchor);
+                    pin.xMotion = pin.yMotion = pin.zMotion = ConfigurableJointMotion.Locked;
+                    pin.angularXMotion = pin.angularYMotion = pin.angularZMotion = ConfigurableJointMotion.Locked;
+                }
+
+                Vector3 start = clamp.position;
+                List<Rigidbody> craft = StandingColumn(7, 0.0f, 9.0f);
+                foreach (Rigidbody part in craft)
+                {
+                    part.mass = 18.0f;
+                    part.sleepThreshold = 0.0f;
+                    part.maxAngularVelocity = 50.0f;
+                }
+
+                Simulate();
+                Assert.That(VesselCount(), Is.EqualTo(1));
+                float clampSpeed = 0.0f, clampTravel = 0.0f, craftSpeed = 0.0f;
+                int clampPeakStep = 0;
+                for (int step = 2; step <= 220; step++)
+                {
+                    Simulate();
+                    float speed = clamp.linearVelocity.magnitude;
+                    if (speed > clampSpeed)
                     {
-                        var pin = tower.AddComponent<ConfigurableJoint>();
-                        pin.autoConfigureConnectedAnchor = false;
-                        pin.anchor = Vector3.up * 3.75f;
-                        pin.connectedAnchor = tower.transform.TransformPoint(pin.anchor);
-                        pin.xMotion = pin.yMotion = pin.zMotion = ConfigurableJointMotion.Locked;
-                        pin.angularXMotion = pin.angularYMotion = pin.angularZMotion = ConfigurableJointMotion.Locked;
+                        clampSpeed = speed;
+                        clampPeakStep = step;
                     }
 
-                    Vector3 start = clamp.position;
-                    List<Rigidbody> craft = StandingColumn(7, 0.0f, 9.0f);
+                    clampTravel = Mathf.Max(clampTravel, Vector3.Distance(start, clamp.position));
                     foreach (Rigidbody part in craft)
                     {
-                        part.mass = 18.0f;
-                        part.sleepThreshold = 0.0f;
-                        part.maxAngularVelocity = 50.0f;
+                        craftSpeed = Mathf.Max(craftSpeed, part.linearVelocity.magnitude);
                     }
-
-                    Simulate();
-                    Assert.That(VesselCount(), Is.EqualTo(vessels ? 1 : 0));
-                    float clampSpeed = 0.0f, clampTravel = 0.0f, craftSpeed = 0.0f;
-                    int clampPeakStep = 0;
-                    for (int step = 2; step <= 220; step++)
-                    {
-                        Simulate();
-                        float speed = clamp.linearVelocity.magnitude;
-                        if (speed > clampSpeed)
-                        {
-                            clampSpeed = speed;
-                            clampPeakStep = step;
-                        }
-
-                        clampTravel = Mathf.Max(clampTravel, Vector3.Distance(start, clamp.position));
-                        foreach (Rigidbody part in craft)
-                        {
-                            craftSpeed = Mathf.Max(craftSpeed, part.linearVelocity.magnitude);
-                        }
-                    }
-
-                    Debug.Log($"[VesselStepTests] pinned={pinned}, vessels={vessels}, clamp {clampSpeed:F3} m/s at step {clampPeakStep}, " +
-                        $"clamp travel {clampTravel:F3} m, craft {craftSpeed:F3} m/s, bottom {craft[0].position:F3}");
-                    Assert.That(clampSpeed, Is.LessThan(pinned ? 5.0f : 20.0f), "the clamp stays at impact speeds");
-                    Assert.That(craftSpeed, Is.LessThan(20.0f), "the craft stays at falling speeds");
-                    if (pinned)
-                    {
-                        Assert.That(clampTravel, Is.LessThan(0.1f), "the world joint holds the clamp");
-                    }
-
-                    Assert.That(craft[0].position.y, Is.LessThan(1.0f), "the craft reaches the pad");
                 }
+
+                Debug.Log($"[VesselStepTests] pinned={pinned}, clamp {clampSpeed:F3} m/s at step {clampPeakStep}, " +
+                    $"clamp travel {clampTravel:F3} m, craft {craftSpeed:F3} m/s, bottom {craft[0].position:F3}");
+                Assert.That(clampSpeed, Is.LessThan(pinned ? 5.0f : 20.0f), "the clamp stays at impact speeds");
+                Assert.That(craftSpeed, Is.LessThan(20.0f), "the craft stays at falling speeds");
+                if (pinned)
+                {
+                    Assert.That(clampTravel, Is.LessThan(0.1f), "the world joint holds the clamp");
+                }
+
+                Assert.That(craft[0].position.y, Is.LessThan(1.0f), "the craft reaches the pad");
             }
             finally
             {
@@ -394,8 +369,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TestCase(true)]
         public void ASlidingVesselDoesNotKickAPinnedClamp(bool mounted)
         {
-            Fresh(true);
-            ForestSwitches.Enabled = false;
+            Fresh();
             GameObject tower = Box(new Vector3(0.66f, 3.75f, 0.05f), new Vector3(0.5f, 7.5f, 0.5f));
             tower.transform.rotation = Quaternion.Euler(0.0f, 3.0f, 0.0f);
             Rigidbody clamp = tower.AddComponent<Rigidbody>();
@@ -549,64 +523,46 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
         }
 
-        /// <summary>
-        /// Compare landing positions and loads for small compiled vessels and ordinary Unity joints under a slow
-        /// initial spin.
-        /// Higher spin amplifies their different joint compliance, so this test uses the shared landing tolerance.
-        /// </summary>
         [Test]
-        public void AFleetOfTinyCraftLandsTheSameAsOnUnityJoints()
+        public void AFleetOfTinyCraftLandsAndCarriesItsWeight()
         {
             const int craft = 12;
-            const int steps = 60;
-            var positions = new Vector3[2][];
-            var loads = new Vector3[2][];
-            for (int pass = 0; pass < 2; pass++)
+            Ground();
+            var columns = new List<List<Rigidbody>>();
+            for (int c = 0; c < craft; c++)
             {
-                Fresh(true);
-                VesselSwitches.MinimumParts = pass == 0 ? 1000 : 0;
-                Ground();
-                var bodies = new List<Rigidbody>();
-                for (int c = 0; c < craft; c++)
+                // Four rows of three craft fit on the ground, which is 20 m square.
+                List<Rigidbody> column = StandingColumn(2 + c % 6, -6.0f + 4.0f * (c % 4), 1.2f, -4.0f + 4.0f * (c / 4));
+                foreach (Rigidbody body in column)
                 {
-                    // Four rows of three craft, all on the ground, which is 20 m square.
-                    foreach (Rigidbody body in StandingColumn(2 + c % 6, -6.0f + 4.0f * (c % 4), 1.2f, -4.0f + 4.0f * (c / 4)))
-                    {
-                        body.angularVelocity = new Vector3(0.01f * c, 0.0f, 0.05f);
-                        bodies.Add(body);
-                    }
+                    body.angularVelocity = new Vector3(0.01f * c, 0.0f, 0.05f);
                 }
 
-                // Count the vessels in the first step: a vessel that sleeps is not handed to the step.
-                Simulate();
-                Assert.That(VesselCount(), pass == 0 ? Is.EqualTo(0) : Is.EqualTo(craft),
-                    $"in pass {pass}, the craft are vessels only in the second pass, and then every one of them");
-                Simulate(steps - 1);
-                positions[pass] = bodies.ConvertAll(b => b.position).ToArray();
-                loads[pass] = bodies.ConvertAll(b =>
+                columns.Add(column);
+            }
+
+            Simulate();
+            Assert.That(VesselCount(), Is.EqualTo(craft));
+            Simulate(59);
+            foreach (List<Rigidbody> column in columns)
+            {
+                Rigidbody foot = column[0];
+                Assert.That(foot.position.y, Is.EqualTo(0.5f).Within(1e-3f), "the foot rests on the ground");
+                for (int i = 1; i < column.Count; i++)
                 {
-                    Vector3 sum = Vector3.zero;
-                    foreach (ConfigurableJoint joint in b.GetComponents<ConfigurableJoint>())
+                    Vector3 offset = foot.transform.InverseTransformPoint(column[i].position);
+                    Assert.That((offset - i * Vector3.up).magnitude, Is.LessThan(1e-3f), $"part {i} stays in place above its foot");
+                    Vector3 load = Vector3.zero;
+                    foreach (ConfigurableJoint joint in column[i].GetComponents<ConfigurableJoint>())
                     {
-                        sum += joint.currentForce;
+                        load += joint.currentForce;
                     }
 
-                    return sum;
-                }).ToArray();
+                    float weight = (column.Count - i) * PartMass * -Gravity;
+                    Assert.That((load - weight * Vector3.up).magnitude, Is.LessThan(0.01f * weight + 0.01f),
+                        $"part {i}'s joints support the weight above them");
+                }
             }
-
-            float largestPose = 0.0f, largestLoad = 0.0f;
-            for (int i = 0; i < positions[0].Length; i++)
-            {
-                float pose = (positions[1][i] - positions[0][i]).magnitude;
-                float load = (loads[1][i] - loads[0][i]).magnitude;
-                largestPose = Mathf.Max(largestPose, pose);
-                largestLoad = Mathf.Max(largestLoad, load);
-                Assert.That(pose, Is.LessThan(1e-3f), $"part {i} lands in the same place");
-                Assert.That(load, Is.LessThan(0.01f * loads[0][i].magnitude + 0.01f), $"part {i}'s joints carry the same load");
-            }
-
-            Debug.Log($"[VesselStepTests] tiny fleet: largest difference from Unity joints {largestPose:E2} m in pose, {largestLoad:E2} N in load");
         }
     }
 }

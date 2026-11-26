@@ -58,9 +58,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         /// </summary>
         public bool KeyByWorldIndex;
 
-        // Keep the version 13 recording layout until the format changes.
-        private byte recordingPadding;
-
         /// <summary>
         /// Disable held-row corrections, preserving their warm impulses and omitting push-out. Benchmark option.
         /// </summary>

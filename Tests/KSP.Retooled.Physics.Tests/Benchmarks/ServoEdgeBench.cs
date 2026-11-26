@@ -91,7 +91,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             int workers = JobsUtility.JobWorkerCount;
             try
             {
-                VesselSwitches.Enabled = true;
                 VesselSwitches.MinimumParts = 2;
                 foreach (int count in new[] { 8, 1 })
                 {

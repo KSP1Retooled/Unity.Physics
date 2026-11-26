@@ -48,7 +48,6 @@ namespace Unity.Physics.Stepping.Stages
 
             solverCaches.directSolverCache.Forest = new ForestSettings
             {
-                Enabled = ForestSwitches.Enabled || VesselSwitches.Enabled,
                 BoundaryRowCap = ForestSwitches.BoundaryRowCap,
                 Locking = ForestSwitches.Locking,
                 LockAngle = ForestSwitches.LockAngle,
