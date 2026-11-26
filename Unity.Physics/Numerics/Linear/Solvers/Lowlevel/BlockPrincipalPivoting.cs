@@ -117,11 +117,15 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel
             for (int i = 0; i < n; i++)
             {
                 byte state = bounded ? guess[i] : Free;
+                // A contact can lose its crash impulse cap between solves. Drop a saved state at a bound that no
+                // longer exists so that the free solve never subtracts a sentinel from its right-hand side.
+                bool boundRemoved = (state == LowerTight && lower[i] <= float.MinValue)
+                    || (state == UpperTight && upper[i] >= float.MaxValue);
                 if (bounded && lower[i] == upper[i])
                 {
                     state = LowerTight;
                 }
-                else if ((coupled[i] && !warm) || state > UpperTight)
+                else if (boundRemoved || (coupled[i] && !warm) || state > UpperTight)
                 {
                     state = Free;
                 }

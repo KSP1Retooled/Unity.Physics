@@ -2,6 +2,7 @@ using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 using CollisionLog = KSP.Retooled.Physics.Tests.Conformance.Contacts.CollisionEventConformanceTests.CollisionLog;
 using System.Collections.Generic;
 using KSP.Retooled.Physics.Interop;
+using KSP.Retooled.Physics.Stepping;
 using NUnit.Framework;
 using Unity.Physics.Collision.Filter.Groups;
 using Unity.Physics.Configuration;
@@ -174,6 +175,49 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(log.gameObject.activeSelf, Is.False);
             Assert.That(bodies[0].linearVelocity.y, Is.LessThan(slowest + 1.0f), "the top part's speed after the impact step");
             Assert.That(bodies[Parts - 2].linearVelocity.y, Is.LessThan(slowest + 1.0f), "the next part's speed after the impact step");
+        }
+
+        [Test]
+        public unsafe void AContactStopsTheVesselAfterItsCrashImpulseCapExpires()
+        {
+            bool wasFused = SolverSwitches.VesselFused;
+            int fusedParts = SolverSwitches.FusedVesselParts;
+            try
+            {
+                SolverSwitches.VesselFused = true;
+                SolverSwitches.FusedVesselParts = 1;
+                Ground();
+
+                // The tilted part stands in for the blade. Some of its contact points reach their cap while others
+                // leave enough of the cap for the solver to remember the upper bound into the next step.
+                Rigidbody bottom = Track(new GameObject("light part that strikes the ground")).AddComponent<Rigidbody>();
+                bottom.position = Vector3.up;
+                bottom.rotation = Quaternion.AngleAxis(20.0f, Vector3.forward);
+                bottom.mass = 0.18f;
+                bottom.useGravity = false;
+                BoxCollider contact = bottom.gameObject.AddComponent<BoxCollider>();
+                Assert.That(CrashContacts.SetCrashSpeed(contact, 20.0f), Is.True);
+                Rigidbody top = WeightlessBox(2.5f * Vector3.up, 8.62f);
+                StackJoint(top, bottom, 1.75f * Vector3.up);
+                Simulate();
+
+                bottom.position = 0.6f * Vector3.up;
+                top.position = 2.1f * Vector3.up;
+                bottom.linearVelocity = top.linearVelocity = -30.0f * Vector3.up;
+                Simulate();
+                Assert.That(top.linearVelocity.y, Is.LessThan(-25.0f), "The first contact has a crash impulse cap.");
+
+                int recoveries = StepEntryPoints.Current->Counters.NonFiniteBodies;
+                Simulate();
+                Assert.That(StepEntryPoints.Current->Counters.NonFiniteBodies, Is.EqualTo(recoveries));
+                Assert.That(top.linearVelocity.magnitude, Is.LessThan(2.0f), "The next contact can stop the whole vessel.");
+                Assert.That(bottom.linearVelocity.magnitude, Is.LessThan(2.0f));
+            }
+            finally
+            {
+                SolverSwitches.VesselFused = wasFused;
+                SolverSwitches.FusedVesselParts = fusedParts;
+            }
         }
 
         [Test]
