@@ -455,8 +455,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 peakAngle = Mathf.Max(peakAngle, angle * Mathf.Rad2Deg);
             }
 
-            bool fused = mounted && SolverSwitches.VesselFused && SolverSwitches.FusedContacts
-                && SolverSwitches.FusedVesselParts <= craft.Count + 2;
+            bool fused = mounted && SolverSwitches.FusedVesselParts <= craft.Count + 2;
             Assert.That(VesselCount(), Is.EqualTo(mounted ? 2 : 1));
             Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? steps : 0));
             Assert.That(contactSteps, Is.GreaterThanOrEqualTo(25));

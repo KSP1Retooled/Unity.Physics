@@ -89,8 +89,6 @@ namespace Unity.Physics.Configuration
             VesselSwitches.StrutExperiment = int.TryParse(Environment.GetEnvironmentVariable("STRUT_EXPERIMENT"), out int experiment)
                 ? experiment : 0;
 
-            string fused = Environment.GetEnvironmentVariable("RETOOLED_VESSEL_FUSED");
-            SolverSwitches.VesselFused = fused != "0";
             string fold = Environment.GetEnvironmentVariable("RETOOLED_SUBSTEP_FOLD");
             SolverSwitches.UnfusedFolding = fold == "1" ? SolverSwitches.SubstepFolding.Fold
                 : fold == "0" ? SolverSwitches.SubstepFolding.Chain : SolverSwitches.SubstepFolding.Auto;

@@ -3,7 +3,6 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Physics.Base.Threading;
-using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Solver.Islands.Data;
 using Unity.Physics.Dynamics.Vessels.Model;
 using static Unity.Physics.Dynamics.Solver.Vessels.VesselIslandSolver;
@@ -34,22 +33,15 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
             public IslandSolverCache Cache;
 
-            /// <summary>
-            /// Whether the fused job is on, and the value of <see cref="SolverSwitches.FusedVesselParts"/>, when the job was scheduled.
-            /// </summary>
-            public bool Fuse;
-
+            /// <summary>The minimum number of vessel parts that qualifies an island for the fused solve.</summary>
             public int MinimumParts;
-
-            /// <summary>The value of <see cref="SolverSwitches.FusedContacts"/> when the job was scheduled.</summary>
-            public bool Contacts;
 
             /// <summary>The buffers that hold a team for each fused island and the configured team that they copy.</summary>
             public DirectIslandBuffers Buffers;
 
             public void Execute()
             {
-                for (int i = 0; Fuse && i < Islands.Length; i++)
+                for (int i = 0; i < Islands.Length; i++)
                 {
                     DirectIsland island = Islands[i];
                     if (!Fusable(island, MinimumParts))
@@ -154,8 +146,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             /// </summary>
             bool Fusable(in DirectIsland island, int minimumParts)
             {
-                return island.VesselCount > 0 && island.VesselParts >= minimumParts && island.OtherBodies == 0
-                    && (Contacts || (island.JointRows == 0 && island.Rows == 0 && island.JointEnd == island.HeaderEnd));
+                return island.VesselCount > 0 && island.VesselParts >= minimumParts && island.OtherBodies == 0;
             }
         }
     }

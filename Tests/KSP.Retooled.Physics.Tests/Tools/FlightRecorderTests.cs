@@ -30,6 +30,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assume.That(BackendInfo.IsRetooled);
             EnvironmentSwitches.Read();
             settings = RecordedPhysicsSettings.Read();
+            VesselSwitches.MinimumParts = 2;
+            SolverSwitches.FusedVesselParts = 1;
             enabled = FlightRecorderSwitches.Enabled;
             window = FlightRecorderSwitches.WindowSteps;
             postSteps = FlightRecorderSwitches.PostTriggerSteps;
@@ -68,13 +70,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
             directory = null;
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public void ManualSaveReplaysRollingWindow(bool vessels, bool fused)
+        [Test]
+        public void ManualSaveReplaysRollingWindow()
         {
-            SetMode(vessels, fused);
             GameObject ground = Ground();
             Rigidbody root = WeightlessBox(new Vector3(0, 0.49f, 0));
             Rigidbody child = WeightlessBox(new Vector3(0, 1.49f, 0));
@@ -82,7 +80,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Rigidbody probe = DynamicBox(new Vector3(3, 1f, 0));
             root.sleepThreshold = child.sleepThreshold = 0f;
             Simulate(8);
-            Assert.That(StepEntryPoints.Current->VesselSet.VesselCount > 0, Is.EqualTo(vessels));
+            Assert.That(StepEntryPoints.Current->VesselSet.VesselCount > 0, Is.True);
 
             FlightRecorderSwitches.Enabled = true;
             Simulate(3);
@@ -207,11 +205,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
         /// hits the ground above its crash speed, so its contact may take only the box's own momentum in its first step.
         /// A replay without the crash speed would stop the whole vessel in that step and differ from the recording.
         /// </summary>
-        [TestCase(false)]
-        [TestCase(true)]
-        public void ReplayKeepsCrashSpeeds(bool fused)
+        [Test]
+        public void ReplayKeepsCrashSpeeds()
         {
-            SetMode(true, fused);
             Ground();
             Rigidbody bottom = DynamicBox(new Vector3(0, 1.5f, 0));
             Rigidbody top = DynamicBox(new Vector3(0, 2.5f, 0));
@@ -245,13 +241,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assert.That(crashShapes, Is.All.EqualTo(1), summary.ToString());
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public void VelocityWriteTriggersAndReplays(bool vessels, bool fused)
+        [Test]
+        public void VelocityWriteTriggersAndReplays()
         {
-            SetMode(vessels, fused);
             Rigidbody body = WeightlessBox(new Vector3(17, 5, 3));
             Rigidbody neighbor = WeightlessBox(new Vector3(17, 6, 3));
             StackJoint(neighbor, body);
@@ -269,10 +261,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assert.That(FlightReplay.Run(path, long.MaxValue, summary), Is.EqualTo(6), summary.ToString());
             StringAssert.Contains($"linear velocity change, body {serial},", summary.ToString());
             StringAssert.Contains("Joint ", summary.ToString());
-            if (vessels)
-            {
-                StringAssert.Contains(fused ? "FusedVessel" : "UnfusedVessel", summary.ToString());
-            }
+            StringAssert.Contains("FusedVessel", summary.ToString());
         }
 
         [Test]
@@ -321,13 +310,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
             TestContext.WriteLine($"Terrain recording {new FileInfo(path).Length:N0} bytes");
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public void SixSecondWindowReplaysFromAWorldAlreadyInMotion(bool vessels, bool fused)
+        [Test]
+        public void SixSecondWindowReplaysFromAWorldAlreadyInMotion()
         {
-            SetMode(vessels, fused);
             FlightRecorderSwitches.WindowSteps = 300;
             Ground();
             Rigidbody root = DynamicBox(new Vector3(0, 0.55f, 0));
@@ -353,10 +338,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
         }
 
         [Test]
-        public void LockedForestReplaysWithVesselsDisabled()
+        public void LockedForestReplaysWithOrdinaryJointRows()
         {
-            SetMode(false, false);
-            ForestSwitches.Enabled = true;
+            VesselSwitches.MinimumParts = 3;
             ForestSwitches.Locking = true;
             Ground();
             Rigidbody root = WeightlessBox(new Vector3(0, 0.499f, 0));
@@ -364,6 +348,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             root.sleepThreshold = child.sleepThreshold = 0f;
             StackJoint(child, root);
             Simulate(24);
+            Assert.That(StepEntryPoints.Current->VesselSet.VesselCount, Is.Zero);
             FlightRecorderSwitches.Enabled = true;
             child.AddForce(new Vector3(0.15f, -0.04f, 0.1f), ForceMode.Impulse);
             Simulate(8);
@@ -410,7 +395,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
         [Test, Explicit("Measures recording overhead on a large vessel and a terrain scene.")]
         public void Measure()
         {
-            SetMode(true, true);
             FlightRecorderSwitches.WindowSteps = 300;
             var graph = VesselForestBench.Load("tu160:128x8");
             Assert.That(graph.Parent.Length, Is.EqualTo(1024));
@@ -465,15 +449,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
                     TestContext.WriteLine($"Recording file {new FileInfo(path).Length:N0} bytes at {path}");
                 }
             }
-        }
-
-        private static void SetMode(bool vessels, bool fused)
-        {
-            VesselSwitches.Enabled = vessels;
-            VesselSwitches.MinimumParts = 2;
-            ForestSwitches.Enabled = vessels;
-            SolverSwitches.VesselFused = fused;
-            SolverSwitches.FusedVesselParts = 1;
         }
 
         private static void StackJoint(Rigidbody body, Rigidbody parent, Vector3? anchor = null)

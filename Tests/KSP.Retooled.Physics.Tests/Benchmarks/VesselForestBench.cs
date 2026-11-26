@@ -62,7 +62,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
 
         // The fused job's settings before the bench changes them for a path.
         private static int fusedParts = SolverSwitches.DefaultFusedVesselParts;
-        private static bool fusedOn = true;
 
         /// <summary>
         /// Load vessel graph scenes. Use tu160x4 for copies, tu160:128x16 for copies of a parent-first prefix,
@@ -713,20 +712,15 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             TearDownScene();
             SetUpScene();
             double clear = Since(clock);
-            // Compiled path options select the fused job: parts=n, nocontacts or off.
+            // The parts option sets the minimum island size for the fused job.
             string[] options = path.Split(':');
             SolverSwitches.FusedVesselParts = fusedParts;
-            SolverSwitches.FusedContacts = true;
-            SolverSwitches.VesselFused = fusedOn;
             for (int i = 1; i < options.Length; i++)
             {
                 if (options[i].StartsWith("parts="))
                 {
                     SolverSwitches.FusedVesselParts = int.Parse(options[i].Substring("parts=".Length), CultureInfo.InvariantCulture);
                 }
-
-                SolverSwitches.FusedContacts &= options[i] != "nocontacts";
-                SolverSwitches.VesselFused &= options[i] != "off";
             }
 
             path = options[0];
@@ -778,8 +772,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             JobsUtility.JobWorkerCount = workers;
             vesselSet?.Dispose();
             SolverSwitches.FusedVesselParts = fusedParts;
-            SolverSwitches.FusedContacts = true;
-            SolverSwitches.VesselFused = fusedOn;
             return results;
         }
 
@@ -1295,7 +1287,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             int workers = JobsUtility.JobWorkerCount;
             EnvironmentSwitches.Read();
             fusedParts = SolverSwitches.FusedVesselParts;
-            fusedOn = SolverSwitches.VesselFused;
             double load = SampleLoad();
             bool share = Environment.GetEnvironmentVariable("RETOOLED_BENCH_SHARE") == "1";
             var report = new StringBuilder($"[VesselForestBench] whole Physics.Simulate step, ms min / median over {Measured} warm steps; " +

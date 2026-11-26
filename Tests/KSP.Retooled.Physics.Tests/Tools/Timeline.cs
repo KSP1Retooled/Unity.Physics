@@ -208,10 +208,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
                                 continue;
                             }
 
-                            // "compiled:nocontacts" keeps the islands with contacts or joints out of the fused vessel job,
-                            // and "compiled:parts=64" sends vessel islands of 64 parts or more to it.
+                            // The parts option sets the minimum island size for the fused job.
                             string[] options = path.Split(':');
-                            SolverSwitches.FusedContacts = !options.Contains("nocontacts");
                             SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
                             foreach (string option in options.Where(o => o.StartsWith("parts=")))
                             {
@@ -307,7 +305,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
             ForestSwitches.Enabled = wasForest;
             ForestSwitches.Locking = wasLocking;
             VesselSwitches.Enabled = wasVessels;
-            SolverSwitches.FusedContacts = true;
             SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"Timeline-{tag}.txt"), report.ToString());

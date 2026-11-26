@@ -38,8 +38,8 @@ namespace Unity.Physics.Configuration
         internal static RecordedPhysicsSettings Read() => new RecordedPhysicsSettings
         {
             Vessels = VesselSwitches.Enabled,
-            Fused = SolverSwitches.VesselFused,
-            FusedContacts = SolverSwitches.FusedContacts,
+            Fused = true,
+            FusedContacts = true,
             FusedParts = SolverSwitches.FusedVesselParts,
             MinimumParts = VesselSwitches.MinimumParts,
             StrutLoads = true,
@@ -71,8 +71,6 @@ namespace Unity.Physics.Configuration
         internal readonly void Apply()
         {
             VesselSwitches.Enabled = Vessels;
-            SolverSwitches.VesselFused = Fused;
-            SolverSwitches.FusedContacts = FusedContacts;
             SolverSwitches.FusedVesselParts = FusedParts;
             VesselSwitches.MinimumParts = MinimumParts;
             VesselSwitches.StrutExperiment = StrutExperiment;

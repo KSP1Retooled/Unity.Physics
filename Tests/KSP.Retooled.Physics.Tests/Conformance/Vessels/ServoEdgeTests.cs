@@ -248,29 +248,19 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         [Test]
-        public void AContactFreeDriveUsesTheConfiguredBoundaryPath()
+        public void ADriveWithoutContactsReachesItsTargetInTheFusedSolve()
         {
-            SolverSwitches.VesselFused = true;
             SolverSwitches.FusedVesselParts = 1;
-            SolverSwitches.FusedContacts = false;
             Rigidbody[] bodies = Coaxial();
             var joint = Link(bodies[2], bodies[1], Vector3.right, Vector3.right, true);
             Drive(joint, 20.0f, 8.0f, 50.0f);
             Target(joint, 60.0f);
             long before = IslandWorkCounters.FusedIslandSolves;
-            Simulate(20);
-            float unfused = Twist(joint);
-            Assert.That(IslandWorkCounters.FusedIslandSolves, Is.EqualTo(before));
+            Simulate(180);
 
-            DestroyAll();
-            bodies = Coaxial();
-            joint = Link(bodies[2], bodies[1], Vector3.right, Vector3.right, true);
-            Drive(joint, 20.0f, 8.0f, 50.0f);
-            Target(joint, 60.0f);
-            SolverSwitches.FusedContacts = true;
-            Simulate(20);
-            Assert.That(IslandWorkCounters.FusedIslandSolves, Is.GreaterThan(before));
-            Assert.That(Twist(joint), Is.EqualTo(unfused).Within(0.1f));
+            Assert.That(IslandWorkCounters.FusedIslandSolves - before, Is.EqualTo(180));
+            Assert.That(Rows(ConstraintType.RotationMotor), Is.EqualTo(1));
+            Assert.That(Twist(joint), Is.EqualTo(60.0f).Within(0.1f));
         }
 
         private (Rigidbody[] bodies, ConfigurableJoint joint) Arm(bool reversed, bool gravity)

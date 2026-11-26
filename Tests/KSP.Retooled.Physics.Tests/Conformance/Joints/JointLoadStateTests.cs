@@ -160,18 +160,16 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             AssertVector(new Vector3(0.0f, 3.0f * 9.81f, 0.0f), joint.currentForce, 0.5f, "the joint still holds the body");
         }
 
-        [TestCase(true, true)]
-        [TestCase(true, false)]
-        [TestCase(false, false)]
-        public void PackingClearsThePreviousBreakLoad(bool vessels, bool fused)
+        [Test]
+        public void PackingClearsThePreviousBreakLoad()
         {
             EnvironmentSwitches.Read();
-            bool previousVessels = VesselSwitches.Enabled;
-            bool previousFused = SolverSwitches.VesselFused;
+            int previousMinimumParts = VesselSwitches.MinimumParts;
+            int previousFusedParts = SolverSwitches.FusedVesselParts;
             try
             {
-                VesselSwitches.Enabled = vessels;
-                SolverSwitches.VesselFused = fused;
+                VesselSwitches.MinimumParts = 2;
+                SolverSwitches.FusedVesselParts = 1;
                 UnityEngine.Physics.gravity = Vector3.zero;
                 Ground();
                 Vector3 footPosition = 0.5f * Vector3.up;
@@ -212,8 +210,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
                 long fusedBefore = IslandWorkCounters.FusedIslandSolves;
                 Simulate();
 
-                Assert.That(StepEntryPoints.Current->VesselSet.VesselCount, Is.EqualTo(vessels ? 1 : 0));
-                Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? 1 : 0));
+                Assert.That(StepEntryPoints.Current->VesselSet.VesselCount, Is.EqualTo(1));
+                Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(1));
                 Assert.That(Store->jointBreakCount, Is.Zero, $"packed force was {packedForce.magnitude:F3} kN");
                 Assert.That(packedForce, Is.EqualTo(Vector3.zero));
                 Assert.That(packedTorque, Is.EqualTo(Vector3.zero));
@@ -221,8 +219,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             }
             finally
             {
-                VesselSwitches.Enabled = previousVessels;
-                SolverSwitches.VesselFused = previousFused;
+                VesselSwitches.MinimumParts = previousMinimumParts;
+                SolverSwitches.FusedVesselParts = previousFusedParts;
             }
         }
 
