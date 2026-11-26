@@ -58,10 +58,8 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         /// </summary>
         public bool KeyByWorldIndex;
 
-        /// <summary>
-        /// Keep distant one-sided joint rows in the boundary. RETOOLED_DORMANT_ROWS=0 enables this option.
-        /// </summary>
-        public bool KeepDormantRows;
+        // Keep the version 13 recording layout until the format changes.
+        private byte recordingPadding;
 
         /// <summary>
         /// Disable held-row corrections, preserving their warm impulses and omitting push-out. Benchmark option.

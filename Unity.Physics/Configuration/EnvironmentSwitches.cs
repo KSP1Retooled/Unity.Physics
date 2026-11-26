@@ -1,5 +1,4 @@
 using System;
-using Unity.Physics.Dynamics.Solver.Forest;
 
 namespace Unity.Physics.Configuration
 {
@@ -64,16 +63,6 @@ namespace Unity.Physics.Configuration
             {
                 ForestSwitches.Locking = locking == "1" || locking.Equals("true", StringComparison.OrdinalIgnoreCase);
                 UnityEngine.Debug.Log($"[ForestSwitches] RETOOLED_LOCK={locking}: locking {(ForestSwitches.Locking ? "on" : "off")}");
-            }
-
-            // Dormant joint rows stay out of a vessel island's boundary unless RETOOLED_DORMANT_ROWS=0.
-            string dormant = Environment.GetEnvironmentVariable("RETOOLED_DORMANT_ROWS");
-            if (!string.IsNullOrEmpty(dormant))
-            {
-                BoundaryCaps caps = ForestSwitches.Caps;
-                caps.KeepDormantRows = dormant == "0" || dormant.Equals("false", StringComparison.OrdinalIgnoreCase);
-                ForestSwitches.Caps = caps;
-                UnityEngine.Debug.Log($"[ForestSwitches] RETOOLED_DORMANT_ROWS={dormant}: dormant rows {(caps.KeepDormantRows ? "kept in the boundary" : "left out")}");
             }
         }
 
