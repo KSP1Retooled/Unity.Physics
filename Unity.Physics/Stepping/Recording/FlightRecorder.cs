@@ -106,7 +106,7 @@ namespace Unity.Physics.Stepping.Recording
             }
 
             return $"Enabled={enabled}, Steps={recorder?.window.Count ?? 0}, Bytes={bytes}, "
-                + $"PostTriggerStepsRemaining={recorder?.postSteps ?? 0}, SavesQueued={queued}, LastSave={Volatile.Read(ref lastSave)}";
+                + $"PostTriggerStepsRemaining={recorder?.postSteps ?? 0}, SavesQueued={Volatile.Read(ref queued)}, LastSave={Volatile.Read(ref lastSave)}";
         }
 
         internal RecordedStep Begin(StoreStepper* stepper, float deltaTime)
@@ -360,7 +360,7 @@ namespace Unity.Physics.Stepping.Recording
 
         internal static ulong EngineId(void* userData, uint offset) => userData == null ? 0 : *(ulong*)((byte*)userData + offset);
 
-        private static bool HasFileSlot => queued < math.max(0, FlightRecorderSwitches.MaxFiles);
+        private static bool HasFileSlot => Volatile.Read(ref queued) < math.max(0, FlightRecorderSwitches.MaxFiles);
 
         private string Save(string reason)
         {
@@ -385,9 +385,18 @@ namespace Unity.Physics.Stepping.Recording
                 {
                     step.QueuedForSave = true;
                 }
-                queued++;
                 Volatile.Write(ref lastSave, $"queued {path}");
-                writerTask = writerTask.ContinueWith(_ => WriteFile(path, reason, unity, steps), TaskScheduler.Default);
+                Interlocked.Increment(ref queued);
+                try
+                {
+                    writerTask = writerTask.ContinueWith(_ => WriteFile(path, reason, unity, steps), TaskScheduler.Default);
+                }
+                catch
+                {
+                    Interlocked.Decrement(ref queued);
+                    throw;
+                }
+
                 return path;
             }
             catch (Exception error)
@@ -463,6 +472,10 @@ namespace Unity.Physics.Stepping.Recording
                 catch (UnauthorizedAccessException)
                 {
                 }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref queued);
             }
         }
     }

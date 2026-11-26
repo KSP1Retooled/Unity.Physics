@@ -105,6 +105,60 @@ namespace KSP.Retooled.Physics.Tests.Tools
         }
 
         /// <summary>
+        /// A save gives its slot back when the file is written, so a recorder that allows one queued save can save
+        /// again and again.
+        /// </summary>
+        [Test]
+        public void CompletedSaveFreesItsSlot()
+        {
+            WeightlessBox(new Vector3(0, 5, 0));
+            FlightRecorderSwitches.Enabled = true;
+            Simulate();
+            FlightRecorderSwitches.MaxFiles = 1;
+
+            for (int i = 0; i < 5; i++)
+            {
+                string path = FlightRecorderSwitches.Save();
+                Assert.That(path, Is.Not.Null, FlightRecorderSwitches.GetStatus());
+                WaitForRecording(path);
+                WaitForWriter();
+            }
+
+            Assert.That(Directory.GetFiles(directory, "*.rfr"), Has.Length.EqualTo(5));
+        }
+
+        /// <summary>
+        /// A save that fails to write also gives its slot back, so the next save still goes through.
+        /// </summary>
+        [Test]
+        public void FailedSaveFreesItsSlot()
+        {
+            WeightlessBox(new Vector3(0, 5, 0));
+            FlightRecorderSwitches.Enabled = true;
+            Simulate();
+            FlightRecorderSwitches.MaxFiles = 1;
+            Directory.CreateDirectory(directory);
+            string blockedDirectory = Path.Combine(directory, "file");
+            File.WriteAllText(blockedDirectory, "The writer cannot create a directory here.");
+            FlightRecorderSwitches.OutputDirectory = blockedDirectory;
+
+            Assert.That(FlightRecorderSwitches.Save(), Is.Not.Null, FlightRecorderSwitches.GetStatus());
+            WaitForWriter();
+
+            FlightRecorderSwitches.OutputDirectory = directory;
+            string path = FlightRecorderSwitches.Save();
+            Assert.That(path, Is.Not.Null, FlightRecorderSwitches.GetStatus());
+            WaitForRecording(path);
+            WaitForWriter();
+        }
+
+        private static void WaitForWriter()
+        {
+            Assert.That(SpinWait.SpinUntil(() => FlightRecorderSwitches.GetStatus().Contains("SavesQueued=0,"),
+                TimeSpan.FromSeconds(2)), Is.True, FlightRecorderSwitches.GetStatus());
+        }
+
+        /// <summary>
         /// The replay holds the same ignored collider pairs as the recorded world, not pairs made from the table's
         /// internal slot contents.
         /// </summary>
