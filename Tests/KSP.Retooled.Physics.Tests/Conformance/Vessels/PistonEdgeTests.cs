@@ -10,18 +10,13 @@ using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
-    [TestFixture(false)]
-    [TestFixture(true)]
     public unsafe class PistonEdgeTests : PhysicsScene
     {
         private const float Stroke = 2.4f;
         private const float Middle = Stroke / 2.0f;
         private const float Stop = 1.01f * Middle;
         private const float MediumExtension = 1.6f;
-        private readonly bool servoEdges;
         private RecordedPhysicsSettings settings;
-
-        public PistonEdgeTests(bool servoEdges) => this.servoEdges = servoEdges;
 
         [SetUp]
         public void Configure()
@@ -35,7 +30,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             settings = RecordedPhysicsSettings.Read();
             VesselSwitches.Enabled = true;
             VesselSwitches.MinimumParts = 2;
-            VesselSwitches.ServoEdges = servoEdges;
         }
 
         [TearDown]
@@ -167,18 +161,15 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Simulate();
 
             VesselSet set = State->VesselSet;
-            Assert.That(set.VesselCount, Is.EqualTo(servoEdges ? 1 : 2));
+            Assert.That(set.VesselCount, Is.EqualTo(1));
             VesselEdge edge = PistonEdge(out int count);
-            Assert.That(count, Is.EqualTo(servoEdges ? 1 : 0));
-            if (servoEdges)
-            {
-                Assert.That(set.Vessels[0].PartCount, Is.EqualTo(5));
-                Assert.That(edge.MayLock, Is.False);
-                Assert.That(edge.TwistStiffness, Is.EqualTo(double.PositiveInfinity));
-                Assert.That(edge.SwingStiffness, Is.EqualTo(double.PositiveInfinity));
-            }
+            Assert.That(count, Is.EqualTo(1));
+            Assert.That(set.Vessels[0].PartCount, Is.EqualTo(5));
+            Assert.That(edge.MayLock, Is.False);
+            Assert.That(edge.TwistStiffness, Is.EqualTo(double.PositiveInfinity));
+            Assert.That(edge.SwingStiffness, Is.EqualTo(double.PositiveInfinity));
 
-            Assert.That(Rows(joint), Is.EqualTo(servoEdges ? (1, 0, 0) : (1, 3, 3)));
+            Assert.That(Rows(joint), Is.EqualTo((1, 0, 0)));
 
             uint version = State->RecorderVesselCompilationVersion;
             Target(joint, MediumExtension + 0.01f);
@@ -188,17 +179,17 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             joint.linearLimit = limit;
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
-            Assert.That(Rows(joint), Is.EqualTo(servoEdges ? (1, 1, 0) : (1, 3, 3)));
+            Assert.That(Rows(joint), Is.EqualTo((1, 1, 0)));
 
             joint.xDrive = default;
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
-            Assert.That(Rows(joint), Is.EqualTo(servoEdges ? (0, 1, 0) : (0, 3, 3)));
+            Assert.That(Rows(joint), Is.EqualTo((0, 1, 0)));
 
             joint.xMotion = ConfigurableJointMotion.Free;
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
-            Assert.That(Rows(joint), Is.EqualTo(servoEdges ? (0, 0, 0) : (0, 2, 3)));
+            Assert.That(Rows(joint), Is.EqualTo((0, 0, 0)));
 
             joint.xMotion = ConfigurableJointMotion.Locked;
             Simulate();
@@ -210,7 +201,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
             PistonEdge(out count);
-            Assert.That(count, Is.EqualTo(servoEdges ? 1 : 0));
+            Assert.That(count, Is.EqualTo(1));
         }
 
         [Test]
@@ -222,9 +213,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Simulate();
 
             PistonEdge(out int count);
-            Assert.That(count, Is.EqualTo(servoEdges ? 1 : 0));
+            Assert.That(count, Is.EqualTo(1));
             Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
-            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(servoEdges ? 1 : 0));
+            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(1));
         }
 
         private (float extension, float side, float tilt, float drift, Vector3 tip) Hold(bool vertical, bool reversed, float step)
@@ -253,12 +244,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             var pose = Measure(joint);
-            if (VesselSwitches.ServoEdges)
-            {
-                VesselEdge edge = PistonEdge(out int count);
-                Assert.That(count, Is.EqualTo(1));
-                Assert.That(edge.FrameInChild, Is.EqualTo(!reversed));
-            }
+            VesselEdge edge = PistonEdge(out int count);
+            Assert.That(count, Is.EqualTo(1));
+            Assert.That(edge.FrameInChild, Is.EqualTo(!reversed));
 
             return (pose.extension, pose.side, pose.tilt, max - min, bodies[4].position);
         }
@@ -270,13 +258,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             var measured = Hold(vertical, reversed, Step);
             DestroyAll();
-            VesselSwitches.ServoEdges = false;
             var reference = Hold(vertical, reversed, Step / 10.0f);
             float extensionError = Mathf.Abs(measured.extension - reference.extension);
             float sideError = Mathf.Abs(measured.side - reference.side);
             float tiltError = Mathf.Abs(measured.tilt - reference.tilt);
             float tipError = Vector3.Distance(measured.tip, reference.tip);
-            TestContext.WriteLine($"Edges {servoEdges}, vertical {vertical}, reversed {reversed}: extension {measured.extension:F6} m, "
+            TestContext.WriteLine($"Vertical {vertical}, reversed {reversed}: extension {measured.extension:F6} m, "
                 + $"side {measured.side:E4} m, tilt {measured.tilt:E4} deg, hold drift {measured.drift:E4} m. Absolute errors against 2 ms: "
                 + $"extension {extensionError:E4} m, side {sideError:E4} m, tilt {tiltError:E4} deg, tip {tipError:E4} m.");
             Assert.That(measured.extension, Is.EqualTo(vertical ? 1.75f : 2.1f).Within(0.03f));
@@ -341,12 +328,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Simulate();
             float firstExtension = Measure(joint).extension;
             long retries = BoundaryCounters.Current.StopRetries - before;
-            TestContext.WriteLine($"Edges {servoEdges}, hard stop: first-step excess {firstExtension - Middle - Stop:E4} m, {retries} retries.");
-            if (servoEdges)
-            {
-                Assert.That(retries, Is.GreaterThan(0));
-                Assert.That(firstExtension, Is.LessThan(Middle + Stop + 0.002f));
-            }
+            TestContext.WriteLine($"Hard stop: first-step excess {firstExtension - Middle - Stop:E4} m, {retries} retries.");
+            Assert.That(retries, Is.GreaterThan(0));
+            Assert.That(firstExtension, Is.LessThan(Middle + Stop + 0.002f));
 
             Simulate(12);
             Assert.That(Measure(joint).extension, Is.EqualTo(Middle + Stop).Within(0.025f));
@@ -404,7 +388,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             var after = ServoEdgeTests.Momentum(bodies);
             float linear = (after.linear - before.linear).magnitude;
             float angular = (after.angular - before.angular).magnitude;
-            TestContext.WriteLine($"Edges {servoEdges}, spinning {spinning}: linear drift {linear:E4}, angular drift {angular:E4}, "
+            TestContext.WriteLine($"Spinning {spinning}: linear drift {linear:E4}, angular drift {angular:E4}, "
                 + $"peak side {peakSide:E4} m, peak tilt {peakTilt:E4} deg.");
             Assert.That(Measure(joint).extension, Is.EqualTo(1.55f).Within(0.06f));
             Assert.That(peakSide, Is.LessThan(0.005f));
@@ -443,8 +427,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             PistonEdge(out int count);
-            Assert.That(count, Is.EqualTo(servoEdges ? 1 : 0));
-            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(servoEdges ? 1 : 3));
+            Assert.That(count, Is.EqualTo(1));
+            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
             Assert.That(Measure(piston).extension, Is.EqualTo(1.65f).Within(0.04f));
             Assert.That(Measure(piston).side, Is.LessThan(0.003f));
             Assert.That(Measure(piston).tilt, Is.LessThan(0.25f));
@@ -470,9 +454,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Target(joint, 1.8f);
             Simulate(60);
             Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
-            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(servoEdges && !strutFirst ? 1 : 0));
+            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(strutFirst ? 0 : 1));
             PistonEdge(out int count);
-            Assert.That(count, Is.EqualTo(servoEdges && !strutFirst ? 1 : 0));
+            Assert.That(count, Is.EqualTo(strutFirst ? 0 : 1));
             Assert.That(Rows(joint).drive, Is.EqualTo(1));
             Assert.That(Measure(joint).extension, Is.EqualTo(Middle).Within(0.003f));
             Assert.That(Measure(joint).side, Is.LessThan(0.003f));

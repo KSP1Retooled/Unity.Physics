@@ -16,7 +16,6 @@ using Unity.Physics.Store.Versions;
 using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Dynamics.Joint.Translation;
-using Unity.Physics.Configuration;
 using Unity.Physics.Dynamics.Joint.Loads;
 using Unity.Physics.Dynamics.Bodies;
 
@@ -114,8 +113,7 @@ namespace KSP.Retooled.Physics.Commands
             }
 
             // Reuse groups and forest roles when the joints still have compatible settings.
-            bool servoEdges = VesselSwitches.ServoEdges;
-            ServoAxis oldServo = servoEdges ? JointTranslation.BuildJointsJob.ServoJoint(joint) : ServoAxis.None;
+            ServoAxis oldServo = JointTranslation.BuildJointsJob.ServoJoint(joint);
             if (setsTarget && oldServo != ServoAxis.None)
             {
                 Run(command, joint, a, axis);
@@ -127,7 +125,7 @@ namespace KSP.Retooled.Physics.Commands
             quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
             var flags = joint->flags;
             Run(command, joint, a, axis);
-            ServoAxis newServo = servoEdges ? JointTranslation.BuildJointsJob.ServoJoint(joint) : ServoAxis.None;
+            ServoAxis newServo = JointTranslation.BuildJointsJob.ServoJoint(joint);
             bool servo = newServo != ServoAxis.None;
             bool mergeable = !servo && JointTranslation.BuildJointsJob.Mergeable(joint);
             bool moved = joint->body0 != body0 || joint->body1 != body1 || joint->flags != flags

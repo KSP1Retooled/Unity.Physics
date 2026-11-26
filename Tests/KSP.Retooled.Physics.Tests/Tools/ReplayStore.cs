@@ -45,15 +45,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
             world = New<WorldData>();
         }
 
-        internal void Read(BinaryReader reader, Dictionary<int, byte[]> payloads, int version)
+        internal void Read(BinaryReader reader, Dictionary<int, byte[]> payloads)
         {
-            var settings = reader.ReadValue<RecordedPhysicsSettings>();
-            if (version == RecordingBinary.VersionBeforeServoEdges)
-            {
-                // The servo switch occupies a byte that version 11 left as padding.
-                settings.ServoEdges = false;
-            }
-            settings.Apply();
+            reader.ReadValue<RecordedPhysicsSettings>().Apply();
             world->gravity = reader.ReadValue<Unity.Mathematics.float3>();
             world->bounceThreshold = reader.ReadSingle();
             world->staticsVersion = reader.ReadUInt32();

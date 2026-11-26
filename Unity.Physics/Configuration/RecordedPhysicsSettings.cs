@@ -8,7 +8,6 @@ namespace Unity.Physics.Configuration
         internal bool Vessels;
         internal bool Fused;
         internal bool FusedContacts;
-        internal bool ServoEdges;
         internal int FusedParts;
         internal int MinimumParts;
         internal bool StrutLoads;
@@ -41,7 +40,6 @@ namespace Unity.Physics.Configuration
             Vessels = VesselSwitches.Enabled,
             Fused = SolverSwitches.VesselFused,
             FusedContacts = SolverSwitches.FusedContacts,
-            ServoEdges = VesselSwitches.ServoEdges,
             FusedParts = SolverSwitches.FusedVesselParts,
             MinimumParts = VesselSwitches.MinimumParts,
             StrutLoads = VesselSwitches.StrutLoadsEnabled,
@@ -73,7 +71,6 @@ namespace Unity.Physics.Configuration
         internal readonly void Apply()
         {
             VesselSwitches.Enabled = Vessels;
-            VesselSwitches.ServoEdges = ServoEdges;
             SolverSwitches.VesselFused = Fused;
             SolverSwitches.FusedContacts = FusedContacts;
             SolverSwitches.FusedVesselParts = FusedParts;

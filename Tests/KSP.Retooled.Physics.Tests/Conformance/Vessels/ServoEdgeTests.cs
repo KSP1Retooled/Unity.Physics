@@ -13,14 +13,9 @@ using PhysicsScene = KSP.Retooled.Physics.Tests.Scenes.PhysicsScene;
 
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
-    [TestFixture(false)]
-    [TestFixture(true)]
     public unsafe class ServoEdgeTests : PhysicsScene
     {
-        private readonly bool servoEdges;
         private RecordedPhysicsSettings settings;
-
-        public ServoEdgeTests(bool servoEdges) => this.servoEdges = servoEdges;
 
         [SetUp]
         public void Configure()
@@ -34,7 +29,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             settings = RecordedPhysicsSettings.Read();
             VesselSwitches.Enabled = true;
             VesselSwitches.MinimumParts = 2;
-            VesselSwitches.ServoEdges = servoEdges;
         }
 
         [TearDown]
@@ -170,15 +164,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Target(joint, 60.0f);
             Simulate(80);
 
-            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(servoEdges ? 1 : 2));
-            if (servoEdges)
-            {
-                Assert.That(State->VesselSet.Vessels[0].PartCount, Is.EqualTo(4));
-            }
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges ? 1 : 0));
+            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
+            Assert.That(State->VesselSet.Vessels[0].PartCount, Is.EqualTo(4));
+            Assert.That(FreeAxes(), Is.EqualTo(1));
             Assert.That(Rows(ConstraintType.RotationMotor), Is.EqualTo(1));
-            Assert.That(Rows(ConstraintType.Linear), Is.EqualTo(servoEdges ? 0 : 3));
-            Assert.That(Rows(ConstraintType.Angular), Is.EqualTo(servoEdges ? 0 : 2));
+            Assert.That(Rows(ConstraintType.Linear), Is.Zero);
+            Assert.That(Rows(ConstraintType.Angular), Is.Zero);
 
             uint version = State->RecorderVesselCompilationVersion;
             Limits(joint, 0.0f, 120.0f);
@@ -186,12 +177,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Drive(joint, 15.0f, 6.0f, 45.0f);
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
-            Assert.That(Rows(ConstraintType.Angular), Is.EqualTo(servoEdges ? 0 : 3));
+            Assert.That(Rows(ConstraintType.Angular), Is.Zero);
 
             Limits(joint, 0.0f, 62.0f);
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
-            Assert.That(Rows(ConstraintType.Angular), Is.EqualTo(servoEdges ? 1 : 3));
+            Assert.That(Rows(ConstraintType.Angular), Is.EqualTo(1));
             joint.angularXMotion = ConfigurableJointMotion.Locked;
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
@@ -200,32 +191,32 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             joint.angularXMotion = ConfigurableJointMotion.Free;
             Simulate();
             Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges ? 1 : 0));
-            if (servoEdges)
-            {
-                version = State->RecorderVesselCompilationVersion;
-                joint.anchor += 0.01f * Vector3.right;
-                Simulate();
-                Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
-                version = State->RecorderVesselCompilationVersion;
-                joint.connectedBody = bodies[0];
-                Simulate();
-                Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
-            }
+            Assert.That(FreeAxes(), Is.EqualTo(1));
+
+            version = State->RecorderVesselCompilationVersion;
+            joint.anchor += 0.01f * Vector3.right;
+            Simulate();
+            Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
+            version = State->RecorderVesselCompilationVersion;
+            joint.connectedBody = bodies[0];
+            Simulate();
+            Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
         }
 
         [Test]
-        public void SwitchingRebuildsAnUnpoweredHinge()
+        public void AnUnpoweredHingeTurnsWithoutRecompilingTheVessel()
         {
             Rigidbody[] bodies = Coaxial();
             var joint = Link(bodies[2], bodies[1], Vector3.right, Vector3.right, true);
             Simulate();
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges ? 1 : 0));
+            Assert.That(FreeAxes(), Is.EqualTo(1));
             uint version = State->RecorderVesselCompilationVersion;
-            VesselSwitches.ServoEdges = !servoEdges;
-            Simulate();
-            Assert.That(State->RecorderVesselCompilationVersion, Is.GreaterThan(version));
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges ? 0 : 1));
+
+            bodies[2].AddTorque(0.4f * Vector3.right, ForceMode.Impulse);
+            Simulate(10);
+            Assert.That(Mathf.Abs(Twist(joint)), Is.GreaterThan(5.0f));
+            Assert.That(State->RecorderVesselCompilationVersion, Is.EqualTo(version));
+            Assert.That(FreeAxes(), Is.EqualTo(1));
             Assert.That(joint.currentForce.magnitude, Is.LessThan(0.01f));
         }
 
@@ -324,6 +315,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 UnityEngine.Physics.Simulate(step);
             }
 
+            Assert.That(FreeAxes(), Is.EqualTo(1));
             Assert.That(joint.currentForce.magnitude, Is.GreaterThan(20.0f));
             return ((reversed ? 1.0f : -1.0f) * Twist(joint), AnchorGap(joint), AxisGap(joint), bodies[3].position);
         }
@@ -333,19 +325,14 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         public void SpringDriveHoldsAnArmUnderGravity(bool reversed)
         {
             var measured = Hold(reversed, Step);
-            if (servoEdges)
-            {
-                Assert.That(FreeAxes(), Is.EqualTo(1));
-                VesselSet set = State->VesselSet;
-                State->FinishPendingRefit();
-                Vector3 root = State->World.Bodies[set.PartBodies[set.Vessels[0].FirstPart]].WorldFromBody.pos;
-                Assert.That(root.x, reversed ? Is.GreaterThan(0.7f) : Is.LessThan(0.3f));
-            }
+            VesselSet set = State->VesselSet;
+            State->FinishPendingRefit();
+            Vector3 root = State->World.Bodies[set.PartBodies[set.Vessels[0].FirstPart]].WorldFromBody.pos;
+            Assert.That(root.x, reversed ? Is.GreaterThan(0.7f) : Is.LessThan(0.3f));
             DestroyAll();
-            VesselSwitches.ServoEdges = false;
             var reference = Hold(reversed, Step / 10.0f);
 
-            TestContext.WriteLine($"Servo edges {servoEdges}, reversed {reversed}, gravity hold: angle {measured.angle:F6} deg, "
+            TestContext.WriteLine($"Gravity hold, reversed {reversed}: angle {measured.angle:F6} deg, "
                 + $"anchor {measured.anchor:E4} m, axis {measured.axis:E4} deg. Absolute errors against 2 ms: "
                 + $"angle {Mathf.Abs(measured.angle - reference.angle):E4} deg, anchor {Mathf.Abs(measured.anchor - reference.anchor):E4} m, "
                 + $"axis {Mathf.Abs(measured.axis - reference.axis):E4} deg, tip {Vector3.Distance(measured.tip, reference.tip):E4} m.");
@@ -466,6 +453,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             {
                 UnityEngine.Physics.Simulate(step);
             }
+            Assert.That(FreeAxes(), Is.EqualTo(1));
             var after = Momentum(bodies);
             return (after.linear - before.linear, after.angular - before.angular, bodies[3].position, Twist(joint));
         }
@@ -475,9 +463,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             var measured = TurnInSpace(Step);
             DestroyAll();
-            VesselSwitches.ServoEdges = false;
             var reference = TurnInSpace(Step / 10.0f);
-            TestContext.WriteLine($"Servo edges {servoEdges}, floating turn: linear drift {measured.linear.magnitude:E4} kg m/s, "
+            TestContext.WriteLine($"Floating turn: linear drift {measured.linear.magnitude:E4} kg m/s, "
                 + $"angular drift {measured.angular.magnitude:E4} kg m²/s. Errors against 2 ms: "
                 + $"linear {(measured.linear - reference.linear).magnitude:E4} kg m/s, "
                 + $"angular {(measured.angular - reference.angular).magnitude:E4} kg m²/s, "
@@ -525,7 +512,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 speed = RotorSpeed(bodies[2], bodies[1], Vector3.right);
                 peakSpeed = Mathf.Max(peakSpeed, speed);
             }
-            TestContext.WriteLine($"Servo edges {servoEdges}, rotor limited {limited}, speed {speed:F4} rad/s, "
+            TestContext.WriteLine($"Rotor limited {limited}, speed {speed:F4} rad/s, "
                 + $"peak speed {peakSpeed:F4} rad/s, peak anchor gap {anchor:E4} m, peak axis deflection {axis:E4} deg, "
                 + $"peak blade anchor gap {bladeGap:E4} m.");
             Assert.That(float.IsFinite(speed + anchor + axis + bladeGap), Is.True);
@@ -575,7 +562,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 peakSpeed = Mathf.Max(peakSpeed, speed);
             }
 
-            TestContext.WriteLine($"Servo edges {servoEdges}, speed {speed:F4} rad/s, peak speed {peakSpeed:F4} rad/s, "
+            TestContext.WriteLine($"Speed {speed:F4} rad/s, peak speed {peakSpeed:F4} rad/s, "
                 + $"peak anchor gap {anchor:E4} m, peak axis deflection {axis:E4} deg, peak blade anchor gap {bladeGap:E4} m, "
                 + $"peak base tilt {tilt:E4} deg.");
             Assert.That(float.IsFinite(speed + anchor + axis + bladeGap + tilt), Is.True);
@@ -647,8 +634,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             Simulate(60);
             Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
-            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(servoEdges && !strutFirst ? 1 : 0));
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges && !strutFirst ? 1 : 0));
+            Assert.That(State->VesselSet.Vessels[0].ClosureCount, Is.EqualTo(strutFirst ? 0 : 1));
+            Assert.That(FreeAxes(), Is.EqualTo(strutFirst ? 0 : 1));
             Assert.That(Rows(ConstraintType.RotationMotor), Is.EqualTo(1));
             Assert.That(Mathf.Abs(Twist(joint)), Is.LessThan(1.0f));
             Assert.That(AnchorGap(joint), Is.LessThan(0.002f));
@@ -690,8 +677,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 }
             }
             Simulate(120);
-            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(servoEdges ? 1 : count + 1));
-            Assert.That(FreeAxes(), Is.EqualTo(servoEdges ? count : 0));
+            Assert.That(State->VesselSet.VesselCount, Is.EqualTo(1));
+            Assert.That(FreeAxes(), Is.EqualTo(count));
             for (int i = 0; i < count; i++)
             {
                 Assert.That(Twist(joints[i]), Is.EqualTo(i % 2 == 0 ? 25.0f : -25.0f).Within(3.0f));

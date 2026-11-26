@@ -4,6 +4,11 @@ uid: changelog
 
 # Changelog
 
+## Unreleased
+The vessel solver uses a free-axis edge for each DLC hinge, rotation servo, rotor, or piston that joins two vessel
+trees. A servo that cannot become an edge still uses boundary rows. The flight recorder now writes version 13, and
+the replay tool requires that version.
+
 ## 0.1.5
 A part that a fast impact destroys no longer stops its vessel before the game destroys it. The game gives each such
 collider its crash speed with `CrashContacts.SetCrashSpeed`. A contact that begins faster than that speed pushes with a

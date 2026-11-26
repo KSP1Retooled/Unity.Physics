@@ -34,9 +34,10 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
 
                 int version = reader.ReadInt32();
-                if (version != RecordingBinary.Version && version != RecordingBinary.VersionBeforeServoEdges)
+                if (version != RecordingBinary.Version)
                 {
-                    throw new InvalidDataException("Unsupported flight recorder format.");
+                    throw new InvalidDataException(
+                        $"The recording uses format version {version}. Replay requires version {RecordingBinary.Version}.");
                 }
 
                 if (reader.ReadInt32() != IntPtr.Size || reader.ReadBoolean() != BitConverter.IsLittleEndian)
@@ -76,7 +77,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
                     using var input = new BinaryReader(new MemoryStream(bytes, writable: false));
                     using var store = new ReplayStore();
-                    store.Read(input, payloads, version);
+                    store.Read(input, payloads);
                     if (input.BaseStream.Position != input.BaseStream.Length)
                     {
                         throw new InvalidDataException($"Extra input bytes at step {number}.");

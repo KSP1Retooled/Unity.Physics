@@ -13,7 +13,6 @@ using Unity.Physics.Store.World;
 using Unity.Physics.Stepping;
 using Unity.Physics.Store.Memory;
 using Unity.Physics.Dynamics.Joint.Translation;
-using Unity.Physics.Configuration;
 
 namespace Unity.Physics.Dynamics.Joint.Grouping
 {
@@ -45,8 +44,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             public void Execute()
             {
                 Units.Clear();
-                bool servoEdges = VesselSwitches.ServoEdges;
-                NativeArray<int> groupOf = FindGroups(servoEdges);
+                NativeArray<int> groupOf = FindGroups();
                 for (int i = 0; i < World->jointCount; i++)
                 {
                     int group = groupOf[i];
@@ -56,15 +54,15 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     }
                 }
 
-                FindForest(servoEdges);
+                FindForest();
                 Written.ResizeUninitialized(Units.Length);
             }
 
             /// <summary>
-            /// Build the vessel spanning forest with Kruskal's algorithm in store order.
-            /// Mergeable units joining trees become edges; units within a tree become closures.
+            /// Use Kruskal's algorithm in store order to build the forests for vessels and rows.
+            /// Mergeable units that join trees become edges. Mergeable units within a tree become closures.
             /// </summary>
-            private void FindForest(bool servoEdges)
+            private void FindForest()
             {
                 Roles.ResizeUninitialized(Units.Length);
                 if (!Forest)
@@ -79,21 +77,18 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
 
                 int bodyCount = (int)World->bodyCount;
                 var root = new NativeArray<int>(bodyCount, Allocator.Temp);
-                // Servo edges join vessels only. The row forest needs its own connectivity when a servo is present.
-                var vesselRoot = new NativeArray<int>(servoEdges ? bodyCount : 0, Allocator.Temp);
+                // A servo can join two vessel trees. The row forest tracks connections through mergeable joints.
+                var vesselRoot = new NativeArray<int>(bodyCount, Allocator.Temp);
                 for (int i = 0; i < bodyCount; i++)
                 {
                     root[i] = i;
-                    if (servoEdges)
-                    {
-                        vesselRoot[i] = i;
-                    }
+                    vesselRoot[i] = i;
                 }
 
                 for (int u = 0; u < Units.Length; u++)
                 {
                     JointData* joint = World->joints[Units[u].Joint];
-                    ServoAxis axis = servoEdges ? JointTranslation.BuildJointsJob.ServoJoint(joint) : ServoAxis.None;
+                    ServoAxis axis = JointTranslation.BuildJointsJob.ServoJoint(joint);
                     bool servo = axis != ServoAxis.None;
                     if (!servo && !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
@@ -108,22 +103,19 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     }
 
                     int body0 = (int)joint->body0->index, body1 = (int)joint->body1->index;
-                    if (servoEdges)
+                    bool joinsVesselTrees = false;
+                    if ((StoreMemory.Row(joint->body0)->flags & StoreMemory.Row(joint->body1)->flags & BodyFlags.Simulated) != 0)
                     {
-                        bool joinsVesselTrees = false;
-                        if ((StoreMemory.Row(joint->body0)->flags & StoreMemory.Row(joint->body1)->flags & BodyFlags.Simulated) != 0)
-                        {
-                            int first = Find(vesselRoot, body0), second = Find(vesselRoot, body1);
-                            joinsVesselTrees = first != second;
-                            vesselRoot[first] = second;
-                        }
+                        int first = Find(vesselRoot, body0), second = Find(vesselRoot, body1);
+                        joinsVesselTrees = first != second;
+                        vesselRoot[first] = second;
+                    }
 
-                        if (servo)
-                        {
-                            Roles[u] = !joinsVesselTrees ? JointForestRole.None
-                                : axis == ServoAxis.LinearX ? JointForestRole.PistonTree : JointForestRole.ServoTree;
-                            continue;
-                        }
+                    if (servo)
+                    {
+                        Roles[u] = !joinsVesselTrees ? JointForestRole.None
+                            : axis == ServoAxis.LinearX ? JointForestRole.PistonTree : JointForestRole.ServoTree;
+                        continue;
                     }
 
                     int a = Find(root, body0), b = Find(root, body1);
@@ -159,7 +151,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             /// Merge compatible joints between the same bodies into groups of at least two, avoiding redundant solver
             /// rows.
             /// </summary>
-            private NativeArray<int> FindGroups(bool servoEdges)
+            private NativeArray<int> FindGroups()
             {
                 Groups.Clear();
                 Members.Clear();
@@ -173,7 +165,7 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
                     groupOf[i] = -1;
                     leaderOf[i] = -1;
                     JointData* joint = World->joints[i];
-                    if ((servoEdges && JointTranslation.BuildJointsJob.ServoJoint(joint) != ServoAxis.None)
+                    if (JointTranslation.BuildJointsJob.ServoJoint(joint) != ServoAxis.None
                         || !JointTranslation.BuildJointsJob.Mergeable(joint))
                     {
                         continue;

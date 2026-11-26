@@ -17,7 +17,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
     [Category("Slow")]
     public unsafe class ServoEdgeBench : PhysicsScene
     {
-        private const int BlocksPerMode = 3;
+        private const int Blocks = 3;
         private const int WarmupSteps = 20;
         private const int StepsPerBlock = 20;
 
@@ -113,14 +113,12 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         private void MeasureCraft(int workers, int parts, int pistons, int hinges)
         {
             var (sliders, rotary) = Build(parts, pistons, hinges);
-            var times = new[] { new List<double>(), new List<double>() };
-            var rows = new long[2];
-            var samples = new long[2];
+            var times = new List<double>(Blocks * StepsPerBlock);
+            long rows = 0;
+            long samples = 0;
             int step = 0;
-            for (int block = 0; block < BlocksPerMode * 2; block++)
+            for (int block = 0; block < Blocks; block++)
             {
-                int mode = block % 2;
-                VesselSwitches.ServoEdges = mode == 1;
                 for (int i = 0; i < WarmupSteps + StepsPerBlock; i++)
                 {
                     for (int drive = 0; drive < sliders.Length; drive++)
@@ -140,24 +138,21 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                     long elapsed = Stopwatch.GetTimestamp() - start;
                     if (i >= WarmupSteps)
                     {
-                        times[mode].Add(elapsed * 1000.0 / Stopwatch.Frequency);
+                        times.Add(elapsed * 1000.0 / Stopwatch.Frequency);
                         BoundaryCounters after = BoundaryCounters.Current;
-                        rows[mode] += after.OtherRows - before.OtherRows;
-                        samples[mode] += after.RowKindSamples - before.RowKindSamples;
+                        rows += after.OtherRows - before.OtherRows;
+                        samples += after.RowKindSamples - before.RowKindSamples;
                     }
                 }
             }
 
-            for (int mode = 0; mode < times.Length; mode++)
-            {
-                times[mode].Sort();
-                int middle = times[mode].Count / 2;
-                double median = 0.5 * (times[mode][middle - 1] + times[mode][middle]);
-                double rowCount = samples[mode] > 0 ? rows[mode] / (double)samples[mode] : 0.0;
-                TestContext.WriteLine($"{workers} workers, {parts} parts, {pistons} pistons, {hinges} hinges, edges {(mode == 1 ? "on" : "off")}: "
-                    + $"median {median:F3} ms, minimum {times[mode][0]:F3} ms, {rowCount:F2} boundary rows.");
-                Assert.That(rowCount, Is.EqualTo((pistons + hinges) * (mode == 1 ? 1 : 6)));
-            }
+            times.Sort();
+            int middle = times.Count / 2;
+            double median = 0.5 * (times[middle - 1] + times[middle]);
+            double rowCount = samples > 0 ? rows / (double)samples : 0.0;
+            TestContext.WriteLine($"{workers} workers, {parts} parts, {pistons} pistons, {hinges} hinges: "
+                + $"median {median:F3} ms, minimum {times[0]:F3} ms, {rowCount:F2} boundary rows.");
+            Assert.That(rowCount, Is.EqualTo(pistons + hinges));
             DestroyAll();
         }
     }

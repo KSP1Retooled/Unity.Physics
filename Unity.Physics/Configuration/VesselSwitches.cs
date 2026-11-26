@@ -1,5 +1,4 @@
 using Unity.Burst;
-using Unity.Physics.Store.Versions;
 
 namespace Unity.Physics.Configuration
 {
@@ -14,12 +13,9 @@ namespace Unity.Physics.Configuration
 
         private readonly struct MinimumPartsKey { }
 
-        private readonly struct ServoEdgesKey { }
-
         private static readonly SharedStatic<bool> Shared = SharedStatic<bool>.GetOrCreate<Key>();
 
         private static readonly SharedStatic<int> MinimumPartsShared = SharedStatic<int>.GetOrCreate<MinimumPartsKey>();
-        private static readonly SharedStatic<bool> ServoEdgesShared = SharedStatic<bool>.GetOrCreate<ServoEdgesKey>();
 
         /// <summary>
         /// Default minimum vessel size: two parts, so any eligible joined craft can use the vessel solver.
@@ -46,19 +42,6 @@ namespace Unity.Physics.Configuration
         {
             get => Shared.Data;
             set => Shared.Data = value;
-        }
-
-        internal static bool ServoEdges
-        {
-            get => ServoEdgesShared.Data;
-            set
-            {
-                if (ServoEdgesShared.Data != value)
-                {
-                    ServoEdgesShared.Data = value;
-                    JointTopology.Changed();
-                }
-            }
         }
 
         private struct StrutLoadsOffKey { }
