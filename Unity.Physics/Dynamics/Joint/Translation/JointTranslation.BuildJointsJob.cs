@@ -818,8 +818,13 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     return;
                 }
 
+                // When the spring is negligible compared with the damper, treat the drive as a velocity drive. KSP's
+                // rotors set up their drive that way, with a spring of 1e-10 and a damper of 1000. A position motor
+                // would have to move its target by damper / spring * velocity, which is about 1e14 radians. The motor
+                // wraps its error to the nearest turn, so that offset would wrap to nothing, and the rotor would stop
+                // instead of spinning.
                 float mass = JointConstraints.AngularMass(joint, index);
-                if (drive->driveSpring > 0.0f)
+                if (drive->driveSpring > drive->driveDamper * PureDamperSpringRatio)
                 {
                     float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                     float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];
