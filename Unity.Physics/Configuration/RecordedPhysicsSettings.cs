@@ -42,7 +42,7 @@ namespace Unity.Physics.Configuration
             FusedContacts = SolverSwitches.FusedContacts,
             FusedParts = SolverSwitches.FusedVesselParts,
             MinimumParts = VesselSwitches.MinimumParts,
-            StrutLoads = VesselSwitches.StrutLoadsEnabled,
+            StrutLoads = true,
             StrutExperiment = VesselSwitches.StrutExperiment,
             Folding = SolverSwitches.UnfusedFolding,
             SerialIslandPairLimit = SolverSwitches.SerialIslandPairLimit,
@@ -75,7 +75,6 @@ namespace Unity.Physics.Configuration
             SolverSwitches.FusedContacts = FusedContacts;
             SolverSwitches.FusedVesselParts = FusedParts;
             VesselSwitches.MinimumParts = MinimumParts;
-            VesselSwitches.StrutLoadsEnabled = StrutLoads;
             VesselSwitches.StrutExperiment = StrutExperiment;
             SolverSwitches.UnfusedFolding = Folding;
             SolverSwitches.SerialIslandPairLimit = SerialIslandPairLimit;

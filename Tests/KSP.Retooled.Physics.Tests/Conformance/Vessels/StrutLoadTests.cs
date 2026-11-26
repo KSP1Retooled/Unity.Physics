@@ -18,7 +18,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
     {
         private bool wasVessels;
         private int wasMinimumParts;
-        private bool wasStrutLoads;
         private bool wasFused;
         private int wasFusedParts;
 
@@ -34,7 +33,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             EnvironmentSwitches.Read();
             wasVessels = VesselSwitches.Enabled;
             wasMinimumParts = VesselSwitches.MinimumParts;
-            wasStrutLoads = VesselSwitches.StrutLoadsEnabled;
             wasFused = SolverSwitches.VesselFused;
             wasFusedParts = SolverSwitches.FusedVesselParts;
             VesselSwitches.MinimumParts = 2;
@@ -45,7 +43,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             VesselSwitches.Enabled = wasVessels;
             VesselSwitches.MinimumParts = wasMinimumParts;
-            VesselSwitches.StrutLoadsEnabled = wasStrutLoads;
             SolverSwitches.VesselFused = wasFused;
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
@@ -225,53 +222,33 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return largest;
         }
 
-        /// <summary>
-        /// The craft settles on the ground. With vessels on, after the edges lock, its largest joint load stays within a
-        /// factor of two of the largest load on Unity's joint rows, and no joint breaks that doesn't break there. The rings'
-        /// break force lies between the share that they carry with the struts and the whole moment of the radial parts,
-        /// which the tree method puts on them.
-        /// </summary>
         [Test]
-        public void AStruttedCraftOnTheGroundCarriesItsLoadsAsOnTheJointRows()
+        public void AStruttedCraftOnTheGroundSharesTheLoadBetweenItsJoints()
         {
             const int settle = 150, measure = 50;
-            // The tree method loads each ring with the whole radial part as a cantilever, about 260 N on a ring's joint. On
-            // the joint rows, the strut takes nearly all of it and leaves about 5 N on the ring.
             const float ringBreak = 150.0f;
-            var largest = new float[3];
-            var broken = new int[3];
-            var which = new string[3];
-            var locked = new long[3];
-            var rings = new float[3];
-            var struts = new float[3];
-            string[] passes = { "joint rows", "vessels", "vessels, tree method" };
-            for (int pass = 0; pass < 3; pass++)
+            Fresh(true);
+            Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
+            Simulate(settle);
+            float largest = 0.0f;
+            float strutForce = 0.0f;
+            for (int i = 0; i < measure; i++)
             {
-                Fresh(pass > 0);
-                VesselSwitches.StrutLoadsEnabled = pass != 2;
-                Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
-                Simulate(settle);
-                largest[pass] = 0.0f;
-                for (int i = 0; i < measure; i++)
-                {
-                    Simulate();
-                    largest[pass] = Mathf.Max(largest[pass], LargestLoad(craft, out broken[pass], out which[pass]));
-                    rings[pass] = Mathf.Max(rings[pass], LargestOf(craft, "ring"));
-                    struts[pass] = Mathf.Max(struts[pass], LargestOf(craft, "strut"));
-                }
-
-                LargestLoad(craft, out broken[pass], out _);
-                ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out locked[pass]);
-                Debug.Log($"[StrutLoadTests] ground, {passes[pass]}: largest joint force {largest[pass]:F1} N on the {which[pass]}, " +
-                    $"rings {rings[pass]:F1} N, struts {struts[pass]:F1} N, {broken[pass]} broken joints, {locked[pass]} locked edges");
+                Simulate();
+                largest = Mathf.Max(largest, LargestLoad(craft, out _, out _));
+                strutForce = Mathf.Max(strutForce, LargestOf(craft, "strut"));
             }
 
-            Assert.That(locked[1], Is.GreaterThan(0), "the craft's edges lock");
-            Assert.That(broken[0], Is.Zero, "nothing breaks on the joint rows");
-            Assert.That(broken[1], Is.LessThanOrEqualTo(broken[0]), "nothing breaks with vessels that doesn't break on the joint rows");
-            Assert.That(largest[1], Is.LessThan(2.0f * largest[0]), "the largest load stays within twice the joint rows' largest");
-            Assert.That(largest[1], Is.GreaterThan(0.5f * largest[0]), "and above half of it");
-            Assert.That(broken[2], Is.GreaterThan(0), "the tree method, which leaves the struts without load, breaks the rings");
+            LargestLoad(craft, out int broken, out _);
+            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out long locked);
+            Assert.That(locked, Is.GreaterThan(0), "the craft's edges lock");
+            Assert.That(broken, Is.Zero, "the rings hold when the struts take their share of the load");
+
+            float radialWeight = RadialMass * -Gravity;
+            Assert.That(strutForce, Is.GreaterThan(0.5f * radialWeight), "a strut carries at least half a radial part's weight");
+            // The original joint-row solve put 75.4 N on the most loaded strut. Keep the same factor-of-two bounds.
+            const float referencePeak = 75.4f;
+            Assert.That(largest, Is.InRange(0.5f * referencePeak, 2.0f * referencePeak), "the peak joint force");
         }
 
         /// <summary>
@@ -347,7 +324,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             SolverSwitches.VesselFused = fused;
             SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
-            VesselSwitches.StrutLoadsEnabled = true;
             Craft craft = BuildCraft(1000.0f, float.PositiveInfinity, ground: false);
             foreach (Rigidbody body in craft.Bodies)
             {

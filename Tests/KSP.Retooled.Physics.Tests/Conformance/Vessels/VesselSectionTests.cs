@@ -385,43 +385,34 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void ALockedStrutCarriesItsShareAsTheYieldingOne()
         {
-            bool wasStrutLoads = VesselSwitches.StrutLoadsEnabled;
-            VesselSwitches.StrutLoadsEnabled = true;
             var strut = new Vector3[2];
             var arm = new Vector3[2];
             var lockedPairs = new long[2];
-            try
+            for (int pass = 0; pass < 2; pass++)
             {
-                for (int pass = 0; pass < 2; pass++)
+                Fresh(pass == 1);
+                var bodies = new List<Rigidbody>();
+                for (int i = 0; i < 3; i++)
                 {
-                    Fresh(pass == 1);
-                    var bodies = new List<Rigidbody>();
-                    for (int i = 0; i < 3; i++)
-                    {
-                        Rigidbody body = Box(new Vector3(0.0f, 10.0f - i, 0.0f), new Vector3(0.6f, 1.0f, 0.6f)).AddComponent<Rigidbody>();
-                        body.mass = PartMass;
-                        bodies.Add(body);
-                        RigidJoint(body, i > 0 ? bodies[i - 1] : null, new Vector3(0.0f, 10.5f - i, 0.0f));
-                    }
-
-                    Rigidbody radial = Box(new Vector3(2.3f, 9.0f, 0.0f), new Vector3(4.0f, 0.6f, 0.6f)).AddComponent<Rigidbody>();
-                    radial.mass = 4.0f * PartMass;
-                    ConfigurableJoint armJoint = RigidJoint(radial, bodies[1], new Vector3(0.3f, 9.0f, 0.0f));
-                    ConfigurableJoint strutJoint = RigidJoint(radial, bodies[2], new Vector3(2.3f, 8.5f, 0.0f));
-                    foreach (Rigidbody body in bodies)
-                    {
-                        UnityEngine.Physics.IgnoreCollision(body.GetComponent<UnityEngine.Collider>(), radial.GetComponent<UnityEngine.Collider>());
-                    }
-
-                    Simulate(60);
-                    strut[pass] = strutJoint.currentForce;
-                    arm[pass] = armJoint.currentForce;
-                    Sections(out _, out lockedPairs[pass]);
+                    Rigidbody body = Box(new Vector3(0.0f, 10.0f - i, 0.0f), new Vector3(0.6f, 1.0f, 0.6f)).AddComponent<Rigidbody>();
+                    body.mass = PartMass;
+                    bodies.Add(body);
+                    RigidJoint(body, i > 0 ? bodies[i - 1] : null, new Vector3(0.0f, 10.5f - i, 0.0f));
                 }
-            }
-            finally
-            {
-                VesselSwitches.StrutLoadsEnabled = wasStrutLoads;
+
+                Rigidbody radial = Box(new Vector3(2.3f, 9.0f, 0.0f), new Vector3(4.0f, 0.6f, 0.6f)).AddComponent<Rigidbody>();
+                radial.mass = 4.0f * PartMass;
+                ConfigurableJoint armJoint = RigidJoint(radial, bodies[1], new Vector3(0.3f, 9.0f, 0.0f));
+                ConfigurableJoint strutJoint = RigidJoint(radial, bodies[2], new Vector3(2.3f, 8.5f, 0.0f));
+                foreach (Rigidbody body in bodies)
+                {
+                    UnityEngine.Physics.IgnoreCollision(body.GetComponent<UnityEngine.Collider>(), radial.GetComponent<UnityEngine.Collider>());
+                }
+
+                Simulate(60);
+                strut[pass] = strutJoint.currentForce;
+                arm[pass] = armJoint.currentForce;
+                Sections(out _, out lockedPairs[pass]);
             }
 
             float weight = 4.0f * PartMass * -Gravity;

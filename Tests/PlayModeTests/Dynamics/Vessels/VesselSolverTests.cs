@@ -405,33 +405,24 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
         public void LockedEdgesMatchVeryStiffYieldingOnes([Values("pegasus", "behemoth", "tu160")] string craft,
             [Values(VesselGraph.LockRule.LiveJointsOnly, VesselGraph.LockRule.StackLocked)] VesselGraph.LockRule rule)
         {
-            bool wasOn = VesselSwitches.StrutLoadsEnabled;
-            VesselSwitches.StrutLoadsEnabled = true;
-            try
+            VesselGraph graph = VesselGraph.Load(craft);
+            var report = new System.Text.StringBuilder($"[VesselSolverTests] {craft} {rule}, locked against stiff, by hard period:");
+            double[] periods = { 1e-3, 1e-4, 1e-5 };
+            var velocityErrors = new double[periods.Length];
+            var loadErrors = new double[periods.Length];
+            for (int level = 0; level < periods.Length; level++)
             {
-                VesselGraph graph = VesselGraph.Load(craft);
-                var report = new System.Text.StringBuilder($"[VesselSolverTests] {craft} {rule}, locked against stiff, by hard period:");
-                double[] periods = { 1e-3, 1e-4, 1e-5 };
-                var velocityErrors = new double[periods.Length];
-                var loadErrors = new double[periods.Length];
-                for (int level = 0; level < periods.Length; level++)
-                {
-                    Compare(graph, rule, periods[level], out velocityErrors[level], out loadErrors[level], report);
-                }
+                Compare(graph, rule, periods[level], out velocityErrors[level], out loadErrors[level], report);
+            }
 
-                Debug.Log(report.ToString());
-                int last = periods.Length - 1;
-                // The live edges' hard rows join parts in one solve and sections in the other, so they converge on each other
-                // only as both stiffen; where few edges are live (Pegasus, servos only) the loads agree to 1e-8 at 1e-5 s.
-                Assert.Less(velocityErrors[last], 5e-3);
-                Assert.Less(loadErrors[last], 5e-2);
-                Assert.Less(velocityErrors[last], 0.1 * velocityErrors[0]);
-                Assert.Less(loadErrors[last], 0.1 * loadErrors[0]);
-            }
-            finally
-            {
-                VesselSwitches.StrutLoadsEnabled = wasOn;
-            }
+            Debug.Log(report.ToString());
+            int last = periods.Length - 1;
+            // The live edges' hard rows join parts in one solve and sections in the other, so they converge on each other
+            // only as both stiffen; where few edges are live (Pegasus, servos only) the loads agree to 1e-8 at 1e-5 s.
+            Assert.Less(velocityErrors[last], 5e-3);
+            Assert.Less(loadErrors[last], 5e-2);
+            Assert.Less(velocityErrors[last], 0.1 * velocityErrors[0]);
+            Assert.Less(loadErrors[last], 0.1 * loadErrors[0]);
         }
 
         static double MeanInverse(double3 inertia) => (1.0 / inertia.x + 1.0 / inertia.y + 1.0 / inertia.z) / 3.0;
@@ -692,8 +683,6 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
         [Test]
         public void AStrutInALockedCantileverTakesItsShare([Values(1e-4, 1e-5)] double period)
         {
-            bool wasOn = VesselSwitches.StrutLoadsEnabled;
-            VesselSwitches.StrutLoadsEnabled = true;
             const int count = 4;
             var mass = new double[] { 2.0, 1.0, 1.5, 0.8 };
             var position = new double3[count];
@@ -860,7 +849,6 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
                 stiffParts.Dispose();
                 stiffEdges.Dispose();
                 stiffClosures.Dispose();
-                VesselSwitches.StrutLoadsEnabled = wasOn;
             }
         }
 

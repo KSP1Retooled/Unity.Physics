@@ -86,14 +86,6 @@ namespace Unity.Physics.Configuration
                 UnityEngine.Debug.Log($"[VesselSwitches] RETOOLED_VESSEL_MIN_PARTS={minimum}: vessels have at least {VesselSwitches.MinimumParts} parts");
             }
 
-            // RETOOLED_STRUT_LOADS=0 brings back the tree method for the loads inside a locked section.
-            string strutLoads = Environment.GetEnvironmentVariable("RETOOLED_STRUT_LOADS");
-            VesselSwitches.StrutLoadsEnabled = !IsOff(strutLoads);
-            if (!VesselSwitches.StrutLoadsEnabled)
-            {
-                UnityEngine.Debug.Log("[VesselSwitches] RETOOLED_STRUT_LOADS=0: each locked edge carries its whole subtree, and closures inside a section carry nothing");
-            }
-
             VesselSwitches.StrutExperiment = int.TryParse(Environment.GetEnvironmentVariable("STRUT_EXPERIMENT"), out int experiment)
                 ? experiment : 0;
 

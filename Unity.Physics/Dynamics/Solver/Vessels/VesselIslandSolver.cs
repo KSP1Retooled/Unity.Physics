@@ -1561,9 +1561,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         static unsafe void PrepareEquilibrium(ref ForestRun run)
         {
             ForestIsland* forest = run.Forest;
-            bool enabled = VesselSwitches.StrutLoadsEnabled;
-            if (forest->Equilibrium.BuiltFor == forest->StructureBuilds && forest->EquilibriumTimeStep == run.Timestep
-                && forest->EquilibriumEnabled == enabled)
+            if (forest->Equilibrium.BuiltFor == forest->StructureBuilds && forest->EquilibriumTimeStep == run.Timestep)
             {
                 return;
             }
@@ -1600,7 +1598,6 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             forest->Equilibrium.BuiltFor = forest->StructureBuilds;
             forest->Equilibrium.PrepareTicks += Unity.Profiling.LowLevel.Unsafe.ProfilerUnsafeUtility.Timestamp - started;
             forest->EquilibriumTimeStep = run.Timestep;
-            forest->EquilibriumEnabled = enabled;
         }
 
         /// <summary>

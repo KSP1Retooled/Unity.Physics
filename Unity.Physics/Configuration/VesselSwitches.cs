@@ -44,8 +44,6 @@ namespace Unity.Physics.Configuration
             set => Shared.Data = value;
         }
 
-        private struct StrutLoadsOffKey { }
-
         private struct StrutExperimentKey { }
 
         private static readonly SharedStatic<int> StrutExperimentShared = SharedStatic<int>.GetOrCreate<StrutExperimentKey>();
@@ -55,18 +53,6 @@ namespace Unity.Physics.Configuration
         {
             get => StrutExperimentShared.Data;
             set => StrutExperimentShared.Data = value;
-        }
-
-        private static readonly SharedStatic<bool> StrutLoadsOff = SharedStatic<bool>.GetOrCreate<StrutLoadsOffKey>();
-
-        /// <summary>
-        /// Solve for static equilibrium to distribute loads among locked edges and closures inside rigid sections.
-        /// With this off, each locked edge carries its child's subtree and closures inside a section carry nothing.
-        /// </summary>
-        internal static bool StrutLoadsEnabled
-        {
-            get => !StrutLoadsOff.Data;
-            set => StrutLoadsOff.Data = !value;
         }
     }
 }
