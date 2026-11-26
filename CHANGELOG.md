@@ -4,6 +4,12 @@ uid: changelog
 
 # Changelog
 
+## 0.1.5
+A part that a fast impact destroys no longer stops its vessel before the game destroys it. The game gives each such
+collider its crash speed with `CrashContacts.SetCrashSpeed`. A contact that begins faster than that speed pushes with a
+limited impulse for its first step, enough to stop the collider's own mass and no more. The collision report is
+unchanged. A contact that the game leaves alone pushes without a limit from its second step.
+
 ## 0.1.4
 Player builds compile the package again. BackendHost imported the namespace of the native world layout only in
 the editor, so every player build failed with five CS0246 errors.

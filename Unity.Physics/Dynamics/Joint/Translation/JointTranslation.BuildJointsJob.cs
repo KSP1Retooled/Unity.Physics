@@ -736,11 +736,22 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             /// <summary>
-            /// Use separate 1D constraints for locked angular axes so that accumulated impulses give usable torques for
-            /// reporting and breaking.
+            /// Lock the angular axes. Each locked axis gets its own 1D constraint so that the accumulated impulses give
+            /// usable torques for reporting and breaking. The exception is two locked axes around one free axis: they
+            /// get a single swing constraint, which still reports a torque on each locked axis.
             /// </summary>
             private void AddLockedAngles(bool3 locked, float frequency, float damping, float3 impulseThreshold)
             {
+                if (math.csum(math.select(new int3(0), new int3(1), locked)) == 2)
+                {
+                    // Two twist constraints would measure each locked angle from a quaternion component over q.w. That
+                    // becomes ill-conditioned when the free axis passes a half turn, so a fast rotor would gain energy
+                    // and swing over. The cone measures swing independently of the twist about the free axis.
+                    int free = !locked.x ? 0 : !locked.y ? 1 : 2;
+                    Add(Constraint.Cone(free, new FloatRange(0.0f, 0.0f), impulseThreshold, frequency, damping));
+                    return;
+                }
+
                 for (int i = 0; i < 3; i++)
                 {
                     if (locked[i])
@@ -818,8 +829,13 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                     return;
                 }
 
+                // When the spring is negligible compared with the damper, treat the drive as a velocity drive. KSP's
+                // rotors set up their drive that way, with a spring of 1e-10 and a damper of 1000. A position motor
+                // would have to move its target by damper / spring * velocity, which is about 1e14 radians. The motor
+                // wraps its error to the nearest turn, so that offset would wrap to nothing, and the rotor would stop
+                // instead of spinning.
                 float mass = JointConstraints.AngularMass(joint, index);
-                if (drive->driveSpring > 0.0f)
+                if (drive->driveSpring > drive->driveDamper * PureDamperSpringRatio)
                 {
                     float3 angles = JointConstraints.AngleAxis(joint->targetRotation);
                     float offset = drive->driveDamper / drive->driveSpring * JointConstraints.TargetAngularVelocity(joint)[index];

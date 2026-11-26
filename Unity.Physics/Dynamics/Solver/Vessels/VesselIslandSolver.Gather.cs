@@ -164,7 +164,8 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             summary.BodyA = Moving(header.BodyPair.BodyIndexA, motionVelocities, motionCount);
             summary.BodyB = Moving(header.BodyPair.BodyIndexB, motionVelocities, motionCount);
-            summary.HoldsPosition = header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D;
+            summary.HoldsPosition = header.Type == JacobianType.LinearLimit || header.Type == JacobianType.AngularLimit1D
+                || (header.Type == JacobianType.AngularLimit2D && header.AccessBaseJacobian<AngularLimit2DJacobian>().IsSwingLock);
             if (header.Type == JacobianType.Contact)
             {
                 ref ContactJacobian contact = ref header.AccessBaseJacobian<ContactJacobian>();

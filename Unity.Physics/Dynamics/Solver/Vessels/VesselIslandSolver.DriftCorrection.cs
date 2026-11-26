@@ -38,6 +38,21 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                     change[0] = math.atan2(math.sin(angleChange), math.cos(angleChange));
                     return true;
                 }
+                case JacobianType.AngularLimit2D:
+                {
+                    ref AngularLimit2DJacobian swing = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
+                    if (!swing.IsSwingLock)
+                    {
+                        return false;
+                    }
+
+                    quaternion predicted = JacobianUtilities.IntegrateOrientationBFromA(swing.BFromA,
+                        MotionAngularVelocity(ixBodyA, motionVelocities), MotionAngularVelocity(ixBodyB, motionVelocities), timestep);
+                    float2 drift = swing.SwingLockError(predicted) - swing.SwingLockError(swing.BFromA);
+                    change[0] = drift.x;
+                    change[1] = drift.y;
+                    return true;
+                }
                 case JacobianType.LinearLimit:
                 {
                     ref LinearLimitJacobian limitJacobian = ref header.AccessBaseJacobian<LinearLimitJacobian>();
