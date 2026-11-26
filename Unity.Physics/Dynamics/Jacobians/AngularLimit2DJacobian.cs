@@ -41,6 +41,16 @@ namespace Unity.Physics
 
         public int FreeIndex;
 
+        public bool IsSwingLock => math.abs(MinAngle) < math.EPSILON && math.abs(MaxAngle) < math.EPSILON;
+
+        internal float2 SwingLockError(quaternion bFromA)
+        {
+            float3 axisInB = math.rotate(bFromA, AxisAinA);
+            float2 sine = new float2(math.dot(axisInB, AnchorFrameInBodyB.Rotation[ConstraintIndexX]),
+                math.dot(axisInB, AnchorFrameInBodyB.Rotation[ConstraintIndexY]));
+            return math.asin(math.clamp(sine, -1.0f, 1.0f));
+        }
+
         // Build the Jacobian
         public void Build(
             MTransform aFromConstraint, MTransform bFromConstraint,

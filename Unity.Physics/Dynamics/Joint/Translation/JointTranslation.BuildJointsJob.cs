@@ -735,12 +735,16 @@ namespace Unity.Physics.Dynamics.Joint.Translation
                 Add(constraint);
             }
 
-            /// <summary>
-            /// Use separate 1D constraints for locked angular axes so that accumulated impulses give usable torques for
-            /// reporting and breaking.
-            /// </summary>
             private void AddLockedAngles(bool3 locked, float frequency, float damping, float3 impulseThreshold)
             {
+                if (math.csum(math.select(new int3(0), new int3(1), locked)) == 2)
+                {
+                    // The cone measures swing independently of the twist about the free axis.
+                    int free = !locked.x ? 0 : !locked.y ? 1 : 2;
+                    Add(Constraint.Cone(free, new FloatRange(0.0f, 0.0f), impulseThreshold, frequency, damping));
+                    return;
+                }
+
                 for (int i = 0; i < 3; i++)
                 {
                     if (locked[i])
