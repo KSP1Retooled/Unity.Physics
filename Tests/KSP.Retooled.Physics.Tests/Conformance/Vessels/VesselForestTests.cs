@@ -139,8 +139,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(solves, Is.GreaterThan(solvesBefore));
             AssertJointSpacing(positions);
             Assert.That(positions[Parts - 1].y, Is.EqualTo(28.0f).Within(1e-3f), "the top stays near its anchor");
-            // The column starts with its bottom part at (0, 6, 0). The 2 mm bound allows 1 mm for the motion
-            // that a58bfe4 reports after 100 steps and 1 mm for the tolerance that b032085 used.
+            // The column starts with its bottom part at (0, 6, 0). Before the forest became the only path, the sparse
+            // solve moved the bottom part by 1 mm in these 100 steps, and the forest had to stay within 1 mm of the
+            // sparse solve. The 2 mm bound adds the two.
             Assert.That(Vector3.Distance(positions[0], new Vector3(0.0f, 6.0f, 0.0f)), Is.LessThan(0.002f));
         }
 
@@ -153,8 +154,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(solves, Is.GreaterThan(solvesBefore));
             AssertJointSpacing(positions);
             Assert.That(positions[0].y, Is.EqualTo(1.0f).Within(1e-2f), "the bottom stays on the ground");
-            // This is the 100-step position that a58bfe4 records for the top part.
-            // The test in b032085 logged the top part's position on the sparse path.
+            // The sparse solve put the top part here after 100 steps, before the forest became the only path. The forest
+            // had to stay within 1 cm of it.
             var expectedTop = new Vector3(-0.095f, 23.001f, -0.021f);
             Assert.That(Vector3.Distance(positions[Parts - 1], expectedTop), Is.LessThan(1e-2f), "the top rocks sideways");
         }
@@ -163,8 +164,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         public void AColumnSunkIntoTheGroundComesOutInOnePiece()
         {
             Vector3[] positions = Run(true, 10, 0.7f);
-            // This is the 10-step position that a58bfe4 records for the bottom part.
-            // The test in b032085 logged the bottom part's position on both paths.
+            // The sparse solve put the bottom part here after 10 steps, before the forest became the only path. The forest
+            // had to stay within 1 cm of it.
             var expectedFoot = new Vector3(0.003f, 0.998f, 0.002f);
             Assert.That(Vector3.Distance(positions[0], expectedFoot), Is.LessThan(1e-2f), "the bottom came out of the ground");
             AssertJointSpacing(positions);
