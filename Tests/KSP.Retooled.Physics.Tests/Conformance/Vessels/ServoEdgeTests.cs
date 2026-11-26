@@ -112,6 +112,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return Mathf.Atan2(Vector3.Cross(a, b).magnitude, Vector3.Dot(a, b)) * Mathf.Rad2Deg;
         }
 
+        private static float RotorSpeed(Rigidbody rotor, Rigidbody mount, Vector3 axis)
+            => Vector3.Dot(rotor.angularVelocity - mount.angularVelocity, mount.rotation * axis);
+
         private static int FreeAxes()
         {
             VesselSet set = State->VesselSet;
@@ -499,34 +502,89 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Limits(joint, -177.0f, 177.0f);
                 joint.angularXLimitSpring = new SoftJointLimitSpring { spring = 1e-8f };
             }
-            for (int i = 0; i < 4; i++)
+            var blades = new ConfigurableJoint[4];
+            for (int i = 0; i < blades.Length; i++)
             {
                 Vector3 offset = (i % 2 == 0 ? Vector3.up : Vector3.forward) * (i < 2 ? 0.35f : -0.35f);
                 Rigidbody blade = Part(bodies[2].position + offset, 0.25f, 0.04f);
-                Link(blade, bodies[2], blade.position, Vector3.right);
+                blades[i] = Link(blade, bodies[2], blade.position, Vector3.right);
             }
-            Drive(joint, 0.0f, 80.0f, 1000.0f);
+            // KSP's rotors give their velocity drive a spring of 1e-10 rather than zero.
+            Drive(joint, 1e-10f, 80.0f, 1000.0f);
             joint.targetAngularVelocity = 40.0f * Vector3.right;
-            float anchor = 0.0f, axis = 0.0f, peakSpeed = 0.0f, speed = 0.0f;
+            float anchor = 0.0f, axis = 0.0f, bladeGap = 0.0f, peakSpeed = 0.0f, speed = 0.0f;
             for (int i = 0; i < 75; i++)
             {
                 Simulate();
                 anchor = Mathf.Max(anchor, AnchorGap(joint));
                 axis = Mathf.Max(axis, AxisGap(joint));
-                speed = Vector3.Dot(bodies[2].angularVelocity - bodies[1].angularVelocity, bodies[1].rotation * Vector3.right);
+                foreach (ConfigurableJoint blade in blades)
+                {
+                    bladeGap = Mathf.Max(bladeGap, AnchorGap(blade));
+                }
+                speed = RotorSpeed(bodies[2], bodies[1], Vector3.right);
                 peakSpeed = Mathf.Max(peakSpeed, speed);
             }
             TestContext.WriteLine($"Servo edges {servoEdges}, rotor limited {limited}, speed {speed:F4} rad/s, "
-                + $"peak speed {peakSpeed:F4} rad/s, peak anchor gap {anchor:E4} m, peak axis deflection {axis:E4} deg.");
-            Assert.That(float.IsFinite(speed + anchor + axis), Is.True);
-            Assert.That(peakSpeed, Is.GreaterThan(39.0f));
-            // The ordinary swing rows can lose alignment during sustained spin.
-            if (servoEdges)
+                + $"peak speed {peakSpeed:F4} rad/s, peak anchor gap {anchor:E4} m, peak axis deflection {axis:E4} deg, "
+                + $"peak blade anchor gap {bladeGap:E4} m.");
+            Assert.That(float.IsFinite(speed + anchor + axis + bladeGap), Is.True);
+            Assert.That(peakSpeed, Is.GreaterThan(39.0f).And.LessThanOrEqualTo(40.5f));
+            Assert.That(speed, Is.EqualTo(40.0f).Within(0.5f));
+            Assert.That(anchor, Is.LessThan(0.002f));
+            Assert.That(axis, Is.LessThan(0.1f));
+            Assert.That(bladeGap, Is.LessThan(0.002f));
+        }
+
+        [Test]
+        public void ABladeRotorSpinsAtFortyEightRadiansPerSecondOnTheGround()
+        {
+            Ground();
+            Rigidbody tank = Body(Box(Vector3.up, new Vector3(2.0f, 2.0f, 2.0f)), Vector3.up, 18.0f, 12.0f, true);
+            Rigidbody probe = Part(2.1f * Vector3.up, 0.15f, 0.015f, true);
+            Rigidbody rotor = Part(2.35f * Vector3.up, 0.1f, 0.016f, true);
+            Link(probe, tank, probe.position, Vector3.right);
+
+            var joint = Link(rotor, probe, rotor.position, Vector3.up, true);
+            joint.secondaryAxis = Vector3.right;
+            Limits(joint, 0.01f, 0.1f);
+            joint.angularXLimitSpring = new SoftJointLimitSpring { spring = 1e-8f, damper = 1e-8f };
+            Drive(joint, 1e-10f, 1000.0f, 70.0f);
+
+            var blades = new ConfigurableJoint[2];
+            for (int i = 0; i < blades.Length; i++)
             {
-                Assert.That(speed, Is.EqualTo(40.0f).Within(0.5f));
-                Assert.That(anchor, Is.LessThan(0.002f));
-                Assert.That(axis, Is.LessThan(0.1f));
+                float offset = i == 0 ? -1.25f : 1.25f;
+                Rigidbody blade = Part(rotor.position + offset * Vector3.right, 0.075f, 0.025f, true);
+                blades[i] = Link(blade, rotor, rotor.position, Vector3.right);
             }
+
+            float anchor = 0.0f, axis = 0.0f, bladeGap = 0.0f, tilt = 0.0f, peakSpeed = 0.0f, speed = 0.0f;
+            for (int i = 0; i < 300; i++)
+            {
+                joint.targetAngularVelocity = Mathf.Min(48.0f, 48.0f * i * Step) * Vector3.right;
+                Simulate();
+                anchor = Mathf.Max(anchor, AnchorGap(joint));
+                axis = Mathf.Max(axis, AxisGap(joint));
+                tilt = Mathf.Max(tilt, Vector3.Angle(Vector3.up, tank.rotation * Vector3.up));
+                foreach (ConfigurableJoint blade in blades)
+                {
+                    bladeGap = Mathf.Max(bladeGap, AnchorGap(blade));
+                }
+                speed = RotorSpeed(rotor, probe, Vector3.up);
+                peakSpeed = Mathf.Max(peakSpeed, speed);
+            }
+
+            TestContext.WriteLine($"Servo edges {servoEdges}, speed {speed:F4} rad/s, peak speed {peakSpeed:F4} rad/s, "
+                + $"peak anchor gap {anchor:E4} m, peak axis deflection {axis:E4} deg, peak blade anchor gap {bladeGap:E4} m, "
+                + $"peak base tilt {tilt:E4} deg.");
+            Assert.That(float.IsFinite(speed + anchor + axis + bladeGap + tilt), Is.True);
+            Assert.That(speed, Is.EqualTo(48.0f).Within(0.5f));
+            Assert.That(peakSpeed, Is.LessThanOrEqualTo(48.5f));
+            Assert.That(anchor, Is.LessThan(0.002f));
+            Assert.That(axis, Is.LessThan(0.1f));
+            Assert.That(bladeGap, Is.LessThan(0.002f));
+            Assert.That(tilt, Is.LessThan(1.0f));
         }
 
         [TestCase(false)]
