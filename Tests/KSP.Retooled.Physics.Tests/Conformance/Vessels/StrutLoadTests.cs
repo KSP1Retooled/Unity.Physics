@@ -9,7 +9,10 @@ using Unity.Physics.Configuration;
 
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
-    /// <summary>Checks how the vessel solver distributes forces and handles breaks inside locked sections.</summary>
+    /// <summary>
+    /// These tests build strutted craft from Unity joints and compare the loads with and without vessels.
+    /// The struts must share the loads with the stack joints inside a locked section, as they do on the ordinary joint rows.
+    /// </summary>
     public class StrutLoadTests : PhysicsScene
     {
         private int wasMinimumParts;
@@ -37,10 +40,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
-        private void Fresh()
+        private void Fresh(bool vessels)
         {
             TearDownScene();
             SetUpScene();
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
             ForestDiagnostics.ForgetIslands();
         }
 
@@ -211,45 +215,62 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             return largest;
         }
 
+        /// <summary>
+        /// The craft settles on the ground. After the vessel edges lock, the largest joint load stays within a
+        /// factor of two of the largest load on Unity's joint rows. The rings hold while the struts carry their share.
+        /// </summary>
         [Test]
-        public void AStruttedCraftOnTheGroundSharesTheLoadBetweenItsJoints()
+        public void AStruttedCraftOnTheGroundCarriesItsLoadsAsOnTheJointRows()
         {
             const int settle = 150, measure = 50;
             const float ringBreak = 150.0f;
             SolverSwitches.FusedVesselParts = 1;
-            Fresh();
-            Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
-            Simulate(settle);
-            float largest = 0.0f;
-            float strutForce = 0.0f;
-            for (int i = 0; i < measure; i++)
+            var largest = new float[2];
+            var broken = new int[2];
+            var which = new string[2];
+            var locked = new long[2];
+            var rings = new float[2];
+            var struts = new float[2];
+            string[] passes = { "joint rows", "vessels" };
+            for (int pass = 0; pass < 2; pass++)
             {
-                Simulate();
-                largest = Mathf.Max(largest, LargestLoad(craft, out _, out _));
-                strutForce = Mathf.Max(strutForce, LargestOf(craft, "strut"));
+                Fresh(pass == 1);
+                Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
+                Simulate(settle);
+                largest[pass] = 0.0f;
+                for (int i = 0; i < measure; i++)
+                {
+                    Simulate();
+                    largest[pass] = Mathf.Max(largest[pass], LargestLoad(craft, out broken[pass], out which[pass]));
+                    rings[pass] = Mathf.Max(rings[pass], LargestOf(craft, "ring"));
+                    struts[pass] = Mathf.Max(struts[pass], LargestOf(craft, "strut"));
+                }
+
+                LargestLoad(craft, out broken[pass], out _);
+                ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out locked[pass]);
+                Debug.Log($"[StrutLoadTests] ground, {passes[pass]}: largest joint force {largest[pass]:F1} N on the {which[pass]}, " +
+                    $"rings {rings[pass]:F1} N, struts {struts[pass]:F1} N, {broken[pass]} broken joints, {locked[pass]} locked edges");
             }
 
-            LargestLoad(craft, out int broken, out _);
-            ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out _, out long locked);
-            Assert.That(locked, Is.GreaterThan(0), "the craft's edges lock");
-            Assert.That(broken, Is.Zero, "the rings hold when the struts take their share of the load");
-
+            Assert.That(locked[1], Is.GreaterThan(0), "the craft's edges lock");
+            Assert.That(broken[0], Is.Zero, "nothing breaks on the joint rows");
+            Assert.That(broken[1], Is.LessThanOrEqualTo(broken[0]), "nothing breaks with vessels that doesn't break on the joint rows");
+            Assert.That(largest[1], Is.LessThan(2.0f * largest[0]), "the largest load stays within twice the joint rows' largest");
+            Assert.That(largest[1], Is.GreaterThan(0.5f * largest[0]), "and above half of it");
             float radialWeight = RadialMass * -Gravity;
-            Assert.That(strutForce, Is.GreaterThan(0.5f * radialWeight), "a strut carries at least half a radial part's weight");
-            // The original joint-row solve put 75.4 N on the most loaded strut. Keep the same factor-of-two bounds.
-            const float referencePeak = 75.4f;
-            Assert.That(largest, Is.InRange(0.5f * referencePeak, 2.0f * referencePeak), "the peak joint force");
+            Assert.That(struts[1], Is.GreaterThan(0.5f * radialWeight), "a strut carries at least half a radial part's weight");
         }
 
         /// <summary>
         /// A floating strutted craft whose edges have locked takes a blow that breaks a ring inside the locked section, and
-        /// one that breaks a strut. In the steps after the break, every body keeps a finite pose and velocity.
+        /// one that breaks a strut. In the steps after, every body keeps a finite pose and velocity, in the fused job and in
+        /// the substeps' jobs.
         /// </summary>
         [Test]
-        public void BreaksInsideALockedSectionLeaveFinitePoses()
+        public void BreaksInsideALockedSectionLeaveFinitePoses([Values] bool fused)
         {
-            SolverSwitches.FusedVesselParts = 1;
-            Fresh();
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
+            Fresh(true);
             Craft craft = BuildCraft(400.0f, 400.0f, false);
             foreach (Rigidbody body in craft.Bodies)
             {
@@ -259,7 +280,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             Simulate(30);
             ForestDiagnostics.GetSectionCounts(out _, out _, out _, out _, out _, out _, out long sections, out long locked);
-            Debug.Log($"[StrutLoadTests] floating: {sections} sections, {locked} locked edges before the blows");
+            Debug.Log($"[StrutLoadTests] floating, fused {fused}: {sections} sections, {locked} locked edges before the blows");
             Assert.That(locked, Is.GreaterThan(0), "the craft's edges lock before the blows");
 
             void CheckFinite(string when)
@@ -286,7 +307,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             int ringsLeft = craft.LeftRing.FindAll(joint => joint != null).Count;
-            Debug.Log($"[StrutLoadTests] floating: {ringsLeft} of the left ring's joints left after its blow");
+            Debug.Log($"[StrutLoadTests] floating, fused {fused}: {ringsLeft} of the left ring's joints left after its blow");
             Assert.That(ringsLeft, Is.Zero, "the left ring breaks");
 
             // The right radial part is pulled away from the bottom part, which stretches its strut.
@@ -298,7 +319,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 CheckFinite($"{i + 1} steps after the blow to the strut");
             }
 
-            Debug.Log($"[StrutLoadTests] floating: the right strut {(craft.RightStrut == null ? "broke" : "held")}");
+            Debug.Log($"[StrutLoadTests] floating, fused {fused}: the right strut {(craft.RightStrut == null ? "broke" : "held")}");
             Assert.That(craft.RightStrut == null, Is.True, "the right strut breaks");
         }
 
@@ -307,10 +328,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         /// The section that forms again must use the factor that it kept before the pull.
         /// </summary>
         [Test]
-        public void ASectionThatLocksAgainKeepsItsFactor()
+        public void ASectionThatLocksAgainKeepsItsFactor([Values] bool fused)
         {
-            SolverSwitches.FusedVesselParts = 1;
-            Fresh();
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
+            Fresh(true);
             Craft craft = BuildCraft(1000.0f, float.PositiveInfinity, ground: false);
             foreach (Rigidbody body in craft.Bodies)
             {
@@ -357,10 +378,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         /// after the edges lock, as in the bursts of breaks that the game showed. Every body keeps a finite pose and velocity.
         /// </summary>
         [Test]
-        public void ABurstOfBreaksLeavesFinitePoses()
+        public void ABurstOfBreaksLeavesFinitePoses([Values] bool fused)
         {
-            SolverSwitches.FusedVesselParts = 1;
-            Fresh();
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
+            Fresh(true);
             Craft craft = BuildCraft(20.0f, 20.0f);
             foreach (ConfigurableJoint joint in craft.Joints)
             {
@@ -391,7 +412,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             LargestLoad(craft, out int brokenJoints, out _);
-            Debug.Log($"[StrutLoadTests] burst: the first joint broke at step {brokenAt + 1}, {brokenJoints} of {craft.Joints.Count} joints broke");
+            Debug.Log($"[StrutLoadTests] burst, fused {fused}: the first joint broke at step {brokenAt + 1}, {brokenJoints} of {craft.Joints.Count} joints broke");
             Assert.That(brokenJoints, Is.GreaterThan(craft.Joints.Count / 2), "most of the joints break");
         }
     }

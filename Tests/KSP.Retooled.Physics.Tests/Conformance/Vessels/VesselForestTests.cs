@@ -139,8 +139,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(solves, Is.GreaterThan(solvesBefore));
             AssertJointSpacing(positions);
             Assert.That(positions[Parts - 1].y, Is.EqualTo(28.0f).Within(1e-3f), "the top stays near its anchor");
-            // After 100 steps, the bottom has swung back to within a millimetre of its starting position on the
-            // original reference run. Allow the original one-millimetre tolerance on top of that displacement.
+            // The column starts with its bottom part at (0, 6, 0). The 2 mm bound allows 1 mm for the motion
+            // that a58bfe4 reports after 100 steps and 1 mm for the tolerance that b032085 used.
             Assert.That(Vector3.Distance(positions[0], new Vector3(0.0f, 6.0f, 0.0f)), Is.LessThan(0.002f));
         }
 
@@ -153,7 +153,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(solves, Is.GreaterThan(solvesBefore));
             AssertJointSpacing(positions);
             Assert.That(positions[0].y, Is.EqualTo(1.0f).Within(1e-2f), "the bottom stays on the ground");
-            // The original reference run puts the top here after 100 steps.
+            // This is the 100-step position that a58bfe4 records for the top part.
+            // The test in b032085 logged the top part's position on the sparse path.
             var expectedTop = new Vector3(-0.095f, 23.001f, -0.021f);
             Assert.That(Vector3.Distance(positions[Parts - 1], expectedTop), Is.LessThan(1e-2f), "the top rocks sideways");
         }
@@ -162,7 +163,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         public void AColumnSunkIntoTheGroundComesOutInOnePiece()
         {
             Vector3[] positions = Run(true, 10, 0.7f);
-            // The original reference run puts the foot here after 10 steps.
+            // This is the 10-step position that a58bfe4 records for the bottom part.
+            // The test in b032085 logged the bottom part's position on both paths.
             var expectedFoot = new Vector3(0.003f, 0.998f, 0.002f);
             Assert.That(Vector3.Distance(positions[0], expectedFoot), Is.LessThan(1e-2f), "the bottom came out of the ground");
             AssertJointSpacing(positions);

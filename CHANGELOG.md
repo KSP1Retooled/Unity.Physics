@@ -8,13 +8,11 @@ uid: changelog
 The vessel solver uses a free-axis edge for each DLC hinge, rotation servo, rotor, or piston that joins two vessel
 trees. A servo that cannot become an edge still uses boundary rows.
 
-The backend always compiles eligible vessels and uses the forest for eligible joint rows. Craft that fall below the
-minimum vessel size still use ordinary Unity Physics joints. The solver fuses eligible vessel islands across
-substeps, including islands that have boundary rows. It still uses the separate substeps for islands that do not
-qualify, including those below the configured minimum size for the fused solve.
-
-The solver uses static equilibrium to share loads inside locked sections that have struts. It leaves dormant
-joint rows out of the vessel boundary until they are needed.
+The backend no longer reads `RETOOLED_VESSEL`, `RETOOLED_FOREST`, `RETOOLED_VESSEL_FUSED`,
+`RETOOLED_STRUT_LOADS`, or `RETOOLED_DORMANT_ROWS`. It drops the code that let those variables bypass vessel
+compilation or forest solving, disable fused solving for all islands, use the tree method for strut loads, or
+keep dormant rows in the vessel boundary. With the default settings, the backend already behaved as it does now.
+Craft with fewer parts than the configured minimum still use ordinary Unity Physics joints.
 
 The flight recorder writes version 14. The replay tool requires that version.
 
