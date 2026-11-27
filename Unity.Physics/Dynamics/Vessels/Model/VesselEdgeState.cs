@@ -15,8 +15,7 @@ namespace Unity.Physics.Dynamics.Vessels.Model
         Yielding,
 
         /// <summary>
-        /// A servo or hinge with five hard rows. The twist row uses a spring and damper with
-        /// <see cref="VesselEdge.DriveTarget"/> as the target angle.
+        /// A servo with five hard rows and one free axis.
         /// </summary>
         FreeAxis,
 

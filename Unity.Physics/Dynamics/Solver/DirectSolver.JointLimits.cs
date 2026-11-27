@@ -15,7 +15,7 @@ namespace Unity.Physics
             bool bodyAIsStatic, bool bodyBIsStatic, in float3 hingeAxis, float currentAngle, float minAngle, float maxAngle,
             int startRow, in Vector l, in Vector u, ref Vector eps, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
             in Vector rhs, in StepInput stepInput, in JacobianHeader.DirectSolverRegularizationData jointRegularizationData,
-            in LimitMotion motion)
+            in LimitMotion motion, bool servoStop = false)
         {
             const int startColumnA = 0;
             const int startColumnB = 6;
@@ -49,7 +49,7 @@ namespace Unity.Physics
                     : 0.0f;
 
                 gamma_phi_0 = SetLimitRow(currentAngle, minAngle, maxAngle, rate, jointRegularizationData,
-                    stepInput.Timestep, startRow, in l, in u, ref indexSetArray, ref isLCP, motion.ConfigurableAngularStop);
+                    stepInput.Timestep, startRow, in l, in u, ref indexSetArray, ref isLCP, motion.ConfigurableAngularStop, servoStop);
             }
 
             // Assemble right hand side (rhs):
@@ -114,18 +114,20 @@ namespace Unity.Physics
         /// </summary>
         static float SetLimitRow(float distance, float minimum, float maximum, float rate,
             in JacobianHeader.DirectSolverRegularizationData regularization, float timestep, int row,
-            in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP, bool configurableAngularStop = false)
+            in Vector l, in Vector u, ref NativeArray<LCP.MLCPIndexFlag> indexSetArray, ref bool isLCP,
+            bool configurableAngularStop = false, bool servoStop = false)
         {
             float reach = regularization.Hard ? distance + rate * timestep : distance;
             float margin = regularization.Hard ? LimitArmingMargin : 0.0f;
 
             isLCP = true;
             float error;
-            // Keep the nearer side of a narrow hard angular stop available to the coupled solve.
+            // Keep the nearer side of a hard stop available to the coupled solve if the builder already
+            // checked its reach or if the ordinary narrow stop is close.
             // Its impulse remains zero until the other rows would take the joint past the stop.
             bool upper = reach >= 0.5f * (minimum + maximum);
             bool close = upper ? distance >= 0.5f * maximum : distance <= 0.5f * minimum;
-            bool arm = regularization.Hard && configurableAngularStop && close;
+            bool arm = regularization.Hard && (servoStop || (configurableAngularStop && close));
             if (reach > maximum - margin || (arm && upper))
             {
                 error = distance - maximum;

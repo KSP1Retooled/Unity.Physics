@@ -148,6 +148,15 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             return math.rotate(math.conjugate(WorldRotation0(joint)), difference);
         }
 
+        internal static float RelativeLinearSpeedX(JointData* joint)
+        {
+            // The speed uses both velocities at the connected anchor because the axis rotates with body0.
+            float3 point = WorldAnchor(joint->body1, joint->position1);
+            float3 first = BodyKinematics.VelocityAt(StoreMemory.Row(joint->body0), point);
+            float3 second = BodyKinematics.VelocityAt(StoreMemory.Row(joint->body1), point);
+            return math.dot(second - first, math.rotate(WorldRotation0(joint), new float3(1.0f, 0.0f, 0.0f)));
+        }
+
         /// <summary>Body 1's angular velocity relative to body 0, in world space.</summary>
         internal static float3 RelativeAngularVelocity(JointData* joint)
         {

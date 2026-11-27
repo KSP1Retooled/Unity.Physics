@@ -7,6 +7,7 @@ using AOT;
 using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Physics;
 using UnityEngine;
 using Unity.Physics.Store.Bodies;
 using Unity.Physics.Store.Joints;
@@ -112,17 +113,29 @@ namespace KSP.Retooled.Physics.Commands
             }
 
             // Reuse groups and forest roles when the joints still have compatible settings.
-            bool wasMergeable = JointTranslation.BuildJointsJob.Mergeable(joint);
+            ServoAxis oldServo = JointTranslation.BuildJointsJob.ServoJoint(joint);
+            if (setsTarget && oldServo != ServoAxis.None)
+            {
+                Run(command, joint, a, axis);
+                return;
+            }
+
+            bool wasMergeable = oldServo == ServoAxis.None && JointTranslation.BuildJointsJob.Mergeable(joint);
             Body* body0 = joint->body0, body1 = joint->body1;
             quaternion rotation0 = joint->rotation0, rotation1 = joint->rotation1;
             var flags = joint->flags;
             Run(command, joint, a, axis);
-            bool mergeable = JointTranslation.BuildJointsJob.Mergeable(joint);
+            ServoAxis newServo = JointTranslation.BuildJointsJob.ServoJoint(joint);
+            bool servo = newServo != ServoAxis.None;
+            bool mergeable = !servo && JointTranslation.BuildJointsJob.Mergeable(joint);
             bool moved = joint->body0 != body0 || joint->body1 != body1 || joint->flags != flags
                 || !math.all(joint->rotation0.value == rotation0.value) || !math.all(joint->rotation1.value == rotation1.value);
             bool canChangeLimit = command == JointCommand.Set6DofAxisLock || command == JointCommand.Set6DofLimit || command == JointCommand.Set6DofSpringLimit;
             bool limitsChanged = mergeable && wasMergeable && canChangeLimit && !JointTranslation.BuildJointsJob.SameAngularLimits(&before, joint);
-            if (mergeable != wasMergeable || (mergeable && (moved || limitsChanged)))
+            bool servoAnchorMoved = servo && !setsTarget
+                && (!math.all(joint->position0 == before.position0) || !math.all(joint->position1 == before.position1));
+            if (newServo != oldServo || (servo && (moved || servoAnchorMoved))
+                || mergeable != wasMergeable || (mergeable && (moved || limitsChanged)))
             {
                 JointTopology.Changed();
             }

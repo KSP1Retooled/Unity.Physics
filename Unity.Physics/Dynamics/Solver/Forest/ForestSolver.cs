@@ -162,7 +162,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             /// <summary>How long the factor, the boundary block and any structure rebuild took, in profiler timestamp units.</summary>
             public long FactorTicks;
             public long BoundaryTicks;
-            public int DormantAngularStops;
+            public int DormantStops;
             public long StructureTicks;
 
             /// <summary>Whether the structure was rebuilt for this solve, and how many pairs changed lock state.</summary>
@@ -1073,8 +1073,8 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                     double slack = speed - problem.RightHandSide[row];
                     if ((pushes && slack > margin) || (pulls && -slack > margin))
                     {
-                        bool narrowStop = IsNarrowAngularStop(ref *header);
-                        if (narrowStop && havePrevious)
+                        bool retryStop = CanReopenStop(ref *header);
+                        if (retryStop && havePrevious)
                         {
                             // In a pile of resting contacts, the same stops often close on each substep.
                             // Keep stops that previously carried an impulse in the first solve.
@@ -1087,7 +1087,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
                         run.RowClass[row] = DormantRowClass;
                         dormant++;
-                        run.DormantAngularStops += narrowStop ? 1 : 0;
+                        run.DormantStops += retryStop ? 1 : 0;
                     }
                 }
             }
@@ -1102,12 +1102,12 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 && header->AccessImpulseEventSolverData().IsConfigurableLimit;
         }
 
-        private static bool IsNarrowAngularStop(ref JacobianHeader header)
+        private static bool CanReopenStop(ref JacobianHeader header)
         {
             if (header.Type == JacobianType.AngularLimit1D)
             {
                 ref var twist = ref header.AccessBaseJacobian<AngularLimit1DJacobian>();
-                return IsNarrowConfigurableStop(ref header, twist.MinAngle, twist.MaxAngle);
+                return twist.IsServoLimit || IsNarrowConfigurableStop(ref header, twist.MinAngle, twist.MaxAngle);
             }
 
             if (header.Type == JacobianType.AngularLimit2D)
@@ -1116,16 +1116,16 @@ namespace Unity.Physics.Dynamics.Solver.Forest
                 return IsNarrowConfigurableStop(ref header, swing.MinAngle > 0.0f ? swing.MinAngle : -float.MaxValue, swing.MaxAngle);
             }
 
-            return false;
+            return header.Type == JacobianType.LinearLimit && header.AccessBaseJacobian<LinearLimitJacobian>().IsServoLimit;
         }
 
         /// <summary>
-        /// A contact impulse can close a stop that was slack in the solution before contacts. Restore those stops
+        /// A boundary impulse can close a stop that was slack before the boundary solve. Restore those stops
         /// together if any of them would pass its bound after the boundary solve.
         /// </summary>
-        internal static unsafe bool ReopenAngularStops(ref ForestRun run, float* rhs)
+        internal static unsafe bool ReopenStops(ref ForestRun run, float* rhs)
         {
-            if (run.DormantAngularStops == 0)
+            if (run.DormantStops == 0)
             {
                 return false;
             }
@@ -1135,7 +1135,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             bool violated = false;
             for (int row = 0; row < problem.RowCount && !violated; row++)
             {
-                if (run.RowClass[row] != DormantRowClass || !IsNarrowAngularStop(ref *run.Headers[run.RowBlock[row]]))
+                if (run.RowClass[row] != DormantRowClass || !CanReopenStop(ref *run.Headers[run.RowBlock[row]]))
                 {
                     continue;
                 }
@@ -1153,13 +1153,13 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
             for (int row = 0; row < problem.RowCount; row++)
             {
-                if (run.RowClass[row] == DormantRowClass && IsNarrowAngularStop(ref *run.Headers[run.RowBlock[row]]))
+                if (run.RowClass[row] == DormantRowClass && CanReopenStop(ref *run.Headers[run.RowBlock[row]]))
                 {
                     run.RowClass[row] = BoundaryRowClass;
                 }
             }
 
-            run.DormantAngularStops = 0;
+            run.DormantStops = 0;
             run.DisposeBoundary();
             BuildBoundary(ref run, problem.RowCount, false);
             BoundaryCounters.AddStopRetry();

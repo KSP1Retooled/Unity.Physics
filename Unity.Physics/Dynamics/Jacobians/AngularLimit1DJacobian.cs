@@ -20,6 +20,8 @@ namespace Unity.Physics
         public float MinAngle;
         public float MaxAngle;
 
+        public bool IsServoLimit;
+
         // Motion A orientation in world space
         public quaternion WorldFromMotionA;
 
@@ -51,6 +53,7 @@ namespace Unity.Physics
             AxisInMotionA = aFromConstraint.Rotation[AxisIndex];
             MinAngle = constraint.Min;
             MaxAngle = constraint.Max;
+            IsServoLimit = constraint.IsServoLimit;
             Tau = tau;
             Damping = damping;
 
@@ -118,11 +121,15 @@ namespace Unity.Physics
             // hinge. It works fairly well when the limited axis can only rotate a small amount, preferably less than 90
             // degrees. It works poorly at higher angles, especially near 180 degrees where it is not continuous. For systems
             // that require that kind of flexibility, the gimbals should be modeled as separate bodies.
-            float angle = CalculateTwistAngle(jointBFromA, AxisIndex);
+            return WrapAngle(CalculateTwistAngle(jointBFromA, AxisIndex), MinAngle, MaxAngle);
+        }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static float WrapAngle(float angle, float minAngle, float maxAngle)
+        {
             // Angle is in [-2pi, 2pi].
             // For comparison against the limits, find k so that angle + 2k * pi is as close to [min, max] as possible.
-            float centerAngle = (MinAngle + MaxAngle) / 2.0f;
+            float centerAngle = (minAngle + maxAngle) / 2.0f;
             bool above = angle > (centerAngle + (float)math.PI);
             bool below = angle < (centerAngle - (float)math.PI);
             angle = math.select(angle, angle - 2.0f * (float)math.PI, above);
