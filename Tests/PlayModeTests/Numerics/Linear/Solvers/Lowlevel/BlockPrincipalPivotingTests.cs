@@ -346,6 +346,30 @@ namespace Unity.Numerics.Linear.Solvers.Lowlevel.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public void ARowCanLoseTheBoundThatItWasAt(bool removeUpperBound)
+        {
+            double sign = removeUpperBound ? 1.0 : -1.0;
+            double* w = stackalloc double[] { 1.0, 0.3, 0.3, 1.0 };
+            double* q = stackalloc double[] { sign, sign };
+            double* lower = stackalloc double[] { float.MinValue, removeUpperBound ? 0.0 : -0.25 };
+            double* upper = stackalloc double[] { float.MaxValue, removeUpperBound ? 0.25 : 0.0 };
+            byte* states = stackalloc byte[] { 0, 0 };
+            double* impulses = stackalloc double[2];
+
+            Assert.That(BlockPrincipalPivoting.Solve(2, w, q, lower, upper, states, null, 0, true, impulses), Is.True);
+            Assert.That(states[1], Is.EqualTo(removeUpperBound ? UpperTight : LowerTight));
+
+            lower[1] = removeUpperBound ? 0.0 : float.MinValue;
+            upper[1] = removeUpperBound ? float.MaxValue : 0.0;
+            Assert.That(BlockPrincipalPivoting.Solve(2, w, q, lower, upper, states, null, 0, true, impulses,
+                8, true, out _), Is.True);
+
+            Assert.That(impulses[0], Is.EqualTo(sign / 1.3).Within(1e-12));
+            Assert.That(impulses[1], Is.EqualTo(sign / 1.3).Within(1e-12));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void AJointRespondsToTheFinalBoundedImpulses(bool finishBySweeps)
         {
             // The warm start allows two units of friction. The first solve gives back 1.5 units of normal impulse,
