@@ -266,8 +266,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 + $"side {measured.side:E4} m, tilt {measured.tilt:E4} deg, hold drift {measured.drift:E4} m. Absolute errors against 2 ms: "
                 + $"extension {extensionError:E4} m, side {sideError:E4} m, tilt {tiltError:E4} deg, tip {tipError:E4} m.");
             Assert.That(measured.extension, Is.EqualTo(vertical ? 1.75f : 2.1f).Within(0.03f));
-            Assert.That(measured.side, Is.LessThan(0.003f));
-            Assert.That(measured.tilt, Is.LessThan(0.25f));
+            // The piston's edge has no row stiffness cap. With the cap, the sideways load tilted it about 0.04 degrees.
+            Assert.That(measured.side, Is.LessThan(5e-5f));
+            Assert.That(measured.tilt, Is.LessThan(0.005f));
             Assert.That(measured.drift, Is.LessThan(0.003f));
             Assert.That(extensionError, Is.LessThan(0.03f));
             Assert.That(tipError, Is.LessThan(0.04f));
