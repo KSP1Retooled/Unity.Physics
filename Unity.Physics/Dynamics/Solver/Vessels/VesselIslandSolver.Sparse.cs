@@ -142,7 +142,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
                 return;
             }
 
-            if (forestSettings.Enabled && headers.Length == blocks.Length && blocks.Length > 0)
+            if (headers.Length == blocks.Length && blocks.Length > 0)
             {
                 ForestIsland* forest = stepInput.IslandSolverCache.ForestOf(islandIndex);
                 int builds = forest != null ? forest->Builds : 0;

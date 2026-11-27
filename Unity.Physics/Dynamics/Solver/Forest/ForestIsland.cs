@@ -154,10 +154,8 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
         public int ForestEquilibriumBuiltFor;
 
-        /// <summary>The time step and the switch that <see cref="Equilibrium"/> were last prepared with.</summary>
+        /// <summary>The time step that the solver used to prepare <see cref="Equilibrium"/>.</summary>
         public double EquilibriumTimeStep;
-
-        public bool EquilibriumEnabled;
 
         // Imported vessel IDs, structure versions and lock states. On the next layout, prefer imported states
         // over this forest's older copies when TakesStates is set.

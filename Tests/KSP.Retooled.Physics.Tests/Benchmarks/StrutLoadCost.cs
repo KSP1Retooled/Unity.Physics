@@ -112,7 +112,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(30, 30);
             UnityEngine.Physics.IgnoreLayerCollision(30, 30, true);
             MethodInfo build = typeof(VesselForestBench).GetMethod("Build", BindingFlags.NonPublic | BindingFlags.Instance);
-            bool wasForest = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking;
+            bool wasLocking = ForestSwitches.Locking;
             int wasHold = ForestSwitches.MinimumHoldSteps;
             try
             {
@@ -120,7 +120,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 {
                     foreach (string scene in new[] { "ground", "floating", "dropped, 20 kN" })
                     {
-                        ForestSwitches.Enabled = true;
                         ForestSwitches.Locking = false;
                         ForestSwitches.MinimumHoldSteps = -1;
                         ForestDiagnostics.ForgetIslands();
@@ -174,7 +173,6 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             }
             finally
             {
-                ForestSwitches.Enabled = wasForest;
                 ForestSwitches.Locking = wasLocking;
                 ForestSwitches.MinimumHoldSteps = wasHold;
                 UnityEngine.Physics.IgnoreLayerCollision(30, 30, !collided);
@@ -185,10 +183,9 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
         }
 
         /// <summary>
-        /// The whole step with the strut loads off and on, in turn, on the same craft and scene, with the job workers that
-        /// STRUT_COST_THREADS gives (8 by default). For each run: the median step over the last 300 of 400 steps, the strut
-        /// solves' own time per step, the step less that time, every step at which a system was factored, and the sections,
-        /// locked edges and structure builds at the end. Output in Logs/StrutLoadSteps.txt.
+        /// Measures the strut solve and the whole step on each craft. The report uses the last 300 of 400 steps and
+        /// lists the steps where the solver factored a system. STRUT_COST_THREADS sets the number of threads.
+        /// The test writes the report to Logs/StrutLoadSteps.txt.
         /// </summary>
         [Test]
         public void StepTimes()
@@ -208,13 +205,13 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             int threads = int.TryParse(System.Environment.GetEnvironmentVariable("STRUT_COST_THREADS"), out int t) ? t : 8;
             int rounds = int.TryParse(System.Environment.GetEnvironmentVariable("STRUT_COST_ROUNDS"), out int r) ? r : 2;
             var text = new System.Text.StringBuilder($"[StrutLoadSteps] {threads} threads, {rounds} rounds\n" +
-                "craft | scene | strut loads | median step ms | strut ms per step | median step less strut ms | factors at steps | " +
+                "craft | scene | median step ms | strut ms per step | median step less strut ms | factors at steps | " +
                 "sections, locked edges, structure builds\n");
             bool collided = !UnityEngine.Physics.GetIgnoreLayerCollision(30, 30);
             UnityEngine.Physics.IgnoreLayerCollision(30, 30, true);
             MethodInfo build = typeof(VesselForestBench).GetMethod("Build", BindingFlags.NonPublic | BindingFlags.Instance);
             int workers = Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount;
-            bool wasForest = ForestSwitches.Enabled, wasLocking = ForestSwitches.Locking, wasStrut = VesselSwitches.StrutLoadsEnabled;
+            bool wasLocking = ForestSwitches.Locking;
             int wasHold = ForestSwitches.MinimumHoldSteps;
             try
             {
@@ -223,11 +220,8 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                 {
                     foreach (string scene in scenes.Split(','))
                     {
-                        for (int run = 0; run < 2 * rounds; run++)
+                        for (int run = 0; run < rounds; run++)
                         {
-                            bool on = run % 2 == 1;
-                            VesselSwitches.StrutLoadsEnabled = on;
-                            ForestSwitches.Enabled = true;
                             ForestSwitches.Locking = false;
                             ForestSwitches.MinimumHoldSteps = -1;
                             ForestDiagnostics.ForgetIslands();
@@ -269,7 +263,7 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
                                 times.Sort();
                                 double median = times[times.Count / 2];
                                 double strut = strutMs / times.Count;
-                                text.Append($"{craft} | {scene} | {(on ? "on" : "off")} | {median:F3} | {strut:F3} | {median - strut:F3} | " +
+                                text.Append($"{craft} | {scene} | {median:F3} | {strut:F3} | {median - strut:F3} | " +
                                     $"{(factors.Count == 0 ? "none" : string.Join(" ", factors))} | {sections}, {locked}, {builds - builds0} in the last {steps - skip}\n");
                             }
                             finally
@@ -283,10 +277,8 @@ namespace KSP.Retooled.Physics.Tests.Benchmarks
             finally
             {
                 Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = workers;
-                ForestSwitches.Enabled = wasForest;
                 ForestSwitches.Locking = wasLocking;
                 ForestSwitches.MinimumHoldSteps = wasHold;
-                VesselSwitches.StrutLoadsEnabled = wasStrut;
                 UnityEngine.Physics.IgnoreLayerCollision(30, 30, !collided);
             }
 

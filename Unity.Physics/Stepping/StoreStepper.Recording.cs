@@ -103,7 +103,6 @@ namespace Unity.Physics.Stepping
             writer.Write(canReuse);
             if (canReuse)
             {
-                writer.Write(Joints.groupedForest);
                 writer.WriteList(Joints.jointGroups);
                 writer.WriteList(Joints.jointGroupMembers);
                 writer.WriteList(Joints.jointUnits);
@@ -120,7 +119,6 @@ namespace Unity.Physics.Stepping
             if (Joints.grouped)
             {
                 Joints.groupedTopology = JointTopology.Version;
-                Joints.groupedForest = reader.ReadBoolean();
                 reader.ReadList(Joints.jointGroups);
                 reader.ReadList(Joints.jointGroupMembers);
                 reader.ReadList(Joints.jointUnits);

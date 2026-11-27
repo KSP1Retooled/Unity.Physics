@@ -4,17 +4,17 @@ using Unity.Physics.Dynamics.Solver.Forest;
 namespace Unity.Physics.Configuration
 {
     /// <summary>
-    /// Control forest solving and optional load-based locking of vessel joints.
-    /// Set RETOOLED_FOREST=1 to enable the forest at the first world build. Set RETOOLED_LOCK=1 to enable locking.
+    /// Settings for the forest solver, including optional locking based on joint loads.
+    /// Set RETOOLED_LOCK=1 to enable locking at the first world build.
     /// Locked bodies form a rigid section until deflection or load exceeds the configured yield limits.
     /// </summary>
     internal static class ForestSwitches
     {
-        private readonly struct Key { }
+        private readonly struct ForestSettingsKey { }
 
         private readonly struct LockKey { }
 
-        private static readonly SharedStatic<ForestSettings> Shared = SharedStatic<ForestSettings>.GetOrCreate<Key>();
+        private static readonly SharedStatic<ForestSettings> Shared = SharedStatic<ForestSettings>.GetOrCreate<ForestSettingsKey>();
 
         private static readonly SharedStatic<LockFractions> Fractions = SharedStatic<LockFractions>.GetOrCreate<LockKey>();
 
@@ -50,12 +50,6 @@ namespace Unity.Physics.Configuration
         /// The fraction of joint break limits above which a smoothed load causes a locked pair to yield.
         /// </summary>
         internal const float DefaultYieldFraction = 0.5f;
-
-        internal static bool Enabled
-        {
-            get => Shared.Data.Enabled;
-            set => Shared.Data.Enabled = value;
-        }
 
         internal static int BoundaryRowCap
         {

@@ -28,7 +28,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             EnvironmentSwitches.Read();
             settings = RecordedPhysicsSettings.Read();
-            VesselSwitches.Enabled = true;
             VesselSwitches.MinimumParts = 2;
         }
 

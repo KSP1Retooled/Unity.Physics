@@ -5,33 +5,6 @@ namespace Unity.Physics.Configuration
     internal static class SolverSwitches
     {
         /// <summary>
-        /// Solve vessel-only islands in one fused job across all substeps, including their contact/joint boundary.
-        /// Set RETOOLED_VESSEL_FUSED=0 to disable it at the first world build.
-        /// </summary>
-        internal static bool VesselFused
-        {
-            get => !VesselFusedOff.Data;
-            set => VesselFusedOff.Data = !value;
-        }
-
-        private struct VesselFusedKey { }
-
-        /// <summary>
-        /// Allow fused vessel islands with contact or joint boundary rows. Benchmarks may disable this.
-        /// </summary>
-        internal static bool FusedContacts
-        {
-            get => !FusedContactsOff.Data;
-            set => FusedContactsOff.Data = !value;
-        }
-
-        private struct FusedContactsKey { }
-
-        private static readonly SharedStatic<bool> FusedContactsOff = SharedStatic<bool>.GetOrCreate<FusedContactsKey>();
-
-        private static readonly SharedStatic<bool> VesselFusedOff = SharedStatic<bool>.GetOrCreate<VesselFusedKey>();
-
-        /// <summary>
         /// Minimum vessel part count for fused solving. By default every eligible island is fused.
         /// RETOOLED_VESSEL_FUSED_PARTS sets the starting value.
         /// </summary>

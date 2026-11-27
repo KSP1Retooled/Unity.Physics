@@ -32,14 +32,12 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             public NativeList<JointUnit> Units;
 
             /// <summary>
-            /// The role of each unit in the vessel forest, or None for all units when the forest is disabled.
+            /// The role of each unit in the forest.
             /// </summary>
             public NativeList<JointForestRole> Roles;
 
             /// <summary>Resized here for <see cref="JointTranslation.BuildJointsJob.Written"/> ; values are written by that job.</summary>
             public NativeList<int> Written;
-
-            public bool Forest;
 
             public void Execute()
             {
@@ -65,16 +63,6 @@ namespace Unity.Physics.Dynamics.Joint.Grouping
             private void FindForest()
             {
                 Roles.ResizeUninitialized(Units.Length);
-                if (!Forest)
-                {
-                    for (int u = 0; u < Units.Length; u++)
-                    {
-                        Roles[u] = JointForestRole.None;
-                    }
-
-                    return;
-                }
-
                 int bodyCount = (int)World->bodyCount;
                 var root = new NativeArray<int>(bodyCount, Allocator.Temp);
                 // A servo can join two vessel trees. The row forest tracks connections through mergeable joints.

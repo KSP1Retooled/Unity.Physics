@@ -628,10 +628,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
             if (chooseRows && run.VesselMode && run.Bounded)
             {
                 CapBoundary(ref run);
-                if (!run.Caps.KeepDormantRows)
-                {
-                    MarkDormantRows(ref run);
-                }
+                MarkDormantRows(ref run);
             }
 
             var boundary = new NativeArray<int>(math.max(1, boundaryRows), Allocator.Temp, NativeArrayOptions.UninitializedMemory);

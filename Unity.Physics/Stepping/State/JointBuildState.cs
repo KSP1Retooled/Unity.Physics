@@ -12,7 +12,7 @@ namespace Unity.Physics.Stepping.State
 {
     /// <summary>
     /// Owns the joint units, groups, and loads.
-    /// Reuses groups while the topology version and forest setting match.
+    /// The build reuses groups while the topology version stays the same.
     /// </summary>
     internal unsafe struct JointBuildState
     {
@@ -22,10 +22,8 @@ namespace Unity.Physics.Stepping.State
         internal NativeList<JointForestRole> jointRoles;
         internal NativeList<int> jointsWritten;
 
-        // The topology version and forest setting used to find the groups. The groups can be reused while these values
-        // are unchanged. See JointTopology.
+        // The topology version that the build used to find the groups. See JointTopology.
         internal uint groupedTopology;
-        internal bool groupedForest;
         internal bool grouped;
         internal NativeList<JointLoad> jointLoads;
         internal NativeList<JointLoad> groupLoads;
@@ -75,11 +73,11 @@ namespace Unity.Physics.Stepping.State
             otherGroups.Dispose();
         }
 
-        internal bool FindGroups(WorldData* store, bool forest, JobHandle dependency, out JobHandle groupsFound)
+        internal bool FindGroups(WorldData* store, JobHandle dependency, out JobHandle groupsFound)
         {
             uint topology = JointTopology.Version;
             groupsFound = dependency;
-            bool regrouped = !grouped || topology != groupedTopology || forest != groupedForest;
+            bool regrouped = !grouped || topology != groupedTopology;
             if (regrouped)
             {
                 groupsFound = new JointGrouping.GroupJointsJob
@@ -90,21 +88,19 @@ namespace Unity.Physics.Stepping.State
                     Units = jointUnits,
                     Roles = jointRoles,
                     Written = jointsWritten,
-                    Forest = forest,
                 }.Schedule(dependency);
                 grouped = true;
                 groupedTopology = topology;
-                groupedForest = forest;
             }
             else if (StepCacheSwitches.MemoryChecks)
             {
                 dependency.Complete();
-                ValidateGroups(store, forest);
+                ValidateGroups(store);
             }
             return regrouped;
         }
 
-        private void ValidateGroups(WorldData* store, bool forest)
+        private void ValidateGroups(WorldData* store)
         {
             using var groups = new NativeList<JointGroup>(Allocator.TempJob);
             using var members = new NativeList<JointGroupMember>(Allocator.TempJob);
@@ -119,7 +115,6 @@ namespace Unity.Physics.Stepping.State
                 Units = units,
                 Roles = roles,
                 Written = written,
-                Forest = forest,
             }.Run();
 
             if (groups.Length != jointGroups.Length || members.Length != jointGroupMembers.Length

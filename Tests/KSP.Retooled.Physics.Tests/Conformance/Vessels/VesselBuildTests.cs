@@ -25,7 +25,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         private const float PartHeight = 1.0f;
         private const float PartMass = 2.0f;
 
-        private bool wasEnabled;
+
+        private int wasMinimumParts;
 
         [SetUp]
         public void TurnVesselsOn()
@@ -36,18 +37,16 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            wasEnabled = VesselSwitches.Enabled;
-            VesselSwitches.Enabled = true;
 
             // These crafts are small, so let them compile into vessels.
+            wasMinimumParts = VesselSwitches.MinimumParts;
             VesselSwitches.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselSwitches.Enabled = wasEnabled;
-            VesselSwitches.MinimumParts = 0;
+            VesselSwitches.MinimumParts = wasMinimumParts;
         }
 
         private static StoreStepper* State => StepEntryPoints.Current;
@@ -999,22 +998,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             // The strut's owner is the lowest part. The load acts on part B, so the owner feels it if it is part B.
             Vector3 expected = parts[closure.PartB] == bodies[2] ? (Vector3)(float3)force : -(Vector3)(float3)force;
             AssertVector(expected, strut.currentForce, 1e-4f, "the strut's force");
-        }
-
-        [Test]
-        public void WithVesselsOffNothingIsCompiled()
-        {
-            VesselSwitches.Enabled = false;
-            Column(3);
-            Simulate();
-            Assert.That(State->VesselSet.IsCreated, Is.False);
-            int constrained = 0;
-            foreach (Unity.Physics.Joint joint in State->World.Joints)
-            {
-                constrained += joint.Constraints.Length > 0 ? 1 : 0;
-            }
-
-            Assert.That(constrained, Is.GreaterThanOrEqualTo(2), "both stack joints are built");
         }
     }
 }

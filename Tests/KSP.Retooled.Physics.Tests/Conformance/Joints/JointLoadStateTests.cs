@@ -166,12 +166,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
         public void PackingClearsThePreviousBreakLoad(bool vessels, bool fused)
         {
             EnvironmentSwitches.Read();
-            bool previousVessels = VesselSwitches.Enabled;
-            bool previousFused = SolverSwitches.VesselFused;
+            int previousMinimumParts = VesselSwitches.MinimumParts;
+            int previousFusedParts = SolverSwitches.FusedVesselParts;
             try
             {
-                VesselSwitches.Enabled = vessels;
-                SolverSwitches.VesselFused = fused;
+                VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
+                SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
                 UnityEngine.Physics.gravity = Vector3.zero;
                 Ground();
                 Vector3 footPosition = 0.5f * Vector3.up;
@@ -221,8 +221,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             }
             finally
             {
-                VesselSwitches.Enabled = previousVessels;
-                SolverSwitches.VesselFused = previousFused;
+                VesselSwitches.MinimumParts = previousMinimumParts;
+                SolverSwitches.FusedVesselParts = previousFusedParts;
             }
         }
 

@@ -6,8 +6,15 @@ uid: changelog
 
 ## Unreleased
 The vessel solver uses a free-axis edge for each DLC hinge, rotation servo, rotor, or piston that joins two vessel
-trees. A servo that cannot become an edge still uses boundary rows. The flight recorder now writes version 13, and
-the replay tool requires that version.
+trees. A servo that cannot become an edge still uses boundary rows.
+
+The backend no longer reads `RETOOLED_VESSEL`, `RETOOLED_FOREST`, `RETOOLED_VESSEL_FUSED`,
+`RETOOLED_STRUT_LOADS`, or `RETOOLED_DORMANT_ROWS`. It drops the code that let those variables bypass vessel
+compilation or forest solving, disable fused solving for all islands, use the tree method for strut loads, or
+keep dormant rows in the vessel boundary. With the default settings, the backend already behaved as it does now.
+Craft with fewer parts than the configured minimum still use ordinary Unity Physics joints.
+
+The flight recorder writes version 14. The replay tool requires that version.
 
 ## 0.1.5
 A part that a fast impact destroys no longer stops its vessel before the game destroys it. The game gives each such

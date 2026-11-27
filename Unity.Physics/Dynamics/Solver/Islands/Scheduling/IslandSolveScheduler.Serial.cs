@@ -77,9 +77,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 UnfusedBodies = work.UnfusedBodies,
                 Vessels = stepInput.VesselSet,
                 Cache = stepInput.IslandSolverCache,
-                Fuse = SolverSwitches.VesselFused,
                 MinimumParts = SolverSwitches.FusedVesselParts,
-                Contacts = SolverSwitches.FusedContacts,
                 Buffers = work.Buffers,
             }.Execute();
 
@@ -92,29 +90,21 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 Buffers = work.Buffers,
                 StepInput = substepInput,
             };
-            if (SolverSwitches.VesselFused)
+            new SolveFusedVesselIslandsJob
             {
-                new SolveFusedVesselIslandsJob
-                {
-                    Islands = work.Islands.AsArray(),
-                    IslandVessels = work.IslandVessels.AsArray(),
-                    Headers = work.Headers.AsArray(),
-                    UnfusedBodies = work.UnfusedBodies.AsArray(),
-                    MotionVelocities = world.MotionVelocities,
-                    MotionDatas = world.MotionDatas,
-                    Bodies = world.Bodies,
-                    StepInput = substepInput,
-                    Teams = work.Buffers.FusedTeams,
-                    Lanes = 1,
-                    Unfused = unfused,
-                    UnfusedClaim = work.Buffers.UnfusedClaim,
-                }.Execute(0);
-            }
-            else
-            {
-                RunUnfusedSubsteps(unfused, work.Headers.AsArray(), work.Islands.AsArray(), work.IslandVessels.AsArray(),
-                    work.UnfusedBodies.AsArray(), world.MotionVelocities, world.MotionDatas, world.Bodies);
-            }
+                Islands = work.Islands.AsArray(),
+                IslandVessels = work.IslandVessels.AsArray(),
+                Headers = work.Headers.AsArray(),
+                UnfusedBodies = work.UnfusedBodies.AsArray(),
+                MotionVelocities = world.MotionVelocities,
+                MotionDatas = world.MotionDatas,
+                Bodies = world.Bodies,
+                StepInput = substepInput,
+                Teams = work.Buffers.FusedTeams,
+                Lanes = 1,
+                Unfused = unfused,
+                UnfusedClaim = work.Buffers.UnfusedClaim,
+            }.Execute(0);
 
             var export = new ParallelExportEventsJob
             {

@@ -221,7 +221,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands
         internal bool IsCreated => slots != null;
 
         /// <summary>
-        /// Forest/boundary settings shared by all cache copies. Set between steps; default leaves forests disabled.
+        /// The settings for the forest and its boundary. Cache copies share these settings.
         /// </summary>
         public ForestSettings Forest
         {

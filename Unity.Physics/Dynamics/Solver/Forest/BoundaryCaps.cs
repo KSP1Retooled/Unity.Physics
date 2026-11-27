@@ -59,11 +59,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         public bool KeyByWorldIndex;
 
         /// <summary>
-        /// Keep distant one-sided joint rows in the boundary. RETOOLED_DORMANT_ROWS=0 enables this option.
-        /// </summary>
-        public bool KeepDormantRows;
-
-        /// <summary>
         /// Disable held-row corrections, preserving their warm impulses and omitting push-out. Benchmark option.
         /// </summary>
         public bool IdleHeldRows;

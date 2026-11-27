@@ -10,16 +10,12 @@ using Unity.Physics.Configuration;
 namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 {
     /// <summary>
-    /// Strutted crafts built from Unity joints the way the game builds them, run through the vessel pipeline with locking
-    /// on and compared with the same crafts on Unity's joint rows (vessels off). Inside a locked section, the struts must
-    /// share the loads with the stack joints, as they do on the joint rows.
+    /// These tests build strutted craft from Unity joints and compare the loads with and without vessels.
+    /// The struts must share the loads with the stack joints inside a locked section, as they do on the ordinary joint rows.
     /// </summary>
     public class StrutLoadTests : PhysicsScene
     {
-        private bool wasVessels;
         private int wasMinimumParts;
-        private bool wasStrutLoads;
-        private bool wasFused;
         private int wasFusedParts;
 
         [SetUp]
@@ -32,10 +28,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
             EnvironmentSwitches.Read();
             EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
             wasMinimumParts = VesselSwitches.MinimumParts;
-            wasStrutLoads = VesselSwitches.StrutLoadsEnabled;
-            wasFused = SolverSwitches.VesselFused;
             wasFusedParts = SolverSwitches.FusedVesselParts;
             VesselSwitches.MinimumParts = 2;
         }
@@ -43,10 +36,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TearDown]
         public void RestoreSwitches()
         {
-            VesselSwitches.Enabled = wasVessels;
             VesselSwitches.MinimumParts = wasMinimumParts;
-            VesselSwitches.StrutLoadsEnabled = wasStrutLoads;
-            SolverSwitches.VesselFused = wasFused;
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
@@ -54,7 +44,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             TearDownScene();
             SetUpScene();
-            VesselSwitches.Enabled = vessels;
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
             ForestDiagnostics.ForgetIslands();
         }
 
@@ -226,29 +216,25 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         /// <summary>
-        /// The craft settles on the ground. With vessels on, after the edges lock, its largest joint load stays within a
-        /// factor of two of the largest load on Unity's joint rows, and no joint breaks that doesn't break there. The rings'
-        /// break force lies between the share that they carry with the struts and the whole moment of the radial parts,
-        /// which the tree method puts on them.
+        /// The craft settles on the ground. After the vessel edges lock, the largest joint load stays within a
+        /// factor of two of the largest load on Unity's joint rows. The rings hold while the struts carry their share.
         /// </summary>
         [Test]
         public void AStruttedCraftOnTheGroundCarriesItsLoadsAsOnTheJointRows()
         {
             const int settle = 150, measure = 50;
-            // The tree method loads each ring with the whole radial part as a cantilever, about 260 N on a ring's joint. On
-            // the joint rows, the strut takes nearly all of it and leaves about 5 N on the ring.
             const float ringBreak = 150.0f;
-            var largest = new float[3];
-            var broken = new int[3];
-            var which = new string[3];
-            var locked = new long[3];
-            var rings = new float[3];
-            var struts = new float[3];
-            string[] passes = { "joint rows", "vessels", "vessels, tree method" };
-            for (int pass = 0; pass < 3; pass++)
+            SolverSwitches.FusedVesselParts = 1;
+            var largest = new float[2];
+            var broken = new int[2];
+            var which = new string[2];
+            var locked = new long[2];
+            var rings = new float[2];
+            var struts = new float[2];
+            string[] passes = { "joint rows", "vessels" };
+            for (int pass = 0; pass < 2; pass++)
             {
-                Fresh(pass > 0);
-                VesselSwitches.StrutLoadsEnabled = pass != 2;
+                Fresh(pass == 1);
                 Craft craft = BuildCraft(ringBreak, float.PositiveInfinity);
                 Simulate(settle);
                 largest[pass] = 0.0f;
@@ -271,7 +257,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(broken[1], Is.LessThanOrEqualTo(broken[0]), "nothing breaks with vessels that doesn't break on the joint rows");
             Assert.That(largest[1], Is.LessThan(2.0f * largest[0]), "the largest load stays within twice the joint rows' largest");
             Assert.That(largest[1], Is.GreaterThan(0.5f * largest[0]), "and above half of it");
-            Assert.That(broken[2], Is.GreaterThan(0), "the tree method, which leaves the struts without load, breaks the rings");
+            float radialWeight = RadialMass * -Gravity;
+            Assert.That(struts[1], Is.GreaterThan(0.5f * radialWeight), "a strut carries at least half a radial part's weight");
         }
 
         /// <summary>
@@ -282,7 +269,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void BreaksInsideALockedSectionLeaveFinitePoses([Values] bool fused)
         {
-            SolverSwitches.VesselFused = fused;
             SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
             Craft craft = BuildCraft(400.0f, 400.0f, false);
@@ -344,10 +330,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void ASectionThatLocksAgainKeepsItsFactor([Values] bool fused)
         {
-            SolverSwitches.VesselFused = fused;
             SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
-            VesselSwitches.StrutLoadsEnabled = true;
             Craft craft = BuildCraft(1000.0f, float.PositiveInfinity, ground: false);
             foreach (Rigidbody body in craft.Bodies)
             {
@@ -396,7 +380,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void ABurstOfBreaksLeavesFinitePoses([Values] bool fused)
         {
-            SolverSwitches.VesselFused = fused;
             SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             Fresh(true);
             Craft craft = BuildCraft(20.0f, 20.0f);

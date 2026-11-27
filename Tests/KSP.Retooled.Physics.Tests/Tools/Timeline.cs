@@ -169,9 +169,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             JobsUtility.JobDebuggerEnabled = false;
             Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.Disabled;
             int workers = JobsUtility.JobWorkerCount;
-            bool wasForest = ForestSwitches.Enabled;
             bool wasLocking = ForestSwitches.Locking;
-            bool wasVessels = VesselSwitches.Enabled;
             Assert.IsTrue(BackendHost.WaitForCompiledKernels(300.0), "the kernels still run in Mono");
             EnvironmentSwitches.Read();
             report.Append($"CPU load at start {SampleLoad():F1}%\n");
@@ -208,20 +206,18 @@ namespace KSP.Retooled.Physics.Tests.Tools
                                 continue;
                             }
 
-                            // "compiled:nocontacts" keeps the islands with contacts or joints out of the fused vessel job,
-                            // and "compiled:parts=64" sends vessel islands of 64 parts or more to it.
+                            // The parts option sets the minimum island size for the fused job.
                             string[] options = path.Split(':');
-                            SolverSwitches.FusedContacts = !options.Contains("nocontacts");
+                            Assert.That(options[0], Is.EqualTo("compiled").Or.EqualTo("locked"), "the profile path");
                             SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
-                            foreach (string option in options.Where(o => o.StartsWith("parts=")))
+                            foreach (string option in options.Skip(1))
                             {
+                                Assert.That(option, Does.StartWith("parts="), "the profile option");
                                 SolverSwitches.FusedVesselParts = int.Parse(option.Substring("parts=".Length), CultureInfo.InvariantCulture);
                             }
 
-                            ForestSwitches.Enabled = path != "sparse";
-                            VesselSwitches.Enabled = options[0] == "compiled";
                             ForestDiagnostics.ForgetIslands();
-                            ForestSwitches.Locking = path == "locked";
+                            ForestSwitches.Locking = options[0] == "locked";
                             ForestSwitches.BoundaryRowCap = ForestSwitches.DefaultBoundaryRowCap;
                             ForestSwitches.MinimumHoldSteps = -1;
                             JobsUtility.JobWorkerCount = threads - 1;
@@ -304,10 +300,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
                 }
             }
 
-            ForestSwitches.Enabled = wasForest;
             ForestSwitches.Locking = wasLocking;
-            VesselSwitches.Enabled = wasVessels;
-            SolverSwitches.FusedContacts = true;
             SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
             UnityEngine.Physics.IgnoreLayerCollision(PartLayer, PartLayer, !collided);
             File.WriteAllText(Path.Combine(Application.dataPath, "..", "Logs", $"Timeline-{tag}.txt"), report.ToString());

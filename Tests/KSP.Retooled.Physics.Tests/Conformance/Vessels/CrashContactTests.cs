@@ -27,8 +27,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         // above the ground, and without a limit the contact stops the column in that step.
         private const float StartGap = 1.0f;
 
-        private bool wasEnabled;
         private bool reuseCallbacks;
+
+        private int wasMinimumParts;
 
         [SetUp]
         public void TurnVesselsOn()
@@ -39,8 +40,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            wasEnabled = VesselSwitches.Enabled;
-            VesselSwitches.Enabled = true;
+            wasMinimumParts = VesselSwitches.MinimumParts;
             VesselSwitches.MinimumParts = 2;
             reuseCallbacks = UnityEngine.Physics.reuseCollisionCallbacks;
             UnityEngine.Physics.reuseCollisionCallbacks = false;
@@ -49,8 +49,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TearDown]
         public void RestoreSwitches()
         {
-            VesselSwitches.Enabled = wasEnabled;
-            VesselSwitches.MinimumParts = 0;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             UnityEngine.Physics.reuseCollisionCallbacks = reuseCallbacks;
         }
 

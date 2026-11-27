@@ -22,12 +22,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
     {
         private const float DriveForce = 1e20f;
         private static readonly Vector3 PegasusOrigin = new Vector3(-1122.0312f, -506.4113f, -1363.5506f);
-        private bool previousVessels;
-        private bool previousFused;
         private int previousMinimumParts;
         private int previousFusedParts;
-        private bool previousForest;
         private bool previousLocking;
+        private double previousLinearCap;
+        private double previousAngularCap;
         private Mesh padMesh;
 
         [SetUp]
@@ -39,12 +38,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            previousVessels = VesselSwitches.Enabled;
-            previousFused = SolverSwitches.VesselFused;
             previousMinimumParts = VesselSwitches.MinimumParts;
             previousFusedParts = SolverSwitches.FusedVesselParts;
-            previousForest = ForestSwitches.Enabled;
             previousLocking = ForestSwitches.Locking;
+            previousLinearCap = VesselRowSwitches.LinearCap;
+            previousAngularCap = VesselRowSwitches.AngularCap;
             VesselSwitches.MinimumParts = 2;
             SolverSwitches.FusedVesselParts = 1;
             UnityEngine.Physics.gravity = Vector3.zero;
@@ -53,13 +51,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TearDown]
         public void RestoreSolverSettings()
         {
-            VesselRowSwitches.LinearCap = 0.0;
-            VesselRowSwitches.AngularCap = 0.0;
-            VesselSwitches.Enabled = previousVessels;
-            SolverSwitches.VesselFused = previousFused;
+            VesselRowSwitches.LinearCap = previousLinearCap > 0.0 ? previousLinearCap : -1.0;
+            VesselRowSwitches.AngularCap = previousAngularCap > 0.0 ? previousAngularCap : -1.0;
             VesselSwitches.MinimumParts = previousMinimumParts;
             SolverSwitches.FusedVesselParts = previousFusedParts;
-            ForestSwitches.Enabled = previousForest;
             ForestSwitches.Locking = previousLocking;
             if (padMesh != null)
             {
@@ -172,42 +167,38 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             Assert.That(joint == null, Is.True);
         }
 
-        [TestCase(0, 1, 1.0f, false, false)]
-        [TestCase(1, 1, 1.0f, false, false)]
-        [TestCase(2, 1, 1.0f, false, false)]
-        [TestCase(3, 1, 1.0f, false, false)]
-        [TestCase(0, 3, 1.0f, false, false)]
-        [TestCase(3, 3, 1.0f, false, false)]
-        [TestCase(1, 1, 1.0f, true, false)]
-        [TestCase(3, 1, 1.0f, true, false)]
-        [TestCase(2, 1, 1.0f, false, true)]
-        [TestCase(3, 1, 1.0f, false, true)]
-        [TestCase(0, 1, 5.0f, false, false)]
-        [TestCase(1, 1, 5.0f, false, false)]
-        [TestCase(2, 1, 5.0f, false, false)]
-        [TestCase(3, 1, 5.0f, false, false)]
-        [TestCase(0, 3, 5.0f, false, false)]
-        [TestCase(2, 3, 5.0f, false, false)]
-        [TestCase(3, 3, 5.0f, false, false)]
-        [TestCase(2, 1, 5.0f, false, true)]
-        [TestCase(3, 1, 5.0f, false, true)]
-        [TestCase(0, 1, 10.0f, false, false)]
-        [TestCase(1, 1, 10.0f, false, false)]
-        [TestCase(2, 1, 10.0f, false, false)]
-        [TestCase(3, 1, 10.0f, false, false)]
-        [TestCase(0, 3, 10.0f, false, false)]
-        [TestCase(2, 3, 10.0f, false, false)]
-        [TestCase(3, 3, 10.0f, false, false)]
-        [TestCase(2, 1, 10.0f, false, true)]
-        [TestCase(3, 1, 10.0f, false, true)]
-        [TestCase(0, 1, 10.0f, true, false)]
-        [TestCase(2, 1, 10.0f, true, false)]
-        [TestCase(3, 1, 10.0f, true, false)]
-        public unsafe void AngularStopReportsTheReactionBeyondTheDrive(int solver, int count, float angle, bool twist, bool closure)
+        [TestCase(false, false, 1, 1.0f, false, false)]
+        [TestCase(true, false, 1, 1.0f, false, false)]
+        [TestCase(true, true, 1, 1.0f, false, false)]
+        [TestCase(false, false, 3, 1.0f, false, false)]
+        [TestCase(true, true, 3, 1.0f, false, false)]
+        [TestCase(false, false, 1, 1.0f, true, false)]
+        [TestCase(true, true, 1, 1.0f, true, false)]
+        [TestCase(true, false, 1, 1.0f, false, true)]
+        [TestCase(true, true, 1, 1.0f, false, true)]
+        [TestCase(false, false, 1, 5.0f, false, false)]
+        [TestCase(true, false, 1, 5.0f, false, false)]
+        [TestCase(true, true, 1, 5.0f, false, false)]
+        [TestCase(false, false, 3, 5.0f, false, false)]
+        [TestCase(true, false, 3, 5.0f, false, false)]
+        [TestCase(true, true, 3, 5.0f, false, false)]
+        [TestCase(true, false, 1, 5.0f, false, true)]
+        [TestCase(true, true, 1, 5.0f, false, true)]
+        [TestCase(false, false, 1, 10.0f, false, false)]
+        [TestCase(true, false, 1, 10.0f, false, false)]
+        [TestCase(true, true, 1, 10.0f, false, false)]
+        [TestCase(false, false, 3, 10.0f, false, false)]
+        [TestCase(true, false, 3, 10.0f, false, false)]
+        [TestCase(true, true, 3, 10.0f, false, false)]
+        [TestCase(true, false, 1, 10.0f, false, true)]
+        [TestCase(true, true, 1, 10.0f, false, true)]
+        [TestCase(false, false, 1, 10.0f, true, false)]
+        [TestCase(true, false, 1, 10.0f, true, false)]
+        [TestCase(true, true, 1, 10.0f, true, false)]
+        public unsafe void AngularStopReportsTheReactionBeyondTheDrive(bool vessels, bool fused, int count, float angle, bool twist, bool closure)
         {
-            bool vessels = solver >= 2;
-            SelectSolver(vessels, solver == 3);
-            ForestSwitches.Enabled = solver == 1;
+            // The plain rows and the vessel use different code to recover an angular stop's load.
+            SelectSolver(vessels, fused);
             Rigidbody support = Part("support", Vector3.up * 5.0f, 10.0f, Vector3.one * 20.0f);
             Rigidbody body = Part("part", support.position, 10.0f, Vector3.one * 20.0f);
             support.isKinematic = body.isKinematic = false;
@@ -329,12 +320,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         [Test]
-        public unsafe void ConfiguredDriveStiffnessHoldsBetweenTwoMovingBodies([Values(0, 1, 2, 3)] int solver,
+        public unsafe void ConfiguredDriveStiffnessHoldsBetweenTwoMovingBodies([Values(0, 2, 3)] int solver,
             [Values] bool unequal, [Values(10.0f, 180.0f)] float limit, [Values(0, 1, 2, 3, 4, 5, 6)] int drive)
         {
             bool vessels = solver >= 2;
             SelectSolver(vessels, solver == 3);
-            ForestSwitches.Enabled = solver == 1;
             Vector3 point = Vector3.up * 5.0f;
             Rigidbody support = Part("support", point, unequal ? 40.0f : 10.0f, Vector3.one * (unequal ? 80.0f : 20.0f));
             Rigidbody body = Part("part", point, 10.0f, Vector3.one * 20.0f);
@@ -436,9 +426,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
         private static void SelectSolver(bool vessels, bool fused)
         {
-            VesselSwitches.Enabled = vessels;
-            SolverSwitches.VesselFused = fused;
-            ForestSwitches.Enabled = false;
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             ForestSwitches.Locking = false;
         }
 
@@ -462,8 +451,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             // parts sit on a critically damped spring with a period of about four steps, so the shares lag behind.
             VesselRowSwitches.LinearCap = -1.0;
             VesselRowSwitches.AngularCap = -1.0;
-            VesselSwitches.Enabled = true;
-            SolverSwitches.VesselFused = fused;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             const float x = 1280.0f;
             Box(new Vector3(x, -0.5f, 0.0f), new Vector3(10.0f, 1.0f, 10.0f));
             Rigidbody support = Part("support", new Vector3(x, 0.5f, 0.0f), 81.0f, 13.5f * Vector3.one, true);
@@ -571,8 +559,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TestCase(false, false, true)]
         public unsafe void AHeavyVesselKeepsBoundedLoadsAsItsSectionsRelease(bool vessels, bool fused, bool cycleStruts)
         {
-            VesselSwitches.Enabled = vessels;
-            SolverSwitches.VesselFused = fused;
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
             GameObject pad = PegasusPad();
 
             VesselForestBench.Graph graph = VesselForestBench.Load("pegasus");

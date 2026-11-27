@@ -242,8 +242,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
             substepInput.DisableExportEvents = true;
 
             // Fused islands own their bodies for the entire step; substep jobs must skip them.
-            bool fusedVessels = SolverSwitches.VesselFused;
-            JobHandle fused = default;
             handle = new MarkFusedVesselIslandsJob
             {
                 Islands = work.Islands,
@@ -252,9 +250,7 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 UnfusedBodies = work.UnfusedBodies,
                 Vessels = stepInput.VesselSet,
                 Cache = stepInput.IslandSolverCache,
-                Fuse = fusedVessels,
                 MinimumParts = SolverSwitches.FusedVesselParts,
-                Contacts = SolverSwitches.FusedContacts,
                 Buffers = work.Buffers,
             }.Schedule(handle);
 
@@ -267,38 +263,21 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
                 StepInput = substepInput,
             };
 
-            if (fusedVessels)
+            JobHandle fused = new SolveFusedVesselIslandsJob
             {
-                fused = new SolveFusedVesselIslandsJob
-                {
-                    Islands = work.Islands.AsDeferredJobArray(),
-                    IslandVessels = work.IslandVessels.AsDeferredJobArray(),
-                    Headers = work.Headers.AsDeferredJobArray(),
-                    UnfusedBodies = work.UnfusedBodies.AsDeferredJobArray(),
-                    MotionVelocities = world.MotionVelocities,
-                    MotionDatas = world.MotionDatas,
-                    Bodies = world.Bodies,
-                    StepInput = substepInput,
-                    Teams = work.Buffers.FusedTeams,
-                    Lanes = lanes,
-                    Unfused = unfused,
-                    UnfusedClaim = fold ? work.Buffers.UnfusedClaim : null,
-                }.Schedule(lanes, 1, handle);
-            }
-            else if (fold)
-            {
-                handle = new SolveUnfusedSubstepsJob
-                {
-                    Islands = work.Islands.AsDeferredJobArray(),
-                    IslandVessels = work.IslandVessels.AsDeferredJobArray(),
-                    Headers = work.Headers.AsDeferredJobArray(),
-                    UnfusedBodies = work.UnfusedBodies.AsDeferredJobArray(),
-                    MotionVelocities = world.MotionVelocities,
-                    MotionDatas = world.MotionDatas,
-                    Bodies = world.Bodies,
-                    Unfused = unfused,
-                }.Schedule(handle);
-            }
+                Islands = work.Islands.AsDeferredJobArray(),
+                IslandVessels = work.IslandVessels.AsDeferredJobArray(),
+                Headers = work.Headers.AsDeferredJobArray(),
+                UnfusedBodies = work.UnfusedBodies.AsDeferredJobArray(),
+                MotionVelocities = world.MotionVelocities,
+                MotionDatas = world.MotionDatas,
+                Bodies = world.Bodies,
+                StepInput = substepInput,
+                Teams = work.Buffers.FusedTeams,
+                Lanes = lanes,
+                Unfused = unfused,
+                UnfusedClaim = fold ? work.Buffers.UnfusedClaim : null,
+            }.Schedule(lanes, 1, handle);
 
             for (int substep = 0; !fold && substep < substeps; substep++)
             {
@@ -1030,41 +1009,6 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
         }
 
         static readonly ProfilerMarker UnfusedSubstepsMarker = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Island.UnfusedSubsteps");
-
-        /// <summary>
-        /// Run unfused substeps on one thread when fused solving is disabled and folding is selected.
-        /// </summary>
-        [BurstCompile]
-        unsafe struct SolveUnfusedSubstepsJob : IJob
-        {
-            [ReadOnly]
-            public NativeArray<IslandHeader> Headers;
-
-            public NativeArray<DirectIsland> Islands;
-
-            [ReadOnly]
-            public NativeArray<int> IslandVessels;
-
-            [ReadOnly]
-            public NativeArray<int> UnfusedBodies;
-
-            // The iterative solve changes the motions of other bodies at the same time.
-            [NativeDisableContainerSafetyRestriction]
-            public NativeArray<MotionVelocity> MotionVelocities;
-
-            [NativeDisableContainerSafetyRestriction]
-            public NativeArray<MotionData> MotionDatas;
-
-            [ReadOnly]
-            public NativeArray<RigidBody> Bodies;
-
-            public UnfusedSubsteps Unfused;
-
-            public void Execute()
-            {
-                RunUnfusedSubsteps(Unfused, Headers, Islands, IslandVessels, UnfusedBodies, MotionVelocities, MotionDatas, Bodies);
-            }
-        }
 
         /// <summary>
         /// The most rows that the islands that are not fused can have, at the first substep of the last step, for this

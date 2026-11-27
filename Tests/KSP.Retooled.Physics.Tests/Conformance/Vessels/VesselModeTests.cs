@@ -164,7 +164,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         }
 
         private TestVessels vessels;
-        private bool wasEnabled;
         private int wasFusedParts;
 
         /// <summary>
@@ -181,8 +180,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            wasEnabled = ForestSwitches.Enabled;
-            ForestSwitches.Enabled = true;
             wasFusedParts = SolverSwitches.FusedVesselParts;
             if (FusedParts > 0)
             {
@@ -197,7 +194,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             vessels?.Dispose();
             vessels = null;
-            ForestSwitches.Enabled = wasEnabled;
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
@@ -299,7 +295,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             {
                 TearDownScene();
                 SetUpScene();
-                ForestSwitches.Enabled = true;
                 vessels.Dispose();
                 vessels = new TestVessels();
                 Rigidbody root = Box(new Vector3(0.0f, 5.0f, 0.0f), Vector3.one).AddComponent<Rigidbody>();
@@ -436,18 +431,18 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 body.useGravity = false;
             }
 
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             SolverSwitches.FusedVesselParts = 2;
-            SolverSwitches.VesselFused = true;
             try
             {
                 Begin(vessels);
-                void Pull(string when)
+                void Pull(string when, bool fused)
                 {
                     bodies[0].AddForce(new Vector3(0.0f, pull, 0.0f));
                     bodies[3].AddForce(new Vector3(0.0f, -pull, 0.0f));
+                    long fusedBefore = IslandWorkCounters.FusedIslandSolves;
                     vessels.Step();
+                    Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? 1 : 0), when);
                     for (int i = 1; i < 4; i++)
                     {
                         Assert.That(vessels.Locked(i), Is.False, $"edge {i} stays yielding {when} (ratio {vessels.Load(i).Ratio:F3})");
@@ -461,17 +456,16 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                     vessels.Step();
                 }
 
-                Pull("in the fused job");
-                SolverSwitches.VesselFused = false;
-                Pull("in the step that leaves the fused job");
-                Pull("outside the fused job");
-                SolverSwitches.VesselFused = true;
-                Pull("in the step that comes back to the fused job");
-                Pull("back in the fused job");
+                Pull("in the fused job", fused: true);
+                SolverSwitches.FusedVesselParts = 5;
+                Pull("in the step that leaves the fused job", fused: false);
+                Pull("outside the fused job", fused: false);
+                SolverSwitches.FusedVesselParts = 2;
+                Pull("in the step that comes back to the fused job", fused: true);
+                Pull("back in the fused job", fused: true);
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
         }
@@ -482,8 +476,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void TheFusedJobLandsAColumnAsTheIslandPathDoes()
         {
-            bool wasFused = SolverSwitches.VesselFused;
-            SolverSwitches.VesselFused = true;
             int fusedParts = SolverSwitches.FusedVesselParts;
             var positions = new Vector3[2][];
             var loads = new float[2];
@@ -493,7 +485,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 {
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     SolverSwitches.FusedVesselParts = pass == 0 ? 1000 : 2;
@@ -515,7 +506,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
 
@@ -536,8 +526,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void AKinematicPartMovesTheSameInTheFusedJobAsInTheSubsteps()
         {
-            bool wasFused = SolverSwitches.VesselFused;
-            SolverSwitches.VesselFused = true;
             int fusedParts = SolverSwitches.FusedVesselParts;
             var positions = new Vector3[2][];
             var rotations = new Quaternion[2][];
@@ -548,7 +536,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 {
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     SolverSwitches.FusedVesselParts = pass == 0 ? 1000 : 2;
@@ -573,7 +560,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
 
@@ -597,7 +583,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void SeveralFusedIslandsEndTheSameOnOneThreadAndOnMany()
         {
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             int workers = Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount;
             int[] heights = { 6, 12, 9, 16 };
@@ -606,13 +591,11 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             var loads = new double3[2][];
             try
             {
-                SolverSwitches.VesselFused = true;
                 for (int pass = 0; pass < 2; pass++)
                 {
                     Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = pass == 0 ? 0 : System.Math.Max(workers, 3);
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
@@ -646,7 +629,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             finally
             {
                 Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount = workers;
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
 
@@ -666,8 +648,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void SmallVesselsGoToTheFusedJobHoweverManyThereAre()
         {
-            bool wasFused = SolverSwitches.VesselFused;
-            SolverSwitches.VesselFused = true;
             int fusedParts = SolverSwitches.FusedVesselParts;
             SolverSwitches.FusedVesselParts = SolverSwitches.DefaultFusedVesselParts;
             try
@@ -676,7 +656,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 {
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     vessels.Dispose();
                     vessels = new TestVessels();
                     for (int c = 0; c < columns; c++)
@@ -696,7 +675,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
         }
@@ -707,7 +685,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public void AFleetOfSmallVesselsLandsTheSameInTheFusedJobAsInTheSubsteps()
         {
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             const int columns = 12;
             const int steps = 60;
@@ -715,12 +692,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             var loads = new double3[2][];
             try
             {
-                SolverSwitches.VesselFused = true;
                 for (int pass = 0; pass < 2; pass++)
                 {
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
@@ -752,7 +727,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
 
@@ -791,11 +765,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
 
         private void ManyFusedIslandsKeepTheirStructures(int columns)
         {
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             try
             {
-                SolverSwitches.VesselFused = true;
                 SolverSwitches.FusedVesselParts = 2;
                 for (int c = 0; c < columns; c++)
                 {
@@ -816,7 +788,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
         }
@@ -829,12 +800,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         public void MoreUnfusedIslandsThanTheOldCacheHeldKeepTheirStructures([Values] bool folded)
         {
             const int columns = 100;
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             SolverSwitches.SubstepFolding folding = SolverSwitches.UnfusedFolding;
             try
             {
-                SolverSwitches.VesselFused = true;
                 SolverSwitches.FusedVesselParts = int.MaxValue;
                 SolverSwitches.UnfusedFolding = folded ? SolverSwitches.SubstepFolding.Fold : SolverSwitches.SubstepFolding.Chain;
                 for (int c = 0; c < columns; c++)
@@ -859,7 +828,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
                 SolverSwitches.UnfusedFolding = folding;
             }
@@ -870,9 +838,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         /// and ordinary islands.
         /// </summary>
         [Test]
-        public void TheSubstepsEndTheSameOnOneThreadAsInTheirChainOfJobs([Values] bool fusedJob)
+        public void TheSubstepsEndTheSameOnOneThreadAsInTheirChainOfJobs()
         {
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             SolverSwitches.SubstepFolding folding = SolverSwitches.UnfusedFolding;
             const int columns = 8;
@@ -884,12 +851,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             int partCount = 0;
             try
             {
-                SolverSwitches.VesselFused = fusedJob;
                 for (int pass = 0; pass < 2; pass++)
                 {
                     TearDownScene();
                     SetUpScene();
-                    ForestSwitches.Enabled = true;
                     ForestDiagnostics.ForgetIslands();
                     vessels.Dispose();
                     vessels = new TestVessels();
@@ -944,7 +909,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
                 SolverSwitches.UnfusedFolding = folding;
             }
@@ -962,7 +926,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 Assert.That(loads[1][i], Is.EqualTo(loads[0][i]), $"part {i}'s edge carries the same load");
             }
 
-            Debug.Log($"[VesselModeTests] substeps on one thread and in a chain of jobs, fused job {fusedJob}: the tallest column's top at {positions[0][partCount - (columns + 1)]:F5}");
+            Debug.Log($"[VesselModeTests] substeps on one thread and in a chain of jobs: the tallest column's top at {positions[0][partCount - (columns + 1)]:F5}");
         }
 
         [Test]

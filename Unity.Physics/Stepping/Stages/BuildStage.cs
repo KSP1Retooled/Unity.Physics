@@ -116,14 +116,11 @@ namespace Unity.Physics.Stepping.Stages
             {
                 using var jointsSpan = BuildJointsMarker.Auto();
 
-                // Reuse the groups if the topology and forest setting have not changed since they were found. The joint
-                // build refreshes group data that depends on other state.
-                bool vesselsEnabled = VesselSwitches.Enabled;
-                bool forest = ForestSwitches.Enabled || vesselsEnabled;
-                bool regrouped = jointState.FindGroups(store, forest, dependency, out JobHandle groupsFound);
+                // The group layout depends on topology. The joint build refreshes data that depends on other state.
+                bool regrouped = jointState.FindGroups(store, dependency, out JobHandle groupsFound);
 
                 bool compiledThisStep = vessels.CompileAndChoose(store, ref jointState, ref partition,
-                    vesselsEnabled, regrouped, ref stepCount, groupsFound);
+                    regrouped, ref stepCount, groupsFound);
 
                 // The number of joints produced by each unit is not known in advance. JointTranslation.BuildJointsJob therefore writes a
                 // separate stream range for each unit.
@@ -142,7 +139,7 @@ namespace Unity.Physics.Stepping.Stages
                     AnchorIndex = partition.dynamicIndices.Length + partition.staticIndices.Length,
                     DeltaTime = deltaTime,
                     Roles = jointState.jointRoles.AsDeferredJobArray(),
-                    Locking = forest && ForestSwitches.Locking,
+                    Locking = ForestSwitches.Locking,
                     LockFraction = ForestSwitches.LockFraction,
                     YieldFraction = ForestSwitches.YieldFraction,
                     Vessels = vessels.vesselSet.IsCreated,

@@ -24,11 +24,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
         internal static unsafe void Recover(ref ForestRun run, in SparseConstraintSolver.Problem problem, float* impulses)
         {
             ForestIsland* forest = run.Forest;
-            if (!VesselSwitches.StrutLoadsEnabled)
-            {
-                return;
-            }
-
             if (forest->ForestEquilibriumBuiltFor != forest->StructureBuilds)
             {
                 using (StrutLoads.FactorMarker.Auto())

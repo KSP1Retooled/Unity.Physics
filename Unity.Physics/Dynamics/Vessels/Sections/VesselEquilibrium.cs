@@ -98,16 +98,13 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 Entries.Ptr[e].Claimed = false;
             }
 
-            if (VesselSwitches.StrutLoadsEnabled)
+            // The closures inside each section, in the order of their indices.
+            for (int c = 0; c < closureCount; c++)
             {
-                // The closures inside each section, in the order of their indices.
-                for (int c = 0; c < closureCount; c++)
+                int s = InsideSection(context, c);
+                if (s >= 0)
                 {
-                    int s = InsideSection(context, c);
-                    if (s >= 0)
-                    {
-                        SectionClosureStart[s + 1]++;
-                    }
+                    SectionClosureStart[s + 1]++;
                 }
             }
 

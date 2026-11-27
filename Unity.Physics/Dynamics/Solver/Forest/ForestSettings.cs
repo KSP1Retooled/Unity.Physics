@@ -10,7 +10,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
     /// </summary>
     internal struct ForestSettings
     {
-        public bool Enabled;
         public int BoundaryRowCap;
         public bool Locking;
 
@@ -43,7 +42,6 @@ namespace Unity.Physics.Dynamics.Solver.Forest
 
         public static ForestSettings Default => new ForestSettings
         {
-            Enabled = false,
             BoundaryRowCap = 512,
             Locking = false,
             LockAngle = DefaultLockAngle,

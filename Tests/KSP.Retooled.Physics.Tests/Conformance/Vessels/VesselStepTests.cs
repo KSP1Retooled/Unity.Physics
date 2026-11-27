@@ -23,9 +23,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         /// <summary>How many vessels the backend handed to the last step.</summary>
         private static int VesselCount() => StepEntryPoints.Current->VesselSet.VesselCount;
 
-        private bool wasVessels;
-        private bool wasForest;
         private int wasFusedParts;
+        private int wasMinimumParts;
 
         /// <summary>
         /// Fused-job part threshold for these tests. int.MaxValue keeps substep solving; zero uses the default.
@@ -33,7 +32,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         protected virtual int FusedParts => int.MaxValue;
 
         [SetUp]
-        public void TurnVesselsOn()
+        public void ConfigureVesselSizes()
         {
             if (!BackendInfo.IsRetooled)
             {
@@ -41,12 +40,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
-            wasForest = ForestSwitches.Enabled;
-
-            // These crafts are small, so let them compile into vessels.
-            VesselSwitches.MinimumParts = 2;
+            wasMinimumParts = VesselSwitches.MinimumParts;
             wasFusedParts = SolverSwitches.FusedVesselParts;
             if (FusedParts > 0)
             {
@@ -59,9 +53,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [TearDown]
         public void RestoreSwitch()
         {
-            VesselSwitches.Enabled = wasVessels;
-            ForestSwitches.Enabled = wasForest;
-            VesselSwitches.MinimumParts = 0;
+            VesselSwitches.MinimumParts = wasMinimumParts;
             SolverSwitches.FusedVesselParts = wasFusedParts;
         }
 
@@ -69,8 +61,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             TearDownScene();
             SetUpScene();
-            VesselSwitches.Enabled = vessels;
-            ForestSwitches.Enabled = vessels;
+            // In the plain pass, the forest solves ordinary joint rows.
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
             ForestDiagnostics.ForgetIslands();
         }
 
@@ -206,6 +198,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             Debug.Log($"[VesselStepTests] break: today at step {brokeAt[0]}, with vessels at step {brokeAt[1]}");
+            Assert.That(brokeAt[0], Is.GreaterThanOrEqualTo(0), "the joint breaks on the plain rows");
             Assert.That(brokeAt[1], Is.GreaterThan(0), "the joint breaks");
             Assert.That(Mathf.Abs(brokeAt[1] - brokeAt[0]), Is.LessThanOrEqualTo(3), "at the load it breaks at today");
         }
@@ -323,7 +316,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 foreach (bool vessels in new[] { false, true })
                 {
                     Fresh(vessels);
-                    ForestSwitches.Enabled = false;
                     Ground();
                     GameObject tower = Box(new Vector3(0.865f, 3.78f, 0.1f), new Vector3(0.5f, 7.5f, 0.5f));
                     tower.transform.rotation = Quaternion.Euler(0.0f, 13.0f, 3.0f);
@@ -395,7 +387,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         public void ASlidingVesselDoesNotKickAPinnedClamp(bool mounted)
         {
             Fresh(true);
-            ForestSwitches.Enabled = false;
             GameObject tower = Box(new Vector3(0.66f, 3.75f, 0.05f), new Vector3(0.5f, 7.5f, 0.5f));
             tower.transform.rotation = Quaternion.Euler(0.0f, 3.0f, 0.0f);
             Rigidbody clamp = tower.AddComponent<Rigidbody>();
@@ -455,8 +446,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 peakAngle = Mathf.Max(peakAngle, angle * Mathf.Rad2Deg);
             }
 
-            bool fused = mounted && SolverSwitches.VesselFused && SolverSwitches.FusedContacts
-                && SolverSwitches.FusedVesselParts <= craft.Count + 2;
+            bool fused = mounted && SolverSwitches.FusedVesselParts <= craft.Count + 2;
             Assert.That(VesselCount(), Is.EqualTo(mounted ? 2 : 1));
             Assert.That(IslandWorkCounters.FusedIslandSolves - fusedBefore, Is.EqualTo(fused ? steps : 0));
             Assert.That(contactSteps, Is.GreaterThanOrEqualTo(25));

@@ -23,7 +23,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         private const float PartHeight = 2.0f;
         private const float PartMass = 4.0f;
 
-        private bool wasEnabled;
+        private int wasMinimumParts;
 
         [SetUp]
         public void RememberSwitch()
@@ -33,17 +33,16 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 Assert.Ignore("The caches are part of the Unity Physics backend.");
             }
 
-            wasEnabled = ForestSwitches.Enabled;
 
-            // The columns here have six parts. Let them compile into vessels when vessels are on.
+            EnvironmentSwitches.Read();
+            wasMinimumParts = VesselSwitches.MinimumParts;
             VesselSwitches.MinimumParts = 2;
         }
 
         [TearDown]
         public void RestoreSwitch()
         {
-            ForestSwitches.Enabled = wasEnabled;
-            VesselSwitches.MinimumParts = 0;
+            VesselSwitches.MinimumParts = wasMinimumParts;
         }
 
         /// <summary>A stock part joint: three joints over a stack node, which the step builds as one group.</summary>
@@ -117,11 +116,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         /// Run a hanging column through cache-invalidating changes and return final poses.
         /// everyStepAfresh disables reuse between steps.
         /// </summary>
-        private (Vector3[], Quaternion[]) RunChanges(bool forest, bool everyStepAfresh)
+        private (Vector3[], Quaternion[]) RunChanges(bool everyStepAfresh)
         {
             TearDownScene();
             SetUpScene();
-            ForestSwitches.Enabled = forest;
 
             // Islands keep their pairs' lock states by their first body, which the run before had too.
             ForestDiagnostics.ForgetIslands();
@@ -174,14 +172,12 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
                 StepOnce(everyStepAfresh);
             }
 
-            // With vessels on, the stack joints are hard, so the weak joint across them carries almost nothing and holds.
-            Assert.That(weak == null, Is.EqualTo(!VesselSwitches.Enabled), "the weak joint breaks only where the stack joints flex");
+            Assert.That(weak != null, Is.True, "the hard stack joints carry enough load for the weak joint to hold");
             return Poses(bodies);
         }
 
         /// <summary>
-        /// A column that moves at 2,000 m/s onto a 5 cm plate. When vessels are on, the column is a vessel, so this
-        /// checks that the vessel's contact rows reach one step ahead.
+        /// Checks that the vessel's contact rows look one step ahead when a column moves at 2,000 m/s onto a 5 cm plate.
         /// </summary>
         [Test]
         public void AFastColumnDoesNotPassThroughAThinPlate()
@@ -199,11 +195,10 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
         }
 
         /// <summary>A column dropped onto the ground, where contacts appear on an island whose joints were kept.</summary>
-        private (Vector3[], Quaternion[]) RunLanding(bool forest, bool everyStepAfresh)
+        private (Vector3[], Quaternion[]) RunLanding(bool everyStepAfresh)
         {
             TearDownScene();
             SetUpScene();
-            ForestSwitches.Enabled = forest;
             Ground();
             List<Rigidbody> bodies = Column(0.3f, false);
             bodies[Parts - 1].linearVelocity = new Vector3(0.5f, 0.0f, 0.2f);
@@ -237,23 +232,21 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Stepping
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void KeptJointsMoveAsJointsWorkedOutAfresh(bool forest)
+        [Test]
+        public void KeptJointsMoveAsJointsWorkedOutAfresh()
         {
             // The direct solver keeps each island's forest, and with locking its pairs' lock states, under the island's first
             // body, which a new scene of the same shape takes over. A run first gives both compared runs the same start.
-            RunChanges(forest, true);
-            AssertSame(RunChanges(forest, false), RunChanges(forest, true));
+            RunChanges(true);
+            AssertSame(RunChanges(false), RunChanges(true));
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void AContactOnAKeptIslandLandsAsOnAFreshOne(bool forest)
+        [Test]
+        public void AContactOnAKeptIslandLandsAsOnAFreshOne()
         {
             // As above: the first scene of this shape lands a few ulps from every later one, kept or afresh.
-            RunLanding(forest, true);
-            AssertSame(RunLanding(forest, false), RunLanding(forest, true));
+            RunLanding(true);
+            AssertSame(RunLanding(false), RunLanding(true));
         }
 
         /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Threading;
 using KSP.Retooled.Physics.Stepping;
 using KSP.Retooled.Physics.Tests.Benchmarks;
@@ -30,6 +31,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
             Assume.That(BackendInfo.IsRetooled);
             EnvironmentSwitches.Read();
             settings = RecordedPhysicsSettings.Read();
+            VesselSwitches.MinimumParts = 2;
+            SolverSwitches.FusedVesselParts = 1;
             enabled = FlightRecorderSwitches.Enabled;
             window = FlightRecorderSwitches.WindowSteps;
             postSteps = FlightRecorderSwitches.PostTriggerSteps;
@@ -66,6 +69,23 @@ namespace KSP.Retooled.Physics.Tests.Tools
             FlightRecorderSwitches.PostTriggerSteps = postSteps;
             settings.Apply();
             directory = null;
+        }
+
+        [Test]
+        public void ReplayRejectsVersion13BeforeReadingTheStepData()
+        {
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "version-13.recording");
+            using (var file = File.Create(path))
+            using (var gzip = new GZipStream(file, CompressionMode.Compress))
+            using (var writer = new BinaryWriter(gzip))
+            {
+                writer.Write(RecordingBinary.Magic);
+                writer.Write(13);
+            }
+
+            var error = Assert.Throws<InvalidDataException>(() => FlightReplay.Run(path, long.MaxValue, TextWriter.Null));
+            Assert.That(error.Message, Is.EqualTo("The recording uses format version 13. Replay requires version 14."));
         }
 
         [TestCase(false, false)]
@@ -353,10 +373,9 @@ namespace KSP.Retooled.Physics.Tests.Tools
         }
 
         [Test]
-        public void LockedForestReplaysWithVesselsDisabled()
+        public void LockedForestReplaysWithOrdinaryJointRows()
         {
-            SetMode(false, false);
-            ForestSwitches.Enabled = true;
+            VesselSwitches.MinimumParts = 3;
             ForestSwitches.Locking = true;
             Ground();
             Rigidbody root = WeightlessBox(new Vector3(0, 0.499f, 0));
@@ -364,6 +383,7 @@ namespace KSP.Retooled.Physics.Tests.Tools
             root.sleepThreshold = child.sleepThreshold = 0f;
             StackJoint(child, root);
             Simulate(24);
+            Assert.That(StepEntryPoints.Current->VesselSet.VesselCount, Is.Zero);
             FlightRecorderSwitches.Enabled = true;
             child.AddForce(new Vector3(0.15f, -0.04f, 0.1f), ForceMode.Impulse);
             Simulate(8);
@@ -410,7 +430,6 @@ namespace KSP.Retooled.Physics.Tests.Tools
         [Test, Explicit("Measures recording overhead on a large vessel and a terrain scene.")]
         public void Measure()
         {
-            SetMode(true, true);
             FlightRecorderSwitches.WindowSteps = 300;
             var graph = VesselForestBench.Load("tu160:128x8");
             Assert.That(graph.Parent.Length, Is.EqualTo(1024));
@@ -469,11 +488,8 @@ namespace KSP.Retooled.Physics.Tests.Tools
 
         private static void SetMode(bool vessels, bool fused)
         {
-            VesselSwitches.Enabled = vessels;
-            VesselSwitches.MinimumParts = 2;
-            ForestSwitches.Enabled = vessels;
-            SolverSwitches.VesselFused = fused;
-            SolverSwitches.FusedVesselParts = 1;
+            VesselSwitches.MinimumParts = vessels ? 2 : int.MaxValue;
+            SolverSwitches.FusedVesselParts = fused ? 1 : int.MaxValue;
         }
 
         private static void StackJoint(Rigidbody body, Rigidbody parent, Vector3? anchor = null)

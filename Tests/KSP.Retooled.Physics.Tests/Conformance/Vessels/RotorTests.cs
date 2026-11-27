@@ -11,7 +11,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
     /// </summary>
     public class RotorTests : PhysicsScene
     {
-        private bool wasVessels;
+
+        private int wasMinimumParts;
 
         [SetUp]
         public void TurnVesselsOn()
@@ -22,10 +23,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
 
             EnvironmentSwitches.Read();
-            wasVessels = VesselSwitches.Enabled;
-            VesselSwitches.Enabled = true;
 
             // These crafts are small, so let them compile into vessels.
+            wasMinimumParts = VesselSwitches.MinimumParts;
             VesselSwitches.MinimumParts = 2;
         }
 
@@ -34,8 +34,7 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         {
             if (BackendInfo.IsRetooled)
             {
-                VesselSwitches.Enabled = wasVessels;
-                VesselSwitches.MinimumParts = 0;
+                VesselSwitches.MinimumParts = wasMinimumParts;
             }
         }
 
