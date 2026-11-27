@@ -179,11 +179,9 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
         [Test]
         public unsafe void AContactStopsTheVesselAfterItsCrashImpulseCapExpires()
         {
-            bool wasFused = SolverSwitches.VesselFused;
             int fusedParts = SolverSwitches.FusedVesselParts;
             try
             {
-                SolverSwitches.VesselFused = true;
                 SolverSwitches.FusedVesselParts = 1;
                 Ground();
 
@@ -214,7 +212,6 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
             }
             finally
             {
-                SolverSwitches.VesselFused = wasFused;
                 SolverSwitches.FusedVesselParts = fusedParts;
             }
         }
