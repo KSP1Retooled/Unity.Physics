@@ -965,6 +965,22 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             /// </summary>
             private void AddSoftRotation(JointData* joint, JointAxis* drive)
             {
+                // When the spring is negligible compared with the damper, the drive only pulls toward its target angular
+                // velocity, so build a velocity motor on each axis, as AddAxisDrive does. A spring target would have to
+                // turn by damper / spring * velocity, thousands of radians or more, and that rotation wraps to an
+                // arbitrary target.
+                if (drive->driveSpring <= drive->driveDamper * PureDamperSpringRatio)
+                {
+                    float3 velocity = JointConstraints.TargetAngularVelocity(joint);
+                    for (int i = 0; i < 3; i++)
+                    {
+                        Constraint motor = OnAxis(i, Constraint.AngularVelocityMotor(velocity[i], MaxImpulse(drive)));
+                        Add(WithDrive(motor, drive, drive->driveDamper * PureDamperSpringRatio, JointConstraints.AngularMass(joint, i)));
+                    }
+
+                    return;
+                }
+
                 Flush();
 
                 float spring = math.max(drive->driveSpring, drive->driveDamper * PureDamperSpringRatio);

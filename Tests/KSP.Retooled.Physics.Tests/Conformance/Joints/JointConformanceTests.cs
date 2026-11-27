@@ -330,6 +330,32 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
         }
 
         /// <summary>
+        /// A velocity drive in either rotation mode, with no spring or KSP's spring of 1e-10, turns the body at its
+        /// target angular velocity.
+        /// </summary>
+        [TestCase(RotationDriveMode.XYAndZ, 0.0f)]
+        [TestCase(RotationDriveMode.XYAndZ, 1e-10f)]
+        [TestCase(RotationDriveMode.Slerp, 0.0f)]
+        [TestCase(RotationDriveMode.Slerp, 1e-10f)]
+        public void AVelocityDriveFollowsItsTargetInEitherMode(RotationDriveMode mode, float spring)
+        {
+            Rigidbody body = Weightless(Vector3.zero);
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+            joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Free;
+            JointDrive drive = new JointDrive { positionSpring = spring, positionDamper = 1000.0f, maximumForce = float.MaxValue };
+            joint.rotationDriveMode = mode;
+            joint.angularXDrive = drive;
+            joint.angularYZDrive = drive;
+            joint.slerpDrive = drive;
+            joint.targetAngularVelocity = new Vector3(3.0f, 0.0f, 0.0f);
+
+            Simulate(100);
+
+            Assert.That(body.angularVelocity.x, Is.EqualTo(3.0f).Within(0.1f));
+            Assert.That(new Vector2(body.angularVelocity.y, body.angularVelocity.z).magnitude, Is.LessThan(0.1f));
+        }
+
+        /// <summary>
         /// KSP's rotors drive with a spring of 1e-10, a damper of 1000 and a target angular velocity. They limit their
         /// own axis to a range from 0.01 to 0.1 degrees with a limit spring of 1e-8, which PhysX treats as almost free.
         /// The rotor must reach its target speed, here 460 RPM.
