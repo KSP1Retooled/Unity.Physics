@@ -2112,12 +2112,11 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
             }
             else
             {
-                // Choose a velocity that places the part at its offset after the section rotates, so the locked section
-                // remains rigid.
-                double angle = math.length(sectionAngular) * h;
-                double4 turn = angle > 1e-12 ? new double4(math.normalize(sectionAngular) * math.sin(0.5 * angle), math.cos(0.5 * angle))
-                    : new double4(0.0, 0.0, 0.0, 1.0);
-                targetLinear = sectionLinear + (math.mul(DoubleMath.Rotation(turn), r) - r) / h;
+                // The part's offset must rotate by the same normalized quaternion (h * angular / 2, 1)
+                // that the integrator uses for its orientation. Compute the rotated offset's change divided by h.
+                double3 halfTurn = (0.5 * h) * sectionAngular;
+                double3 tangent = math.cross(sectionAngular, r);
+                targetLinear = sectionLinear + (tangent + math.cross(halfTurn, tangent)) / (1.0 + math.lengthsq(halfTurn));
             }
 
             double3 changeLinear = pushOut ? targetLinear : targetLinear - p.LinearVelocity;

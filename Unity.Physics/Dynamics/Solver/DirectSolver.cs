@@ -248,8 +248,7 @@ namespace Unity.Physics
                     return 1;
                 case JacobianType.AngularLimit2D: // free hinge's angular constraints (2 rows), potentially limited with min/max angle (1 row)
                     ref var angLimit2D = ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
-                    return math.select(1, 2,
-                        math.abs(angLimit2D.MinAngle) < math.EPSILON && math.abs(angLimit2D.MaxAngle) < math.EPSILON);
+                    return angLimit2D.IsSwingLock ? 2 : 1;
                 case JacobianType.AngularLimit3D: // fixed relative orientation constraints (prismatic's 3 angular)
                     return 3;
                 case JacobianType.RotationMotor:
@@ -764,7 +763,7 @@ namespace Unity.Physics
                                     ref AngularLimit2DJacobian angJacobian =
                                         ref header.AccessBaseJacobian<AngularLimit2DJacobian>();
 
-                                    if (math.abs(angJacobian.MinAngle) < math.EPSILON && math.abs(angJacobian.MaxAngle) < math.EPSILON)
+                                    if (angJacobian.IsSwingLock)
                                     {
                                         // Constraint: two scalar dot-1 constraints
                                         //      \phi(q)_u = n_A^t * u_B = 0
@@ -810,10 +809,8 @@ namespace Unity.Physics
                                         // Constraint error from last step, at coordinates q_:
                                         //      \phi(q_)_u = n_A^t * u_B
                                         //      \phi(q_)_v = n_A^t * v_B
-                                        // including a mapping to angles for correct constraint regularization via acos.
-                                        float2 phi_0 = math.PIHALF - new float2(
-                                            math.acos(math.mul(n_A, u_B)),
-                                            math.acos(math.mul(n_A, v_B)));
+                                        // Express the projections as angles so the bias is in radians.
+                                        float2 phi_0 = angJacobian.SwingLockError(angJacobian.BFromA);
 
                                         // Assemble right hand side (rhs):
 

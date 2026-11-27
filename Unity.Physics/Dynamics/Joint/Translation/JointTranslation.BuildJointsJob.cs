@@ -736,11 +736,22 @@ namespace Unity.Physics.Dynamics.Joint.Translation
             }
 
             /// <summary>
-            /// Use separate 1D constraints for locked angular axes so that accumulated impulses give usable torques for
-            /// reporting and breaking.
+            /// Lock the angular axes. Each locked axis gets its own 1D constraint so that the accumulated impulses give
+            /// usable torques for reporting and breaking. The exception is two locked axes around one free axis: they
+            /// get a single swing constraint, which still reports a torque on each locked axis.
             /// </summary>
             private void AddLockedAngles(bool3 locked, float frequency, float damping, float3 impulseThreshold)
             {
+                if (math.csum(math.select(new int3(0), new int3(1), locked)) == 2)
+                {
+                    // Two twist constraints would measure each locked angle from a quaternion component over q.w. That
+                    // becomes ill-conditioned when the free axis passes a half turn, so a fast rotor would gain energy
+                    // and swing over. The cone measures swing independently of the twist about the free axis.
+                    int free = !locked.x ? 0 : !locked.y ? 1 : 2;
+                    Add(Constraint.Cone(free, new FloatRange(0.0f, 0.0f), impulseThreshold, frequency, damping));
+                    return;
+                }
+
                 for (int i = 0; i < 3; i++)
                 {
                     if (locked[i])
