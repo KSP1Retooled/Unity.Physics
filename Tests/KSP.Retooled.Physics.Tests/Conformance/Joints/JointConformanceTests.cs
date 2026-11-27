@@ -329,6 +329,36 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Joints
             Assert.That(body.angularVelocity.x, Is.EqualTo(1.0f).Within(0.1f));
         }
 
+        /// <summary>
+        /// KSP's rotors drive with a spring of 1e-10, a damper of 1000 and a target angular velocity. They limit their
+        /// own axis to a range from 0.01 to 0.1 degrees with a limit spring of 1e-8, which PhysX treats as almost free.
+        /// The rotor must reach its target speed, here 460 RPM.
+        /// </summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RotorDriveSpinsAtItsTargetVelocity(bool rotorLimit)
+        {
+            const float target = 48.17f;
+            Rigidbody body = Weightless(Vector3.zero);
+            body.maxAngularVelocity = 100.0f;
+            ConfigurableJoint joint = Lock(body, null, Vector3.zero, Vector3.zero);
+            joint.angularXMotion = ConfigurableJointMotion.Free;
+            if (rotorLimit)
+            {
+                joint.angularXMotion = ConfigurableJointMotion.Limited;
+                joint.lowAngularXLimit = new SoftJointLimit { limit = 0.01f };
+                joint.highAngularXLimit = new SoftJointLimit { limit = 0.1f };
+                joint.angularXLimitSpring = new SoftJointLimitSpring { spring = 1e-8f, damper = 1e-8f };
+            }
+
+            joint.angularXDrive = new JointDrive { positionSpring = 1e-10f, positionDamper = 1000.0f, maximumForce = float.MaxValue };
+            joint.targetAngularVelocity = new Vector3(target, 0.0f, 0.0f);
+
+            Simulate(100);
+
+            Assert.That(body.angularVelocity.x, Is.EqualTo(target).Within(0.5f));
+        }
+
         [Test]
         public void FixedJointKeepsTheOffset()
         {
