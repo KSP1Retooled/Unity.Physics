@@ -1,0 +1,88 @@
+using System;
+using System.IO;
+using Unity.Collections;
+using Unity.Physics.Stepping.Recording;
+
+namespace Unity.Physics.Stepping.State
+{
+    internal unsafe partial struct VesselState
+    {
+        internal uint CompilationVersion { get; private set; }
+
+        internal readonly void WriteRecording(RecordingWriter writer)
+        {
+            writer.Write(compiled);
+            writer.Write(tombstoneExpiry);
+            writer.WriteList(vesselBuild.Vessels);
+            writer.WriteList(vesselBuild.PartStoreBodies);
+            writer.WriteList(vesselBuild.PartUnits);
+            writer.WriteList(vesselBuild.PartParents);
+            writer.WriteList(vesselBuild.PartIsBody0);
+            writer.WriteList(vesselBuild.PartVesselFirst);
+            writer.WriteList(vesselBuild.ClosureUnits);
+            writer.WriteList(vesselBuild.ClosurePartA);
+            writer.WriteList(vesselBuild.ClosurePartB);
+            writer.WriteList(vesselBuild.PartTombstones);
+            writer.WriteList(vesselBuild.ClosureTombstones);
+            writer.WriteList(vesselBuild.UnitVessels);
+            writer.WriteList(vesselBuild.BodyVessels);
+            writer.WriteList(vesselBuild.PartBodyRecords);
+            writer.WriteList(vesselBuild.PartJointRecords);
+            writer.WriteList(vesselBuild.ClosureJointRecords);
+            writer.WriteList(vesselBuild.PartBodySerials);
+            writer.WriteList(vesselBuild.PartJointSerials);
+            writer.WriteList(vesselBuild.ClosureJointSerials);
+            writer.Write(vesselBuild.PairUnits.Count());
+            foreach (var pair in vesselBuild.PairUnits)
+            {
+                writer.Write(pair.Key);
+                writer.Write(pair.Value);
+            }
+        }
+
+        internal void ReadRecording(BinaryReader reader, Func<ulong, nint> resolveBody, Func<ulong, nint> resolveJoint)
+        {
+            compiled = reader.ReadBoolean();
+            // Fill recomputes each used edge and closure from its restored unit, joint settings and motion frames.
+            cacheFilled = false;
+            tombstoneExpiry = reader.ReadInt32();
+            reader.ReadList(vesselBuild.Vessels);
+            reader.ReadList(vesselBuild.PartStoreBodies);
+            reader.ReadList(vesselBuild.PartUnits);
+            reader.ReadList(vesselBuild.PartParents);
+            reader.ReadList(vesselBuild.PartIsBody0);
+            reader.ReadList(vesselBuild.PartVesselFirst);
+            reader.ReadList(vesselBuild.ClosureUnits);
+            reader.ReadList(vesselBuild.ClosurePartA);
+            reader.ReadList(vesselBuild.ClosurePartB);
+            reader.ReadList(vesselBuild.PartTombstones);
+            reader.ReadList(vesselBuild.ClosureTombstones);
+            reader.ReadList(vesselBuild.UnitVessels);
+            reader.ReadList(vesselBuild.BodyVessels);
+            reader.ReadList(vesselBuild.PartBodyRecords);
+            reader.ReadList(vesselBuild.PartJointRecords);
+            reader.ReadList(vesselBuild.ClosureJointRecords);
+            reader.ReadList(vesselBuild.PartBodySerials);
+            reader.ReadList(vesselBuild.PartJointSerials);
+            reader.ReadList(vesselBuild.ClosureJointSerials);
+            int pairs = reader.ReadCount(1 << 24);
+            for (int i = 0; i < pairs; i++)
+            {
+                vesselBuild.PairUnits.Add(reader.ReadUInt64(), reader.ReadInt32());
+            }
+
+            Resolve(vesselBuild.PartBodyRecords, resolveBody);
+            Resolve(vesselBuild.PartJointRecords, resolveJoint);
+            Resolve(vesselBuild.ClosureJointRecords, resolveJoint);
+        }
+
+        private static void Resolve(NativeList<IntPtr> list, Func<ulong, nint> resolve)
+        {
+            for (int i = 0; i < list.Length; i++)
+            {
+                ulong address = (ulong)list[i];
+                list[i] = address == 0 ? IntPtr.Zero : (IntPtr)resolve(address);
+            }
+        }
+    }
+}

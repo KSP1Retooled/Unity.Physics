@@ -276,6 +276,27 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
             double hardAngular = omega * omega / ((DoubleMath.Trace(childSection->InverseInertia)
                 + DoubleMath.Trace(parentSection->InverseInertia)) / 3.0);
             double dampingPerStiffness = 2.0 * HardDampingRatio / omega;
+            double linearDampingPerStiffness = dampingPerStiffness, angularDampingPerStiffness = dampingPerStiffness;
+
+            // Cap the hard stiffness so that the rows of a loop spanning several sections cannot fight a sub-millimetre
+            // misfit with hundreds of meganewtons. See VesselRowSwitches. A capped row keeps the hard damping ratio at
+            // its own, lower frequency.
+            double linearCap = Unity.Physics.Configuration.VesselRowSwitches.LinearCap;
+            if (linearCap > 0.0 && hardLinear > linearCap)
+            {
+                double reducedMass = hardLinear / (omega * omega);
+                hardLinear = linearCap;
+                linearDampingPerStiffness = 2.0 * HardDampingRatio * math.sqrt(reducedMass / linearCap);
+            }
+
+            double angularCap = Unity.Physics.Configuration.VesselRowSwitches.AngularCap;
+            if (angularCap > 0.0 && hardAngular > angularCap)
+            {
+                double reducedInertia = hardAngular / (omega * omega);
+                hardAngular = angularCap;
+                angularDampingPerStiffness = 2.0 * HardDampingRatio * math.sqrt(reducedInertia / angularCap);
+            }
+
             if (link->Edge >= 0)
             {
                 VesselEdge* edge = Edges + link->Edge;
@@ -284,13 +305,13 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 frame = edge->Frame;
                 rest = edge->Rest;
                 linearStiffness = hardLinear;
-                linearDamping = hardLinear * dampingPerStiffness;
+                linearDamping = hardLinear * linearDampingPerStiffness;
                 hardLinearAxes = true;
                 if (edge->State == VesselEdgeState.FreeAxis)
                 {
                     freeSwing = true;
                     angularStiffness = new double3(edge->TwistStiffness, hardAngular, hardAngular);
-                    angularDamping = new double3(edge->TwistDamping, hardAngular * dampingPerStiffness, hardAngular * dampingPerStiffness);
+                    angularDamping = new double3(edge->TwistDamping, hardAngular * angularDampingPerStiffness, hardAngular * angularDampingPerStiffness);
                     driveTarget = edge->DriveTarget;
                 }
                 else
@@ -315,8 +336,8 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
 
             // A stiffness of infinity asks for a hard row: the caller marks an axis that way when it is locked.
             bool3 hardAngularAxes = (angularStiffness == double.PositiveInfinity) | new bool3(false, freeSwing, freeSwing);
-            Harden(ref linearStiffness, ref linearDamping, hardLinear, dampingPerStiffness);
-            Harden(ref angularStiffness, ref angularDamping, hardAngular, dampingPerStiffness);
+            Harden(ref linearStiffness, ref linearDamping, hardLinear, linearDampingPerStiffness);
+            Harden(ref angularStiffness, ref angularDamping, hardAngular, angularDampingPerStiffness);
 
             double3x3 childRotation = DoubleMath.Rotation(child->Orientation);
             double3x3 parentRotation = DoubleMath.Rotation(parent->Orientation);

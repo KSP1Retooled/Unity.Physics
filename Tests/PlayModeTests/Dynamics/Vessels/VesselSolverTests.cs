@@ -22,6 +22,24 @@ namespace Unity.Physics.Tests.Dynamics.Vessels
     {
         const double TimeStep = 0.02;
 
+        /// <summary>
+        /// The references are stiff solves with full hard rows, so the row caps are off here. A cap would soften the
+        /// solver's links and change the load split that the references check.
+        /// </summary>
+        [SetUp]
+        public void TurnRowCapsOff()
+        {
+            VesselRowSwitches.LinearCap = -1.0;
+            VesselRowSwitches.AngularCap = -1.0;
+        }
+
+        [TearDown]
+        public void RestoreRowCaps()
+        {
+            VesselRowSwitches.LinearCap = 0.0;
+            VesselRowSwitches.AngularCap = 0.0;
+        }
+
         /// <summary>Solves A X = B in place by LU with partial pivoting; A is n by n and B n by columns, both row by row.</summary>
         [BurstCompile(DisableSafetyChecks = true)]
         struct DenseSolveJob : IJob

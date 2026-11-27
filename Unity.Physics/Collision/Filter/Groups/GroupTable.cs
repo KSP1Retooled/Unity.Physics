@@ -10,7 +10,7 @@ namespace Unity.Physics.Collision.Filter.Groups
     /// Records are keyed by engine object ID and survive shape replacement and domain reloads.
     /// Shapes cache their group record index; CollisionGroups removes records for destroyed colliders.
     /// </summary>
-    internal unsafe struct GroupTable
+    internal unsafe partial struct GroupTable
     {
         /// <summary>The flag that lets a member collide with other members of its group that have the flag.</summary>
         internal const uint SelfCollides = 1;

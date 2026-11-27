@@ -369,6 +369,19 @@ namespace Unity.Physics.Dynamics.Solver.Islands.Scheduling
 
             handle = JobHandle.CombineDependencies(handle, fused);
             solved = handle;
+            if (stepInput.IslandSolverCache.RecorderIslands != null)
+            {
+                handle = new RecordIslandsJob
+                {
+                    Islands = work.Islands,
+                    Starts = info.FirstIslandBodyIndices,
+                    Bodies = info.IslandBodies,
+                    RigidBodies = world.Bodies,
+                    Output = stepInput.IslandSolverCache.RecorderIslands,
+                    Paths = stepInput.IslandSolverCache.RecorderPaths,
+                }.Schedule(handle);
+            }
+
             return work.Dispose(handle);
         }
 

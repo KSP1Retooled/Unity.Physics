@@ -17,7 +17,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
         /// Use a separate push-out solve with unilateral contacts and no friction so that the main solver state is
         /// preserved.
         /// </summary>
-        internal static unsafe void SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
+        internal static unsafe bool SolvePushOut(in SparseConstraintSolver.Problem problem, JacobianHeader** headers,
             in NativeList<int> worldBodies, float* recovery, in NativeArray<MotionVelocity> motionVelocities,
             in NativeArray<MotionData> motionDatas, float timestep, float fastest, ForestRun* forest = null)
         {
@@ -30,7 +30,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             if (!pushing)
             {
-                return;
+                return false;
             }
 
             using ProfilerMarker.AutoScope span = PushOutMarker.Auto();
@@ -105,7 +105,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
                 bodyImpulses.Dispose();
                 values.Dispose();
-                return;
+                return true;
             }
 
             // Contacts that wedge a body push it hard along whatever way out they leave, faster than any one of them asks.
@@ -154,6 +154,7 @@ namespace Unity.Physics.Dynamics.Solver.Vessels
 
             bodyImpulses.Dispose();
             values.Dispose();
+            return true;
         }
 
         /// <summary>

@@ -23,6 +23,12 @@ namespace Unity.Physics.Dynamics.Vessels.Detection
         // receive distinct Ids.
         private static readonly SharedStatic<long> LastId = SharedStatic<long>.GetOrCreate<IdKey>();
 
+        internal static long RecordingId
+        {
+            get => LastId.Data;
+            set => LastId.Data = value;
+        }
+
         /// <summary>Allocates a vessel Id that has not been used before.</summary>
         internal static unsafe ulong NewId()
         {

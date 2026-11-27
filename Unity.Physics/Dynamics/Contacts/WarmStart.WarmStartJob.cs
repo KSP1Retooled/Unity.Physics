@@ -26,6 +26,45 @@ namespace Unity.Physics.Dynamics.Contacts
     internal static partial class WarmStart
     {
         /// <summary>
+        /// Fills, for each dynamic body, the index of its vessel in the step's vessel set, or -1.
+        ///
+        /// Two parts of one vessel touch only when the game lets them collide, which happens mostly in the steps after a
+        /// vessel splits, while the vessel solve still groups the pieces and the parts still overlap where they were
+        /// attached. Those deep contacts end a step with large impulses that cancel each other. The warm start would apply
+        /// them as velocity at the start of the next step. The vessel solve holds some of these contacts out of its
+        /// boundary, and a held contact keeps its warm impulse, so the parts would leave at hundreds or thousands of
+        /// metres per second. These contacts start cold instead.
+        /// </summary>
+        [BurstCompile]
+        internal unsafe struct FillBodyVesselsJob : IJob
+        {
+            public Unity.Physics.Dynamics.Vessels.Model.VesselSet Vessels;
+
+            public NativeArray<int> BodyVessels;
+
+            public void Execute()
+            {
+                for (int i = 0; i < BodyVessels.Length; i++)
+                {
+                    BodyVessels[i] = -1;
+                }
+
+                for (int v = 0; v < Vessels.VesselCount; v++)
+                {
+                    Unity.Physics.Dynamics.Vessels.Model.VesselRecord vessel = Vessels.Vessels[v];
+                    for (int part = vessel.FirstPart; part < vessel.FirstPart + vessel.PartCount; part++)
+                    {
+                        int body = Vessels.PartBodies[part];
+                        if (body >= 0 && body < BodyVessels.Length)
+                        {
+                            BodyVessels[body] = v;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Warm start nearby contact points with an equal share of the previous manifold's normal impulse.
         /// </summary>
         [BurstCompile]
@@ -47,10 +86,18 @@ namespace Unity.Physics.Dynamics.Contacts
 
             public int MotionCount;
 
+            /// <summary>
+            /// For each dynamic body, the index of its vessel in the step's vessel set, or -1. A contact between two parts
+            /// of one vessel starts cold, see <see cref="FillBodyVesselsJob"/>.
+            /// </summary>
+            [ReadOnly]
+            public NativeArray<int> BodyVessels;
+
             public void Execute(ref ModifiableJacobianHeader header, ref ModifiableContactJacobian jacobian)
             {
                 JacobianKey key = new JacobianKey { BodyA = header.BodyIndexA, BodyB = header.BodyIndexB, Normal = jacobian.Normal };
-                if ((header.Flags & JacobianFlags.Disabled) != 0 || !WarmStarts.TryGetValue(key, out float2 shared))
+                if ((header.Flags & JacobianFlags.Disabled) != 0 || SameVessel(header.BodyIndexA, header.BodyIndexB) ||
+                    !WarmStarts.TryGetValue(key, out float2 shared))
                 {
                     return;
                 }
@@ -74,6 +121,17 @@ namespace Unity.Physics.Dynamics.Contacts
 
             public void Execute(ref ModifiableJacobianHeader header, ref ModifiableTriggerJacobian jacobian)
             {
+            }
+
+            private bool SameVessel(int bodyA, int bodyB)
+            {
+                if (bodyA < 0 || bodyB < 0 || bodyA >= BodyVessels.Length || bodyB >= BodyVessels.Length)
+                {
+                    return false;
+                }
+
+                int vessel = BodyVessels[bodyA];
+                return vessel >= 0 && vessel == BodyVessels[bodyB];
             }
 
             private void Push(int body, float3 linearImpulse, float3 angularImpulse)

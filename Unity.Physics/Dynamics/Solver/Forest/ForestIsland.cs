@@ -15,7 +15,7 @@ namespace Unity.Physics.Dynamics.Solver.Forest
     /// Persistent island forest pairs, locks, structure and factor arrays, owned by IslandSolverCache.
     /// Number moving bodies parent-first; BodyPart and PartBody translate indices.
     /// </summary>
-    internal unsafe struct ForestIsland
+    internal unsafe partial struct ForestIsland
     {
         public VesselStructure Structure;
 

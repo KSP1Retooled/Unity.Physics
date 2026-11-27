@@ -1,4 +1,5 @@
 using System;
+using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -59,12 +60,21 @@ namespace Unity.Physics.Stepping.Stages
             input.IslandSolverCache = solverCaches.directSolverCache;
             input.VesselSet = vessels.vesselSet;
             preparedSimulation = singleton.AsSimulationPtr();
-            return new WarmStart.WarmStartJob
+            int dynamicBodies = partition.dynamicIndices.Length;
+            var bodyVessels = new NativeArray<int>(math.max(1, dynamicBodies), Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            JobHandle filled = new WarmStart.FillBodyVesselsJob
+            {
+                Vessels = vessels.vesselSet,
+                BodyVessels = bodyVessels,
+            }.Schedule(JobHandle.CombineDependencies(dependency, vessels.vesselsFilled));
+            JobHandle warmed = new WarmStart.WarmStartJob
             {
                 WarmStarts = contactState.warmStarts,
                 Motions = (MotionVelocity*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(world.MotionVelocities),
-                MotionCount = partition.dynamicIndices.Length,
-            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(dependency, warmStartsIndexed, vessels.vesselsFilled));
+                MotionCount = dynamicBodies,
+                BodyVessels = bodyVessels,
+            }.Schedule(singleton, ref world, JobHandle.CombineDependencies(filled, warmStartsIndexed));
+            return bodyVessels.Dispose(warmed);
         }
 
         internal static void ResizeJointLoads(WorldData* store, ref JointBuildState jointState)

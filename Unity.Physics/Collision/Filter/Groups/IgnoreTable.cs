@@ -11,7 +11,7 @@ namespace Unity.Physics.Collision.Filter.Groups
     /// Store collider pairs disabled by Physics.IgnoreCollision, keyed by persistent 16-bit ignore IDs.
     /// Use a hash table for lookups and per-ID edge lists for removal. Native allocations survive domain reloads.
     /// </summary>
-    internal unsafe struct IgnoreTable
+    internal unsafe partial struct IgnoreTable
     {
         private static readonly ProfilerMarker ForgetIgnoredCollisions = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Filter.ForgetIgnoredPairs");
         private static readonly ProfilerMarker IgnoreCollision = new ProfilerMarker(ProfilerCategory.Physics, "Physics.Filter.IgnoreCollision");
