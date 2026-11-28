@@ -325,7 +325,8 @@ namespace KSP.Retooled.Physics.Tests.Conformance.Vessels
                 + $"angle {Mathf.Abs(measured.angle - reference.angle):E4} deg, anchor {Mathf.Abs(measured.anchor - reference.anchor):E4} m, "
                 + $"axis {Mathf.Abs(measured.axis - reference.axis):E4} deg, tip {Vector3.Distance(measured.tip, reference.tip):E4} m.");
             Assert.That(measured.angle, Is.EqualTo(55.0f).Within(4.0f));
-            Assert.That(measured.anchor, Is.LessThan(0.003f));
+            // The servo's edge has no row stiffness cap. With the cap, the anchors drifted about 120 micrometres apart.
+            Assert.That(measured.anchor, Is.LessThan(2e-5f));
             Assert.That(measured.axis, Is.LessThan(0.2f));
             Assert.That(Vector3.Distance(measured.tip, reference.tip), Is.LessThan(0.03f));
         }

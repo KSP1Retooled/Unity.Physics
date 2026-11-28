@@ -280,8 +280,11 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
 
             // Cap the hard stiffness so that the rows of a loop spanning several sections cannot fight a sub-millimetre
             // misfit with hundreds of meganewtons. See VesselRowSwitches. A capped row keeps the hard damping ratio at
-            // its own, lower frequency.
-            double linearCap = Unity.Physics.Configuration.VesselRowSwitches.LinearCap;
+            // its own, lower frequency. A servo's edge keeps its full stiffness: capped, a hinge holding a loaded arm
+            // let its anchors drift about 100 times as far. A loop through a servo still has capped closure rows,
+            // which give way to a misfit first.
+            bool servo = link->Edge >= 0 && Edges[link->Edge].State == VesselEdgeState.FreeAxis;
+            double linearCap = servo ? 0.0 : Unity.Physics.Configuration.VesselRowSwitches.LinearCap;
             if (linearCap > 0.0 && hardLinear > linearCap)
             {
                 double reducedMass = hardLinear / (omega * omega);
@@ -289,7 +292,7 @@ namespace Unity.Physics.Dynamics.Vessels.Sections
                 linearDampingPerStiffness = 2.0 * HardDampingRatio * math.sqrt(reducedMass / linearCap);
             }
 
-            double angularCap = Unity.Physics.Configuration.VesselRowSwitches.AngularCap;
+            double angularCap = servo ? 0.0 : Unity.Physics.Configuration.VesselRowSwitches.AngularCap;
             if (angularCap > 0.0 && hardAngular > angularCap)
             {
                 double reducedInertia = hardAngular / (omega * omega);
